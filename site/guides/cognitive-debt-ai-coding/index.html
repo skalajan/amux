@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Cognitive Debt: How AI Coding Tools Erode Developer Skills (and How to Fight Back) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="AI-assisted developers score 17% lower on comprehension tests. Code churn has doubled. Review times are up 91%. Cognitive debt is the hidden cost of AI coding &mdash; here's the data, the five accumulation patterns, and the practical framework for staying sharp while shipping faster.">
+  <meta name="keywords" content="cognitive debt, comprehension debt, AI coding skills, AI coding making developers worse, AI skill atrophy, AI brain fry, agentic fatigue, AI generated code quality, AI coding dependency, developer deskilling, AI pair programming risks, AI coding agent risks 2026">
+  <link rel="canonical" href="https://amux.io/guides/cognitive-debt-ai-coding/">
+  <meta property="og:title" content="Cognitive Debt: How AI Coding Tools Erode Developer Skills (and How to Fight Back)">
+  <meta property="og:description" content="AI-assisted developers score 17% lower on comprehension tests. Code churn has doubled. Review times are up 91%. The data on cognitive debt &mdash; and how to fix it.">
+  <meta property="og:url" content="https://amux.io/guides/cognitive-debt-ai-coding/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Cognitive Debt","item":"https://amux.io/guides/cognitive-debt-ai-coding/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Cognitive Debt: How AI Coding Tools Erode Developer Skills (and How to Fight Back)","description":"AI-assisted developers score 17% lower on comprehension tests. Code churn has doubled. Review times are up 91%. Cognitive debt is the hidden cost of AI coding — here's the data, the five accumulation patterns, and the practical framework for staying sharp while shipping faster.","url":"https://amux.io/guides/cognitive-debt-ai-coding/","datePublished":"2026-05-21","dateModified":"2026-05-21","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is cognitive debt in software development?","acceptedAnswer":{"@type":"Answer","text":"Cognitive debt is the growing gap between how much code exists in a system and how much of it any developer genuinely understands. Unlike technical debt (which lives in code), cognitive debt lives in people — it accumulates when developers accept AI-generated code without building mental models of how it works. The term draws from Addy Osmani's 'comprehension debt' concept and Margaret-Anne Storey's academic 'triple debt model' (technical, cognitive, and intent debt)."}},{"@type":"Question","name":"Does AI coding make developers worse?","acceptedAnswer":{"@type":"Answer","text":"It depends on how you use it. Anthropic's 2026 randomized controlled trial found AI-assisted developers scored 17% lower on comprehension tests (50% vs 67%). But the same study found developers who used AI for conceptual inquiry scored 65%+, while those who purely delegated code generation scored below 40%. AI amplifies your approach: delegation without understanding causes skill atrophy, but using AI as a thinking partner can enhance learning."}},{"@type":"Question","name":"What is comprehension debt?","acceptedAnswer":{"@type":"Answer","text":"Comprehension debt, coined by Google engineering leader Addy Osmani in March 2026, is the specific form of cognitive debt where teams lose understanding of their own codebase because AI generates code faster than humans can evaluate it. AI produces 140-200 lines per minute; humans comprehend 20-40 lines per minute. The result: tests pass, code looks clean, PRs get merged — but nobody understands how the system works."}},{"@type":"Question","name":"What is AI brain fry?","acceptedAnswer":{"@type":"Answer","text":"AI brain fry is a term from Harvard Business Review's March 2026 research describing the mental fog, decision fatigue, and cognitive overload that comes from intensive AI oversight. It particularly affects developers running multiple AI coding agents in parallel, where the mental load of reviewing, redirecting, and coordinating AI output exceeds human cognitive capacity."}},{"@type":"Question","name":"How do you prevent cognitive debt while using AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"The key strategies are: (1) Use AI for inquiry before delegation — ask it to explain approaches before generating code. (2) Maintain architectural ownership — write specs and review AI output against them. (3) Use structured orchestration — tools like amux keep humans at the supervisor level while agents handle implementation, with review checkpoints that force comprehension. (4) Practice active code reading — use AI to annotate and explain code rather than just generate it. (5) Rotate between AI-assisted and manual coding sessions to maintain fundamental skills."}},{"@type":"Question","name":"Is cognitive debt the same as technical debt?","acceptedAnswer":{"@type":"Answer","text":"No. Technical debt lives in the code — shortcuts, missing tests, poor abstractions. Cognitive debt lives in the people — gaps in understanding, lost mental models, inability to debug without AI assistance. You can measure technical debt with static analysis tools. Cognitive debt is invisible until something breaks and no one on the team understands the system well enough to fix it. Margaret-Anne Storey's research adds a third category: intent debt, which is the gap between what the code does and what's documented about why."}},{"@type":"Question","name":"What percentage of AI-generated code has bugs?","acceptedAnswer":{"@type":"Answer","text":"Multiple studies converge on concerning numbers. CodeRabbit's analysis of 470 GitHub PRs found AI-co-authored code has 1.7x more issues overall, 75% more logic errors, and 2.74x more security vulnerabilities than human-only code. Lightrun's 2026 survey of 200 senior engineering leaders found 43% of AI-generated code changes need debugging in production even after passing QA. SonarSource reports 96% of developers do not fully trust AI-generated code, and only 48% always verify it before committing."}}]}</script>
+  <style>
+    .debt-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .debt-card h3 { margin-top: 0; font-size: 1.1rem; }
+    .debt-card .debt-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #6ee7b7; font-weight: 600; margin-bottom: 0.3rem; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #f87171; }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
+    .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .key-insight strong { color: #6ee7b7; }
+    .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .warning-box strong { color: #f87171; }
+    .pattern-card { background: var(--bg-card, #232838); border-left: 3px solid #f87171; border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
+    .pattern-card h4 { margin-top: 0; color: #f87171; }
+    .pattern-card .antidote { border-top: 1px solid rgba(255,255,255,0.06); margin-top: 0.75rem; padding-top: 0.75rem; }
+    .pattern-card .antidote strong { color: #6ee7b7; }
+    .strategy-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
+    .strategy-card h4 { margin-top: 0; color: #6ee7b7; }
+    .spectrum-bar { display: flex; align-items: stretch; border-radius: 10px; overflow: hidden; margin: 1.5rem 0; font-size: 0.85rem; }
+    .spectrum-bar .seg { padding: 1rem; flex: 1; text-align: center; }
+    .spectrum-bar .seg-danger { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.25); }
+    .spectrum-bar .seg-warn { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.2); }
+    .spectrum-bar .seg-ok { background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.2); }
+    .triple-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .triple-grid .tcard { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .triple-grid .tcard h4 { margin-top: 0; font-size: 0.95rem; }
+    .triple-grid .tcard .tlabel { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
+    .triple-grid .tcard.td-tech .tlabel { color: var(--text-muted, #8892a4); }
+    .triple-grid .tcard.td-cog .tlabel { color: #f87171; }
+    .triple-grid .tcard.td-int .tlabel { color: #fbbf24; }
+    @media (max-width: 600px) { .triple-grid { grid-template-columns: 1fr; } }
+    .evidence-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.88rem; }
+    .evidence-table th, .evidence-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .evidence-table th { font-weight: 600; white-space: nowrap; }
+    .evidence-table a { color: #6ee7b7; }
+    .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
+    .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Cognitive Debt</span></div>
+    <span class="updated-badge">May 2026</span>
+    <h1>Cognitive Debt: How AI Coding Tools Erode Developer Skills</h1>
+    <p class="subtitle">AI-assisted developers score 17% lower on comprehension tests. Code churn has doubled. Review times are up 91%. The developer community's fastest-growing concern isn't whether AI can write code &mdash; it's whether <em>you</em> still understand the code it writes. This is the practitioner's guide to the hidden cost of AI coding, the research that quantifies it, and the framework for staying sharp while shipping faster.</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-num">17%</div>
+        <div class="stat-label">Lower comprehension scores with AI assistance</div>
+        <div class="stat-source"><a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener" style="color:inherit;">Anthropic RCT, 2026</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">96%</div>
+        <div class="stat-label">of developers don't fully trust AI-generated code</div>
+        <div class="stat-source"><a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener" style="color:inherit;">SonarSource Survey, 2026</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">91%</div>
+        <div class="stat-label">increase in code review time under high AI adoption</div>
+        <div class="stat-source"><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener" style="color:inherit;">Faros AI, 2026</a></div>
+      </div>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Is Cognitive Debt?</a></li>
+        <li><a href="#triple-debt" style="color:var(--dim);text-decoration:none;">The Triple Debt Model</a></li>
+        <li><a href="#evidence" style="color:var(--dim);text-decoration:none;">The Evidence: 8 Studies You Should Know</a></li>
+        <li><a href="#patterns" style="color:var(--dim);text-decoration:none;">Five Accumulation Patterns</a></li>
+        <li><a href="#paradox" style="color:var(--dim);text-decoration:none;">The AI Productivity Paradox</a></li>
+        <li><a href="#spectrum" style="color:var(--dim);text-decoration:none;">The AI Usage Spectrum</a></li>
+        <li><a href="#framework" style="color:var(--dim);text-decoration:none;">The Cognitive Debt Prevention Framework</a></li>
+        <li><a href="#orchestration" style="color:var(--dim);text-decoration:none;">How Agent Orchestration Reduces Cognitive Debt</a></li>
+        <li><a href="#junior" style="color:var(--dim);text-decoration:none;">The Junior Developer Question</a></li>
+        <li><a href="#checklist" style="color:var(--dim);text-decoration:none;">The 10-Point Cognitive Debt Audit</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ============================== -->
+    <h2 id="what">What Is Cognitive Debt?</h2>
+
+    <p>Cognitive debt is the growing gap between how much code exists in a system and how much of it any developer genuinely understands. It accumulates when developers accept AI-generated code without building mental models of how it works &mdash; and unlike technical debt, it's invisible until something breaks and no one knows why.</p>
+
+    <p>The term crystallized in March 2026 when <a href="https://addyosmani.com/blog/comprehension-debt/" target="_blank" rel="noopener">Addy Osmani</a>, engineering leader at <a href="https://www.google.com" target="_blank" rel="noopener">Google</a>, published his seminal essay on <strong>comprehension debt</strong>. His core observation: AI generates code at 140&ndash;200 lines per minute, but humans comprehend code at 20&ndash;40 lines per minute. That 5&ndash;7x speed gap means code is accumulating far faster than understanding.</p>
+
+    <div class="quote-block">
+      <div class="quote-text">&ldquo;Comprehension debt is the growing gap between how much code exists in your system and how much of it any human being genuinely understands.&rdquo;</div>
+      <div class="quote-attr">&mdash; <a href="https://addyosmani.com/blog/comprehension-debt/" target="_blank" rel="noopener">Addy Osmani</a>, Google, March 2026</div>
+    </div>
+
+    <p>Two months earlier, <a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic</a> published the first randomized controlled trial measuring the effect. The result: developers who used AI assistance scored <strong>50%</strong> on comprehension assessments versus <strong>67%</strong> for the manual coding group &mdash; a 17-percentage-point gap equivalent to nearly two letter grades.</p>
+
+    <p>Then came the practitioner voices. <a href="https://simonwillison.net/" target="_blank" rel="noopener">Simon Willison</a>, co-creator of <a href="https://www.djangoproject.com/" target="_blank" rel="noopener">Django</a>, described on <a href="https://www.lennysnewsletter.com/p/an-ai-state-of-the-union" target="_blank" rel="noopener">Lenny's Podcast</a> how running parallel agents pushes human cognition to its limits:</p>
+
+    <div class="quote-block">
+      <div class="quote-text">&ldquo;Using coding agents well is taking every inch of my 25 years of experience as a software engineer, and it is mentally exhausting. I can fire up four agents in parallel and have them work on four different problems, and by 11am I am wiped out for the day.&rdquo;</div>
+      <div class="quote-attr">&mdash; <a href="https://simonwillison.net/" target="_blank" rel="noopener">Simon Willison</a>, co-creator of Django, April 2026</div>
+    </div>
+
+    <p>Cognitive debt isn't a fringe concern. It's the intersection of three converging forces: AI now generates <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">42% of committed code</a> (expected to reach 65% by 2027), <a href="https://stackoverflow.blog/2025/12/29/developers-remain-willing-but-reluctant-to-use-ai-the-2025-developer-survey-results-are-here/" target="_blank" rel="noopener">84% of developers</a> now use AI tools, and trust in AI accuracy has <a href="https://stackoverflow.blog/2025/12/29/developers-remain-willing-but-reluctant-to-use-ai-the-2025-developer-survey-results-are-here/" target="_blank" rel="noopener">fallen from 40% to 29%</a>.</p>
+
+    <div class="key-insight">
+      <strong>The core paradox:</strong> Developers are using AI tools more than ever while trusting them less than ever. The code is piling up. The understanding isn't keeping pace. That gap is cognitive debt.
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="triple-debt">The Triple Debt Model</h2>
+
+    <p><a href="https://arxiv.org/abs/2603.22106" target="_blank" rel="noopener">Margaret-Anne Storey's research</a> (University of Victoria, March 2026) formalizes cognitive debt as part of a <strong>triple debt model</strong> &mdash; three interacting forms of debt that compound each other in AI-assisted development:</p>
+
+    <div class="triple-grid">
+      <div class="tcard td-tech">
+        <div class="tlabel">In the code</div>
+        <h4>Technical Debt</h4>
+        <p>Shortcuts, missing tests, poor abstractions, duplicated logic. Measurable with static analysis. The kind we've managed for decades.</p>
+        <p style="font-size:0.85rem;color:var(--text-muted);">AI accelerates this: <a href="https://www.coderabbit.ai/blog/state-of-ai-vs-human-code-generation-report" target="_blank" rel="noopener">CodeRabbit</a> found AI PRs have 1.7x more issues, 2.74x more security vulnerabilities.</p>
+      </div>
+      <div class="tcard td-cog">
+        <div class="tlabel">In the people</div>
+        <h4>Cognitive Debt</h4>
+        <p>Gaps in understanding, lost mental models, inability to debug or extend without AI. Invisible to tooling. Only surfaces during incidents.</p>
+        <p style="font-size:0.85rem;color:var(--text-muted);"><a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic's RCT</a>: 17% comprehension drop. The debt lives in people's heads, not in the code.</p>
+      </div>
+      <div class="tcard td-int">
+        <div class="tlabel">In the documentation</div>
+        <h4>Intent Debt</h4>
+        <p>The gap between what code does and what's documented about <em>why</em>. AI generates code but rarely captures the reasoning behind decisions.</p>
+        <p style="font-size:0.85rem;color:var(--text-muted);">When the original developer leaves, intent debt becomes cognitive debt for everyone else.</p>
+      </div>
+    </div>
+
+    <p>The three debts interact: AI generates technically correct code (low immediate tech debt) that nobody fully understands (high cognitive debt) with no documented rationale (high intent debt). The system looks clean. The team is fragile.</p>
+
+    <!-- ============================== -->
+    <h2 id="evidence">The Evidence: 8 Studies You Should Know</h2>
+
+    <p>Cognitive debt moved from anecdote to evidence in early 2026. Eight studies and surveys now quantify the problem from different angles:</p>
+
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Study</th><th>Key Finding</th><th>Sample</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic RCT</a> (Jan 2026)</td>
+          <td>AI-assisted devs scored <strong>50% vs 67%</strong> on comprehension (p=0.01, Cohen's d=0.738)</td>
+          <td>52 engineers</td>
+        </tr>
+        <tr>
+          <td><a href="https://addyosmani.com/blog/comprehension-debt/" target="_blank" rel="noopener">Osmani / Google</a> (Mar 2026)</td>
+          <td>AI generates code <strong>5&ndash;7x faster</strong> than humans can comprehend it</td>
+          <td>Industry analysis</td>
+        </tr>
+        <tr>
+          <td><a href="https://arxiv.org/abs/2603.22106" target="_blank" rel="noopener">Storey / UVic</a> (Mar 2026)</td>
+          <td>Formalized the <strong>triple debt model</strong>: technical + cognitive + intent debt</td>
+          <td>Academic framework</td>
+        </tr>
+        <tr>
+          <td><a href="https://arxiv.org/abs/2604.13277" target="_blank" rel="noopener">Comprehension Debt Study</a> (Apr 2026)</td>
+          <td>Identified <strong>4 accumulation patterns</strong> from 621 developer diaries</td>
+          <td>207 developers</td>
+        </tr>
+        <tr>
+          <td><a href="https://arxiv.org/abs/2602.20206" target="_blank" rel="noopener">Epistemic Debt Study</a> (Feb 2026)</td>
+          <td>Unrestricted AI users had <strong>77% failure rate</strong> on AI-blackout maintenance tasks</td>
+          <td>78 developers</td>
+        </tr>
+        <tr>
+          <td><a href="https://www.coderabbit.ai/blog/state-of-ai-vs-human-code-generation-report" target="_blank" rel="noopener">CodeRabbit Report</a> (Dec 2025)</td>
+          <td>AI PRs have <strong>1.7x more issues</strong>, 2.74x more security vulnerabilities</td>
+          <td>470 GitHub PRs</td>
+        </tr>
+        <tr>
+          <td><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI Paradox</a> (2026)</td>
+          <td>Review time <strong>up 91%</strong>; task throughput up, but DORA metrics flat</td>
+          <td>10,000 developers</td>
+        </tr>
+        <tr>
+          <td><a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">SonarSource Survey</a> (2026)</td>
+          <td><strong>96% don't fully trust</strong> AI code; only 48% always verify before commit</td>
+          <td>Developer survey</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="warning-box">
+      <strong>The fragile expert problem:</strong> An <a href="https://arxiv.org/abs/2602.20206" target="_blank" rel="noopener">experimental study</a> at N=78 found that unrestricted AI users could build features faster &mdash; but when AI was taken away for a 30-minute maintenance task, <strong>77% failed</strong> (vs. 39% in the scaffolded group). The researchers call these &ldquo;fragile experts&rdquo; &mdash; developers whose high output masks critically low understanding.
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="patterns">Five Accumulation Patterns</h2>
+
+    <p>Drawing from the <a href="https://arxiv.org/abs/2604.13277" target="_blank" rel="noopener">621-diary academic study</a> and <a href="https://addyosmani.com/blog/comprehension-debt/" target="_blank" rel="noopener">Osmani's analysis</a>, cognitive debt accumulates through five distinct patterns. Each has a different trigger, a different symptom, and a different antidote:</p>
+
+    <div class="pattern-card">
+      <h4>#1 &mdash; Black-Box Acceptance</h4>
+      <p>The developer prompts AI, gets working code, copies it in. Tests pass. PR gets merged. Nobody read it carefully. This is the most common pattern and the most dangerous because it's invisible &mdash; the code <em>works</em>, so there's no signal that understanding is missing.</p>
+      <p><strong>Symptom:</strong> &ldquo;I can't explain how this function works, but it passes all the tests.&rdquo;</p>
+      <div class="antidote"><strong>Antidote:</strong> Before accepting AI-generated code, ask the AI to explain the approach in plain English. If you can't summarize it yourself afterward, you're accumulating debt. Use <a href="/guides/reviewing-ai-agent-code/">structured review workflows</a> that force comprehension before merge.</div>
+    </div>
+
+    <div class="pattern-card">
+      <h4>#2 &mdash; Context-Mismatch Debt</h4>
+      <p>AI generates code that is technically correct but doesn't match the project's patterns, conventions, or architectural intent. The code works but feels foreign. Over time, the codebase becomes a patchwork of styles that nobody fully navigates.</p>
+      <p><strong>Symptom:</strong> &ldquo;This works but it doesn't look like anything else we've written.&rdquo;</p>
+      <div class="antidote"><strong>Antidote:</strong> Invest in <a href="/guides/context-engineering/">context engineering</a> &mdash; well-structured <a href="/guides/claude-md-templates/">CLAUDE.md files</a>, <a href="/guides/agent-config-files-compared/">agent configuration</a>, and project-specific rules that constrain AI output to match your conventions.</div>
+    </div>
+
+    <div class="pattern-card">
+      <h4>#3 &mdash; Dependency-Induced Atrophy</h4>
+      <p>The developer stops practicing fundamental skills because AI handles them. Gradually, they lose the ability to write certain code, debug certain problems, or reason about certain patterns without AI assistance. The skill erodes through disuse.</p>
+      <p><strong>Symptom:</strong> &ldquo;I used to know how to write this. Now I just ask the AI.&rdquo;</p>
+      <div class="antidote"><strong>Antidote:</strong> Deliberately alternate between AI-assisted and manual coding sessions. Reserve architectural decisions and complex debugging for human-only work. Use AI as an accelerator, not a replacement, for tasks that maintain core skills.</div>
+    </div>
+
+    <div class="pattern-card">
+      <h4>#4 &mdash; Verification Bypass</h4>
+      <p>Under time pressure, developers skip thorough code review of AI output. <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">SonarSource found only 48%</a> of developers always verify AI code before committing. The other 52% are accepting code they haven't fully evaluated.</p>
+      <p><strong>Symptom:</strong> &ldquo;It compiled and the tests pass &mdash; ship it.&rdquo;</p>
+      <div class="antidote"><strong>Antidote:</strong> Implement <a href="/guides/vibe-coding-quality-gates/">quality gates</a> that force review. Use <a href="/guides/claude-code-hooks-cookbook/">Claude Code hooks</a> to run static analysis, security scans, and cross-agent review before code can be committed. Make verification automatic rather than relying on discipline.</div>
+    </div>
+
+    <div class="pattern-card">
+      <h4>#5 &mdash; Agentic Overload</h4>
+      <p>The developer runs multiple AI agents in parallel, creating more output than one human can meaningfully review. <a href="https://hbr.org/2026/03/when-using-ai-leads-to-brain-fry" target="_blank" rel="noopener">Harvard Business Review's research</a> on &ldquo;AI brain fry&rdquo; found that intensive AI oversight creates mental fog and decision fatigue. The more agents you run, the thinner your comprehension is spread.</p>
+      <p><strong>Symptom:</strong> &ldquo;I have 10 agents shipping code and I can barely keep up with reviewing the diffs.&rdquo;</p>
+      <div class="antidote"><strong>Antidote:</strong> Use structured orchestration with explicit <a href="/guides/kanban-board-for-agents/">task boards</a> and <a href="/guides/reviewing-ai-agent-code/">review queues</a>. Don't scale agents beyond your review capacity. Tools like <a href="/">amux</a> provide dashboards and coordination layers that prevent agents from producing more work than you can comprehend.</div>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="paradox">The AI Productivity Paradox</h2>
+
+    <p><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI's analysis</a> of 10,000 developers across 1,255 teams reveals the paradox at the heart of cognitive debt: <strong>individual productivity goes up while system-level outcomes stay flat</strong>.</p>
+
+    <p>The numbers tell the story:</p>
+    <ul>
+      <li><strong>Developers complete 21% more tasks</strong> and merge 98% more pull requests</li>
+      <li><strong>Code review times increased 91%</strong> &mdash; larger, more complex diffs take longer to evaluate</li>
+      <li><strong>DORA metrics remain flat</strong> &mdash; deployment frequency, lead time, change failure rate, and mean time to restore are unchanged</li>
+    </ul>
+
+    <p>The explanation is cognitive debt: developers ship more code but spend more time reviewing it, debugging it, and reworking it. The speed of generation outpaces the speed of understanding. <a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR's study</a> of 246 real issues found something even more striking &mdash; experienced open-source developers with AI access actually completed tasks <strong>19% slower</strong>, even though they believed AI made them 20% faster.</p>
+
+    <div class="key-insight">
+      <strong>The perception gap is real.</strong> Developers <em>feel</em> more productive with AI, but measurement tells a more nuanced story. The gap between perceived and actual productivity is a leading indicator of cognitive debt &mdash; you're moving faster on the surface while understanding less underneath.
+    </div>
+
+    <p><a href="https://fortune.com/2026/03/21/andrej-karpathy-openai-cofounder-ai-agents-coding-state-of-psychosis-openclaw/" target="_blank" rel="noopener">Andrej Karpathy</a>, co-founder of <a href="https://openai.com/" target="_blank" rel="noopener">OpenAI</a>, described his own experience on the <a href="https://www.nopriors.com/" target="_blank" rel="noopener">No Priors podcast</a>: he hasn't typed a line of code since December 2025, spending 16 hours a day issuing commands to agent swarms in what he called &ldquo;a state of AI psychosis.&rdquo; Even the most experienced practitioners feel the cognitive strain of delegation at scale.</p>
+
+    <!-- ============================== -->
+    <h2 id="spectrum">The AI Usage Spectrum</h2>
+
+    <p><a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic's study</a> revealed that <em>how</em> you use AI matters more than <em>whether</em> you use it. Developers who used AI for <strong>conceptual inquiry</strong> scored 65%+ on comprehension. Those who <strong>delegated code generation</strong> scored below 40%. Same tool, radically different outcomes.</p>
+
+    <p>This suggests a spectrum of AI usage, from skill-building to skill-eroding:</p>
+
+    <div class="spectrum-bar">
+      <div class="seg seg-ok">
+        <strong style="color:#6ee7b7;">Inquiry Mode</strong><br>
+        <span style="font-size:0.8rem;">&ldquo;Explain how X works&rdquo;<br>&ldquo;What are the tradeoffs?&rdquo;<br>Comprehension: 65%+</span>
+      </div>
+      <div class="seg seg-warn">
+        <strong style="color:#fbbf24;">Collaboration Mode</strong><br>
+        <span style="font-size:0.8rem;">&ldquo;I'll write the structure, you fill in&rdquo;<br>&ldquo;Review what I wrote&rdquo;<br>Comprehension: 50&ndash;65%</span>
+      </div>
+      <div class="seg seg-danger">
+        <strong style="color:#f87171;">Delegation Mode</strong><br>
+        <span style="font-size:0.8rem;">&ldquo;Write the whole thing&rdquo;<br>&ldquo;Fix this for me&rdquo;<br>Comprehension: &lt;40%</span>
+      </div>
+    </div>
+
+    <p>The implication is clear: <strong>AI can be a learning amplifier or a learning bypass</strong>. The tool doesn't determine the outcome &mdash; the interaction pattern does. Cognitive debt accumulates not because you use AI, but because you use it in delegation mode by default.</p>
+
+    <!-- ============================== -->
+    <h2 id="framework">The Cognitive Debt Prevention Framework</h2>
+
+    <p>Preventing cognitive debt doesn't mean using AI less. It means using it differently. Here are six strategies, ordered from immediate tactical changes to structural workflow redesign:</p>
+
+    <div class="strategy-card">
+      <h4>Strategy 1: Inquiry Before Delegation</h4>
+      <p>Before asking AI to generate code, ask it to <strong>explain the approach</strong>. &ldquo;How would you implement pagination with cursor-based offsets?&rdquo; then &ldquo;What are the edge cases?&rdquo; &mdash; only after you understand the approach should you ask for code. This shifts your default from delegation to inquiry mode and pushes comprehension scores from &lt;40% to 65%+.</p>
+    </div>
+
+    <div class="strategy-card">
+      <h4>Strategy 2: Spec-Driven Development</h4>
+      <p>Write the specification yourself. Define acceptance criteria, architectural decisions, and constraints in a <a href="/guides/spec-driven-development/">spec document</a>. Then let AI implement against <em>your</em> spec. You retain the architectural understanding (the highest-value knowledge) while delegating the implementation (the most automatable work). Review AI output against your spec, not against your expectations.</p>
+    </div>
+
+    <div class="strategy-card">
+      <h4>Strategy 3: Active Code Reading</h4>
+      <p>When reviewing AI-generated code, don't just scan for bugs. Ask the AI to <strong>annotate its own code</strong>: &ldquo;Walk me through this function line by line. Why did you choose this data structure? What happens if this input is null?&rdquo; This converts a passive review into an active learning session. Over time, you build mental models of the patterns AI uses.</p>
+    </div>
+
+    <div class="strategy-card">
+      <h4>Strategy 4: Deliberate Skill Maintenance</h4>
+      <p>Reserve certain tasks for manual coding: architectural prototypes, debugging sessions, performance optimization. These are the skills that atrophy fastest under AI dependency and the hardest to rebuild. A 70/30 split (70% AI-assisted, 30% manual) is a practical starting point for maintaining core competence without sacrificing productivity.</p>
+    </div>
+
+    <div class="strategy-card">
+      <h4>Strategy 5: Structured Review Gates</h4>
+      <p>Make verification systematic, not voluntary. <a href="/guides/claude-code-hooks-cookbook/">Automated hooks</a> that run linters, security scans, and type checks on every commit. Cross-agent review where one AI validates another's output. <a href="/guides/vibe-coding-quality-gates/">Quality gates</a> that block merge until comprehension checkpoints are satisfied. The goal: verification should be the path of least resistance, not an act of discipline.</p>
+    </div>
+
+    <div class="strategy-card">
+      <h4>Strategy 6: Orchestration-Aware Scaling</h4>
+      <p>Don't scale agents beyond your review capacity. If you can meaningfully review 5 diffs per morning, don't run 20 agents overnight. Use <a href="/guides/kanban-board-for-agents/">task boards</a> to batch and prioritize agent output. Use <a href="/guides/agent-to-agent-orchestration/">agent-to-agent review</a> to pre-filter before human review. The goal is <strong>comprehended throughput</strong>, not raw output.</p>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="orchestration">How Agent Orchestration Reduces Cognitive Debt</h2>
+
+    <p>Running a single AI coding assistant creates a 1:1 dynamic &mdash; you and the AI. Cognitive debt accumulates through black-box acceptance and skill atrophy. Running <em>multiple</em> agents without structure makes it worse (agentic overload). But running multiple agents <em>with proper orchestration</em> can actually <strong>reduce</strong> cognitive debt by enforcing the structures that prevent it.</p>
+
+    <p>Here's how structured agent orchestration maps to cognitive debt prevention:</p>
+
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Cognitive Debt Pattern</th><th>Orchestration Countermeasure</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Black-box acceptance</td>
+          <td><a href="/guides/spec-driven-development/">Spec-driven development</a> &mdash; write specs first, agents implement against them, review against acceptance criteria</td>
+        </tr>
+        <tr>
+          <td>Context mismatch</td>
+          <td><a href="/guides/context-engineering/">Context engineering</a> &mdash; CLAUDE.md, agent configs, and <a href="/guides/harness-engineering/">harness rules</a> that enforce project conventions</td>
+        </tr>
+        <tr>
+          <td>Skill atrophy</td>
+          <td>Human stays at the <strong>supervisor/architect</strong> level &mdash; decomposing tasks, writing specs, making design decisions. Implementation is delegated; understanding is retained.</td>
+        </tr>
+        <tr>
+          <td>Verification bypass</td>
+          <td><a href="/guides/claude-code-hooks-cookbook/">Automated hooks</a> and <a href="/guides/vibe-coding-quality-gates/">quality gates</a> that run on every commit &mdash; verification is the default, not an opt-in step</td>
+        </tr>
+        <tr>
+          <td>Agentic overload</td>
+          <td><a href="/guides/kanban-board-for-agents/">Task boards</a>, session dashboards, and <a href="/guides/reviewing-ai-agent-code/">morning review workflows</a> that batch and structure review instead of demanding real-time oversight</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="key-insight">
+      <strong>The supervisor pattern is the key.</strong> In a well-orchestrated multi-agent workflow, the human operates at the architectural level &mdash; decomposing problems, writing specs, reviewing outputs, making decisions. The agents handle implementation. This is the natural division that <em>preserves</em> the highest-value knowledge (system design, tradeoffs, constraints) while delegating the most automatable work (writing boilerplate, running tests, formatting code).
+    </div>
+
+    <p>Tools like <a href="/">amux</a> implement this pattern structurally: a <a href="/guides/kanban-board-for-agents/">kanban board</a> for task decomposition, <a href="/guides/agent-to-agent-orchestration/">agent-to-agent coordination</a> via REST API, <a href="/guides/session-memory-and-context/">shared memory</a> for context preservation, and a <a href="/guides/mobile-management-pwa/">dashboard</a> that gives visibility into what agents are doing without requiring constant oversight. The orchestration layer is the <a href="/guides/harness-engineering/">harness</a> that keeps humans in the comprehension loop.</p>
+
+    <!-- ============================== -->
+    <h2 id="junior">The Junior Developer Question</h2>
+
+    <p>Cognitive debt hits junior developers hardest. They're building foundational skills for the first time &mdash; and AI can shortcut that process in ways that feel productive but leave critical gaps.</p>
+
+    <p>The data is stark. <a href="https://stackoverflow.blog/2025/12/26/ai-vs-gen-z/" target="_blank" rel="noopener">Stanford's digital economy research</a> found that employment for software developers aged 22&ndash;25 <strong>declined nearly 20%</strong> from its peak in late 2022 by July 2025. For AI-exposed jobs, employment dropped 6% for workers aged 22&ndash;25 while <em>increasing</em> 9% for workers aged 35&ndash;49. The industry is investing in experienced developers who can supervise AI &mdash; not junior developers who might become dependent on it.</p>
+
+    <p>The <a href="https://arxiv.org/abs/2602.20206" target="_blank" rel="noopener">epistemic debt study</a> (N=78, using <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> + <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Claude</a>) found the highest failure rate in the unrestricted-AI group during maintenance tasks &mdash; exactly the kind of work junior developers need to learn. The researchers call the result &ldquo;fragile experts&rdquo;: high functional output masking low corrective competence.</p>
+
+    <div class="warning-box">
+      <strong>The paradox for juniors:</strong> AI makes you look productive immediately, but the skills you skip building are the skills that make you valuable long-term &mdash; debugging, system design, reading unfamiliar code, reasoning about edge cases. The short-term productivity boost can mask a long-term career risk.
+    </div>
+
+    <p><strong>For junior developers:</strong> Use AI in inquiry mode aggressively. Ask it to explain code, walk through algorithms, compare approaches. Use it as a tutor, not a ghostwriter. When it generates code, read it like you're going to be quizzed &mdash; because production incidents are the quiz.</p>
+
+    <p><strong>For engineering managers:</strong> Don't measure junior developers by output volume. Measure comprehension. Can they explain the code they shipped? Can they debug it without AI? Can they modify it when requirements change? These are the signals that distinguish learning from dependency.</p>
+
+    <!-- ============================== -->
+    <h2 id="checklist">The 10-Point Cognitive Debt Audit</h2>
+
+    <p>Run this audit quarterly on yourself or your team. Each &ldquo;no&rdquo; answer indicates accumulated cognitive debt:</p>
+
+    <div class="debt-card">
+      <div class="debt-label">Comprehension</div>
+      <h3>1. Can you explain, without AI assistance, how the last three features you shipped actually work?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Comprehension</div>
+      <h3>2. Could you draw the data flow of your application on a whiteboard right now?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Debugging</div>
+      <h3>3. When production breaks, can you form a hypothesis about the root cause before reaching for AI?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Debugging</div>
+      <h3>4. Could you debug a critical issue if AI tools were unavailable for 2 hours?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Architecture</div>
+      <h3>5. Do you write specs or architectural decisions before AI generates implementation code?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Architecture</div>
+      <h3>6. Can you explain why the current architecture was chosen over alternatives?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Review</div>
+      <h3>7. Do you read every line of AI-generated code before committing it?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Review</div>
+      <h3>8. Can you predict where AI-generated code will break before running tests?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Skill</div>
+      <h3>9. Have you written non-trivial code without AI assistance in the last 30 days?</h3>
+    </div>
+    <div class="debt-card">
+      <div class="debt-label">Skill</div>
+      <h3>10. Are you learning new patterns and techniques, or just delegating everything to AI?</h3>
+    </div>
+
+    <p style="margin-top:1.5rem;"><strong>Scoring:</strong> 8&ndash;10 &ldquo;yes&rdquo; answers: you're managing cognitive debt well. 5&ndash;7: warning zone &mdash; invest in comprehension practices. Below 5: significant cognitive debt &mdash; restructure your AI workflow before it compounds further.</p>
+
+    <!-- ============================== -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Is cognitive debt the same as technical debt?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">No. Technical debt lives in the code &mdash; shortcuts, missing tests, poor abstractions. Cognitive debt lives in the people &mdash; gaps in understanding, lost mental models, inability to debug without AI assistance. You can detect technical debt with static analysis tools like <a href="https://www.sonarsource.com/" target="_blank" rel="noopener">SonarQube</a>. Cognitive debt is invisible until an incident reveals that nobody on the team understands the system well enough to fix it. <a href="https://arxiv.org/abs/2603.22106" target="_blank" rel="noopener">Storey's research</a> adds a third dimension: intent debt &mdash; the gap between what code does and what's documented about why.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Does AI coding actually make developers worse?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">It depends entirely on usage pattern. <a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic's 2026 RCT</a> found AI-assisted developers scored 17% lower on comprehension &mdash; but also found that those who used AI for conceptual inquiry (asking questions, exploring approaches) scored 65%+, while pure delegation users scored below 40%. AI is a tool that amplifies your approach: inquiry builds understanding, delegation erodes it.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What is agentic fatigue?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Agentic fatigue is the mental exhaustion from supervising multiple AI coding agents in parallel. <a href="https://simonwillison.net/" target="_blank" rel="noopener">Simon Willison</a> described being &ldquo;wiped out by 11am&rdquo; from running four agents. <a href="https://hbr.org/2026/03/when-using-ai-leads-to-brain-fry" target="_blank" rel="noopener">HBR's research</a> on &ldquo;AI brain fry&rdquo; found intensive AI oversight requires significantly more mental effort and causes greater information overload. The solution isn't fewer agents &mdash; it's structured orchestration that batches review instead of demanding constant oversight.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Should I stop using AI coding tools?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">No. The evidence shows AI can be either a learning amplifier or a learning bypass &mdash; the tool doesn't determine the outcome, the interaction pattern does. The goal is shifting from default delegation to intentional usage: inquiry before generation, specs before implementation, review before merge. <a href="https://resources.anthropic.com/2026-agentic-coding-trends-report" target="_blank" rel="noopener">Anthropic's trends report</a> found developers use AI in 60% of their work but can fully delegate only 0&ndash;20% of tasks. The 40&ndash;80% in between is where cognitive debt management matters most.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How do I measure cognitive debt on my team?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Cognitive debt is hard to measure directly because it lives in people's heads, not in code. Proxy metrics include: time to resolve incidents (increases as understanding decreases), code review thoroughness (are reviewers asking questions or rubber-stamping?), the ratio of AI-generated code to manually-written code, and whiteboard test performance (can team members explain the system without referencing source code?). The 10-point audit in this guide is a practical starting point.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What's the difference between comprehension debt and cognitive debt?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;"><a href="https://addyosmani.com/blog/comprehension-debt/" target="_blank" rel="noopener">Comprehension debt</a> (Osmani's term) refers specifically to the gap between code volume and code understanding in a codebase. Cognitive debt is the broader concept encompassing all forms of reduced developer capability &mdash; including skill atrophy, lost debugging ability, and inability to make architectural decisions without AI. Comprehension debt is one component of cognitive debt.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Is this a problem with AI coding tools specifically, or with automation in general?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Automation-induced skill atrophy is well-documented in aviation and manufacturing. What makes AI coding different is the <em>speed</em> and <em>scale</em>: AI generates code 5&ndash;7x faster than humans can comprehend it, and it generates <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">42% of all committed code</a>. Previous automation replaced specific, bounded tasks. AI coding tools are replacing the full spectrum of implementation work, which means the scope of potential skill erosion is much broader.</p>
+    </details>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+
+    <h2>Further Reading</h2>
+    <ul>
+      <li><a href="/guides/reviewing-ai-agent-code/">How to Review AI-Generated Code: The Playbook</a> &mdash; structured morning review workflows for agent fleets</li>
+      <li><a href="/guides/harness-engineering/">Harness Engineering: The Complete Guide</a> &mdash; building the operational environment that constrains AI agents</li>
+      <li><a href="/guides/spec-driven-development/">Spec-Driven Development</a> &mdash; write specs first, let agents implement against them</li>
+      <li><a href="/guides/vibe-coding-quality-gates/">AI Agent Quality Gates</a> &mdash; automated validation pipelines for AI-generated code</li>
+      <li><a href="/guides/context-engineering/">Context Engineering</a> &mdash; structuring what agents see so they produce reliable output</li>
+      <li><a href="/guides/ai-generated-technical-debt/">AI-Generated Technical Debt</a> &mdash; using agents to clean up after agents</li>
+      <li><a href="/guides/ai-coding-agent-safety-checklist/">AI Coding Agent Safety Checklist</a> &mdash; 25 rules for safe agent operation</li>
+    </ul>
+
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
