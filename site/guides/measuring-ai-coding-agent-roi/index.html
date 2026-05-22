@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>How to Measure AI Coding Agent ROI: The Engineering Leader's Framework (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Developers believe AI makes them 20% faster. Measurement shows a 19% slowdown. Only 5% of AI pilots deliver sustained value at scale. This is the vendor-neutral framework for measuring what AI coding agents actually deliver &mdash; the 7 metrics that matter, the 5 that mislead, benchmark data from 10,000+ developers, and the ROI audit your team should run quarterly.">
+  <meta name="keywords" content="AI coding ROI, measure AI coding productivity, AI coding agent ROI, AI developer productivity metrics, AI coding tools ROI 2026, engineering team AI ROI, AI coding cost benefit analysis, code turnover ratio, AI productivity paradox, DORA metrics AI, measure AI agent value, AI coding benchmark">
+  <link rel="canonical" href="https://amux.io/guides/measuring-ai-coding-agent-roi/">
+  <meta property="og:title" content="How to Measure AI Coding Agent ROI: The Engineering Leader's Framework (2026)">
+  <meta property="og:description" content="Developers believe AI makes them 20% faster. Measurement shows a 19% slowdown. The vendor-neutral framework for measuring what AI coding agents actually deliver.">
+  <meta property="og:url" content="https://amux.io/guides/measuring-ai-coding-agent-roi/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Measuring AI Coding Agent ROI","item":"https://amux.io/guides/measuring-ai-coding-agent-roi/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Measure AI Coding Agent ROI: The Engineering Leader's Framework (2026)","description":"Developers believe AI makes them 20% faster. Measurement shows a 19% slowdown. Only 5% of AI pilots deliver sustained value at scale. The vendor-neutral framework for measuring what AI coding agents actually deliver.","url":"https://amux.io/guides/measuring-ai-coding-agent-roi/","datePublished":"2026-05-22","dateModified":"2026-05-22","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do you measure AI coding agent ROI?","acceptedAnswer":{"@type":"Answer","text":"Measure AI coding agent ROI through seven metrics: (1) cycle time — time from first commit to production deploy, (2) code turnover ratio — percentage of AI-generated code reverted or substantially rewritten within 30 days, (3) review time per PR — how long diffs take to evaluate, (4) defect escape rate — bugs reaching production per 100 PRs, (5) DORA metrics — deployment frequency, lead time, change failure rate, MTTR, (6) developer time allocation — hours on generation vs review vs debugging vs rework, and (7) token cost per merged PR — total API spend divided by PRs that actually ship. Compare these against a 30-day pre-AI baseline. Healthy AI ROI shows cycle time down 15-30%, code turnover under 15%, and review time stable or decreasing."}},{"@type":"Question","name":"Does AI coding actually make developers more productive?","acceptedAnswer":{"@type":"Answer","text":"It depends on what you measure. Task completion is 20-55% faster for routine, scoped work like boilerplate and test generation. But METR's controlled study of experienced open-source developers found a 19% slowdown on real-world issues — even though developers believed AI made them 20% faster. Faros AI's analysis of 10,000 developers found 21% more tasks completed but review times up 91% and DORA metrics flat. The pattern: individual task speed increases, but system-level throughput often stays the same because bottlenecks shift to review, debugging, and rework."}},{"@type":"Question","name":"What is the AI productivity paradox?","acceptedAnswer":{"@type":"Answer","text":"The AI productivity paradox is the phenomenon where individual developer output increases (more tasks, more PRs, more code) while organizational delivery metrics remain flat. Faros AI documented this across 10,000 developers: 21% more tasks completed and 98% more PRs merged, but deployment frequency, lead time, change failure rate, and mean time to restore all unchanged. The explanation: AI-generated code is faster to write but harder to review (91% longer review times), more likely to need rework, and produces larger, more complex diffs that slow downstream processes."}},{"@type":"Question","name":"What is code turnover ratio and why does it matter for AI ROI?","acceptedAnswer":{"@type":"Answer","text":"Code turnover ratio is the percentage of code that is reverted, substantially rewritten, or deleted within a set window (typically 30-90 days) after being committed. It matters because it measures whether AI-generated code actually sticks. GitClear's analysis of 150M+ lines found code churn nearly doubled from its pre-AI baseline. A healthy code turnover ratio is under 15%. Above 25% means AI is generating code that doesn't survive contact with production — and the time spent writing, reviewing, and then replacing that code is negative ROI."}},{"@type":"Question","name":"How much do AI coding agents cost per developer?","acceptedAnswer":{"@type":"Answer","text":"Costs vary widely by tool and usage pattern. Subscription plans: GitHub Copilot is $19/month (Individual) or $39/month (Business), Cursor Pro is $20/month, Claude Code Max is $100-200/month. API-based usage for heavy agent workflows can reach $200-500/month per developer. The hidden costs are larger: agents burn 50x more tokens than chat interactions, re-sent context accounts for 50-62% of the bill, and code review time increases 91% under high AI adoption. Total cost of ownership including review overhead and rework can be 2-3x the subscription price."}},{"@type":"Question","name":"What ROI should I expect from AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"Real-world ROI is far lower than vendor claims. Index.dev's analysis found organizations report 0.3-1x productivity improvement, versus the 2x commonly claimed. The 5% rule applies: only 5% of AI pilots deliver sustained value at scale. Healthy benchmarks for teams that measure properly: 15-30% reduction in cycle time, 20-40% faster routine task completion, 2-3 hours saved per developer per week, and code turnover ratio under 15%. Teams that see outsized returns typically invest in process changes (review workflows, quality gates, context engineering) alongside tool adoption — not just tool adoption alone."}},{"@type":"Question","name":"What metrics should I NOT use to measure AI coding ROI?","acceptedAnswer":{"@type":"Answer","text":"Five metrics consistently mislead: (1) Lines of code — AI inflates this 2-5x without improving outcomes. (2) Commit count — more commits doesn't mean more value; it often means more churn. (3) PR volume — Faros AI found 98% more PRs but flat delivery metrics. (4) Self-reported productivity — METR found developers believed they were 20% faster while being 19% slower. (5) Acceptance rate of AI suggestions — measures how often developers click 'accept,' not whether the accepted code survives. These vanity metrics create a false sense of progress while masking the real bottlenecks: review time, rework rate, and defect escape rate."}}]}</script>
+  <style>
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+    .stat-grid .stat-card .stat-num.red { color: #f87171; }
+    .stat-grid .stat-card .stat-num.amber { color: #fbbf24; }
+    .stat-grid .stat-card .stat-num.green { color: #6ee7b7; }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card .stat-source a { color: inherit; }
+    @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
+    .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .key-insight strong { color: #6ee7b7; }
+    .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .warning-box strong { color: #f87171; }
+    .metric-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .metric-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
+    .metric-card .metric-why { font-size: 0.88rem; color: var(--dim, #c5cad8); margin-top: 0.5rem; }
+    .metric-card .metric-benchmark { border-top: 1px solid rgba(255,255,255,0.06); margin-top: 0.75rem; padding-top: 0.75rem; font-size: 0.85rem; }
+    .metric-card .metric-benchmark strong { color: #fbbf24; }
+    .vanity-card { background: var(--bg-card, #232838); border-left: 3px solid #f87171; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .vanity-card h4 { margin-top: 0; color: #f87171; font-size: 1.05rem; }
+    .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
+    .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
+    .phase-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .phase-card h3 { margin-top: 0; font-size: 1.1rem; }
+    .phase-card .phase-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #6ee7b7; font-weight: 600; margin-bottom: 0.3rem; }
+    .evidence-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.88rem; }
+    .evidence-table th, .evidence-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .evidence-table th { font-weight: 600; white-space: nowrap; }
+    .evidence-table a { color: #6ee7b7; }
+    .audit-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.25rem; margin-bottom: 0.75rem; border: 1px solid rgba(255,255,255,0.06); }
+    .audit-card .audit-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; color: #6ee7b7; }
+    .audit-card h3 { margin-top: 0; font-size: 1rem; }
+    .cost-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .cost-grid .cost-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .cost-grid .cost-card h4 { margin-top: 0; font-size: 0.95rem; }
+    .cost-grid .cost-card .cost-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
+    .cost-grid .cost-card .cost-label.visible { color: #6ee7b7; }
+    .cost-grid .cost-card .cost-label.hidden { color: #f87171; }
+    @media (max-width: 600px) { .cost-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Measuring AI Coding Agent ROI</span></div>
+    <span class="updated-badge">May 2026</span>
+    <h1>How to Measure AI Coding Agent ROI</h1>
+    <p class="subtitle">Developers believe AI makes them 20% faster. Controlled measurement shows a 19% slowdown. Only 5% of AI pilots deliver sustained value at scale. This is the vendor-neutral framework for measuring what AI coding agents actually deliver &mdash; the 7 metrics that matter, the 5 that mislead, benchmark data from 10,000+ developers, and the ROI audit every engineering team should run quarterly.</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-num red">19%</div>
+        <div class="stat-label">Measured slowdown for experienced devs with AI</div>
+        <div class="stat-source"><a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR Study, 2025</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num amber">91%</div>
+        <div class="stat-label">Increase in code review time under high AI adoption</div>
+        <div class="stat-source"><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI, 2026</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num green">5%</div>
+        <div class="stat-label">of AI pilots deliver sustained value at scale</div>
+        <div class="stat-source"><a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev, 2026</a></div>
+      </div>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#why-hard" style="color:var(--dim);text-decoration:none;">Why Measuring AI ROI Is Hard</a></li>
+        <li><a href="#perception-gap" style="color:var(--dim);text-decoration:none;">The Perception-Reality Gap</a></li>
+        <li><a href="#vanity" style="color:var(--dim);text-decoration:none;">5 Metrics That Mislead</a></li>
+        <li><a href="#real-metrics" style="color:var(--dim);text-decoration:none;">7 Metrics That Actually Matter</a></li>
+        <li><a href="#paradox" style="color:var(--dim);text-decoration:none;">The AI Productivity Paradox</a></li>
+        <li><a href="#hidden-costs" style="color:var(--dim);text-decoration:none;">The Hidden Costs Nobody Tracks</a></li>
+        <li><a href="#how-to-measure" style="color:var(--dim);text-decoration:none;">How to Run a Controlled Measurement</a></li>
+        <li><a href="#benchmarks" style="color:var(--dim);text-decoration:none;">What Good ROI Looks Like</a></li>
+        <li><a href="#stack" style="color:var(--dim);text-decoration:none;">Building Your Measurement Stack</a></li>
+        <li><a href="#audit" style="color:var(--dim);text-decoration:none;">The 12-Point ROI Audit</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ============================== -->
+    <h2 id="why-hard">Why Measuring AI Coding ROI Is Hard</h2>
+
+    <p>AI coding agent ROI is the question every VP of Engineering needs to answer and no vendor wants you to ask. The difficulty isn't technical &mdash; it's that the obvious metrics all point the wrong direction.</p>
+
+    <p>Developers write more code. They complete more tasks. They merge more PRs. By every activity metric, AI adoption looks like a clear win. But when you measure what actually matters &mdash; <strong>how fast value reaches production</strong> &mdash; the numbers often tell a different story.</p>
+
+    <p><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI</a> analyzed 10,000 developers across 1,255 engineering teams and found the pattern: developers complete <strong>21% more tasks</strong> and merge <strong>98% more PRs</strong>, but <a href="https://dora.dev/" target="_blank" rel="noopener">DORA metrics</a> &mdash; deployment frequency, lead time, change failure rate, mean time to restore &mdash; <strong>remain flat</strong>. The extra output is absorbed by longer reviews, more rework, and larger diffs that slow downstream processes.</p>
+
+    <p>The problem is threefold:</p>
+    <ul>
+      <li><strong>Activity ≠ outcomes.</strong> More code, more commits, more PRs are activity metrics. They measure motion, not progress. AI inflates all of them without necessarily improving delivery.</li>
+      <li><strong>Self-reports are unreliable.</strong> <a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR's controlled study</a> found developers believed AI made them 20% faster while being 19% slower. The perception gap is real and persistent.</li>
+      <li><strong>The costs are distributed.</strong> The subscription fee is visible. The 91% increase in review time, the rework cycles, the <a href="/guides/cognitive-debt-ai-coding/">cognitive debt</a> &mdash; these show up in different budgets and different sprints.</li>
+    </ul>
+
+    <div class="key-insight">
+      <strong>The core challenge:</strong> AI coding tools increase the <em>volume</em> of engineering activity while potentially decreasing the <em>efficiency</em> of the engineering system. Measuring ROI requires tracking system-level outcomes, not individual-level outputs.
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="perception-gap">The Perception-Reality Gap</h2>
+
+    <p>The single most important finding in AI coding productivity research is the gap between how productive developers <em>feel</em> and how productive they <em>are</em>.</p>
+
+    <p><a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR's study</a> is the most rigorous measurement to date: 16 experienced open-source developers worked on 246 real issues, randomized between AI-allowed and AI-prohibited conditions. The results:</p>
+
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Metric</th><th>What Developers Expected</th><th>What Developers Believed After</th><th>What Was Measured</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Speed impact</td><td>24% faster</td><td>20% faster</td><td><strong>19% slower</strong></td></tr>
+        <tr><td>External predictions (economists)</td><td colspan="2">39% faster</td><td>19% slower</td></tr>
+        <tr><td>External predictions (ML experts)</td><td colspan="2">38% faster</td><td>19% slower</td></tr>
+      </tbody>
+    </table>
+
+    <p>Even after the study, even after experiencing the slowdown firsthand, developers <em>still believed</em> AI had helped them. The perception gap wasn't a prediction error &mdash; it persisted through the actual experience.</p>
+
+    <div class="warning-box">
+      <strong>This is why survey-based ROI measurement fails.</strong> If you ask developers &ldquo;Is AI making you more productive?&rdquo; you'll get the wrong answer. Not because they're lying, but because the cognitive experience of AI assistance genuinely <em>feels</em> like a speedup even when it isn't. Any ROI framework must be grounded in observed metrics, not self-reports.
+    </div>
+
+    <p>This doesn't mean AI is never helpful. <a href="https://www.getpanto.ai/blog/ai-coding-productivity-statistics" target="_blank" rel="noopener">Controlled experiments on scoped tasks</a> consistently show 20&ndash;55% speed gains for routine work like boilerplate generation, test writing, and API lookup. The gap appears when you measure <em>end-to-end delivery</em> rather than <em>individual task completion</em> &mdash; the extra code needs extra review, generates extra bugs, and creates extra rework that isn't captured by task-level metrics.</p>
+
+    <!-- ============================== -->
+    <h2 id="vanity">5 Metrics That Mislead</h2>
+
+    <p>These metrics go up when you adopt AI coding tools. None of them reliably correlate with improved engineering outcomes. If your ROI case rests on any of these, it's built on sand.</p>
+
+    <div class="vanity-card">
+      <h4>Lines of Code</h4>
+      <p>AI inflates LoC 2&ndash;5x without improving outcomes. More lines mean more surface area for bugs, more code to maintain, and more review burden. <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">SonarSource</a> reports AI now accounts for 42% of committed code. Volume is not value.</p>
+    </div>
+
+    <div class="vanity-card">
+      <h4>Commit Count</h4>
+      <p>More commits doesn't mean more value. AI encourages smaller, more frequent commits &mdash; which looks like increased velocity but often represents the same (or less) net progress. <a href="https://gitclear.com/" target="_blank" rel="noopener">GitClear's</a> analysis of 150M+ lines found code churn nearly doubled from its pre-AI baseline, meaning much of the new code gets reverted or rewritten.</p>
+    </div>
+
+    <div class="vanity-card">
+      <h4>PR Volume</h4>
+      <p><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI</a> found <strong>98% more PRs merged</strong> under high AI adoption &mdash; while delivery metrics stayed flat. More PRs with larger diffs creates a review bottleneck that absorbs the throughput gains. <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev</a> reports average PR size increased 154%.</p>
+    </div>
+
+    <div class="vanity-card">
+      <h4>Self-Reported Productivity</h4>
+      <p>Developers consistently overestimate AI's impact. The <a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR study</a> showed a <strong>39-percentage-point gap</strong> between belief (+20%) and reality (-19%). Surveys tell you how people feel, not what's happening. Use them for sentiment tracking, not ROI calculation.</p>
+    </div>
+
+    <div class="vanity-card">
+      <h4>AI Suggestion Acceptance Rate</h4>
+      <p>Measures how often developers click &ldquo;accept.&rdquo; Doesn't measure whether accepted code survives &mdash; code churn data says much of it doesn't. A high acceptance rate can actually indicate low review discipline, which correlates with higher defect rates. <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">Only 48% of developers</a> always verify AI code before committing.</p>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="real-metrics">7 Metrics That Actually Matter</h2>
+
+    <p>These metrics measure what AI coding agents do to your engineering system, not just to individual task speed. Track these before and after AI adoption to build an honest ROI case.</p>
+
+    <div class="metric-card">
+      <h4>1. Cycle Time</h4>
+      <p>Time from first commit to production deploy. The single most important delivery metric. Cycle time captures everything: coding speed, review time, CI duration, merge conflicts, and deployment pipeline health.</p>
+      <div class="metric-why">If AI makes coding faster but review and rework absorb the gains, cycle time stays flat or increases. That's the signal that matters.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> Healthy AI ROI shows cycle time down 15&ndash;30%. If cycle time is flat or increasing despite AI adoption, the gains are being absorbed by downstream bottlenecks.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>2. Code Turnover Ratio</h4>
+      <p>Percentage of code that is reverted, substantially rewritten, or deleted within 30 days of being committed. This is the emerging gold standard for AI code quality because it measures whether generated code <em>sticks</em>.</p>
+      <div class="metric-why"><a href="https://gitclear.com/" target="_blank" rel="noopener">GitClear's</a> analysis of 150M+ lines found code churn nearly doubled from the pre-AI baseline. If 25% of AI-generated code gets replaced within a month, the true output is 75% of what the activity metrics show.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> Under 15% is healthy. 15&ndash;25% is a warning. Above 25% means AI is generating code that doesn't survive contact with production &mdash; negative ROI on that portion.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>3. Review Time per PR</h4>
+      <p>Average time from PR creation to final approval. AI generates larger, more complex diffs that take longer to evaluate. <a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI</a> measured a <strong>91% increase</strong> in review time under high AI adoption.</p>
+      <div class="metric-why">Review time is the hidden tax on AI-generated code. If a developer saves 30 minutes generating code but the reviewer spends 45 extra minutes understanding a larger diff, the team is net negative.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> Review time should stay stable or decrease. If it's increasing, your diffs are too large or your <a href="/guides/reviewing-ai-agent-code/">review workflow</a> needs restructuring.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>4. Defect Escape Rate</h4>
+      <p>Bugs reaching production per 100 PRs merged. <a href="https://www.coderabbit.ai/blog/state-of-ai-vs-human-code-generation-report" target="_blank" rel="noopener">CodeRabbit's analysis</a> found AI-co-authored PRs have <strong>1.7x more issues</strong> and <strong>2.74x more security vulnerabilities</strong> than human-only PRs. <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev</a> reports heavy AI users see 9% more bugs per developer.</p>
+      <div class="metric-why">Speed without quality is negative ROI. Every production bug costs engineering time to diagnose, fix, review, and deploy &mdash; plus incident response and potential customer impact.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> Defect escape rate should stay flat or decrease. Any increase means your <a href="/guides/vibe-coding-quality-gates/">quality gates</a> aren't keeping pace with AI output volume.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>5. DORA Metrics</h4>
+      <p>The four <a href="https://dora.dev/" target="_blank" rel="noopener">DORA</a> metrics &mdash; deployment frequency, lead time for changes, change failure rate, and mean time to restore &mdash; are the industry standard for engineering delivery performance.</p>
+      <div class="metric-why"><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI's finding</a> that DORA metrics stay flat despite massive AI adoption is the clearest signal of the productivity paradox. These metrics measure what reaches users, not what developers produce.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> At minimum, DORA metrics should hold steady. Improvement in any dimension while maintaining others is genuine ROI. Decline in any is a red flag.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>6. Developer Time Allocation</h4>
+      <p>Percentage of engineering time spent on: (a) generating code, (b) reviewing AI output, (c) debugging AI-generated code, (d) reworking rejected code. Track how AI shifts <em>where</em> time goes, not just how much time is saved.</p>
+      <div class="metric-why"><a href="https://resources.anthropic.com/2026-agentic-coding-trends-report" target="_blank" rel="noopener">Anthropic's agentic coding trends report</a> found developers use AI in 60% of work but can fully delegate only 0&ndash;20%. The 40&ndash;80% in between &mdash; human-AI collaboration &mdash; is where time allocation reveals whether AI is a force multiplier or a time sink.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> If time shifted from coding to reviewing/debugging is greater than time saved on coding, AI is redistributing work rather than reducing it.</div>
+    </div>
+
+    <div class="metric-card">
+      <h4>7. Token Cost per Merged PR</h4>
+      <p>Total AI API spend (subscriptions + API usage + token costs) divided by the number of PRs that actually ship to production. This is the true unit economics of AI coding &mdash; not cost per token, but cost per delivered outcome.</p>
+      <div class="metric-why">Agents burn <a href="https://leanopstech.com/blog/agentic-ai-cost-runaway-token-budget-2026/" target="_blank" rel="noopener">50x more tokens than chat</a>. Re-sent context accounts for 50&ndash;62% of the bill. Without tracking cost per outcome, you're optimizing spend on the wrong axis.</div>
+      <div class="metric-benchmark"><strong>Benchmark:</strong> Varies by model and complexity. The goal is <em>trend</em>: cost per merged PR should decrease over time as your <a href="/guides/context-engineering/">context engineering</a> and <a href="/guides/harness-engineering/">harness</a> improve.</div>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="paradox">The AI Productivity Paradox</h2>
+
+    <p><a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI's analysis</a> of 10,000 developers is the most comprehensive data on this phenomenon. The headline numbers:</p>
+
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Metric</th><th>Change Under AI Adoption</th><th>Direction</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Tasks completed per developer</td><td>+21%</td><td style="color:#6ee7b7;">Up</td></tr>
+        <tr><td>PRs merged</td><td>+98%</td><td style="color:#6ee7b7;">Up</td></tr>
+        <tr><td>Review time per PR</td><td>+91%</td><td style="color:#f87171;">Up (bad)</td></tr>
+        <tr><td>Average PR size</td><td>+154%</td><td style="color:#f87171;">Up (bad)</td></tr>
+        <tr><td>Deployment frequency</td><td>Flat</td><td style="color:#fbbf24;">Unchanged</td></tr>
+        <tr><td>Lead time for changes</td><td>Flat</td><td style="color:#fbbf24;">Unchanged</td></tr>
+        <tr><td>Change failure rate</td><td>Flat</td><td style="color:#fbbf24;">Unchanged</td></tr>
+        <tr><td>Mean time to restore</td><td>Flat</td><td style="color:#fbbf24;">Unchanged</td></tr>
+      </tbody>
+    </table>
+
+    <p>The paradox: individual developer output rises dramatically while organizational delivery stays flat. The explanation is that AI-generated code shifts bottlenecks downstream. Faster code generation creates larger PRs, which take longer to review, which increases queue time, which absorbs the generation speedup.</p>
+
+    <div class="key-insight">
+      <strong>Implication for ROI:</strong> If your ROI case is built on &ldquo;developers complete 21% more tasks,&rdquo; it's incomplete. The full picture includes the 91% increase in review time and the flat DORA metrics. Genuine ROI requires addressing the entire pipeline, not just the generation step. See our guides on <a href="/guides/reviewing-ai-agent-code/">reviewing AI-generated code</a> and <a href="/guides/vibe-coding-quality-gates/">quality gates</a>.
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="hidden-costs">The Hidden Costs Nobody Tracks</h2>
+
+    <p>The subscription fee is the visible cost. The real cost of AI coding tools includes at least four hidden components that typically <strong>2&ndash;3x the sticker price</strong>:</p>
+
+    <div class="cost-grid">
+      <div class="cost-card">
+        <div class="cost-label visible">Visible</div>
+        <h4>Subscription &amp; API Fees</h4>
+        <p><a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>: $19&ndash;39/mo. <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> Pro: $20/mo. <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> Max: $100&ndash;200/mo. API-based agent workflows: $200&ndash;500/mo per heavy user.</p>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label hidden">Hidden</div>
+        <h4>Review Overhead</h4>
+        <p>91% increase in review time (<a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI</a>). At senior engineer rates, the extra review time on a 10-person team can exceed the total subscription cost. <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev</a> estimates $76,000 in recovered review costs for teams that optimize this &mdash; which means teams that don't are paying that as hidden overhead.</p>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label hidden">Hidden</div>
+        <h4>Rework &amp; Churn</h4>
+        <p>Code churn nearly doubled from the pre-AI baseline (<a href="https://gitclear.com/" target="_blank" rel="noopener">GitClear</a>). Every line written, reviewed, merged, and then reverted within 30 days cost engineering time twice &mdash; once to create and once to replace. At a 25% turnover ratio, one quarter of AI coding effort is wasted.</p>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label hidden">Hidden</div>
+        <h4>Context &amp; Token Waste</h4>
+        <p>Re-sent context accounts for 50&ndash;62% of token spend. Agents burn <a href="https://leanopstech.com/blog/agentic-ai-cost-runaway-token-budget-2026/" target="_blank" rel="noopener">50x more tokens</a> than chat. Without <a href="/guides/context-engineering/">context engineering</a> and prompt caching, over half the API bill is paying to re-read the same files.</p>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label hidden">Hidden</div>
+        <h4>Cognitive Debt</h4>
+        <p>Developers who accept AI code without comprehension accumulate <a href="/guides/cognitive-debt-ai-coding/">cognitive debt</a> &mdash; gaps in understanding that surface during incidents. <a href="https://www.anthropic.com/research/AI-assistance-coding-skills" target="_blank" rel="noopener">Anthropic's RCT</a> measured a 17% comprehension drop. The cost shows up as longer incident resolution times and increased dependence on the developers who do understand the system.</p>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label hidden">Hidden</div>
+        <h4>Security Remediation</h4>
+        <p>AI-co-authored code has <a href="https://www.coderabbit.ai/blog/state-of-ai-vs-human-code-generation-report" target="_blank" rel="noopener">2.74x more security vulnerabilities</a> (<a href="https://www.coderabbit.ai/" target="_blank" rel="noopener">CodeRabbit</a>). <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">29.1% of AI-generated Python code</a> contains security weaknesses. The average data breach costs <a href="https://www.ibm.com/reports/data-breach" target="_blank" rel="noopener">$4.45M</a>. Preventing one breach pays for years of security scanning investment.</p>
+      </div>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="how-to-measure">How to Run a Controlled Measurement</h2>
+
+    <p>Don't try to measure ROI retroactively. Set up a structured before-and-after comparison:</p>
+
+    <div class="phase-card">
+      <div class="phase-label">Phase 1 &mdash; Week 1&ndash;2</div>
+      <h3>Establish Your Baseline</h3>
+      <p>Measure the 7 metrics above for a 2&ndash;4 week period <em>before</em> changing anything. Use your existing git history and CI pipeline data. Critical: capture <strong>cycle time</strong>, <strong>review time</strong>, <strong>defect escape rate</strong>, and <strong>DORA metrics</strong> from the last 30 days as your baseline.</p>
+      <p>Tools: <a href="https://linearb.io/" target="_blank" rel="noopener">LinearB</a>, <a href="https://www.sleuth.io/" target="_blank" rel="noopener">Sleuth</a>, <a href="https://www.pluralsight.com/product/flow" target="_blank" rel="noopener">Pluralsight Flow</a>, <a href="https://waydev.co/" target="_blank" rel="noopener">Waydev</a>, or manual extraction from <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a> / <a href="https://about.gitlab.com/" target="_blank" rel="noopener">GitLab</a> APIs.</p>
+    </div>
+
+    <div class="phase-card">
+      <div class="phase-label">Phase 2 &mdash; Week 3&ndash;6</div>
+      <h3>Deploy AI Tools with Process Changes</h3>
+      <p>Roll out AI coding tools <em>alongside</em> the process changes that make them productive: <a href="/guides/reviewing-ai-agent-code/">structured review workflows</a>, <a href="/guides/vibe-coding-quality-gates/">quality gates</a>, <a href="/guides/context-engineering/">context engineering</a> (CLAUDE.md / AGENTS.md), and <a href="/guides/ai-coding-agent-costs/">cost tracking</a>. AI tools without process changes consistently show the productivity paradox.</p>
+      <p>Start with 2&ndash;3 developers, not the whole team. An A/B comparison between AI-assisted and non-AI teams on comparable work is the strongest evidence.</p>
+    </div>
+
+    <div class="phase-card">
+      <div class="phase-label">Phase 3 &mdash; Week 7&ndash;8</div>
+      <h3>Measure and Compare</h3>
+      <p>Re-measure all 7 metrics. Compare against baseline. Calculate <strong>total cost of ownership</strong> including subscriptions, API usage, review overhead, and rework. Build the ROI case from observed data, not self-reports.</p>
+      <p>Key comparison: did cycle time decrease? Did defect escape rate hold? Is code turnover ratio under 15%? If any of these moved in the wrong direction, the ROI case is negative regardless of how much faster individual tasks feel.</p>
+    </div>
+
+    <div class="phase-card">
+      <div class="phase-label">Ongoing</div>
+      <h3>Run the ROI Audit Quarterly</h3>
+      <p>AI ROI isn't static. Models improve, teams build better <a href="/guides/harness-engineering/">harnesses</a>, and workflows adapt. Re-run the audit quarterly to track whether ROI is improving, plateauing, or regressing. The teams in the top 5% that deliver sustained value treat measurement as a continuous practice, not a one-time exercise.</p>
+    </div>
+
+    <!-- ============================== -->
+    <h2 id="benchmarks">What Good ROI Looks Like</h2>
+
+    <p>Based on data from <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev</a>, <a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI</a>, <a href="https://waydev.co/how-to-measure-ai-roi-on-your-engineering-team/" target="_blank" rel="noopener">Waydev</a>, and <a href="https://www.getpanto.ai/blog/ai-coding-productivity-statistics" target="_blank" rel="noopener">Panto</a>, here are realistic benchmarks for AI coding agent ROI:</p>
+
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Metric</th><th style="color:#f87171;">Poor ROI</th><th style="color:#fbbf24;">Typical</th><th style="color:#6ee7b7;">Top Quartile</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cycle time change</td><td>Flat or increased</td><td>Down 10&ndash;15%</td><td>Down 25&ndash;40%</td></tr>
+        <tr><td>Code turnover ratio (30-day)</td><td>&gt;25%</td><td>15&ndash;25%</td><td>&lt;15%</td></tr>
+        <tr><td>Review time change</td><td>Up &gt;50%</td><td>Up 10&ndash;30%</td><td>Flat or decreased</td></tr>
+        <tr><td>Defect escape rate</td><td>Increased</td><td>Flat</td><td>Decreased</td></tr>
+        <tr><td>DORA metrics</td><td>Declined</td><td>Flat</td><td>Improved</td></tr>
+        <tr><td>Developer time saved (weekly)</td><td>&lt;1 hour</td><td>2&ndash;3 hours</td><td>5+ hours</td></tr>
+        <tr><td>Productivity multiplier (real)</td><td>&lt;0.3x</td><td>0.3&ndash;1x</td><td>1&ndash;2x</td></tr>
+      </tbody>
+    </table>
+
+    <div class="key-insight">
+      <strong>The 5% rule:</strong> <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Only 5% of AI pilots deliver sustained value at scale.</a> The differentiator isn't which AI tool they use &mdash; it's whether they changed their processes alongside adopting the tool. Teams that deploy AI with <a href="/guides/harness-engineering/">harness engineering</a>, <a href="/guides/reviewing-ai-agent-code/">structured review</a>, and <a href="/guides/vibe-coding-quality-gates/">quality gates</a> reach top-quartile ROI. Teams that just add a tool see the productivity paradox.
+    </div>
+
+    <p>Real-world ROI is far lower than vendor claims. <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev's analysis</a> found organizations report <strong>0.3&ndash;1x productivity improvement</strong>, versus the 2x commonly claimed. The gap isn't a tool problem &mdash; it's a measurement and process problem. The tool is the easy part. The ROI comes from the system around it.</p>
+
+    <!-- ============================== -->
+    <h2 id="stack">Building Your Measurement Stack</h2>
+
+    <p>You need three layers of instrumentation to measure AI coding ROI properly:</p>
+
+    <div class="phase-card">
+      <div class="phase-label">Layer 1 &mdash; Git &amp; CI Pipeline Analytics</div>
+      <h3>Delivery Metrics</h3>
+      <p>Tracks cycle time, PR size, merge rate, deployment frequency, and change failure rate from your existing <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a> / <a href="https://about.gitlab.com/" target="_blank" rel="noopener">GitLab</a> data and CI pipeline.</p>
+      <p><strong>Tools:</strong> <a href="https://linearb.io/" target="_blank" rel="noopener">LinearB</a>, <a href="https://www.sleuth.io/" target="_blank" rel="noopener">Sleuth</a>, <a href="https://www.pluralsight.com/product/flow" target="_blank" rel="noopener">Pluralsight Flow</a>, <a href="https://waydev.co/" target="_blank" rel="noopener">Waydev</a>, <a href="https://www.faros.ai/" target="_blank" rel="noopener">Faros AI</a>, or the <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a> / <a href="https://about.gitlab.com/" target="_blank" rel="noopener">GitLab</a> APIs directly. You likely already have this data &mdash; the challenge is segmenting it by AI-assisted vs. non-AI-assisted work.</p>
+    </div>
+
+    <div class="phase-card">
+      <div class="phase-label">Layer 2 &mdash; Agent Session Analytics</div>
+      <h3>AI-Specific Metrics</h3>
+      <p>Tracks token spend, session duration, model usage, context window utilization, and cost per task for your AI coding agents.</p>
+      <p><strong>Tools:</strong> <a href="/">amux</a> (built-in <a href="/guides/token-spend-tracking/">token spend tracking</a>, session monitoring, and per-agent cost attribution), <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a> usage dashboard, <a href="https://openai.com/" target="_blank" rel="noopener">OpenAI</a> usage API, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> usage analytics.</p>
+    </div>
+
+    <div class="phase-card">
+      <div class="phase-label">Layer 3 &mdash; Code Quality Analytics</div>
+      <h3>Quality &amp; Security Metrics</h3>
+      <p>Tracks defect escape rate, code turnover ratio, security vulnerability density, and test coverage delta.</p>
+      <p><strong>Tools:</strong> <a href="https://www.sonarsource.com/" target="_blank" rel="noopener">SonarQube</a>, <a href="https://www.coderabbit.ai/" target="_blank" rel="noopener">CodeRabbit</a>, <a href="https://snyk.io/" target="_blank" rel="noopener">Snyk</a>, <a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a>, <a href="https://gitclear.com/" target="_blank" rel="noopener">GitClear</a> (specifically for code turnover ratio).</p>
+    </div>
+
+    <p>The key is <strong>connecting these layers</strong>. You need to know which PRs were AI-assisted, what they cost to generate, how long they took to review, and whether they survived in production. Without that traceability, you're measuring the tool, not the outcome.</p>
+
+    <!-- ============================== -->
+    <h2 id="audit">The 12-Point ROI Audit</h2>
+
+    <p>Run this audit quarterly. Share the results with your team and leadership. Honest measurement is the foundation of genuine ROI.</p>
+
+    <div class="audit-card">
+      <div class="audit-label">Delivery</div>
+      <h3>1. Has cycle time decreased since adopting AI coding tools?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Delivery</div>
+      <h3>2. Have DORA metrics improved, held steady, or declined?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Quality</div>
+      <h3>3. What is your code turnover ratio? Is it above or below 15%?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Quality</div>
+      <h3>4. Has your defect escape rate changed since AI adoption?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Quality</div>
+      <h3>5. Are you tracking security vulnerability density in AI-generated code separately?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Cost</div>
+      <h3>6. What is your total AI spend per developer per month (including API, subscriptions, and overages)?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Cost</div>
+      <h3>7. What is your cost per merged PR? Is it trending down?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Cost</div>
+      <h3>8. Have you accounted for the review overhead in your ROI calculation?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Process</div>
+      <h3>9. Are you using quality gates, structured review, and context engineering &mdash; or just the tool?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">Process</div>
+      <h3>10. Can you distinguish AI-assisted PRs from human-only PRs in your analytics?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">People</div>
+      <h3>11. Is your team experiencing cognitive debt? Can they debug without AI assistance?</h3>
+    </div>
+    <div class="audit-card">
+      <div class="audit-label">People</div>
+      <h3>12. Are you measuring developer satisfaction alongside productivity?</h3>
+    </div>
+
+    <p style="margin-top:1.5rem;"><strong>Scoring:</strong> 10&ndash;12 &ldquo;yes/healthy&rdquo;: strong ROI program. 7&ndash;9: good foundation but gaps in measurement. 4&ndash;6: significant blind spots &mdash; ROI case is incomplete. Below 4: you're optimizing based on feel, not data.</p>
+
+    <!-- ============================== -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How long does it take to see ROI from AI coding tools?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">For basic automation (autocomplete, boilerplate), 1&ndash;3 months. For agent-based workflows (parallel agents, overnight operation, spec-driven development), 3&ndash;6 months to establish processes and 6&ndash;12 months for sustained ROI. <a href="https://www.index.dev/blog/ai-tool-roi-statistics-for-engineering-teams" target="_blank" rel="noopener">Index.dev reports</a> advanced AI requires 3+ years to full ROI realization. The teams that see fast returns are those that deploy process changes (review workflows, quality gates, <a href="/guides/harness-engineering/">harness engineering</a>) simultaneously with the tool, not sequentially.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Should I measure ROI per developer or per team?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Per team. Individual developer metrics are misleading because AI shifts work between team members (the developer generates faster, the reviewer spends more time). The productivity paradox only becomes visible at the team or organization level, where DORA metrics and cycle time capture the full pipeline. Per-developer metrics are useful for identifying who benefits most from AI (and who might need different workflows), but they don't tell you whether the <em>system</em> is delivering more value.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What if my team says AI is helping but the metrics say otherwise?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">This is the perception-reality gap, documented by <a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/" target="_blank" rel="noopener">METR</a> (developers believed +20%, measured -19%). Don't dismiss either signal. Developer satisfaction has independent value &mdash; happier developers retain better and do higher-quality work. But don't confuse satisfaction with productivity ROI. Present both: &ldquo;The team reports higher satisfaction and faster task completion, but cycle time and DORA metrics are flat, suggesting bottlenecks have shifted to review and integration.&rdquo; Then address the bottlenecks.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How do I track which PRs used AI?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Three approaches: (1) <strong>Git metadata:</strong> <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> adds a &ldquo;Co-Authored-By&rdquo; trailer to commits. <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> logs can be exported. Look for these markers in commit messages. (2) <strong>Agent session logs:</strong> Tools like <a href="/">amux</a> track which sessions produced which commits, giving you a complete mapping of AI session &rarr; commit &rarr; PR. (3) <strong>AI code detection:</strong> <a href="https://gitclear.com/" target="_blank" rel="noopener">GitClear</a> and <a href="https://www.sonarsource.com/" target="_blank" rel="noopener">SonarSource</a> can flag likely AI-generated code based on patterns.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Is the METR study still relevant? Models have improved since 2025.</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">The METR study tested early-2025 models, and models have improved significantly. The <em>task-level speed gains</em> are likely larger with 2026 models. But the structural insight &mdash; that faster generation creates downstream bottlenecks in review and integration &mdash; is about the engineering system, not the model. <a href="https://www.faros.ai/ai-productivity-paradox" target="_blank" rel="noopener">Faros AI's 2026 data</a> with current models still shows the same paradox: more output, flat DORA. The bottleneck has moved from model capability to process design.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What's the single most important metric to track?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;"><strong>Cycle time.</strong> It captures the entire pipeline from first commit to production deploy. If AI is genuinely improving your engineering system, cycle time goes down. If AI is just adding code volume that creates review and rework overhead, cycle time stays flat or increases. Every other metric is a diagnostic for understanding <em>why</em> cycle time moved in a particular direction.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How do multi-agent workflows affect ROI measurement?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Multi-agent workflows (running 5&ndash;30 agents in parallel via tools like <a href="/">amux</a>) amplify both the benefits and the costs. They increase code generation throughput dramatically, but also increase review burden, token costs, and coordination overhead. The ROI case for multi-agent is strongest when agents work on <a href="/guides/spec-driven-development/">well-specified, independent tasks</a> with <a href="/guides/vibe-coding-quality-gates/">automated quality gates</a> that reduce human review load. Track cost per merged PR and review time per agent session &mdash; these tell you whether scaling agents is scaling value or scaling waste.</p>
+    </details>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+
+    <h2>Further Reading</h2>
+    <ul>
+      <li><a href="/guides/cognitive-debt-ai-coding/">Cognitive Debt: How AI Coding Tools Erode Developer Skills</a> &mdash; the human side of AI coding ROI</li>
+      <li><a href="/guides/ai-coding-agent-costs/">AI Coding Agent Costs in 2026</a> &mdash; detailed cost breakdown and optimization</li>
+      <li><a href="/tools/ai-agent-cost-calculator/">AI Agent Cost Calculator</a> &mdash; interactive tool for estimating your real spend</li>
+      <li><a href="/guides/reviewing-ai-agent-code/">How to Review AI-Generated Code</a> &mdash; reduce the review bottleneck</li>
+      <li><a href="/guides/vibe-coding-quality-gates/">AI Agent Quality Gates</a> &mdash; automated validation to keep defect rates low</li>
+      <li><a href="/guides/harness-engineering/">Harness Engineering</a> &mdash; the system around the agent that determines ROI</li>
+      <li><a href="/guides/token-spend-tracking/">Token Spend Tracking</a> &mdash; per-session cost monitoring with amux</li>
+      <li><a href="/guides/ai-generated-technical-debt/">AI-Generated Technical Debt</a> &mdash; measuring and managing the code quality cost</li>
+    </ul>
+
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
