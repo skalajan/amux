@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agents for Legacy Code Modernization: The Developer's Week-by-Week DIY Guide (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Every guide on AI legacy modernization is written by consultancies selling services. This one is written for developers who want to do it themselves. Week-by-week playbook: map a legacy codebase with AI agents, generate test coverage, refactor module by module, and ship &mdash; with real commands, parallel agent workflows, cost estimates, and the patterns that actually work on 500K+ line codebases.">
+  <meta name="keywords" content="AI legacy code modernization, AI refactoring legacy codebase, Claude Code legacy code, AI coding agent refactoring, modernize legacy code with AI, AI agent legacy migration, legacy code refactoring guide 2026, AI modernization playbook, parallel agents refactoring, AI codebase migration, legacy system modernization AI agents, AI technical debt reduction">
+  <link rel="canonical" href="https://amux.io/guides/legacy-code-modernization-ai-agents/">
+  <meta property="og:title" content="AI Agents for Legacy Code Modernization: The Developer's Week-by-Week DIY Guide (2026)">
+  <meta property="og:description" content="Stop hiring consultancies. Modernize your legacy codebase yourself with AI coding agents. Week-by-week playbook with real commands, parallel workflows, and cost estimates.">
+  <meta property="og:url" content="https://amux.io/guides/legacy-code-modernization-ai-agents/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Legacy Code Modernization with AI Agents","item":"https://amux.io/guides/legacy-code-modernization-ai-agents/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Legacy Code Modernization: The Developer's Week-by-Week DIY Guide (2026)","description":"Week-by-week playbook for modernizing legacy codebases with AI coding agents. Map dependencies, generate test coverage, refactor module by module, and ship — with parallel agent workflows and real cost estimates.","url":"https://amux.io/guides/legacy-code-modernization-ai-agents/","datePublished":"2026-05-24","dateModified":"2026-05-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Modernize a Legacy Codebase with AI Coding Agents","description":"A four-week plan for using parallel AI coding agents to map, test, refactor, and ship a legacy codebase modernization.","totalTime":"P28D","estimatedCost":{"@type":"MonetaryCost","currency":"USD","value":"400-1600"},"step":[{"@type":"HowToStep","name":"Week 1: Map the codebase","text":"Use AI agents to generate dependency graphs, identify dead code, catalog technical debt, and produce an architectural inventory of the legacy system."},{"@type":"HowToStep","name":"Week 2: Generate test coverage","text":"Run parallel agents to write integration tests, unit tests, and characterization tests that capture the current behavior of the legacy system before any changes."},{"@type":"HowToStep","name":"Week 3: Refactor module by module","text":"Apply the Strangler Fig pattern with parallel agents — each agent refactors one module in its own git worktree while tests from Week 2 verify correctness."},{"@type":"HowToStep","name":"Week 4: Integrate, validate, and ship","text":"Merge refactored modules, run the full test suite, perform security scanning, update documentation, and deploy the modernized codebase."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents modernize legacy code?","acceptedAnswer":{"@type":"Answer","text":"Yes, but not by pressing a button. AI coding agents like Claude Code, OpenAI Codex, and Aider can map dependencies, generate test coverage, refactor modules, and update syntax — but they need human guidance on architectural decisions, business logic validation, and integration strategy. McKinsey's LegacyX program reports 40-50% timeline acceleration when AI agents are used for legacy modernization. The key is structured orchestration: break the codebase into modules, assign each to an agent running in an isolated git worktree, and use a shared task board to coordinate the work."}},{"@type":"Question","name":"How long does AI-assisted legacy code modernization take?","acceptedAnswer":{"@type":"Answer","text":"For a 100K-500K line codebase, a structured four-week sprint can accomplish what traditionally takes 3-6 months. Week 1: codebase mapping and dependency analysis. Week 2: automated test generation (agents can produce 60-80% coverage for code that previously had near-zero tests). Week 3: parallel refactoring with 4-8 agents working on separate modules simultaneously. Week 4: integration, validation, and deployment. Larger codebases (500K-2M+ lines) typically need 2-3 of these four-week cycles, each targeting a different subsystem."}},{"@type":"Question","name":"What types of legacy code modernization can AI agents handle?","acceptedAnswer":{"@type":"Answer","text":"AI agents are most effective at: (1) Language version upgrades (Python 2→3, Java 8→21, PHP 5→8, Ruby 2→3), (2) Framework migrations (jQuery→React, AngularJS→Angular, Rails 5→7, Django 2→5), (3) Dependency updates and vulnerability remediation, (4) Dead code removal and unused import cleanup, (5) Test generation for untested code, (6) API modernization (REST→GraphQL, SOAP→REST), (7) Code style normalization and linting fixes. They are less effective at: architectural redesigns (monolith→microservices), business logic rewrites, and database schema migrations — those need human architectural judgment."}},{"@type":"Question","name":"How much does AI-assisted legacy modernization cost?","acceptedAnswer":{"@type":"Answer","text":"For a solo developer or small team using the DIY approach in this guide: $400-1,600 over four weeks. That breaks down to $100-200/month per developer for Claude Code Max or similar tool, plus $50-200/month in additional API tokens for parallel agent sessions. Compare this to hiring a modernization consultancy, which typically costs $150,000-500,000+ for a comparable codebase. The tradeoff: the DIY approach requires developers who understand the legacy system and can validate agent output. The consultancy approach is more hands-off but 100-300x more expensive."}},{"@type":"Question","name":"What is the Strangler Fig pattern for legacy modernization?","acceptedAnswer":{"@type":"Answer","text":"The Strangler Fig pattern, described by Martin Fowler, is a strategy where you gradually replace a legacy system by building new functionality around it — like a strangler fig tree growing around its host. Instead of rewriting the entire codebase at once (big bang migration), you replace one module at a time while the legacy system continues running. AI agents accelerate this pattern dramatically: each agent can refactor one module in an isolated git worktree while the legacy system stays operational. When the module's tests pass, you merge the refactored version and move to the next module."}},{"@type":"Question","name":"Should I use Claude Code, Codex, or Aider for legacy modernization?","acceptedAnswer":{"@type":"Answer","text":"Each tool has strengths for different phases. Claude Code (with Opus 4.6) excels at architectural analysis, complex multi-file refactors, and tasks requiring deep reasoning about unfamiliar codebases — making it ideal for Weeks 1 and 3. OpenAI Codex CLI is strong for parallelized, scoped tasks like batch test generation (Week 2). Aider works well for interactive, file-by-file refactoring when you want tight human control. For maximum throughput, use amux to run all three in parallel: Claude Code sessions for complex refactors, Codex for batch operations, and Aider for the modules that need careful human guidance."}},{"@type":"Question","name":"How do I prevent AI agents from breaking legacy code during refactoring?","acceptedAnswer":{"@type":"Answer","text":"Four safety layers: (1) Git worktree isolation — each agent works in its own worktree so changes cannot conflict. (2) Characterization tests — before refactoring, generate tests that capture the existing behavior (even if the behavior has bugs, the tests document it). (3) CI gates — every agent PR must pass the full test suite before merge. (4) Incremental merges — merge one module at a time, run integration tests after each merge, and only proceed if everything passes. The combination of worktree isolation + characterization tests + CI gates means an agent can never silently break the production system."}}]}</script>
+  <style>
+    .week-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid rgba(255,255,255,0.06); }
+    .week-card h3 { margin-top: 0; font-size: 1.15rem; }
+    .week-card .week-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
+    .week-card .week-label.w1 { color: #60a5fa; }
+    .week-card .week-label.w2 { color: #a78bfa; }
+    .week-card .week-label.w3 { color: #6ee7b7; }
+    .week-card .week-label.w4 { color: #fbbf24; }
+    .week-card .agents { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.06); }
+    .week-card .agents strong { color: var(--dim, #c5cad8); }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
+    .stat-grid .stat-card .stat-num.amber { color: #fbbf24; }
+    .stat-grid .stat-card .stat-num.blue { color: #60a5fa; }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card .stat-source a { color: inherit; }
+    @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
+    .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .key-insight strong { color: #6ee7b7; }
+    .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .warning-box strong { color: #f87171; }
+    .phase-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .phase-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
+    .phase-card.danger { border-left-color: #f87171; }
+    .phase-card.danger h4 { color: #f87171; }
+    .phase-card.amber { border-left-color: #fbbf24; }
+    .phase-card.amber h4 { color: #fbbf24; }
+    .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
+    .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
+    .tool-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.86rem; }
+    .tool-table th, .tool-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .tool-table th { font-weight: 600; white-space: nowrap; }
+    .tool-table a { color: #6ee7b7; }
+    .tool-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }
+    .tool-wrap .tool-table { margin: 0; }
+    .cost-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .cost-row .cost-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .cost-row .cost-card h4 { margin-top: 0; font-size: 0.95rem; }
+    .cost-row .cost-card .cost-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
+    .cost-row .cost-card .cost-label.diy { color: #6ee7b7; }
+    .cost-row .cost-card .cost-label.consult { color: #f87171; }
+    .cost-row .cost-card .cost-amount { font-family: 'JetBrains Mono', monospace; font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0; }
+    @media (max-width: 600px) { .cost-row { grid-template-columns: 1fr; } }
+    .checklist { list-style: none; padding: 0; margin: 1rem 0; }
+    .checklist li { padding: 0.4rem 0 0.4rem 1.75rem; position: relative; font-size: 0.9rem; }
+    .checklist li::before { content: ''; position: absolute; left: 0; top: 0.65rem; width: 14px; height: 14px; border-radius: 3px; border: 2px solid rgba(110,231,183,0.4); }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Legacy Code Modernization with AI Agents</span></div>
+    <span class="updated-badge">May 2026</span>
+    <h1>AI Agents for Legacy Code Modernization: The Developer&rsquo;s Week-by-Week DIY Guide</h1>
+    <p class="subtitle">Every guide on AI legacy modernization is written by consultancies selling six-figure engagements. This one is written for developers who want to do it themselves. A four-week playbook: map a legacy codebase with AI agents, generate test coverage from near-zero, refactor module by module using the <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="noopener">Strangler Fig pattern</a>, and ship &mdash; with parallel agent workflows, safety guardrails, and realistic cost estimates for codebases from 100K to 2M+ lines.</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-num">40&ndash;50%</div>
+        <div class="stat-label">Timeline acceleration with AI-assisted modernization</div>
+        <div class="stat-source"><a href="https://www.mckinsey.com/about-us/new-at-mckinsey-blog/mckinseys-legacyx-rejuvenating-legacy-infrastructure-with-agentic-ai" target="_blank" rel="noopener">McKinsey LegacyX, 2026</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num amber">$150K+</div>
+        <div class="stat-label">Typical consultancy cost for legacy modernization</div>
+        <div class="stat-source">Enterprise modernization engagements</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num blue">$400&ndash;1.6K</div>
+        <div class="stat-label">DIY cost with AI agents over four weeks</div>
+        <div class="stat-source">Based on Claude Code Max pricing</div>
+      </div>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#why" style="color:var(--dim);text-decoration:none;">Why AI Agents Change the Legacy Modernization Equation</a></li>
+        <li><a href="#what-works" style="color:var(--dim);text-decoration:none;">What AI Agents Can and Cannot Modernize</a></li>
+        <li><a href="#tools" style="color:var(--dim);text-decoration:none;">Tool Selection: Which Agent for Which Phase</a></li>
+        <li><a href="#week1" style="color:var(--dim);text-decoration:none;">Week 1: Map the Codebase</a></li>
+        <li><a href="#week2" style="color:var(--dim);text-decoration:none;">Week 2: Generate Test Coverage</a></li>
+        <li><a href="#week3" style="color:var(--dim);text-decoration:none;">Week 3: Refactor Module by Module</a></li>
+        <li><a href="#week4" style="color:var(--dim);text-decoration:none;">Week 4: Integrate, Validate, and Ship</a></li>
+        <li><a href="#parallel" style="color:var(--dim);text-decoration:none;">Parallel Agent Orchestration</a></li>
+        <li><a href="#cost" style="color:var(--dim);text-decoration:none;">Cost Breakdown</a></li>
+        <li><a href="#safety" style="color:var(--dim);text-decoration:none;">Safety Guardrails</a></li>
+        <li><a href="#scaling" style="color:var(--dim);text-decoration:none;">Scaling Beyond 500K Lines</a></li>
+        <li><a href="#anti-patterns" style="color:var(--dim);text-decoration:none;">Anti-Patterns That Kill Legacy Modernization Projects</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- =========================================================== -->
+    <h2 id="why">Why AI Agents Change the Legacy Modernization Equation</h2>
+
+    <p>Legacy modernization has always been a math problem with terrible numbers. Rewriting a 300K-line codebase takes 12&ndash;18 months with a team of 4&ndash;6 developers. Hiring a consultancy costs $150,000&ndash;500,000+. The project has a <a href="https://www.mckinsey.com/capabilities/quantumblack/our-insights/ai-for-it-modernization-faster-cheaper-and-better" target="_blank" rel="noopener">50&ndash;70% failure rate</a> because requirements drift during the rewrite. So teams live with the legacy code, adding duct tape until the next person inherits the mess.</p>
+
+    <p>AI coding agents break this equation in three ways:</p>
+
+    <div class="phase-card">
+      <h4>1. Agents read legacy code without complaining</h4>
+      <p>A developer staring at 200K lines of undocumented PHP 5 will spend weeks building a mental model. <a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> with Opus 4.6 can ingest the full context, map dependencies, and produce an architectural inventory in hours. It does not need motivation, onboarding, or context-switching time. It will not quit.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>2. Agents generate tests for code that was never tested</h4>
+      <p>The biggest blocker in legacy modernization is not the refactoring &mdash; it is the lack of tests. You cannot safely refactor code that has no tests. But writing tests for legacy code is mind-numbing, tedious work that developers avoid. AI agents will happily generate hundreds of characterization tests that capture existing behavior, giving you the safety net needed before changing anything.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>3. Parallel agents turn a serial project into a parallel one</h4>
+      <p>A human team refactors one module at a time. An <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> fleet of 4&ndash;8 agents refactors 4&ndash;8 modules simultaneously, each in its own git worktree, coordinated through a shared task board. What took 3 months sequentially takes 3 weeks in parallel.</p>
+    </div>
+
+    <div class="quote-block">
+      <div class="quote-text">&ldquo;Agentic AI didn&rsquo;t just accelerate legacy modernization. It made it economically viable for the first time for companies that aren&rsquo;t Fortune 500.&rdquo;</div>
+      <div class="quote-attr">&mdash; <a href="https://www.mckinsey.com/about-us/new-at-mckinsey-blog/mckinseys-legacyx-rejuvenating-legacy-infrastructure-with-agentic-ai" target="_blank" rel="noopener">McKinsey LegacyX program, 2026</a></div>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="what-works">What AI Agents Can and Cannot Modernize</h2>
+
+    <p>AI agents are not magic. They excel at pattern-based transformations and struggle with architectural judgment. Here is the honest breakdown:</p>
+
+    <div class="phase-card">
+      <h4>AI agents excel at</h4>
+      <ul>
+        <li><strong>Language version upgrades</strong> &mdash; Python 2&rarr;3, Java 8&rarr;21, PHP 5&rarr;8, Ruby 2&rarr;3</li>
+        <li><strong>Framework migrations</strong> &mdash; jQuery&rarr;<a href="https://react.dev/" target="_blank" rel="noopener">React</a>, AngularJS&rarr;<a href="https://angular.dev/" target="_blank" rel="noopener">Angular</a>, Rails 5&rarr;7, Django 2&rarr;5</li>
+        <li><strong>Dependency updates</strong> &mdash; resolving outdated packages, fixing breaking changes, removing vulnerabilities</li>
+        <li><strong>Dead code removal</strong> &mdash; identifying and removing unused functions, imports, routes, and config</li>
+        <li><strong>Test generation</strong> &mdash; writing unit, integration, and characterization tests for untested code</li>
+        <li><strong>API modernization</strong> &mdash; SOAP&rarr;REST, REST&rarr;GraphQL, callback&rarr;async/await</li>
+        <li><strong>Code style normalization</strong> &mdash; enforcing consistent formatting, naming conventions, and linting rules</li>
+        <li><strong>Documentation generation</strong> &mdash; producing inline docs, API references, and architecture diagrams from undocumented code</li>
+      </ul>
+    </div>
+
+    <div class="phase-card danger">
+      <h4>AI agents struggle with</h4>
+      <ul>
+        <li><strong>Architectural redesigns</strong> &mdash; monolith&rarr;microservices requires human judgment about service boundaries, data ownership, and team topology</li>
+        <li><strong>Business logic rewrites</strong> &mdash; agents can migrate syntax but cannot validate that a pricing calculation, compliance rule, or workflow is still correct without explicit specs</li>
+        <li><strong>Database schema migrations</strong> &mdash; changing data models affects every query, report, and integration; agents need human-defined migration plans</li>
+        <li><strong>Cross-system integration changes</strong> &mdash; when the legacy system talks to 15 other services, changing interfaces requires coordination beyond the codebase</li>
+      </ul>
+    </div>
+
+    <div class="key-insight">
+      <strong>The rule of thumb:</strong> if the transformation is a well-defined pattern with clear before/after states (Python 2 <code>print</code> statements &rarr; Python 3 <code>print()</code> functions), agents handle it reliably. If the transformation requires understanding <em>why</em> the business logic exists and whether it should change, you need a human making the call and an agent executing it.
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="tools">Tool Selection: Which Agent for Which Phase</h2>
+
+    <div class="tool-wrap">
+      <table class="tool-table">
+        <thead>
+          <tr>
+            <th>Phase</th>
+            <th>Best tool</th>
+            <th>Why</th>
+            <th>Alternative</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Codebase mapping</td>
+            <td><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a></td>
+            <td>Opus 4.6 excels at reading and reasoning about unfamiliar codebases. 200K context window handles large files.</td>
+            <td><a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> (visual navigation)</td>
+          </tr>
+          <tr>
+            <td>Dependency analysis</td>
+            <td><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> + <a href="https://ast-grep.github.io/" target="_blank" rel="noopener">ast-grep</a></td>
+            <td>Combine AI reasoning with AST-based search for structural dependency mapping</td>
+            <td><a href="https://docs.github.com/en/code-security/dependabot" target="_blank" rel="noopener">Dependabot</a> (for package deps)</td>
+          </tr>
+          <tr>
+            <td>Test generation</td>
+            <td><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> or <a href="https://openai.com/codex/" target="_blank" rel="noopener">Codex</a></td>
+            <td>Both handle batch test generation well. Run in parallel for maximum throughput.</td>
+            <td><a href="https://aider.chat" target="_blank" rel="noopener">Aider</a> (interactive test refinement)</td>
+          </tr>
+          <tr>
+            <td>Module refactoring</td>
+            <td><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a></td>
+            <td>Deep reasoning needed. Multi-file changes. Worktree isolation built in.</td>
+            <td><a href="https://cursor.com" target="_blank" rel="noopener">Cursor v3</a> (visual diff review)</td>
+          </tr>
+          <tr>
+            <td>Security scanning</td>
+            <td><a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a> + <a href="https://snyk.io/" target="_blank" rel="noopener">Snyk</a></td>
+            <td>Static analysis tools catch what agents miss. Run as CI gates on every agent PR.</td>
+            <td><a href="https://www.sonarsource.com/products/sonarqube/" target="_blank" rel="noopener">SonarQube</a></td>
+          </tr>
+          <tr>
+            <td>Orchestration</td>
+            <td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></td>
+            <td>Shared task board, inter-session messaging, mobile monitoring, crash recovery</td>
+            <td>DIY tmux + scripts</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="week1">Week 1: Map the Codebase</h2>
+
+    <div class="week-card">
+      <div class="week-label w1">Week 1 &mdash; Days 1&ndash;2</div>
+      <h3>Architectural Inventory</h3>
+      <p>Before changing anything, you need to know what you have. Launch a <a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> session and ask it to produce an architectural inventory of the codebase. This is the single most valuable task for an AI agent in legacy work &mdash; what takes a developer weeks of code reading takes an agent hours.</p>
+      <p>The inventory should include:</p>
+      <ul>
+        <li><strong>Module map</strong> &mdash; every major directory, its purpose, and its entry points</li>
+        <li><strong>Dependency graph</strong> &mdash; which modules depend on which, including circular dependencies</li>
+        <li><strong>Technology inventory</strong> &mdash; language versions, frameworks, libraries, and their ages</li>
+        <li><strong>Test coverage</strong> &mdash; which modules have tests and which have zero coverage</li>
+        <li><strong>Dead code candidates</strong> &mdash; functions, routes, and files that appear unreachable</li>
+      </ul>
+      <pre><code style="font-size:0.82rem;">## Example prompt for Claude Code
+
+Read this entire codebase and produce an architectural inventory. For each
+top-level directory/module:
+1. Its purpose (one sentence)
+2. Key files and entry points
+3. Dependencies (other modules it imports from)
+4. External dependencies (third-party packages)
+5. Test coverage (has tests / no tests / partial)
+6. Language version and framework version
+
+Then identify: circular dependencies, dead code candidates (unreachable
+functions/routes), and the 5 riskiest modules (most complex, least tested,
+most dependencies).</code></pre>
+      <div class="agents"><strong>Sessions:</strong> 1 Claude Code session. <strong>Estimated time:</strong> 2&ndash;4 hours for a 200K-line codebase. <strong>Cost:</strong> ~$5&ndash;15 in tokens.</div>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w1">Week 1 &mdash; Days 3&ndash;4</div>
+      <h3>Dependency Analysis and Dead Code Removal</h3>
+      <p>Use <a href="https://ast-grep.github.io/" target="_blank" rel="noopener">ast-grep</a> and <a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> together to map internal dependencies at the function/class level. Then use an agent to remove confirmed dead code &mdash; this is the safest first change because deleting unused code cannot break anything that was actually running.</p>
+      <p>Run 2&ndash;3 parallel agents via <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, each targeting a different module&rsquo;s dead code:</p>
+      <pre><code style="font-size:0.82rem;">## Agent 1: Remove dead code in /src/legacy-auth/
+## Agent 2: Remove dead code in /src/legacy-billing/
+## Agent 3: Remove dead code in /src/legacy-reports/
+
+Each agent: analyze imports, find unreachable functions, remove them,
+run existing tests to confirm nothing breaks. Commit each removal
+separately with a clear message.</code></pre>
+      <div class="agents"><strong>Sessions:</strong> 2&ndash;3 parallel Claude Code sessions. <strong>Estimated time:</strong> 4&ndash;8 hours. <strong>Cost:</strong> ~$10&ndash;30.</div>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w1">Week 1 &mdash; Day 5</div>
+      <h3>Modernization Plan</h3>
+      <p>With the architectural inventory and clean dependency graph in hand, produce the modernization plan. This is the one step that <strong>must be human-driven</strong> &mdash; the agent provides data, you make the decisions:</p>
+      <ul>
+        <li><strong>Module priority order</strong> &mdash; which modules to modernize first (start with the least-coupled, best-tested modules)</li>
+        <li><strong>Migration targets</strong> &mdash; what each module should look like after modernization (new framework, new API style, new patterns)</li>
+        <li><strong>Risk assessment</strong> &mdash; which modules need careful human review vs. which can be agent-driven</li>
+        <li><strong>Parallelism plan</strong> &mdash; which modules can be refactored simultaneously (no shared dependencies)</li>
+      </ul>
+      <div class="agents"><strong>Sessions:</strong> 1 Claude Code session (for generating the plan draft). <strong>Human time:</strong> 2&ndash;4 hours reviewing and adjusting.</div>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="week2">Week 2: Generate Test Coverage</h2>
+
+    <div class="key-insight">
+      <strong>This is the most important week.</strong> You cannot safely refactor code that has no tests. Week 2 is not glamorous, but it is the foundation for everything that follows. Every hour invested in test generation saves 3&ndash;5 hours of debugging during refactoring.
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w2">Week 2 &mdash; Days 1&ndash;3</div>
+      <h3>Characterization Tests</h3>
+      <p>Characterization tests capture <em>what the code actually does</em>, not what it should do. Even if the code has bugs, the tests document the current behavior. This is critical: during refactoring, you need to know whether a behavior change was intentional or accidental.</p>
+      <p>Run 4&ndash;6 agents in parallel, each generating characterization tests for a different module:</p>
+      <pre><code style="font-size:0.82rem;">## Prompt template for each agent
+
+Read /src/MODULE_NAME/ and generate characterization tests using
+FRAMEWORK (pytest/Jest/PHPUnit).
+
+For every public function and API endpoint:
+1. Write a test that captures the current input/output behavior
+2. Include edge cases you can identify from the code
+3. Test error paths and exception handling
+4. Do NOT fix bugs — document the current behavior, even if it looks wrong
+5. Add a comment "# Characterization test — captures legacy behavior"
+   to distinguish from intentional tests
+
+Run the tests and ensure they all pass against the current code.</code></pre>
+      <p>Use <a href="https://pytest.org/" target="_blank" rel="noopener">pytest</a> for Python, <a href="https://jestjs.io/" target="_blank" rel="noopener">Jest</a> for JavaScript/TypeScript, PHPUnit for PHP, JUnit for Java. Match the testing framework to the ecosystem.</p>
+      <div class="agents"><strong>Sessions:</strong> 4&ndash;6 parallel agents via <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>. <strong>Estimated time:</strong> 8&ndash;16 hours. <strong>Cost:</strong> ~$30&ndash;80. <strong>Expected result:</strong> 60&ndash;80% code coverage for modules that previously had near-zero coverage.</div>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w2">Week 2 &mdash; Days 4&ndash;5</div>
+      <h3>Integration Tests and Human Review</h3>
+      <p>Characterization tests cover individual modules. Integration tests cover the <em>interactions between modules</em> &mdash; this is where legacy systems hide their worst bugs. Generate integration tests for the critical paths identified in Week 1&rsquo;s architectural inventory.</p>
+      <p>Then spend Day 5 reviewing the generated tests. Look for:</p>
+      <ul>
+        <li><strong>False confidence</strong> &mdash; tests that always pass because they test the wrong thing</li>
+        <li><strong>Missing edge cases</strong> &mdash; boundary conditions that the agent could not infer from code alone</li>
+        <li><strong>Business logic gaps</strong> &mdash; tests that capture the <em>how</em> but miss the <em>why</em> (add intent comments yourself)</li>
+      </ul>
+      <div class="agents"><strong>Sessions:</strong> 2&ndash;3 parallel agents for integration tests. <strong>Human review:</strong> 4&ndash;6 hours on Day 5.</div>
+    </div>
+
+    <div class="warning-box">
+      <strong>Do not skip test review.</strong> AI-generated tests can give false confidence. A <a href="https://www.sonarsource.com/" target="_blank" rel="noopener">SonarSource</a> study found that 48% of developers do not verify AI-generated code before committing. For legacy modernization, unreviewed tests are worse than no tests &mdash; they create a false safety net that hides regressions. Spend the time on Day 5. It is the highest-leverage review of the entire project.
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="week3">Week 3: Refactor Module by Module</h2>
+
+    <p>This is the <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="noopener">Strangler Fig pattern</a> in action. Each agent refactors one module in its own git worktree while the legacy system continues running. When the module&rsquo;s tests pass, you merge the refactored version. The legacy system gradually transforms into the modern one, one module at a time.</p>
+
+    <div class="week-card">
+      <div class="week-label w3">Week 3 &mdash; Days 1&ndash;4</div>
+      <h3>Parallel Refactoring Sprint</h3>
+      <p>Launch 4&ndash;8 agents, each in its own git worktree, each refactoring a different module according to the modernization plan from Week 1:</p>
+      <pre><code style="font-size:0.82rem;">## Example: 6 agents refactoring 6 modules
+
+Agent 1 (worktree: wt-auth)    → Refactor /src/auth/ from PHP 5 → PHP 8
+Agent 2 (worktree: wt-billing) → Refactor /src/billing/ from jQuery → React
+Agent 3 (worktree: wt-reports) → Refactor /src/reports/ from callbacks → async/await
+Agent 4 (worktree: wt-api)     → Refactor /src/api/ from REST v1 → REST v3
+Agent 5 (worktree: wt-models)  → Refactor /src/models/ from raw SQL → ORM
+Agent 6 (worktree: wt-config)  → Refactor /src/config/ from env files → typed config
+
+Each agent:
+1. Create a feature branch in its worktree
+2. Refactor the module according to the spec
+3. Run the module's characterization tests — they MUST still pass
+4. Run the integration tests that touch this module
+5. Commit with a clear message describing the migration</code></pre>
+      <p>Monitor all sessions from the <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> dashboard or the <a href="/guides/mobile-management-pwa/">mobile PWA</a>. When an agent finishes, review its diff and either approve or redirect.</p>
+      <div class="agents"><strong>Sessions:</strong> 4&ndash;8 parallel agents. <strong>Estimated time:</strong> 16&ndash;32 hours of agent runtime (2&ndash;4 days with overnight runs). <strong>Human time:</strong> 2&ndash;3 hours/day reviewing diffs. <strong>Cost:</strong> ~$80&ndash;200.</div>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w3">Week 3 &mdash; Day 5</div>
+      <h3>Conflict Resolution and Second Pass</h3>
+      <p>Some modules will have shared interfaces. When Agent 2 changes a function signature that Agent 4 also calls, you get a conflict. This is expected and manageable:</p>
+      <ol>
+        <li>Merge the module with the most downstream dependencies first (usually the models/data layer)</li>
+        <li>Rebase other agent branches onto the updated main</li>
+        <li>Send each rebased agent a message to fix the conflicts: <code>&ldquo;The function signature for get_user() changed. Update your module to match the new interface and re-run tests.&rdquo;</code></li>
+        <li>Run the full integration test suite after each merge</li>
+      </ol>
+      <div class="agents"><strong>Sessions:</strong> 2&ndash;4 agents for conflict resolution. <strong>Human time:</strong> 4&ndash;6 hours for merge order decisions and integration testing.</div>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="week4">Week 4: Integrate, Validate, and Ship</h2>
+
+    <div class="week-card">
+      <div class="week-label w4">Week 4 &mdash; Days 1&ndash;2</div>
+      <h3>Full Integration Testing</h3>
+      <p>With all refactored modules merged, run the complete test suite. Fix failures using focused agent sessions &mdash; each failure goes to an agent with the specific test, the error message, and the relevant module code.</p>
+      <p>Run <a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a> and <a href="https://snyk.io/" target="_blank" rel="noopener">Snyk</a> security scans against the refactored codebase. AI agents can introduce subtle security regressions during refactoring &mdash; static analysis catches what tests miss.</p>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w4">Week 4 &mdash; Days 3&ndash;4</div>
+      <h3>Documentation and Migration Guide</h3>
+      <p>Generate documentation for the modernized codebase. This is where AI agents shine &mdash; they are tireless documenters. Run 2&ndash;3 agents:</p>
+      <ul>
+        <li><strong>Agent 1:</strong> Generate API documentation for all public interfaces</li>
+        <li><strong>Agent 2:</strong> Write a migration guide documenting every breaking change</li>
+        <li><strong>Agent 3:</strong> Update README, CHANGELOG, and deployment instructions</li>
+      </ul>
+    </div>
+
+    <div class="week-card">
+      <div class="week-label w4">Week 4 &mdash; Day 5</div>
+      <h3>Ship</h3>
+      <p>Deploy the modernized codebase. For most teams, this means a blue-green deployment or feature-flagged rollout &mdash; the legacy system stays running until the modernized version is validated in production.</p>
+      <ul class="checklist">
+        <li>All characterization tests pass</li>
+        <li>All integration tests pass</li>
+        <li>Security scans clean (or known issues documented)</li>
+        <li>Migration guide reviewed and approved</li>
+        <li>Rollback plan documented and tested</li>
+        <li>Monitoring/alerting configured for the new code paths</li>
+      </ul>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="parallel">Parallel Agent Orchestration</h2>
+
+    <p>The difference between &ldquo;using AI for legacy modernization&rdquo; and &ldquo;finishing a legacy modernization in four weeks&rdquo; is parallelism. Here is how to orchestrate it:</p>
+
+    <div class="phase-card">
+      <h4>Git worktree isolation</h4>
+      <p>Every agent must work in its own git worktree. This is non-negotiable &mdash; without it, agents will overwrite each other&rsquo;s changes. <a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> has built-in worktree support. With <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, each session automatically gets its own worktree.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>Shared task board</h4>
+      <p>Use amux&rsquo;s kanban board to track which module each agent is working on. Statuses: <code>todo</code> (not started), <code>doing</code> (agent working), <code>review</code> (waiting for human review), <code>done</code> (merged). This gives you a single view of the entire modernization sprint &mdash; from your desktop or from the <a href="/guides/mobile-management-pwa/">mobile PWA</a> on your phone.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>Merge order protocol</h4>
+      <p>Not all modules can be merged in any order. The rule: merge bottom-up through the dependency graph. Data models and shared utilities first, then the modules that depend on them, then top-level routes and controllers last. This minimizes rebase conflicts and ensures each merge has a stable foundation.</p>
+    </div>
+
+    <div class="key-insight">
+      <strong>The orchestration overhead is small.</strong> For a 6-agent parallel refactoring sprint, expect 2&ndash;3 hours per day of human overhead: reviewing agent diffs, resolving merge conflicts, and validating test results. The agents do 90% of the work; you make the judgment calls.
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="cost">Cost Breakdown</h2>
+
+    <div class="cost-row">
+      <div class="cost-card">
+        <div class="cost-label diy">DIY with AI agents</div>
+        <h4>4-week modernization sprint</h4>
+        <div class="cost-amount" style="color:#6ee7b7;">$400 &ndash; $1,600</div>
+        <ul style="font-size:0.85rem;color:var(--dim);margin:0.5rem 0 0;padding-left:1.2rem;">
+          <li><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code Max</a>: $100&ndash;200/mo per developer</li>
+          <li>Additional API tokens for parallel agents: $50&ndash;200/mo</li>
+          <li>Static analysis tools (<a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a>, <a href="https://snyk.io/" target="_blank" rel="noopener">Snyk</a>): $0&ndash;100/mo (free tiers available)</li>
+          <li>Human time: 40&ndash;60 hours over 4 weeks (review, decisions, validation)</li>
+        </ul>
+      </div>
+      <div class="cost-card">
+        <div class="cost-label consult">Modernization consultancy</div>
+        <h4>Comparable engagement</h4>
+        <div class="cost-amount" style="color:#f87171;">$150K &ndash; $500K+</div>
+        <ul style="font-size:0.85rem;color:var(--dim);margin:0.5rem 0 0;padding-left:1.2rem;">
+          <li>Team of 4&ndash;6 consultants: $200&ndash;350/hour</li>
+          <li>Duration: 3&ndash;6 months</li>
+          <li>Project management overhead: 20&ndash;30% of budget</li>
+          <li>Risk of scope creep and timeline overrun: high</li>
+        </ul>
+      </div>
+    </div>
+
+    <p style="font-size:0.85rem;color:var(--text-muted);">Cost estimates assume a 200K&ndash;500K line codebase. For larger codebases (1M+), multiply the DIY cost by the number of 4-week cycles needed (typically 2&ndash;3 cycles). Consultancy costs scale roughly linearly with codebase size.</p>
+
+    <!-- =========================================================== -->
+    <h2 id="safety">Safety Guardrails</h2>
+
+    <p>The number one risk in AI-assisted legacy modernization is breaking production. These four safety layers prevent it:</p>
+
+    <div class="phase-card">
+      <h4>Layer 1: Characterization tests (from Week 2)</h4>
+      <p>Every refactored module must pass its characterization tests. If a test fails after refactoring, either the refactoring introduced a regression (fix it) or the test was capturing a bug that the refactoring correctly eliminated (update the test with a comment explaining why).</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>Layer 2: Git worktree isolation</h4>
+      <p>Agents cannot touch each other&rsquo;s work. Each agent operates in its own worktree on its own branch. Changes only reach main through reviewed, tested pull requests.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>Layer 3: CI gates</h4>
+      <p>Every agent PR triggers the full test suite, <a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a> security scan, and <a href="https://eslint.org/" target="_blank" rel="noopener">ESLint</a>/<a href="https://www.sonarsource.com/products/sonarqube/" target="_blank" rel="noopener">SonarQube</a> code quality checks. The PR cannot merge if any gate fails. This is the same CI pipeline you use for human PRs &mdash; agents do not get special treatment.</p>
+    </div>
+
+    <div class="phase-card">
+      <h4>Layer 4: Incremental merges</h4>
+      <p>Merge one module at a time. Run integration tests after each merge. Only proceed to the next module if everything passes. If a merge breaks integration, revert it, fix the agent&rsquo;s output, and re-merge. This sounds slow, but it is far faster than debugging a big-bang merge of 6 modules at once.</p>
+    </div>
+
+    <div class="phase-card amber">
+      <h4>Claude Code hooks for legacy refactoring</h4>
+      <p>Add <a href="/guides/claude-code-hooks-cookbook/">hooks</a> that enforce safety during refactoring sessions:</p>
+      <pre><code style="font-size:0.82rem;">// .claude/settings.json — PreToolUse hook
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Write|Edit",
+      "command": "python3 -c \"import ast; ast.parse(open('$FILE').read())\" 2>&1",
+      "description": "Block writes that produce invalid syntax"
+    }]
+  }
+}</code></pre>
+      <p>See the <a href="/guides/ai-coding-agent-safety-checklist/">safety checklist</a> for more enforcement patterns.</p>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="scaling">Scaling Beyond 500K Lines</h2>
+
+    <p>For codebases above 500K lines, a single four-week sprint is not enough. Scale with repeated cycles:</p>
+
+    <div class="tool-wrap">
+      <table class="tool-table">
+        <thead>
+          <tr>
+            <th>Codebase size</th>
+            <th>Cycles</th>
+            <th>Total timeline</th>
+            <th>Parallel agents</th>
+            <th>Estimated cost (DIY)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>100K&ndash;200K lines</td>
+            <td>1 cycle</td>
+            <td>4 weeks</td>
+            <td>4&ndash;6</td>
+            <td>$400&ndash;800</td>
+          </tr>
+          <tr>
+            <td>200K&ndash;500K lines</td>
+            <td>1&ndash;2 cycles</td>
+            <td>4&ndash;8 weeks</td>
+            <td>6&ndash;8</td>
+            <td>$800&ndash;1,600</td>
+          </tr>
+          <tr>
+            <td>500K&ndash;1M lines</td>
+            <td>2&ndash;3 cycles</td>
+            <td>8&ndash;12 weeks</td>
+            <td>8&ndash;10</td>
+            <td>$1,600&ndash;3,200</td>
+          </tr>
+          <tr>
+            <td>1M&ndash;2M+ lines</td>
+            <td>3&ndash;5 cycles</td>
+            <td>12&ndash;20 weeks</td>
+            <td>10+</td>
+            <td>$3,200&ndash;8,000</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Each cycle targets a different subsystem. Use the first cycle&rsquo;s architectural inventory to prioritize: start with the subsystem that has the most technical debt, the most pain, or the most upcoming feature work that would benefit from a modern foundation.</p>
+
+    <p>For codebases above 1M lines, consider <a href="https://www.redhat.com/en/blog/refactoring-speed-mission-agent-mesh-approach-legacy-system-modernization-red-hat-ai" target="_blank" rel="noopener">Red Hat&rsquo;s agent mesh approach</a>: specialized agents for different roles (code analysis, test generation, refactoring, security review) rather than generalist agents that do everything. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>&rsquo;s shared board coordinates these specialist agents through task assignment and status tracking.</p>
+
+    <!-- =========================================================== -->
+    <h2 id="anti-patterns">Anti-Patterns That Kill Legacy Modernization Projects</h2>
+
+    <div class="phase-card danger">
+      <h4>Big bang rewrite</h4>
+      <p>Rewriting the entire codebase at once, then switching over. This fails 50&ndash;70% of the time because requirements drift during the rewrite, the new system has its own bugs, and there is no incremental validation. AI agents make this temptation worse (&ldquo;it&rsquo;s so fast, let&rsquo;s just rewrite everything!&rdquo;). <strong>Use the Strangler Fig pattern instead.</strong> Module by module. One merge at a time.</p>
+    </div>
+
+    <div class="phase-card danger">
+      <h4>Refactoring without tests</h4>
+      <p>Skipping Week 2 because &ldquo;we&rsquo;ll just run it and see if it works.&rdquo; Legacy code has implicit behavior that is not obvious from reading the code. Without characterization tests, you will not know whether a refactoring changed behavior until a customer reports a bug. <strong>Test generation is the foundation. Do not skip it.</strong></p>
+    </div>
+
+    <div class="phase-card danger">
+      <h4>Trusting agent output without review</h4>
+      <p>AI agents produce plausible-looking code that passes tests but introduces subtle regressions. <a href="/guides/cognitive-debt-ai-coding/">Cognitive debt research</a> shows that AI-co-authored code has 1.7x more issues and 2.74x more security vulnerabilities. <strong>Every agent PR gets human review.</strong> The review can be faster than reviewing human code (agents produce consistent style), but it cannot be skipped.</p>
+    </div>
+
+    <div class="phase-card danger">
+      <h4>Modernizing everything at once</h4>
+      <p>Trying to upgrade the language version AND migrate the framework AND restructure the architecture in one pass. Each of these is a separate project. Stack them sequentially: language upgrade first (smallest blast radius), framework migration second, architecture changes last. AI agents are fast, but compounding three types of change in one refactoring makes failures undiagnosable.</p>
+    </div>
+
+    <div class="phase-card danger">
+      <h4>No merge order discipline</h4>
+      <p>Merging refactored modules in random order creates cascading conflicts. Always merge bottom-up through the dependency graph: shared utilities and data models first, then the modules that depend on them, then top-level entry points last. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>&rsquo;s kanban board makes this visible: columns for <code>todo</code>, <code>doing</code>, <code>review</code>, and <code>done</code> map directly to the merge pipeline.</p>
+    </div>
+
+    <!-- =========================================================== -->
+    <h2 id="faq">FAQ</h2>
+
+    <details style="margin-bottom:0.75rem;" open>
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What languages work best for AI-assisted legacy modernization?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Python, JavaScript/TypeScript, and Java have the best results because AI models have seen the most training data for these languages. PHP, Ruby, and C# also work well. COBOL, Fortran, and other rare languages produce mixed results &mdash; models can read the code but struggle with idiomatic transformations. For rare languages, use the agent for analysis and test generation, but handle the refactoring more interactively with <a href="https://aider.chat" target="_blank" rel="noopener">Aider</a> where you guide each change.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Can I use this approach for a monolith-to-microservices migration?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Partially. AI agents can identify service boundaries, extract modules, and set up new service scaffolding. But the architectural decisions (how to split the data model, how to handle cross-service transactions, what communication pattern to use) require human judgment. Use this four-week approach for <em>each</em> service extraction: map the module, generate its tests, refactor it into a standalone service, and validate. The overall microservices strategy is a multi-month project with this guide applied in cycles.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How do I handle a codebase with zero existing tests?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">This is the most common scenario for legacy code, and it is exactly what Week 2 addresses. Start by installing a test framework (<a href="https://pytest.org/" target="_blank" rel="noopener">pytest</a>, <a href="https://jestjs.io/" target="_blank" rel="noopener">Jest</a>, etc.) and running the first characterization test agent on the simplest module. Expect to iterate: the first round of generated tests will have issues, but each module gets easier as the agent builds familiarity with the codebase&rsquo;s patterns. Aim for 60&ndash;80% coverage on critical paths, not 100% on everything.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">What if the legacy codebase is too large for an AI context window?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;"><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a> handles this automatically through context compaction &mdash; it reads files on demand rather than loading the entire codebase. For the Week 1 architectural inventory, point the agent at the top-level directory and let it traverse the tree. It will read files as needed, building its understanding incrementally. For very large codebases (1M+ lines), split the inventory task across multiple agents, each covering a different subsystem. See our <a href="/guides/context-engineering/">context engineering guide</a> for strategies on managing agent context at scale.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">Is this approach suitable for regulated industries (healthcare, finance)?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Yes, with additional guardrails. For regulated codebases: (1) Run agents against a local/private model if data cannot leave your network (use <a href="https://aider.chat" target="_blank" rel="noopener">Aider</a> with a self-hosted model via <a href="https://aws.amazon.com/bedrock/" target="_blank" rel="noopener">AWS Bedrock</a>), (2) Add compliance-specific characterization tests in Week 2 (regulatory calculations, audit trail behavior, data handling paths), (3) Require two-person review for agent PRs that touch compliance-critical modules, and (4) Keep a detailed audit log of every agent-generated change (amux session logs provide this automatically). See our <a href="/guides/ai-agent-security-hardening/">security hardening guide</a> for more.</p>
+    </details>
+
+    <details style="margin-bottom:0.75rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.5rem 0;">How does this compare to Morgan Stanley&rsquo;s approach?</summary>
+      <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;"><a href="https://www.entrepreneur.com/business-news/morgan-stanley-builds-ai-tool-that-fixes-major-coding-issue/492697" target="_blank" rel="noopener">Morgan Stanley built a custom AI tool</a> that converted 9 million lines of code, saving an estimated 280,000 developer hours. Their approach was enterprise-scale: custom-trained models, dedicated infrastructure, months of development on the tooling itself. The approach in this guide uses off-the-shelf AI coding agents and is designed for teams of 1&ndash;5 developers working on 100K&ndash;2M line codebases. You trade Morgan Stanley&rsquo;s scale for speed and cost: they spent millions building bespoke tooling; you spend $400&ndash;1,600 using existing tools in a structured workflow.</p>
+    </details>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+
+    <h2>Further Reading</h2>
+    <ul>
+      <li><a href="/guides/reviewing-ai-agent-code/">How to Review AI-Generated Code</a> &mdash; structured morning review workflows for agent fleets</li>
+      <li><a href="/guides/ai-coding-agent-safety-checklist/">AI Coding Agent Safety Checklist</a> &mdash; 25 rules for safe agent operation</li>
+      <li><a href="/guides/context-engineering/">Context Engineering</a> &mdash; structuring what agents see so they produce reliable output</li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents</a> &mdash; the getting-started guide for parallel agent orchestration</li>
+      <li><a href="/guides/git-conflict-avoidance/">Git Conflict Avoidance</a> &mdash; worktree strategies for parallel agents</li>
+      <li><a href="/guides/spec-driven-development/">Spec-Driven Development</a> &mdash; write specs first, let agents implement against them</li>
+      <li><a href="/guides/ai-generated-technical-debt/">AI-Generated Technical Debt</a> &mdash; how to prevent agents from creating new debt while fixing old debt</li>
+      <li><a href="/guides/vibe-coding-quality-gates/">AI Agent Quality Gates</a> &mdash; automated validation pipelines for AI-generated code</li>
+      <li><a href="/guides/ai-coding-tools-compared-2026/">AI Coding Tools Compared (2026)</a> &mdash; choosing the right tools for the job</li>
+    </ul>
+
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
