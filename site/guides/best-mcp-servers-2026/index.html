@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Best MCP Servers 2026 — 40+ Model Context Protocol Servers Ranked by Category — amux</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The curated guide to the best MCP servers in 2026. 40+ servers across 9 categories — code, databases, web search, cloud, productivity, design, monitoring, AI/ML, and security — ranked by stars, verified, with install commands.">
+  <meta name="keywords" content="best MCP servers, best MCP servers 2026, MCP servers list, top MCP servers, model context protocol servers, awesome MCP servers, MCP server directory, MCP servers for Claude Code, MCP servers for Cursor, MCP server comparison, MCP server guide">
+  <link rel="canonical" href="https://amux.io/guides/best-mcp-servers-2026/">
+  <meta property="og:title" content="Best MCP Servers 2026 — 40+ Servers Ranked by Category">
+  <meta property="og:description" content="The curated guide to the best Model Context Protocol servers. 40+ servers across 9 categories — ranked, reviewed, with install commands and compatibility matrix.">
+  <meta property="og:url" content="https://amux.io/guides/best-mcp-servers-2026/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best MCP Servers 2026","item":"https://amux.io/guides/best-mcp-servers-2026/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best MCP Servers 2026 — 40+ Model Context Protocol Servers Ranked by Category","description":"The curated guide to the best MCP servers in 2026. 40+ servers across 9 categories — code, databases, web search, cloud, productivity, design, monitoring, AI/ML, and security — ranked by stars, verified, with install commands.","url":"https://amux.io/guides/best-mcp-servers-2026/","datePublished":"2026-05-27","dateModified":"2026-05-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best MCP Servers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"Anthropic Reference Servers (filesystem, git, fetch, memory, SQLite)","url":"https://github.com/modelcontextprotocol/servers"},{"@type":"ListItem","position":2,"name":"GitHub MCP Server","url":"https://github.com/github/github-mcp-server"},{"@type":"ListItem","position":3,"name":"Context7 by Upstash","url":"https://github.com/upstash/context7"},{"@type":"ListItem","position":4,"name":"Playwright MCP by Microsoft","url":"https://github.com/microsoft/playwright-mcp"},{"@type":"ListItem","position":5,"name":"AWS MCP Servers","url":"https://github.com/awslabs/mcp"},{"@type":"ListItem","position":6,"name":"Firecrawl MCP Server","url":"https://github.com/firecrawl/firecrawl-mcp-server"},{"@type":"ListItem","position":7,"name":"Framelink Figma MCP","url":"https://github.com/GLips/Figma-Context-MCP"},{"@type":"ListItem","position":8,"name":"Notion MCP Server","url":"https://github.com/makenotion/notion-mcp-server"},{"@type":"ListItem","position":9,"name":"Cloudflare MCP Server","url":"https://github.com/cloudflare/mcp-server-cloudflare"},{"@type":"ListItem","position":10,"name":"Grafana MCP Server","url":"https://github.com/grafana/mcp-grafana"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an MCP server?","acceptedAnswer":{"@type":"Answer","text":"An MCP (Model Context Protocol) server is a program that exposes tools, resources, and prompts to AI assistants like Claude Code, Cursor, GitHub Copilot, and Windsurf via a standardized protocol. Instead of each AI tool building its own integrations, MCP provides a universal interface — one server works across all compatible clients. Think of it as a USB-C port for AI tools: any MCP server plugs into any MCP client."}},{"@type":"Question","name":"How do I install an MCP server?","acceptedAnswer":{"@type":"Answer","text":"Most MCP servers install via npx (Node.js) or uvx (Python). Add the server to your AI tool's MCP config file: claude_desktop_config.json for Claude Desktop, mcp.json for Claude Code, or the MCP settings panel in Cursor/Windsurf. Each server's GitHub README has the exact config snippet. Example: to add the filesystem server, add {\"mcpServers\": {\"filesystem\": {\"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/path/to/dir\"]}}} to your config."}},{"@type":"Question","name":"Which MCP clients support MCP servers?","acceptedAnswer":{"@type":"Answer","text":"As of May 2026, over 300 MCP clients exist. The major ones: Claude Desktop, Claude Code, Cursor, GitHub Copilot (VS Code), Windsurf, Zed, Cody by Sourcegraph, Replit, Amazon Q Developer, and VS Code (via the MCP extension). Claude Desktop and Claude Code have the most mature MCP support, followed by Cursor and Copilot."}},{"@type":"Question","name":"How many MCP servers exist?","acceptedAnswer":{"@type":"Answer","text":"Over 10,000 public MCP servers exist as of May 2026, up from roughly 1,200 a year ago. The MCP SDK hit 97 million monthly downloads in March 2026. The official Anthropic reference servers monorepo has 86,000+ GitHub stars. The ecosystem spans code, databases, cloud services, productivity tools, design tools, monitoring, AI/ML, and security."}},{"@type":"Question","name":"Are MCP servers safe to use?","acceptedAnswer":{"@type":"Answer","text":"MCP servers run locally with the permissions of your user account, so trust matters. Stick to official servers published by the tool vendor (e.g., GitHub's own MCP server, Sentry's own MCP server) or well-starred community servers with active maintenance. Audit the server's tool list before enabling it — a server that exposes write_file or execute_command tools has more risk surface than one that only reads data. Some servers support read-only modes. Security research from BlueRock found SSRF vulnerabilities in 36.7% of surveyed MCP servers, so vetting is important."}},{"@type":"Question","name":"Can I use multiple MCP servers at once?","acceptedAnswer":{"@type":"Answer","text":"Yes. Most MCP clients support multiple concurrent servers. A typical setup might include a filesystem server, a GitHub server, a database server, and a search server — all active simultaneously. The AI assistant sees tools from all connected servers and can use them together in a single task. With amux, you can configure different MCP server sets per session, so your database agent gets the Postgres server while your frontend agent gets the Figma server."}},{"@type":"Question","name":"What is the difference between MCP and A2A?","acceptedAnswer":{"@type":"Answer","text":"MCP (Model Context Protocol) connects AI agents to tools and data sources — it answers 'what can this agent do?' A2A (Agent-to-Agent Protocol by Google) connects agents to each other — it answers 'how do agents collaborate?' They are complementary, not competing. An agent uses MCP to access a database, and A2A to delegate a subtask to another agent. See our guide on A2A + MCP for details."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Best MCP Servers 2026</span></div>
+    <h1>Best MCP Servers in 2026</h1>
+    <p class="subtitle">The <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol</a> hit 97 million monthly SDK downloads. Over 10,000 servers exist. This is the curated guide to the ones that matter &mdash; 40+ servers across 9 categories, ranked by adoption, verified, with install commands.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>TLDR:</strong> MCP servers give AI coding agents (<a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>, <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a>) access to external tools via a universal protocol. The must-haves: <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">Anthropic&rsquo;s reference servers</a> (filesystem, git, fetch), <a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener">GitHub MCP</a> for repo operations, <a href="https://github.com/upstash/context7" target="_blank" rel="noopener">Context7</a> for live documentation, and a database server matching your stack. Below: the full ranked directory.
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-is-mcp" style="color:var(--dim);text-decoration:none;">What MCP Servers Are (and Why They Matter)</a></li>
+        <li><a href="#top-10" style="color:var(--dim);text-decoration:none;">Top 10 Most Popular MCP Servers</a></li>
+        <li><a href="#code" style="color:var(--dim);text-decoration:none;">Code &amp; Development</a></li>
+        <li><a href="#databases" style="color:var(--dim);text-decoration:none;">Databases &amp; Data</a></li>
+        <li><a href="#web" style="color:var(--dim);text-decoration:none;">Web &amp; Search</a></li>
+        <li><a href="#cloud" style="color:var(--dim);text-decoration:none;">Cloud &amp; DevOps</a></li>
+        <li><a href="#productivity" style="color:var(--dim);text-decoration:none;">Productivity &amp; Communication</a></li>
+        <li><a href="#design" style="color:var(--dim);text-decoration:none;">Design &amp; Frontend</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring &amp; Observability</a></li>
+        <li><a href="#ai-ml" style="color:var(--dim);text-decoration:none;">AI &amp; ML</a></li>
+        <li><a href="#security" style="color:var(--dim);text-decoration:none;">Security</a></li>
+        <li><a href="#how-to-install" style="color:var(--dim);text-decoration:none;">How to Install MCP Servers</a></li>
+        <li><a href="#compatibility" style="color:var(--dim);text-decoration:none;">Client Compatibility Matrix</a></li>
+        <li><a href="#safety" style="color:var(--dim);text-decoration:none;">MCP Server Safety Guide</a></li>
+        <li><a href="#amux-mcp" style="color:var(--dim);text-decoration:none;">MCP Servers + amux</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ───────────────────────────────── WHAT IS MCP ───────────────────────────────── -->
+    <h2 id="what-is-mcp">What MCP Servers Are (and Why They Matter)</h2>
+
+    <p><a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP (Model Context Protocol)</a> is an open standard created by <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a> that lets AI assistants connect to external tools through a universal interface. An MCP server is a program that exposes a set of tools &mdash; query a database, search the web, create a GitHub issue, scan for vulnerabilities &mdash; that any compatible AI client can use.</p>
+
+    <p>Before MCP, every AI tool built its own integrations from scratch. <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> had its GitHub integration. <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> had its own. They were incompatible. MCP changed that: one server works across all compatible clients. Build a <a href="https://www.postgresql.org/" target="_blank" rel="noopener">PostgreSQL</a> MCP server once, and it works in Claude Code, Cursor, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">Copilot</a>, <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a>, <a href="https://zed.dev/" target="_blank" rel="noopener">Zed</a>, and 300+ other clients.</p>
+
+    <p>The numbers tell the story: the <a href="https://www.npmjs.com/package/@modelcontextprotocol/sdk" target="_blank" rel="noopener">MCP SDK</a> hit 97 million monthly downloads in March 2026. Over 10,000 public servers exist. The <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">official reference server monorepo</a> has 86,000+ GitHub stars. MCP is to AI tools what USB was to peripherals &mdash; the universal connector that made the ecosystem explode.</p>
+
+    <p>The problem: with 10,000+ servers, finding the good ones is hard. Most are abandoned experiments or thin wrappers. This guide is the curated list &mdash; 40+ servers that are actively maintained, well-documented, and genuinely useful, organized by what you actually need them for.</p>
+
+    <!-- ───────────────────────────────── TOP 10 ───────────────────────────────── -->
+    <h2 id="top-10">Top 10 Most Popular MCP Servers</h2>
+
+    <p>Ranked by GitHub stars as of May 2026. These are the servers with the largest communities and the most battle-testing:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th style="width:3rem;">#</th><th>Server</th><th>Stars</th><th>Category</th><th>Maker</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>Anthropic Reference Servers</strong></a></td><td>86.3k</td><td>Code, Data, Web</td><td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a></td></tr>
+          <tr><td>2</td><td><a href="https://github.com/upstash/context7" target="_blank" rel="noopener"><strong>Context7</strong></a></td><td>56.2k</td><td>Code &amp; Dev</td><td><a href="https://upstash.com/" target="_blank" rel="noopener">Upstash</a></td></tr>
+          <tr><td>3</td><td><a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener"><strong>Playwright MCP</strong></a></td><td>33.1k</td><td>Design &amp; Frontend</td><td><a href="https://www.microsoft.com/" target="_blank" rel="noopener">Microsoft</a></td></tr>
+          <tr><td>4</td><td><a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener"><strong>GitHub MCP Server</strong></a></td><td>30.2k</td><td>Code &amp; Productivity</td><td><a href="https://github.com/" target="_blank" rel="noopener">GitHub</a></td></tr>
+          <tr><td>5</td><td><a href="https://github.com/GLips/Figma-Context-MCP" target="_blank" rel="noopener"><strong>Framelink Figma MCP</strong></a></td><td>14.9k</td><td>Design</td><td><a href="https://www.framelink.ai/" target="_blank" rel="noopener">Framelink</a></td></tr>
+          <tr><td>6</td><td><a href="https://github.com/awslabs/mcp" target="_blank" rel="noopener"><strong>AWS MCP Servers</strong></a></td><td>9.1k</td><td>Cloud &amp; DevOps</td><td><a href="https://aws.amazon.com/" target="_blank" rel="noopener">AWS</a></td></tr>
+          <tr><td>7</td><td><a href="https://github.com/firecrawl/firecrawl-mcp-server" target="_blank" rel="noopener"><strong>Firecrawl MCP</strong></a></td><td>6.4k</td><td>Web &amp; Search</td><td><a href="https://www.firecrawl.dev/" target="_blank" rel="noopener">Firecrawl</a></td></tr>
+          <tr><td>8</td><td><a href="https://github.com/exa-labs/exa-mcp-server" target="_blank" rel="noopener"><strong>Exa MCP</strong></a></td><td>4.5k</td><td>Web &amp; Search</td><td><a href="https://exa.ai/" target="_blank" rel="noopener">Exa</a></td></tr>
+          <tr><td>9</td><td><a href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noopener"><strong>Notion MCP</strong></a></td><td>4.4k</td><td>Productivity</td><td><a href="https://www.notion.com/" target="_blank" rel="noopener">Notion</a></td></tr>
+          <tr><td>10</td><td><a href="https://github.com/cloudflare/mcp-server-cloudflare" target="_blank" rel="noopener"><strong>Cloudflare MCP</strong></a></td><td>3.8k</td><td>Cloud &amp; DevOps</td><td><a href="https://www.cloudflare.com/" target="_blank" rel="noopener">Cloudflare</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ───────────────────────────────── CODE & DEV ───────────────────────────────── -->
+    <h2 id="code">Code &amp; Development</h2>
+
+    <p>These servers give agents direct access to code, files, git history, and documentation. They form the foundation of any coding agent setup.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>Filesystem Server</strong></a></td>
+            <td>86.3k</td>
+            <td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s official reference server. Secure file operations &mdash; read, write, edit, search &mdash; within sandboxed directory boundaries.</td>
+            <td><code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_directory</code>, <code>search_files</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>Git Server</strong></a></td>
+            <td>86.3k</td>
+            <td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s reference server for Git. Commit history, diffs, blame, branch management, log search.</td>
+            <td><code>git_log</code>, <code>git_diff</code>, <code>git_blame</code>, <code>git_status</code>, <code>git_commit</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/upstash/context7" target="_blank" rel="noopener"><strong>Context7</strong></a></td>
+            <td>56.2k</td>
+            <td>By <a href="https://upstash.com/" target="_blank" rel="noopener">Upstash</a>. Delivers up-to-date, version-specific library documentation directly into AI prompts. Prevents hallucinated APIs by serving current docs instead of stale training data.</td>
+            <td><code>resolve-library-id</code>, <code>query-docs</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener"><strong>GitHub MCP Server</strong></a></td>
+            <td>30.2k</td>
+            <td><a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>&rsquo;s official server. Full repo operations: browse code, manage issues and PRs, trigger Actions, review code, search across repos.</td>
+            <td>Repo browsing, Issue/PR CRUD, Actions triggers, Code Security, Discussions, Projects</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>Memory Server</strong></a></td>
+            <td>86.3k</td>
+            <td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s reference server. Knowledge graph-based persistent memory &mdash; store entities, relations, and observations so agents maintain context across sessions.</td>
+            <td><code>create_entities</code>, <code>create_relations</code>, <code>search_nodes</code>, <code>read_graph</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> Start with the <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">filesystem and git reference servers</a> &mdash; they&rsquo;re the official implementations from <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>, well-maintained, and cover the fundamentals. Add <a href="https://github.com/upstash/context7" target="_blank" rel="noopener">Context7</a> if your agents work with libraries whose APIs change often &mdash; it eliminates the &ldquo;hallucinated function name&rdquo; problem.</p>
+
+    <pre><code><span class="comment"># Install the filesystem server</span>
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/directory
+
+<span class="comment"># Install Context7</span>
+npx -y @upstash/context7-mcp</code></pre>
+
+    <!-- ───────────────────────────────── DATABASES ───────────────────────────────── -->
+    <h2 id="databases">Databases &amp; Data</h2>
+
+    <p>Give agents direct access to your database &mdash; for querying, schema inspection, migrations, and data analysis.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/crystaldba/postgres-mcp" target="_blank" rel="noopener"><strong>Postgres MCP Pro</strong></a></td>
+            <td>2.8k</td>
+            <td>By <a href="https://www.crystaldba.com/" target="_blank" rel="noopener">CrystalDBA</a>. Read/write access to <a href="https://www.postgresql.org/" target="_blank" rel="noopener">PostgreSQL</a> with built-in DBA intelligence: health checks, top query analysis, index tuning with cost-based simulation.</td>
+            <td><code>execute_sql</code>, <code>explain_query</code>, <code>get_top_queries</code>, <code>analyze_workload_indexes</code>, <code>analyze_db_health</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/supabase-community/supabase-mcp" target="_blank" rel="noopener"><strong>Supabase MCP</strong></a></td>
+            <td>2.7k</td>
+            <td>Official <a href="https://supabase.com/" target="_blank" rel="noopener">Supabase</a> server. Database ops, edge functions, storage, branching, debugging, and project management through a single server.</td>
+            <td><code>execute_sql</code>, <code>apply_migration</code>, <code>deploy_edge_function</code>, <code>get_logs</code>, <code>create_branch</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/mongodb-js/mongodb-mcp-server" target="_blank" rel="noopener"><strong>MongoDB MCP</strong></a></td>
+            <td>1k</td>
+            <td>Official <a href="https://www.mongodb.com/" target="_blank" rel="noopener">MongoDB</a> server. 41+ tools covering queries, aggregations, indexing, Atlas cluster provisioning, user management, and stream processing.</td>
+            <td><code>find</code>, <code>aggregate</code>, <code>insert-many</code>, <code>create-index</code>, <code>atlas-list-clusters</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/neondatabase/mcp-server-neon" target="_blank" rel="noopener"><strong>Neon MCP</strong></a></td>
+            <td>587</td>
+            <td>Official <a href="https://neon.tech/" target="_blank" rel="noopener">Neon</a> server. Serverless Postgres management via natural language. Project/branch creation, queries, and database migrations with OAuth auth.</td>
+            <td>20 tools covering provisioning, queries, migrations, tuning, operations</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>SQLite Server</strong></a></td>
+            <td>86.3k</td>
+            <td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s reference server. Database interaction and business intelligence via <a href="https://www.sqlite.org/" target="_blank" rel="noopener">SQLite</a>. Run SQL, analyze data, generate insight memos.</td>
+            <td><code>read_query</code>, <code>write_query</code>, <code>create_table</code>, <code>list_tables</code>, <code>append_insight</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/crystaldba/postgres-mcp" target="_blank" rel="noopener">Postgres MCP Pro</a> if you&rsquo;re on PostgreSQL &mdash; the built-in DBA intelligence (query analysis, index tuning) goes beyond basic SQL execution. <a href="https://github.com/supabase-community/supabase-mcp" target="_blank" rel="noopener">Supabase MCP</a> if you&rsquo;re in the Supabase ecosystem, since it manages your entire project stack, not just the database.</p>
+
+    <!-- ───────────────────────────────── WEB & SEARCH ───────────────────────────────── -->
+    <h2 id="web">Web &amp; Search</h2>
+
+    <p>Let agents search the web, scrape content, and fetch pages. Essential for research tasks and agents that need current information.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/firecrawl/firecrawl-mcp-server" target="_blank" rel="noopener"><strong>Firecrawl MCP</strong></a></td>
+            <td>6.4k</td>
+            <td>By <a href="https://www.firecrawl.dev/" target="_blank" rel="noopener">Firecrawl</a>. All-in-one web data stack &mdash; search, scrape, crawl, interact, and extract structured data. Supports cloud and self-hosted.</td>
+            <td><code>firecrawl_scrape</code>, <code>firecrawl_search</code>, <code>firecrawl_crawl</code>, <code>firecrawl_extract</code>, <code>firecrawl_interact</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/exa-labs/exa-mcp-server" target="_blank" rel="noopener"><strong>Exa MCP</strong></a></td>
+            <td>4.5k</td>
+            <td>By <a href="https://exa.ai/" target="_blank" rel="noopener">Exa</a>. Neural/semantic web search that understands natural language queries. Searches the open web, companies, news, people, and academic papers.</td>
+            <td><code>web_search_exa</code>, <code>web_fetch_exa</code>, <code>web_search_advanced_exa</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/tavily-ai/tavily-mcp" target="_blank" rel="noopener"><strong>Tavily MCP</strong></a></td>
+            <td>2k</td>
+            <td>By <a href="https://tavily.com/" target="_blank" rel="noopener">Tavily</a>. Top-ranked in AgentRank benchmarks (81.36 score). Production-ready search, extract, map, and crawl for AI agent research.</td>
+            <td><code>tavily-search</code>, <code>tavily-extract</code>, <code>tavily-map</code>, <code>tavily-crawl</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/brave/brave-search-mcp-server" target="_blank" rel="noopener"><strong>Brave Search MCP</strong></a></td>
+            <td>1.1k</td>
+            <td>Official <a href="https://brave.com/" target="_blank" rel="noopener">Brave</a> server. Web, local, image, video, and news search. The only major search MCP with its own independent index (not Google-dependent).</td>
+            <td><code>brave_web_search</code>, <code>brave_local_search</code>, <code>brave_video_search</code>, <code>brave_news_search</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener"><strong>Fetch Server</strong></a></td>
+            <td>86.3k</td>
+            <td><a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s reference server. Fetches any URL and converts HTML to markdown for AI consumption. Zero config, no API key needed.</td>
+            <td><code>fetch</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> Start with the free <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">Fetch server</a> for basic URL retrieval. Add <a href="https://github.com/brave/brave-search-mcp-server" target="_blank" rel="noopener">Brave Search</a> for web search (free tier available, independent index). If you need heavy scraping or structured extraction, <a href="https://github.com/firecrawl/firecrawl-mcp-server" target="_blank" rel="noopener">Firecrawl</a> is the most complete option.</p>
+
+    <!-- ───────────────────────────────── CLOUD & DEVOPS ───────────────────────────────── -->
+    <h2 id="cloud">Cloud &amp; DevOps</h2>
+
+    <p>Manage cloud infrastructure, deploy code, and operate containers directly from your AI assistant.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/awslabs/mcp" target="_blank" rel="noopener"><strong>AWS MCP Servers</strong></a></td>
+            <td>9.1k</td>
+            <td>Official <a href="https://aws.amazon.com/" target="_blank" rel="noopener">AWS</a> suite of 35+ specialized servers: Lambda, S3, DynamoDB, EKS, ECS, Aurora, CloudFormation/CDK, Bedrock, SageMaker, and more.</td>
+            <td>Per-service tools across compute, storage, databases, AI/ML, serverless, and containers</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/cloudflare/mcp-server-cloudflare" target="_blank" rel="noopener"><strong>Cloudflare MCP</strong></a></td>
+            <td>3.8k</td>
+            <td>Official <a href="https://www.cloudflare.com/" target="_blank" rel="noopener">Cloudflare</a> collection of 14 servers: Workers, KV, R2, D1, Radar, browser rendering, Logpush, AI Gateway, DNS, and security scanning.</td>
+            <td>Workers management, KV/R2/D1 ops, DNS analytics, security scanning, browser rendering</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/containers/kubernetes-mcp-server" target="_blank" rel="noopener"><strong>Kubernetes MCP</strong></a></td>
+            <td>1.6k</td>
+            <td>Native Go server for <a href="https://kubernetes.io/" target="_blank" rel="noopener">Kubernetes</a> and <a href="https://www.redhat.com/en/technologies/cloud-computing/openshift" target="_blank" rel="noopener">OpenShift</a>. Full cluster management: pods, Helm, namespaces, events, Tekton pipelines, KubeVirt VMs.</td>
+            <td>Pod operations, Helm install/list/uninstall, generic resource CRUD, Tekton, KubeVirt</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/hashicorp/terraform-mcp-server" target="_blank" rel="noopener"><strong>Terraform MCP</strong></a></td>
+            <td>1.4k</td>
+            <td>Official <a href="https://www.hashicorp.com/products/terraform" target="_blank" rel="noopener">HashiCorp</a> server. Terraform Registry integration and HCP Terraform/Enterprise workspace management for IaC automation.</td>
+            <td>Provider/module discovery, workspace CRUD, private registry access, OTel metrics</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/portainer/portainer-mcp" target="_blank" rel="noopener"><strong>Portainer MCP</strong></a></td>
+            <td>160</td>
+            <td>Official <a href="https://www.portainer.io/" target="_blank" rel="noopener">Portainer</a> server. Manage <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> containers, stacks, Kubernetes resources, and Helm releases across environments.</td>
+            <td>List environments, Docker container/stack management, K8s queries, Helm releases</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/awslabs/mcp" target="_blank" rel="noopener">AWS MCP Servers</a> if you&rsquo;re on AWS &mdash; the suite covers nearly every service and is maintained by the AWS Labs team. For Kubernetes, the <a href="https://github.com/containers/kubernetes-mcp-server" target="_blank" rel="noopener">Kubernetes MCP</a> is the most complete open-source option, with native Go performance and Helm support built in.</p>
+
+    <!-- ───────────────────────────────── PRODUCTIVITY ───────────────────────────────── -->
+    <h2 id="productivity">Productivity &amp; Communication</h2>
+
+    <p>Connect agents to your project management, documentation, and communication tools.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noopener"><strong>Notion MCP</strong></a></td>
+            <td>4.4k</td>
+            <td>Official <a href="https://www.notion.com/" target="_blank" rel="noopener">Notion</a> server with 22 tools. Read/write pages, query databases, manage comments, search workspace. Also available as hosted remote server.</td>
+            <td><code>query_data_source</code>, <code>create_page</code>, <code>update_page</code>, <code>search</code>, <code>post_comment</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/korotovsky/slack-mcp-server" target="_blank" rel="noopener"><strong>Slack MCP</strong></a></td>
+            <td>1.6k</td>
+            <td>The most feature-rich <a href="https://slack.com/" target="_blank" rel="noopener">Slack</a> MCP server. OAuth and stealth mode, DMs, Group DMs, Apps, GovSlack, and smart history fetch.</td>
+            <td>Channel listing, message posting, thread replies, reactions, history fetch, DM/Group DM</td>
+          </tr>
+          <tr>
+            <td><strong>Linear MCP</strong></td>
+            <td>&mdash;</td>
+            <td>Official <a href="https://linear.app/" target="_blank" rel="noopener">Linear</a> hosted remote server. Issue CRUD, sprint data, workflow state management. No local setup &mdash; connects directly to <a href="https://linear.app/docs/mcp" target="_blank" rel="noopener">mcp.linear.app/sse</a>.</td>
+            <td>Issue CRUD, project/team listing, sprint data, workflow state management</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener"><strong>GitHub MCP</strong></a></td>
+            <td>30.2k</td>
+            <td><a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>&rsquo;s official server also covers productivity: Issues, Projects, Discussions, and Notifications management for cross-functional workflows.</td>
+            <td>Issues, PRs, Projects, Discussions, Notifications, Actions</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener">GitHub MCP</a> is essential for any coding workflow &mdash; it covers both code operations and project management in one server. Add <a href="https://github.com/makenotion/notion-mcp-server" target="_blank" rel="noopener">Notion MCP</a> if your team uses Notion for docs, or the <a href="https://linear.app/docs/mcp" target="_blank" rel="noopener">Linear MCP</a> remote server if you&rsquo;re on Linear for issue tracking.</p>
+
+    <!-- ───────────────────────────────── DESIGN & FRONTEND ───────────────────────────────── -->
+    <h2 id="design">Design &amp; Frontend</h2>
+
+    <p>Bridge the gap between design tools and code. These servers let agents read design specs, automate browsers, and test UIs.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener"><strong>Playwright MCP</strong></a></td>
+            <td>33.1k</td>
+            <td>Official <a href="https://playwright.dev/" target="_blank" rel="noopener">Playwright</a> server by <a href="https://www.microsoft.com/" target="_blank" rel="noopener">Microsoft</a>. 70+ tools for browser automation via accessibility snapshots &mdash; no vision model needed. Tab management, network mocking, tracing.</td>
+            <td>Click, navigate, type, screenshot, tab management, network mocking, tracing, PDF generation</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/GLips/Figma-Context-MCP" target="_blank" rel="noopener"><strong>Framelink Figma MCP</strong></a></td>
+            <td>14.9k</td>
+            <td>By <a href="https://www.framelink.ai/" target="_blank" rel="noopener">Framelink</a>. Grants agents access to <a href="https://www.figma.com/" target="_blank" rel="noopener">Figma</a> design data &mdash; layout, styling, component metadata &mdash; enabling one-shot design-to-code implementation.</td>
+            <td>File/frame metadata extraction, layout information, component context, styling data</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/browserbase/mcp-server-browserbase" target="_blank" rel="noopener"><strong>Browserbase MCP</strong></a></td>
+            <td>3.4k</td>
+            <td>By <a href="https://www.browserbase.com/" target="_blank" rel="noopener">Browserbase</a>. Cloud browser automation using <a href="https://www.stagehand.dev/" target="_blank" rel="noopener">Stagehand</a>. Navigate, interact, extract content, take screenshots. Supports iframes and shadow DOM.</td>
+            <td>Navigation, element interaction, content extraction, screenshot, automated actions</td>
+          </tr>
+          <tr>
+            <td><strong>Figma Official MCP</strong></td>
+            <td>&mdash;</td>
+            <td><a href="https://www.figma.com/" target="_blank" rel="noopener">Figma</a>&rsquo;s own Dev Mode server. Semantic access to design data &mdash; components, spacing tokens, layout constraints. Distributed as desktop server. <a href="https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server" target="_blank" rel="noopener">Setup guide</a>.</td>
+            <td>Design metadata, component access, layout constraints, spacing tokens</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener">Playwright MCP</a> is a must for frontend developers &mdash; the accessibility-snapshot approach means agents can interact with any web page without needing a vision model. For design-to-code workflows, <a href="https://github.com/GLips/Figma-Context-MCP" target="_blank" rel="noopener">Framelink Figma MCP</a> is more popular and easier to set up than Figma&rsquo;s own server.</p>
+
+    <!-- ───────────────────────────────── MONITORING ───────────────────────────────── -->
+    <h2 id="monitoring">Monitoring &amp; Observability</h2>
+
+    <p>Let agents query your monitoring stack to investigate incidents, check dashboards, and analyze performance data.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/grafana/mcp-grafana" target="_blank" rel="noopener"><strong>Grafana MCP</strong></a></td>
+            <td>3.1k</td>
+            <td>Official <a href="https://grafana.com/" target="_blank" rel="noopener">Grafana</a> server. Dashboard management, multi-datasource querying (<a href="https://prometheus.io/" target="_blank" rel="noopener">Prometheus</a>, <a href="https://grafana.com/oss/loki/" target="_blank" rel="noopener">Loki</a>, <a href="https://clickhouse.com/" target="_blank" rel="noopener">ClickHouse</a>, <a href="https://aws.amazon.com/cloudwatch/" target="_blank" rel="noopener">CloudWatch</a>, <a href="https://www.elastic.co/" target="_blank" rel="noopener">Elasticsearch</a>), alert management, incident response, and profiling.</td>
+            <td>Dashboard search/retrieve, datasource querying, alert rules, incident management, OnCall, profiling</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/getsentry/sentry-mcp" target="_blank" rel="noopener"><strong>Sentry MCP</strong></a></td>
+            <td>706</td>
+            <td>Official <a href="https://sentry.io/" target="_blank" rel="noopener">Sentry</a> server. AI-powered issue search, error tracking, trace analysis, and performance debugging &mdash; optimized as middleware for coding assistants.</td>
+            <td><code>search_events</code>, <code>search_issues</code>, error/issue tracking, trace and performance analysis</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/datadog-labs/mcp-server" target="_blank" rel="noopener"><strong>Datadog MCP</strong></a></td>
+            <td>39</td>
+            <td><a href="https://www.datadoghq.com/" target="_blank" rel="noopener">Datadog</a>&rsquo;s managed remote server (GA March 2026). Logs, metrics, traces, and incidents &mdash; no local server required, uses OAuth. Also available at <code>mcp.datadoghq.com</code>.</td>
+            <td>Log querying, metrics exploration, trace analysis, incident management</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/grafana/mcp-grafana" target="_blank" rel="noopener">Grafana MCP</a> covers the widest range of data sources through a single server. If you use <a href="https://sentry.io/" target="_blank" rel="noopener">Sentry</a> for error tracking, pairing it with the <a href="https://github.com/getsentry/sentry-mcp" target="_blank" rel="noopener">Sentry MCP</a> lets agents investigate bugs by querying real error data during debugging sessions.</p>
+
+    <!-- ───────────────────────────────── AI & ML ───────────────────────────────── -->
+    <h2 id="ai-ml">AI &amp; ML</h2>
+
+    <p>Vector databases and embedding tools that give agents access to semantic search and persistent memory.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/qdrant/mcp-server-qdrant" target="_blank" rel="noopener"><strong>Qdrant MCP</strong></a></td>
+            <td>1.4k</td>
+            <td>Official <a href="https://qdrant.tech/" target="_blank" rel="noopener">Qdrant</a> server. Semantic memory layer for AI agents. Highest adoption among vector DB MCP servers. Simple store/find interface.</td>
+            <td><code>qdrant-store</code>, <code>qdrant-find</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/chroma-core/chroma-mcp" target="_blank" rel="noopener"><strong>Chroma MCP</strong></a></td>
+            <td>551</td>
+            <td>Official <a href="https://www.trychroma.com/" target="_blank" rel="noopener">Chroma</a> server. Most tool-rich vector DB MCP with 12 tools. Full collection management and semantic search. Multiple embedding providers (<a href="https://openai.com/" target="_blank" rel="noopener">OpenAI</a>, <a href="https://cohere.com/" target="_blank" rel="noopener">Cohere</a>, <a href="https://jina.ai/" target="_blank" rel="noopener">Jina</a>).</td>
+            <td><code>chroma_create_collection</code>, <code>chroma_add_documents</code>, <code>chroma_query_documents</code>, <code>chroma_get_documents</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/zilliztech/mcp-server-milvus" target="_blank" rel="noopener"><strong>Milvus MCP</strong></a></td>
+            <td>231</td>
+            <td>Official <a href="https://milvus.io/" target="_blank" rel="noopener">Milvus</a> server by <a href="https://zilliz.com/" target="_blank" rel="noopener">Zilliz</a>. Broadest feature set with 14 tools and six search modes including text, vector, hybrid, and similarity.</td>
+            <td><code>milvus_text_search</code>, <code>milvus_vector_search</code>, <code>milvus_hybrid_search</code>, <code>milvus_create_collection</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/pinecone-io/pinecone-mcp" target="_blank" rel="noopener"><strong>Pinecone MCP</strong></a></td>
+            <td>68</td>
+            <td>Official <a href="https://www.pinecone.io/" target="_blank" rel="noopener">Pinecone</a> server. Index management, record upsert/search, cascading multi-index search, and document reranking.</td>
+            <td><code>search-records</code>, <code>upsert-records</code>, <code>cascading-search</code>, <code>rerank-documents</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/qdrant/mcp-server-qdrant" target="_blank" rel="noopener">Qdrant MCP</a> for the simplest setup and highest community adoption. <a href="https://github.com/chroma-core/chroma-mcp" target="_blank" rel="noopener">Chroma MCP</a> if you need more granular collection management and multiple embedding providers. <a href="https://github.com/zilliztech/mcp-server-milvus" target="_blank" rel="noopener">Milvus MCP</a> if you need hybrid search (text + vector) in one query.</p>
+
+    <!-- ───────────────────────────────── SECURITY ───────────────────────────────── -->
+    <h2 id="security">Security</h2>
+
+    <p>Security scanning, vulnerability detection, and compliance checking. Let agents find security issues as they write code.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Server</th><th>Stars</th><th>What It Does</th><th>Key Tools</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/semgrep/mcp" target="_blank" rel="noopener"><strong>Semgrep MCP</strong></a></td>
+            <td>668</td>
+            <td>Official <a href="https://semgrep.dev/" target="_blank" rel="noopener">Semgrep</a> server. Static analysis with 5,000+ detection rules. Vulnerability scanning, custom rules, AST generation, and AppSec Platform integration.</td>
+            <td><code>security_check</code>, <code>semgrep_scan</code>, <code>semgrep_scan_with_custom_rule</code>, <code>get_abstract_syntax_tree</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/SonarSource/sonarqube-mcp-server" target="_blank" rel="noopener"><strong>SonarQube MCP</strong></a></td>
+            <td>559</td>
+            <td>Official <a href="https://www.sonarsource.com/products/sonarqube/" target="_blank" rel="noopener">SonarSource</a> server. Code quality and security for <a href="https://www.sonarqube.org/" target="_blank" rel="noopener">SonarQube</a> Server/Cloud. Issues, security hotspots, coverage, dependency risks, duplications.</td>
+            <td>Code analysis, issue search, security hotspot review, quality gates, coverage, dependency scanning</td>
+          </tr>
+          <tr>
+            <td><strong>Snyk MCP</strong></td>
+            <td>&mdash;</td>
+            <td>Most comprehensive security MCP with 11 tools. SAST, SCA, IaC, containers, SBOM, and AI-BOM. Runs via <code>snyk mcp</code> CLI. <a href="https://docs.snyk.io/cli-ide-and-ci-cd-integrations/snyk-cli/developer-guardrails-for-agentic-workflows/snyk-mcp-early-access" target="_blank" rel="noopener">Early access docs</a>.</td>
+            <td>SAST, SCA, IaC scanning, container scanning, SBOM generation, vulnerability triage</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/aquasecurity/trivy-mcp" target="_blank" rel="noopener"><strong>Trivy MCP</strong></a></td>
+            <td>42</td>
+            <td>Official <a href="https://www.aquasec.com/" target="_blank" rel="noopener">Aqua Security</a> server. <a href="https://trivy.dev/" target="_blank" rel="noopener">Trivy</a> plugin for filesystem vulnerability scanning, container image scanning, and remote repository analysis.</td>
+            <td>Filesystem scanning, container image scanning, remote repo analysis, policy compliance</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Our pick:</strong> <a href="https://github.com/semgrep/mcp" target="_blank" rel="noopener">Semgrep MCP</a> for the broadest SAST coverage &mdash; 5,000+ rules across dozens of languages, with custom rule support for your own patterns. Add <a href="https://github.com/aquasecurity/trivy-mcp" target="_blank" rel="noopener">Trivy MCP</a> for container and dependency scanning if you ship Docker images.</p>
+
+    <!-- ───────────────────────────────── HOW TO INSTALL ───────────────────────────────── -->
+    <h2 id="how-to-install">How to Install MCP Servers</h2>
+
+    <p>MCP servers run locally on your machine. You configure them in your AI tool&rsquo;s settings, and the tool starts them automatically when needed.</p>
+
+    <h3>Claude Code</h3>
+    <p>Add servers to <code>.mcp.json</code> in your project root (per-project) or <code>~/.claude/mcp.json</code> (global). <a href="https://docs.anthropic.com/en/docs/claude-code/mcp" target="_blank" rel="noopener">Full docs</a>.</p>
+
+    <pre><code><span class="comment">// .mcp.json (project root)</span>
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@crystaldba/postgres-mcp"],
+      "env": { "DATABASE_URI": "postgresql://localhost:5432/mydb" }
+    }
+  }
+}</code></pre>
+
+    <h3>Claude Desktop</h3>
+    <p>Add to <code>claude_desktop_config.json</code>. Same format as above. Location: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> on macOS.</p>
+
+    <h3>Cursor</h3>
+    <p>Go to Settings &rarr; MCP Servers &rarr; Add Server. <a href="https://docs.cursor.com/context/model-context-protocol" target="_blank" rel="noopener">Cursor MCP docs</a>.</p>
+
+    <h3>VS Code (Copilot)</h3>
+    <p>Add to <code>.vscode/mcp.json</code> or user settings. <a href="https://code.visualstudio.com/docs/copilot/chat/mcp-servers" target="_blank" rel="noopener">VS Code MCP docs</a>.</p>
+
+    <h3>amux</h3>
+    <p>amux uses a centralized <code>mcp.json</code> in the project root, shared by all sessions. You can also configure different MCP servers per session for role-based access &mdash; your database agent gets the Postgres server while your frontend agent gets the <a href="https://www.figma.com/" target="_blank" rel="noopener">Figma</a> server. See our <a href="/guides/using-mcp-servers/">Using MCP Servers with amux</a> guide.</p>
+
+    <!-- ───────────────────────────────── COMPATIBILITY ───────────────────────────────── -->
+    <h2 id="compatibility">Client Compatibility Matrix</h2>
+
+    <p>Not all MCP clients support all features. Here&rsquo;s what the major clients support as of May 2026:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Feature</th><th><a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a></th><th><a href="https://claude.ai/" target="_blank" rel="noopener">Claude Desktop</a></th><th><a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a></th><th><a href="https://github.com/features/copilot" target="_blank" rel="noopener">Copilot</a></th><th><a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a></th></tr></thead>
+        <tbody>
+          <tr><td><strong>Tools (function calls)</strong></td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>Resources (data access)</strong></td><td>Yes</td><td>Yes</td><td>Partial</td><td>Partial</td><td>Partial</td></tr>
+          <tr><td><strong>Prompts (templates)</strong></td><td>Yes</td><td>Yes</td><td>No</td><td>No</td><td>No</td></tr>
+          <tr><td><strong>Remote servers (SSE/HTTP)</strong></td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>Stdio transport</strong></td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>Multiple servers</strong></td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>Per-project config</strong></td><td>Yes</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ───────────────────────────────── SAFETY ───────────────────────────────── -->
+    <h2 id="safety">MCP Server Safety Guide</h2>
+
+    <p>MCP servers run locally with your user permissions. A poorly written or malicious server can read your files, execute commands, or exfiltrate data. Here&rsquo;s how to stay safe:</p>
+
+    <ul>
+      <li><strong>Prefer official servers.</strong> Servers published by the tool vendor (<a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener">GitHub</a>&rsquo;s own server, <a href="https://github.com/getsentry/sentry-mcp" target="_blank" rel="noopener">Sentry</a>&rsquo;s own server) are the safest bet. They have the most eyes on the code and the strongest incentive to maintain trust.</li>
+      <li><strong>Audit the tool list.</strong> A server that exposes <code>write_file</code> or <code>execute_command</code> has more risk surface than one that only reads data. Know what you&rsquo;re granting access to before enabling a server.</li>
+      <li><strong>Use read-only modes.</strong> Some servers (like <a href="https://github.com/crystaldba/postgres-mcp" target="_blank" rel="noopener">Postgres MCP Pro</a>) support read-only modes. Use them when your agents only need to query, not modify.</li>
+      <li><strong>Pin versions.</strong> Don&rsquo;t use <code>npx -y server@latest</code> in production. Pin to a specific version so updates don&rsquo;t introduce unexpected behavior.</li>
+      <li><strong>Check stars and maintenance.</strong> A server with 10 stars and no commits in 6 months is riskier than one with 1,000 stars and weekly releases. Every server in this guide is actively maintained.</li>
+      <li><strong>Minimize secrets.</strong> Use the narrowest API permissions possible. A GitHub token for MCP should be scoped to specific repos, not your entire organization.</li>
+    </ul>
+
+    <p>Security research from BlueRock found SSRF vulnerabilities in 36.7% of surveyed MCP servers. The servers in this guide were selected in part for their security posture, but always review a server&rsquo;s permissions before trusting it with sensitive data.</p>
+
+    <!-- ───────────────────────────────── AMUX + MCP ───────────────────────────────── -->
+    <h2 id="amux-mcp">MCP Servers + amux</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an <a href="/guides/agent-control-plane/">agent control plane</a> that manages fleets of AI coding agents. MCP servers extend what those agents can do. Here&rsquo;s what makes amux&rsquo;s MCP integration different:</p>
+
+    <ul>
+      <li><strong>Per-session MCP configs.</strong> Different agents get different tool sets. Your database agent gets the Postgres server. Your frontend agent gets the <a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener">Playwright MCP</a>. Your security agent gets <a href="https://github.com/semgrep/mcp" target="_blank" rel="noopener">Semgrep</a>. Each session&rsquo;s MCP config is independent.</li>
+      <li><strong>Centralized config.</strong> One <code>mcp.json</code> in the project root, shared by all sessions that need the same tools. No duplicating config across 10 agents.</li>
+      <li><strong>Built-in REST API as an MCP alternative.</strong> amux&rsquo;s own REST API (board, sessions, notes, CRM) is available to all agents without MCP. Agents can coordinate via the board, message each other, and share state &mdash; capabilities that would otherwise require building a custom MCP server.</li>
+    </ul>
+
+    <pre><code><span class="comment"># Register a project with MCP servers configured</span>
+$ amux register myproject --dir ~/Dev/myproject
+<span class="ok">  Using mcp.json: filesystem, github, postgres</span>
+
+<span class="comment"># Start agents — each inherits the MCP config</span>
+$ amux start api frontend database security
+<span class="ok">  4 sessions started, MCP servers active</span>
+
+<span class="comment"># Agents use MCP tools automatically</span>
+<span class="dim">  api:       Using github MCP → created PR #42</span>
+<span class="dim">  frontend:  Using playwright MCP → screenshot captured</span>
+<span class="dim">  database:  Using postgres MCP → migration applied</span>
+<span class="dim">  security:  Using semgrep MCP → 3 findings reported</span></code></pre>
+
+    <div style="margin:2.5rem 0;text-align:center;">
+      <a href="https://github.com/mixpeek/amux" style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--accent);color:#fff;padding:0.7rem 2rem;border-radius:999px;text-decoration:none;font-weight:600;font-size:0.92rem;transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Get started with amux &mdash; free and open source</a>
+    </div>
+
+    <!-- ───────────────────────────────── FAQ ───────────────────────────────── -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>What is an MCP server?</summary>
+        <p>An MCP (Model Context Protocol) server is a program that exposes tools, resources, and prompts to AI assistants like <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>, and <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a> via a standardized protocol. Instead of each AI tool building its own integrations, <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> provides a universal interface &mdash; one server works across all compatible clients. Think of it as a USB-C port for AI tools: any MCP server plugs into any MCP client.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How do I install an MCP server?</summary>
+        <p>Most MCP servers install via <code>npx</code> (Node.js) or <code>uvx</code> (Python). Add the server to your AI tool&rsquo;s MCP config file: <code>claude_desktop_config.json</code> for Claude Desktop, <code>.mcp.json</code> for Claude Code, or the MCP settings panel in <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>/<a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a>. Each server&rsquo;s GitHub README has the exact config snippet. See the <a href="#how-to-install">installation section</a> above for examples.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Which MCP clients support MCP servers?</summary>
+        <p>Over 300 MCP clients exist as of May 2026. The major ones: <a href="https://claude.ai/" target="_blank" rel="noopener">Claude Desktop</a>, <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> (VS Code), <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a>, <a href="https://zed.dev/" target="_blank" rel="noopener">Zed</a>, <a href="https://sourcegraph.com/cody" target="_blank" rel="noopener">Cody by Sourcegraph</a>, <a href="https://replit.com/" target="_blank" rel="noopener">Replit</a>, and <a href="https://aws.amazon.com/q/developer/" target="_blank" rel="noopener">Amazon Q Developer</a>. See the <a href="#compatibility">compatibility matrix</a> for feature support details.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How many MCP servers exist?</summary>
+        <p>Over 10,000 public MCP servers exist as of May 2026, up from roughly 1,200 a year ago. The <a href="https://www.npmjs.com/package/@modelcontextprotocol/sdk" target="_blank" rel="noopener">MCP SDK</a> hit 97 million monthly downloads in March 2026. The <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">official reference server monorepo</a> has 86,000+ GitHub stars.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Are MCP servers safe to use?</summary>
+        <p>MCP servers run locally with your user permissions, so trust matters. Stick to official servers published by the tool vendor or well-starred community servers with active maintenance. Audit the tool list before enabling &mdash; a server with <code>write_file</code> or <code>execute_command</code> has more risk than read-only servers. Security research from BlueRock found SSRF vulnerabilities in 36.7% of surveyed servers. See our <a href="#safety">safety guide</a> for best practices.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I use multiple MCP servers at once?</summary>
+        <p>Yes. Most clients support multiple concurrent servers. A typical setup: filesystem + <a href="https://github.com/github/github-mcp-server" target="_blank" rel="noopener">GitHub</a> + database + search &mdash; all active simultaneously. The AI assistant sees tools from all connected servers and can use them together. With <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, you can configure different MCP server sets per session for role-based access.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What is the difference between MCP and A2A?</summary>
+        <p><a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> connects agents to tools and data sources &mdash; it answers &ldquo;what can this agent do?&rdquo; <a href="https://google.github.io/A2A/" target="_blank" rel="noopener">A2A</a> (Agent-to-Agent Protocol by <a href="https://www.google.com/" target="_blank" rel="noopener">Google</a>) connects agents to each other &mdash; it answers &ldquo;how do agents collaborate?&rdquo; They&rsquo;re complementary. An agent uses MCP to access a database, and A2A to delegate a subtask to another agent. See our <a href="/guides/a2a-mcp-agent-protocols/">A2A + MCP guide</a>.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/using-mcp-servers/" style="color:var(--dim);">Using MCP Servers with amux Sessions</a></li>
+        <li><a href="/guides/a2a-mcp-agent-protocols/" style="color:var(--dim);">A2A + MCP: How the Two Agent Protocols Work Together</a></li>
+        <li><a href="/guides/agent-control-plane/" style="color:var(--dim);">What Is an Agent Control Plane?</a></li>
+        <li><a href="/guides/ai-agent-security-hardening/" style="color:var(--dim);">AI Agent Security Hardening</a></li>
+        <li><a href="/guides/ai-coding-tools-compared-2026/" style="color:var(--dim);">AI Coding Tools Compared (2026)</a></li>
+        <li><a href="/guides/agentic-engineering/" style="color:var(--dim);">Agentic Engineering: The Practical Guide</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control — in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
