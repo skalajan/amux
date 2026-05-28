@@ -17664,6 +17664,18 @@ async function peekQuickKeys(keys) {
   await doKeys(peekSession, keys);
   setTimeout(refreshPeek, 500);
 }
+async function _submitSuggestion(name, isPeek) {
+  showSendingIndicator();
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text: ''})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d.message === 'no suggestion found') showToast('No suggestion to submit');
+  } catch(e) {}
+  if (isPeek) setTimeout(refreshPeek, 500);
+}
 
 function _showSteerPrompt(text) {
   return new Promise(resolve => {
@@ -18070,6 +18082,15 @@ function _chipAction(chip, sessionName, isPeek) {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
   } else if (chip.action === 'keys') {
+    // Enter on idle session → extract and submit Claude's suggested prompt
+    if (chip.value === 'Enter') {
+      const name = isPeek ? peekSession : sessionName;
+      const sess = (sessions || []).find(s => s.name === name);
+      if (!sess || sess.status !== 'active') {
+        _submitSuggestion(name, isPeek);
+        return;
+      }
+    }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {
