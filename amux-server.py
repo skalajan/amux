@@ -15663,14 +15663,7 @@ async function sendFromInput(name) {
   if (!text) {
     // Empty send = extract + submit the suggested prompt from the session
     inp.value = '';
-    try {
-      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({text: ''})
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d.message === 'no suggestion found') showToast('No suggestion to submit');
-    } catch(e) {}
+    _submitSuggestion(name, false);
     return;
   }
   const routed = _atRoute(text);
@@ -17591,15 +17584,7 @@ async function sendPeekCmd() {
   const files = peekFiles.filter(f => f.path);
   if (!text && files.length === 0) {
     // Empty send = extract + submit the suggested prompt from the session
-    showSendingIndicator();
-    try {
-      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({text: ''})
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d.message === 'no suggestion found') showToast('No suggestion to submit');
-    } catch(e) {}
+    _submitSuggestion(peekSession, true);
     return;
   }
   const sess = (sessions || []).find(s => s.name === peekSession);
@@ -17680,9 +17665,12 @@ async function _submitSuggestion(name, isPeek, fallbackKeys) {
     if (d.message === 'no suggestion found') {
       if (fallbackKeys) { if (isPeek) peekQuickKeys(fallbackKeys); else doKeys(name, fallbackKeys); }
       else showToast('No suggestion to submit');
+    } else if (d.ok) {
+      showToast('Sent suggestion');
     }
   } catch(e) {}
   if (isPeek) setTimeout(refreshPeek, 500);
+  else if (_gridPanes && _gridPanes[name]) setTimeout(() => _updateGridPane(name), 500);
 }
 
 function _showSteerPrompt(text) {
@@ -25053,7 +25041,10 @@ async function sendGridCmd(name) {
   const inp = document.getElementById(sid + '-input');
   if (!inp) return;
   const text = inp.value.trim();
-  if (!text) return;
+  if (!text) {
+    _submitSuggestion(name, false, 'Enter');
+    return;
+  }
   cmdHistoryAdd(text);
   inp.value = '';
   autoGrow(inp);
