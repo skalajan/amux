@@ -2086,6 +2086,17 @@ def _claude_ui_visible(clean_output: str) -> bool:
             # Codex model status line: "gpt-X xhigh · ~/path"
             if "·" in ls and ("gpt-" in ls or "o3" in ls or "o4" in ls):
                 return True
+    # Gemini CLI prompt/status. Gemini's UI is also Ink-based and may use
+    # ">" / "›" prompt lines, but only treat those as ready if the banner/model
+    # is visible somewhere in the recent pane.
+    has_gemini = any("gemini" in l.lower() for l in lines[:20] + lines[-12:])
+    if has_gemini:
+        for l in lines[-8:]:
+            ls = l.strip().lower()
+            if ls == ">" or ls.startswith("> ") or ls.startswith("›"):
+                return True
+            if "gemini-" in ls or "yolo" in ls or "approval" in ls:
+                return True
     return False
 
 
@@ -3302,6 +3313,23 @@ esac
             stub_path.chmod(0o755)
     except Exception:
         pass  # may not have write permission on local dev machines
+
+
+def _auto_trust_codex_dir(work_dir: str):
+    """Pre-trust a directory in ~/.codex/config.toml so Codex starts noninteractively."""
+    try:
+        config_file = Path.home() / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        text = config_file.read_text() if config_file.exists() else ""
+        header = f"[projects.{json.dumps(work_dir)}]"
+        if header in text:
+            return
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += f'\n{header}\ntrust_level = "trusted"\n'
+        config_file.write_text(text)
+    except Exception:
+        pass
 
 
 def _sync_skills_to_commands():
@@ -5329,11 +5357,12 @@ def list_sessions() -> list:
             else:
                 # Fallback: show last few non-empty stripped lines (e.g. spinner/tool output during active processing)
                 preview_lines = [strip_ansi(l).strip()[:200] for l in lines[-8:] if strip_ansi(l).strip()][-5:]
-        # Detect active model from JSONL (skip for codex — it has no Claude JSONL)
+        # Detect active model from JSONL (skip providers without Claude JSONL)
         raw_dir = cfg.get("CC_DIR", "")
         resolved_dir = str(Path(raw_dir).expanduser().resolve()) if raw_dir else ""
-        if cfg.get("CC_PROVIDER", "claude") == "codex":
-            active_model = _extract_model_from_flags(cfg.get("CC_FLAGS", "")) or "gpt-5.5"
+        provider = cfg.get("CC_PROVIDER", "claude")
+        if provider in ("codex", "gemini"):
+            active_model = _extract_model_from_flags(cfg.get("CC_FLAGS", "")) or _default_model_for_provider(provider)
         else:
             active_model = detect_active_model(raw_dir, meta.get("cc_conversation_id", ""))
         # Parse task time from spinner line
@@ -6063,6 +6092,207 @@ def _validate_model_name(value) -> tuple[bool, str, str]:
     return True, normalized, ""
 
 
+_SESSION_PROVIDERS = ("claude", "codex", "gemini")
+
+
+_PROVIDER_YOLO_FLAGS = (
+    "--dangerously-skip-permissions",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--yolo",
+)
+
+
+def _default_model_for_provider(provider: str) -> str:
+    if provider == "codex":
+        return "gpt-5.5"
+    if provider == "gemini":
+        return "auto"
+    return _get_default_model()
+
+
+def _provider_label(provider: str) -> str:
+    return {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "gemini": "Gemini",
+    }.get(provider, provider or "Claude Code")
+
+
+def _provider_yolo_flag(provider: str) -> str:
+    if provider == "codex":
+        return "--dangerously-bypass-approvals-and-sandbox"
+    if provider == "gemini":
+        return "--yolo"
+    return "--dangerously-skip-permissions"
+
+
+def _strip_provider_yolo_flags(flags: str) -> str:
+    """Remove provider-specific YOLO flags while preserving other tokens."""
+    if not flags:
+        return ""
+    try:
+        tokens = shlex.split(flags)
+    except ValueError:
+        out = flags
+        for flag in _PROVIDER_YOLO_FLAGS:
+            out = out.replace(flag, "")
+        out = re.sub(r'--approval-mode(?:=|\s+)yolo\b', '', out)
+        return out.strip()
+    filtered = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _PROVIDER_YOLO_FLAGS:
+            i += 1
+            continue
+        if t == "--approval-mode" and i + 1 < len(tokens) and tokens[i + 1] == "yolo":
+            i += 2
+            continue
+        if t == "--approval-mode=yolo":
+            i += 1
+            continue
+        filtered.append(t)
+        i += 1
+    return " ".join(shlex.quote(t) for t in filtered)
+
+
+def _is_yolo_enabled(flags: str, cfg: dict | None = None) -> bool:
+    return (
+        any(flag in (flags or "") for flag in _PROVIDER_YOLO_FLAGS)
+        or "--approval-mode=yolo" in (flags or "")
+        or "--approval-mode yolo" in (flags or "")
+        or (cfg or {}).get("CC_AUTO_CONTINUE") in ("1", "true", "yes")
+    )
+
+
+def _tail_file_bytes(path: Path, max_bytes: int) -> bytes:
+    if not path.exists():
+        return b""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            return f.read()
+    except Exception:
+        return b""
+
+
+def _capture_log_tail_for_reload(name: str, reason: str) -> bool:
+    """Persist up to the last MAX_LOG_BYTES of session output before a swap."""
+    if not _VALID_SESSION_NAME_RE.match(name):
+        return False
+    CC_LOGS.mkdir(parents=True, exist_ok=True)
+    lp = _log_path(name)
+    chunks: list[bytes] = []
+    existing = _tail_file_bytes(lp, MAX_LOG_BYTES)
+    if existing:
+        chunks.append(existing)
+
+    captured = b""
+    if is_running(name):
+        try:
+            subprocess.run(
+                ["tmux", "pipe-pane", "-t", tmux_name(name)],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["tmux", "capture-pane", "-t", tmux_target(name), "-p", "-S", "-"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.stdout.strip():
+                captured = r.stdout.encode("utf-8", errors="replace")
+        except Exception:
+            captured = b""
+    if captured:
+        safe_reason = reason.replace("\n", " ").strip() or "session swap"
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        marker = f"\n\n=== Captured before {safe_reason}: {ts} ===\n\n".encode()
+        chunks.append(marker + captured)
+
+    if not chunks:
+        return False
+    try:
+        lp.write_bytes(b"".join(chunks)[-MAX_LOG_BYTES:])
+        _last_log_save[name] = time.monotonic()
+        return True
+    except Exception:
+        return False
+
+
+def _mark_pending_log_reload(name: str, reason: str):
+    meta = _load_meta(name)
+    meta["pending_log_reload"] = int(time.time())
+    meta["pending_log_reload_reason"] = reason
+    _save_meta(name, meta)
+
+
+def _log_reload_prompt(name: str, reason: str) -> str:
+    lp = _log_path(name)
+    try:
+        size = lp.stat().st_size if lp.exists() else 0
+    except Exception:
+        size = 0
+    size_mb = size / (1024 * 1024)
+    cap_mb = MAX_LOG_BYTES // (1024 * 1024)
+    reason_text = reason or "session swap"
+    return (
+        "Before continuing, load the previous amux terminal context.\n\n"
+        f"The log tail captured for this {reason_text} is at:\n{lp}\n\n"
+        f"Read that file now. It contains up to the last {cap_mb} MB of this "
+        f"session's terminal history ({size_mb:.1f} MB currently saved). Use it "
+        "as continuity context for the work in this session. Do not summarize it "
+        "back unless asked."
+    )
+
+
+def _start_pending_log_reload_thread(name: str, reason: str):
+    if not _log_path(name).exists():
+        return
+    threading.Thread(
+        target=_send_after_ready,
+        args=(name, _log_reload_prompt(name, reason)),
+        daemon=True,
+    ).start()
+
+
+def _stop_session_for_restart(name: str, provider: str) -> tuple[bool, str]:
+    """Stop the active tool enough for start_session() to relaunch with new config."""
+    if provider == "claude":
+        return stop_session(name)
+    try:
+        subprocess.run(
+            ["tmux", "pipe-pane", "-t", tmux_name(name)],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(1)
+        if _at_shell_prompt(tmux_capture(name, 10)):
+            return True, "stopped"
+        subprocess.run(
+            ["tmux", "respawn-pane", "-k", "-t", tmux_target(name), _USER_SHELL],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(0.2)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+            capture_output=True, timeout=5,
+        )
+        _poll_shell_prompt(name, timeout=3.0)
+        return True, "stopped"
+    except Exception as e:
+        return False, str(e)
+
+
 def _shell_quote_flags(s: str) -> str:
     """Tokenize a stored flag string and re-quote each token shell-safely.
 
@@ -6231,13 +6461,14 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             default_flags = dcfg.get("CC_DEFAULT_FLAGS", "")
 
         if provider == "codex":
+            _auto_trust_codex_dir(work_dir)
             # Resume from stored codex session ID (per amux session), not by cwd
             codex_session_id = meta.get("codex_session_id", "")
             _codex_yolo = False
             _codex_flags = flags or ""
-            if any(f in _codex_flags for f in ('--dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox')):
+            if any(f in _codex_flags for f in _PROVIDER_YOLO_FLAGS):
                 _codex_yolo = True
-                _codex_flags = re.sub(r'--dangerously-(?:skip-permissions|bypass-approvals-and-sandbox)\s*', '', _codex_flags).strip()
+                _codex_flags = _strip_provider_yolo_flags(_codex_flags)
             # Build options list first (before session ID for `codex resume`)
             _codex_opts = ""
             if _codex_flags:
@@ -6248,29 +6479,86 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 _codex_opts += " --model gpt-5.5"
             if "--dangerously-bypass" not in _codex_opts and "-a " not in _codex_opts:
                 _codex_opts += " --dangerously-bypass-approvals-and-sandbox" if _codex_yolo else " -a never"
+            if (
+                not _codex_yolo
+                and "--dangerously-bypass" not in _codex_opts
+                and "--sandbox" not in _codex_opts
+                and "-s " not in _codex_opts
+            ):
+                _codex_opts += " --sandbox workspace-write"
+            logs_dir = str(CC_LOGS)
+            if logs_dir not in _codex_opts:
+                _codex_opts += f" --add-dir {shlex.quote(logs_dir)}"
+            # If work_dir is a subdirectory of a git repo, add the repo root
+            # so codex's sandbox can write to .git (needed for commits)
+            try:
+                _gr = subprocess.run(
+                    ["git", "-C", work_dir, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if _gr.returncode == 0:
+                    git_root = _gr.stdout.strip()
+                    if git_root != work_dir and git_root not in _codex_opts:
+                        _codex_opts += f" --add-dir {shlex.quote(git_root)}"
+                    git_dir = os.path.join(git_root, ".git")
+                    if os.path.isdir(git_dir) and git_dir not in _codex_opts:
+                        _codex_opts += f" --add-dir {shlex.quote(git_dir)}"
+            except Exception:
+                pass
             if codex_session_id:
                 cmd = f"codex resume{_codex_opts} {codex_session_id}"
                 print(f"[start] {name}: codex resume {codex_session_id}")
             else:
                 cmd = f"codex{_codex_opts}"
                 print(f"[start] {name}: codex fresh start")
-            # If work_dir is a subdirectory of a git repo, add the repo root
-            # so codex's sandbox can write to .git (needed for commits)
-            if "--add-dir" not in cmd:
-                try:
-                    _gr = subprocess.run(
-                        ["git", "-C", work_dir, "rev-parse", "--show-toplevel"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if _gr.returncode == 0:
-                        git_root = _gr.stdout.strip()
-                        if git_root != work_dir:
-                            cmd += f" --add-dir {shlex.quote(git_root)}"
-                            git_dir = os.path.join(git_root, ".git")
-                            if os.path.isdir(git_dir):
-                                cmd += f" --add-dir {shlex.quote(git_dir)}"
-                except Exception:
-                    pass
+        elif provider == "gemini":
+            gemini_session_id = meta.get("gemini_session_id", "")
+            _gemini_flags = flags or ""
+            _gemini_yolo = False
+            if (
+                any(f in _gemini_flags for f in _PROVIDER_YOLO_FLAGS)
+                or "--approval-mode=yolo" in _gemini_flags
+                or "--approval-mode yolo" in _gemini_flags
+            ):
+                _gemini_yolo = True
+                _gemini_flags = _strip_provider_yolo_flags(_gemini_flags)
+            _gemini_opts = ""
+            if _gemini_flags:
+                _gemini_opts += f" {_shell_quote_flags(_gemini_flags)}"
+            if extra_flags:
+                _gemini_opts += f" {_shell_quote_flags(extra_flags)}"
+            if "--model" not in _gemini_opts and "-m " not in _gemini_opts:
+                _gemini_opts += " --model auto"
+            if _gemini_yolo and "--yolo" not in _gemini_opts and "--approval-mode" not in _gemini_opts:
+                _gemini_opts += " --yolo"
+            if "--skip-trust" not in _gemini_opts:
+                _gemini_opts += " --skip-trust"
+            include_dirs = [str(CC_LOGS)]
+            try:
+                _gr = subprocess.run(
+                    ["git", "-C", work_dir, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if _gr.returncode == 0:
+                    git_root = _gr.stdout.strip()
+                    if git_root and git_root != work_dir:
+                        include_dirs.append(git_root)
+                    git_dir = os.path.join(git_root, ".git")
+                    if os.path.isdir(git_dir):
+                        include_dirs.append(git_dir)
+            except Exception:
+                pass
+            for include_dir in dict.fromkeys(include_dirs):
+                if include_dir and include_dir not in _gemini_opts:
+                    _gemini_opts += f" --include-directories {shlex.quote(include_dir)}"
+            if gemini_session_id:
+                cmd = f"gemini{_gemini_opts} --resume {shlex.quote(gemini_session_id)}"
+                print(f"[start] {name}: gemini resume {gemini_session_id}")
+            else:
+                gemini_session_id = str(uuid.uuid4())
+                meta["gemini_session_id"] = gemini_session_id
+                cmd = f"gemini{_gemini_opts} --session-id {shlex.quote(gemini_session_id)}"
+                print(f"[start] {name}: gemini fresh start {gemini_session_id}")
         else:
             cmd = "claude"
             if default_flags:
@@ -6295,7 +6583,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             tmux_sess = tmux_name(name)
             # Build shell setup string — skip Claude env cleanup for codex
             _has_oauth = False
-            if provider == "codex":
+            if provider in ("codex", "gemini"):
                 shell_rc = ""
             else:
                 shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
@@ -6314,7 +6602,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                     break
             else:
                 shell_rc += f"cd {shlex.quote(work_dir)}; "
-            if provider != "codex" and _has_oauth:
+            if provider not in ("codex", "gemini") and _has_oauth:
                 shell_rc += "unset ANTHROPIC_API_KEY; "
             # Forward select env vars into the tmux session.
             _env_args = []
@@ -6324,7 +6612,14 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 _api_key_val = os.environ.get("ANTHROPIC_API_KEY", "")
                 if _api_key_val:
                     _env_args += ["-e", f"ANTHROPIC_API_KEY={_api_key_val}"]
-            for _ekey in ["OPENAI_API_KEY"]:
+            for _ekey in [
+                "OPENAI_API_KEY",
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GOOGLE_GENAI_USE_VERTEXAI",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_LOCATION",
+            ]:
                 _eVal = os.environ.get(_ekey, "")
                 if _eVal:
                     _env_args += ["-e", f"{_ekey}={_eVal}"]
@@ -6554,6 +6849,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             meta.pop("start_error", None)
             meta["last_started"] = int(time.time())
             meta["start_count"] = meta.get("start_count", 0) + 1
+            pending_log_reload = meta.pop("pending_log_reload", None)
+            pending_log_reload_reason = meta.pop("pending_log_reload_reason", "")
             # For codex: capture the new session ID after a brief delay
             if provider == "codex" and not meta.get("codex_session_id"):
                 def _capture_codex_id(sname=name, wd=work_dir):
@@ -6566,6 +6863,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                         print(f"[start] {sname}: captured codex session {sid}")
                 threading.Thread(target=_capture_codex_id, daemon=True).start()
             _save_meta(name, meta)
+            if pending_log_reload:
+                _start_pending_log_reload_thread(name, pending_log_reload_reason)
             return True, "started"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
@@ -8273,7 +8572,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .badge.yolo { background: rgba(210,153,34,0.2); color: var(--yellow); }
   .badge.auto-continue { background: rgba(98,160,234,0.2); color: #62a0ea; }
   .badge.model { background: rgba(57,210,192,0.2); color: var(--cyan); }
+  .badge.provider { cursor: pointer; }
+  .badge.claude { background: rgba(88,166,255,0.18); color: var(--accent); }
   .badge.codex { background: rgba(16,185,129,0.2); color: #10b981; }
+  .badge.gemini { background: rgba(168,85,247,0.2); color: #c084fc; }
 
   /* Expanded panel */
   .panel { display: none; margin-top: 12px; }
@@ -12562,6 +12864,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div style="display:flex;gap:6px;">
         <button type="button" id="create-provider-claude" class="btn provider-btn selected" onclick="_selectProvider('claude')">Claude Code</button>
         <button type="button" id="create-provider-codex" class="btn provider-btn" onclick="_selectProvider('codex')">Codex</button>
+        <button type="button" id="create-provider-gemini" class="btn provider-btn" onclick="_selectProvider('gemini')">Gemini</button>
       </div>
     </div>
     <div class="field-group">
@@ -14275,10 +14578,32 @@ function updatePeekStatus() {
   const mb = document.getElementById('peek-model-badge');
   if (mb) {
     const flagModel = (s.flags || '').match(/--model\s+(\S+)/);
-    const defaultModel = s.provider === 'codex' ? 'gpt-5.5' : 'sonnet';
+    const defaultModel = s.provider === 'codex' ? 'gpt-5.5' : (s.provider === 'gemini' ? 'auto' : 'sonnet');
     const model = s.active_model || (flagModel ? flagModel[1] : '') || defaultModel;
     mb.textContent = model;
   }
+}
+
+function providerLabel(provider) {
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'gemini') return 'Gemini';
+  return 'Claude';
+}
+
+function providerYoloFlag(provider) {
+  if (provider === 'codex') return '--dangerously-bypass-approvals-and-sandbox';
+  if (provider === 'gemini') return '--yolo';
+  return '--dangerously-skip-permissions';
+}
+
+function stripProviderYoloFlags(flags) {
+  return (flags || '')
+    .replace(/--dangerously-skip-permissions/g, '')
+    .replace(/--dangerously-bypass-approvals-and-sandbox/g, '')
+    .replace(/--yolo/g, '')
+    .replace(/--approval-mode(?:=|\s+)yolo/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function render() {
@@ -14365,11 +14690,14 @@ function render() {
   function _renderSessionCard(s) {
     const isExp = expanded.has(s.name);
     const flags = s.flags || '';
-    const isYolo = flags.includes('--dangerously-skip-permissions') || flags.includes('--dangerously-bypass-approvals-and-sandbox') || !!s.auto_continue;
+    const isYolo = flags.includes('--dangerously-skip-permissions') || flags.includes('--dangerously-bypass-approvals-and-sandbox') || flags.includes('--yolo') || !!s.auto_continue;
     const modelMatch = flags.match(/--model\s+(\S+)/);
     const flagModel = modelMatch ? modelMatch[1] : null;
     const model = flagModel || s.active_model || null;
     const shortModel = model ? model.replace(/^claude-/, '').replace(/-\d{8}$/, '') : null;
+    let provider = (s.provider || 'claude').toLowerCase();
+    if (provider !== 'claude' && provider !== 'codex' && provider !== 'gemini') provider = 'claude';
+    const pLabel = providerLabel(provider);
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
@@ -14383,7 +14711,8 @@ function render() {
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();showSessionInfo('${s.name}')"><span class="mi">&#x2139;</span> Info</div>
           <div class="card-menu-item" onclick="event.stopPropagation();togglePin('${s.name}')"><span class="mi">${s.pinned?'&#x1F4CC;':'&#x1F4CC;'}</span> ${s.pinned ? 'Unpin' : 'Pin to top'}</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','name','${esc(s.name)}')"><span class="mi">&#x270E;</span> Rename</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model||"")}','${esc(s.provider||"claude")}')"><span class="mi">&#x2699;</span> Model${model ? ': '+esc(model) : ''}</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')"><span class="mi">&#x21C4;</span> Provider: ${pLabel}</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model||"")}','${esc(provider)}')"><span class="mi">&#x2699;</span> Model${model ? ': '+esc(model) : ''}</div>
           <div class="card-menu-item" onclick="event.stopPropagation();toggleYolo('${s.name}')"><span class="mi">${isYolo?'&#x2611;':'&#x2610;'}</span> YOLO mode</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','desc','${esc(s.desc||"")}')"><span class="mi">&#x1F4DD;</span> Description</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','tags','${esc(s.tags.join(", "))}')"><span class="mi">&#x1F3F7;</span> Tags</div>
@@ -14425,8 +14754,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || model || s.tags.length || s.provider === 'codex') ? `<div class="badges">
-        ${s.provider === 'codex' ? '<span class="badge codex">Codex</span>' : ''}
+      ${(isYolo || model || s.tags.length || provider) ? `<div class="badges">
+        <span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')" title="Change provider">${pLabel}</span>
         ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
         ${model ? `<span class="badge model">${esc(model)}</span>` : ''}
         ${s.tags.map(t => `<span class="tag" data-tag="${esc(t)}" onclick="event.stopPropagation();toggleTagFilter('${esc(t)}')">${esc(t)}</span>`).join('')}
@@ -15152,13 +15481,24 @@ if (window._AMUX_DEFAULT_MODEL) {
 let editState = null;  // {session, field, current}
 function editField(session, field, current, provider) {
   closeAllMenus();
-  const titles = { name: 'Rename session', model: 'Change model', dir: 'Change directory', desc: 'Set description', tags: 'Edit tags', duplicate: 'Duplicate session', clone: 'Clone & continue' };
+  const titles = { name: 'Rename session', provider: 'Change provider', model: 'Change model', dir: 'Change directory', desc: 'Set description', tags: 'Edit tags', duplicate: 'Duplicate session', clone: 'Clone & continue' };
   const placeholders = { name: 'Session name', model: 'e.g. opus, sonnet, haiku', dir: window._cloudEmail ? '/root' : '/path/to/project', desc: 'Brief description...', tags: 'e.g. work, frontend, urgent', duplicate: 'New session name', clone: 'New session name' };
   document.getElementById('edit-title').textContent = titles[field] || 'Edit';
   const inp = document.getElementById('edit-input');
   const sel = document.getElementById('edit-select');
   const inpWrap = document.getElementById('edit-input-wrap');
-  if (field === 'model') {
+  if (field === 'provider') {
+    const providers = [
+      {v:'claude',l:'Claude Code'},
+      {v:'codex',l:'Codex'},
+      {v:'gemini',l:'Gemini'}
+    ];
+    sel.innerHTML = '';
+    providers.forEach(p => { const o = document.createElement('option'); o.value = p.v; o.textContent = p.l; sel.appendChild(o); });
+    inpWrap.style.display = 'none';
+    sel.style.display = 'block';
+    sel.value = (current || 'claude').toLowerCase();
+  } else if (field === 'model') {
     const claudeModels = [
       {v:'',l:'Default'},{v:'opus',l:'opus'},{v:'sonnet',l:'sonnet'},{v:'haiku',l:'haiku'},
       {v:'claude-opus-4-8',l:'claude-opus-4-8'},{v:'claude-opus-4-8[1m]',l:'claude-opus-4-8 [1M]'},
@@ -15171,7 +15511,12 @@ function editField(session, field, current, provider) {
       {v:'',l:'Default'},{v:'gpt-5.5',l:'gpt-5.5'},{v:'o3',l:'o3'},{v:'o4-mini',l:'o4-mini'},
       {v:'gpt-4o',l:'gpt-4o'},{v:'gpt-4.1',l:'gpt-4.1'},{v:'gpt-4.1-mini',l:'gpt-4.1-mini'}
     ];
-    const models = (provider === 'codex') ? codexModels : claudeModels;
+    const geminiModels = [
+      {v:'',l:'Default'},{v:'auto',l:'auto'},{v:'gemini-2.5-pro',l:'gemini-2.5-pro'},
+      {v:'gemini-2.5-flash',l:'gemini-2.5-flash'},{v:'gemini-2.5-flash-lite',l:'gemini-2.5-flash-lite'},
+      {v:'gemini-3-pro-preview',l:'gemini-3-pro-preview'},{v:'gemini-3-flash-preview',l:'gemini-3-flash-preview'}
+    ];
+    const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : claudeModels);
     sel.innerHTML = '';
     models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
     inpWrap.style.display = 'none';
@@ -15191,7 +15536,7 @@ function editField(session, field, current, provider) {
   }
   document.getElementById('edit-overlay').classList.add('active');
   editState = { session, field };
-  if (field !== 'model') setTimeout(() => { inp.focus({ preventScroll: true }); inp.select(); }, 100);
+  if (field !== 'model' && field !== 'provider') setTimeout(() => { inp.focus({ preventScroll: true }); inp.select(); }, 100);
 }
 function closeEdit() {
   document.getElementById('edit-overlay').classList.remove('active');
@@ -15203,7 +15548,7 @@ function closeEdit() {
 }
 async function submitEdit() {
   if (!editState) return;
-  const val = editState.field === 'model'
+  const val = (editState.field === 'model' || editState.field === 'provider')
     ? document.getElementById('edit-select').value.trim()
     : document.getElementById('edit-input').value.trim();
   if (!val && editState.field !== 'desc' && editState.field !== 'tags' && editState.field !== 'model') return;
@@ -15228,6 +15573,11 @@ async function submitEdit() {
     await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ model: val })
+    });
+  } else if (field === 'provider') {
+    await apiCall(API + '/api/sessions/' + session + '/config', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ provider: val })
     });
   } else if (field === 'dir') {
     await apiCall(API + '/api/sessions/' + session + '/config', {
@@ -15358,13 +15708,13 @@ async function toggleYolo(session) {
     if (s) {
       const claudeFlag = '--dangerously-skip-permissions';
       const codexFlag = '--dangerously-bypass-approvals-and-sandbox';
-      const wasYolo = (s.flags || '').includes(claudeFlag) || (s.flags || '').includes(codexFlag) || !!s.auto_continue;
+      const geminiFlag = '--yolo';
+      const wasYolo = (s.flags || '').includes(claudeFlag) || (s.flags || '').includes(codexFlag) || (s.flags || '').includes(geminiFlag) || (s.flags || '').includes('--approval-mode=yolo') || (s.flags || '').includes('--approval-mode yolo') || !!s.auto_continue;
       if (wasYolo) {
-        s.flags = (s.flags || '').replace(claudeFlag, '').replace(codexFlag, '').trim();
+        s.flags = stripProviderYoloFlags(s.flags || '');
         s.auto_continue = false;
       } else {
-        const addFlag = s.provider === 'codex' ? codexFlag : claudeFlag;
-        s.flags = ((s.flags || '') + ' ' + addFlag).trim();
+        s.flags = ((s.flags || '') + ' ' + providerYoloFlag(s.provider)).trim();
         s.auto_continue = true;
       }
       lastSessionsJSON = '';
@@ -20585,7 +20935,8 @@ function _selectProvider(p) {
   _createProvider = p;
   document.getElementById('create-provider-claude').classList.toggle('selected', p === 'claude');
   document.getElementById('create-provider-codex').classList.toggle('selected', p === 'codex');
-  // Hide branch/template/session-name options for codex since it uses different mechanics
+  document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
+  // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
   const isClaude = p === 'claude';
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude ? '' : 'none';
   document.getElementById('create-worktree-field').style.display = isClaude && _createDirIsGit ? '' : 'none';
@@ -20595,6 +20946,7 @@ function openCreate() {
   _createProvider = 'claude';
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
+  document.getElementById('create-provider-gemini').classList.remove('selected');
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = '';
   document.getElementById('create-template-field').style.display = '';
   document.getElementById('create-name').value = '';
@@ -33937,7 +34289,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 cfg["CC_CREATOR"] = creator
             cfg["CC_FLAGS"] = ""
             provider = body.get("provider", "").strip().lower()
-            if provider and provider in ("claude", "codex"):
+            if provider and provider in _SESSION_PROVIDERS:
                 cfg["CC_PROVIDER"] = provider
             mcp = body.get("mcp", "").strip().lower()
             if mcp and mcp == "chrome":
@@ -36392,6 +36744,65 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         pass
                     return self._json({"ok": True, "message": f"renamed to {new_name}"})
 
+                # Change provider
+                if "provider" in body:
+                    if not isinstance(body["provider"], str):
+                        return self._json({"error": "provider must be a string"}, 400)
+                    provider_val = body["provider"].strip().lower()
+                    if provider_val not in _SESSION_PROVIDERS:
+                        return self._json({"error": "provider must be 'claude', 'codex', or 'gemini'"}, 400)
+                    old_provider = cfg.get("CC_PROVIDER", "claude").strip().lower() or "claude"
+                    if old_provider not in _SESSION_PROVIDERS:
+                        old_provider = "claude"
+                    if provider_val == old_provider:
+                        return self._json({"ok": True, "message": f"provider already set to {provider_val}"})
+
+                    current_flags = cfg.get("CC_FLAGS", "")
+                    try:
+                        flags_no_model = _strip_model_from_flags(current_flags)
+                    except ValueError as e:
+                        return self._json({
+                            "error": f"existing CC_FLAGS for session '{name}' is malformed ({e}); fix the .env file manually before updating the provider"
+                        }, 400)
+                    was_yolo = _is_yolo_enabled(current_flags, cfg)
+                    flags_no_yolo = _strip_provider_yolo_flags(flags_no_model)
+                    default_model = _default_model_for_provider(provider_val)
+                    flags = (
+                        f"--model {default_model} {flags_no_yolo}".strip()
+                        if flags_no_yolo
+                        else f"--model {default_model}"
+                    )
+                    if was_yolo:
+                        flags = f"{flags} {_provider_yolo_flag(provider_val)}".strip()
+                        cfg["CC_AUTO_CONTINUE"] = "1"
+                    cfg["CC_PROVIDER"] = provider_val
+                    cfg["CC_FLAGS"] = flags
+
+                    was_running = is_running(name)
+                    if _capture_log_tail_for_reload(name, "provider swap"):
+                        _mark_pending_log_reload(name, "provider swap")
+                    _write_env(env_file, cfg)
+
+                    restarted = False
+                    if was_running:
+                        try:
+                            if old_provider == "claude":
+                                work_dir_pre = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+                                conv_id = _live_conv_id(name, work_dir_pre)
+                                if conv_id:
+                                    meta_pre = _load_meta(name)
+                                    if meta_pre.get("cc_conversation_id") != conv_id:
+                                        meta_pre["cc_conversation_id"] = conv_id
+                                        _save_meta(name, meta_pre)
+                            _stop_session_for_restart(name, old_provider)
+                            ok_r, _ = start_session(name)
+                            restarted = bool(ok_r)
+                        except Exception:
+                            pass
+                    provider_label = _provider_label(provider_val)
+                    suffix = " (session restarted; log reload queued)" if restarted else ""
+                    return self._json({"ok": True, "message": f"provider set to {provider_label}{suffix}"})
+
                 # Change model
                 if "model" in body:
                     ok, model_val, err = _validate_model_name(body["model"])
@@ -36417,6 +36828,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     else:
                         flags = flags_no_model
                     cfg["CC_FLAGS"] = flags
+                    current_provider = cfg.get("CC_PROVIDER", "claude").strip().lower() or "claude"
+                    if current_provider not in _SESSION_PROVIDERS:
+                        current_provider = "claude"
+                    was_running = is_running(name)
+                    if _capture_log_tail_for_reload(name, "model swap"):
+                        _mark_pending_log_reload(name, "model swap")
                     _write_env(env_file, cfg)
                     # Auto-restart the session so the new --model takes effect.
                     # In-place /model switching via tmux send-keys is unreliable
@@ -36424,7 +36841,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     # busy). Restart kills in-flight work but preserves the
                     # conversation — next start uses --resume <conv-id>.
                     restarted = False
-                    if is_running(name):
+                    if was_running:
                         try:
                             # Capture the LIVE conversation id BEFORE killing
                             # the tmux session. The stored meta value can be
@@ -36433,43 +36850,61 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                             # process's argv/open-fds + the work_dir's most-
                             # recent jsonl are authoritative for what
                             # conversation is actually being used.
-                            work_dir_pre = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
-                            conv_id = _live_conv_id(name, work_dir_pre)
-                            if conv_id:
-                                meta_pre = _load_meta(name)
-                                if meta_pre.get("cc_conversation_id") != conv_id:
-                                    meta_pre["cc_conversation_id"] = conv_id
-                                    _save_meta(name, meta_pre)
-                            stop_session(name)
+                            if current_provider == "claude":
+                                work_dir_pre = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+                                conv_id = _live_conv_id(name, work_dir_pre)
+                                if conv_id:
+                                    meta_pre = _load_meta(name)
+                                    if meta_pre.get("cc_conversation_id") != conv_id:
+                                        meta_pre["cc_conversation_id"] = conv_id
+                                        _save_meta(name, meta_pre)
+                            _stop_session_for_restart(name, current_provider)
                             ok_r, _ = start_session(name)
                             restarted = bool(ok_r)
                         except Exception:
                             pass
-                    suffix = " (session restarted)" if restarted else ""
+                    suffix = " (session restarted; log reload queued)" if restarted else ""
                     return self._json({"ok": True, "message": f"model set to {model_val}{suffix}"})
 
                 # Toggle YOLO (permissions skip + auto-continue combined)
                 if body.get("toggle_yolo") or body.get("toggle_auto_continue"):
-                    provider = cfg.get("CC_PROVIDER", "claude")
+                    provider = cfg.get("CC_PROVIDER", "claude").strip().lower() or "claude"
+                    if provider not in _SESSION_PROVIDERS:
+                        provider = "claude"
                     flags = cfg.get("CC_FLAGS", "")
-                    is_yolo = (
-                        "--dangerously-skip-permissions" in flags
-                        or "--dangerously-bypass-approvals-and-sandbox" in flags
-                        or cfg.get("CC_AUTO_CONTINUE") in ("1", "true", "yes")
-                    )
+                    is_yolo = _is_yolo_enabled(flags, cfg)
                     if is_yolo:
-                        flags = flags.replace("--dangerously-skip-permissions", "").strip()
-                        flags = flags.replace("--dangerously-bypass-approvals-and-sandbox", "").strip()
+                        flags = _strip_provider_yolo_flags(flags)
                         cfg["CC_AUTO_CONTINUE"] = "0"
+                        enabled = False
                     else:
-                        if provider == "codex":
-                            flags = f"{flags} --dangerously-bypass-approvals-and-sandbox".strip()
-                        else:
-                            flags = f"{flags} --dangerously-skip-permissions".strip()
+                        flags = f"{flags} {_provider_yolo_flag(provider)}".strip()
                         cfg["CC_AUTO_CONTINUE"] = "1"
+                        enabled = True
                     cfg["CC_FLAGS"] = flags
+                    was_running = is_running(name)
+                    if was_running and _capture_log_tail_for_reload(name, "YOLO mode change"):
+                        _mark_pending_log_reload(name, "YOLO mode change")
                     _write_env(env_file, cfg)
-                    return self._json({"ok": True, "message": "yolo toggled"})
+                    restarted = False
+                    if was_running:
+                        try:
+                            if provider == "claude":
+                                work_dir_pre = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+                                conv_id = _live_conv_id(name, work_dir_pre)
+                                if conv_id:
+                                    meta_pre = _load_meta(name)
+                                    if meta_pre.get("cc_conversation_id") != conv_id:
+                                        meta_pre["cc_conversation_id"] = conv_id
+                                        _save_meta(name, meta_pre)
+                            _stop_session_for_restart(name, provider)
+                            ok_r, _ = start_session(name)
+                            restarted = bool(ok_r)
+                        except Exception:
+                            pass
+                    state = "enabled" if enabled else "disabled"
+                    suffix = " (session restarted; log reload queued)" if restarted else ""
+                    return self._json({"ok": True, "message": f"yolo {state}{suffix}"})
 
                 # Change directory
                 if "dir" in body:
