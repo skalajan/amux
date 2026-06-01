@@ -37206,6 +37206,33 @@ def _watch_server_env():
             slog(f"[env-reload] error: {e}")
 
 
+def _watch_notes_dir():
+    """Poll CC_NOTES for filesystem changes (Obsidian edits, new files, deletions).
+
+    Bumps _notes_version so SSE pushes an invalidation to all clients.
+    """
+    global _notes_version
+    prev_snapshot: dict[str, float] = {}
+    while True:
+        time.sleep(4)
+        try:
+            if not CC_NOTES.is_dir():
+                continue
+            snapshot = {}
+            for f in CC_NOTES.rglob("*.md"):
+                if ".trash" in f.parts:
+                    continue
+                try:
+                    snapshot[str(f)] = f.stat().st_mtime
+                except OSError:
+                    pass
+            if prev_snapshot and snapshot != prev_snapshot:
+                _notes_version += 1
+            prev_snapshot = snapshot
+        except Exception:
+            pass
+
+
 def _validate_api_key() -> tuple[bool, str]:
     """Check if the current ANTHROPIC_API_KEY is valid with a minimal API call.
 
@@ -37656,6 +37683,8 @@ def main():
     watcher.start()
     # Watch server.env for key changes (catches gateway pushes, manual edits)
     threading.Thread(target=_watch_server_env, daemon=True).start()
+    # Watch notes directory for external edits (Obsidian, other editors)
+    threading.Thread(target=_watch_notes_dir, daemon=True).start()
 
     # Initial snapshot immediately, then unified scheduler takes over
     threading.Thread(target=_snapshot_all_sessions, daemon=True).start()
