@@ -53,8 +53,9 @@ CC_LOGS = CC_HOME / "logs"
 CC_MEMORY = CC_HOME / "memory"
 CC_BOARD_DIR = CC_HOME / "board"
 CC_UPLOADS = CC_HOME / "uploads"
-CC_NOTES = CC_HOME / "notes"
+CC_NOTES = Path(os.environ.get("AMUX_NOTES_DIR", "")) if os.environ.get("AMUX_NOTES_DIR") else CC_HOME / "notes"
 CC_NOTES_PINS = CC_HOME / "notes" / ".pins.json"
+CC_NOTES_TRASH = CC_HOME / "notes" / ".trash"
 CC_MAP = CC_HOME / "map.json"
 CC_NOTIFICATIONS = CC_HOME / "notifications.json"
 CC_HABITS = CC_HOME / "habits.json"
@@ -174,6 +175,7 @@ CC_MEMORY.mkdir(parents=True, exist_ok=True)
 CC_BOARD_DIR.mkdir(parents=True, exist_ok=True)
 CC_UPLOADS.mkdir(parents=True, exist_ok=True)
 CC_NOTES.mkdir(parents=True, exist_ok=True)
+CC_NOTES_PINS.parent.mkdir(parents=True, exist_ok=True)
 CC_TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
 CC_GMAIL.mkdir(parents=True, exist_ok=True)
 CC_BRANDING.mkdir(parents=True, exist_ok=True)
@@ -10775,16 +10777,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex: 1; overflow: auto; padding: 0; display: flex; flex-direction: column;
     background: var(--card); white-space: normal;
   }
-  .gp-note-body .ql-toolbar {
-    border: none; border-bottom: 1px solid var(--border); padding: 4px 6px;
-    background: var(--card); flex-shrink: 0;
-  }
-  .gp-note-body .ql-toolbar .ql-stroke { stroke: var(--dim); }
-  .gp-note-body .ql-toolbar .ql-fill { fill: var(--dim); }
-  .gp-note-body .ql-toolbar .ql-picker-label { color: var(--dim); }
-  .gp-note-body .ql-container {
-    border: none; flex: 1; overflow: auto; font-family: "Geist","Inter",sans-serif;
-    font-size: 0.82rem; color: var(--text);
+  .gp-note-body textarea {
+    flex: 1; border: none; outline: none; resize: none;
+    background: var(--card); color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.82rem; line-height: 1.6; padding: 8px 12px;
   }
   .gp-note-body .ql-editor { padding: 12px 14px; min-height: 100%; }
   .gp-note-body .ql-editor.ql-blank::before { color: var(--dim); }
@@ -10956,37 +10953,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .notes-delete-btn:hover { background: rgba(248,81,73,0.12); color: var(--red,#f85149); }
   .notes-delete-btn.confirming { background: var(--red,#f85149); color: #fff; border-radius: 4px; padding: 3px 8px; font-size: 0.75rem; font-weight: 600; }
-  /* Quill editor fills pane */
-  .notes-quill-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .notes-quill-wrap .ql-toolbar.ql-snow {
-    background: var(--bg); border: none; border-bottom: 1px solid var(--border); flex-shrink: 0;
-    padding: 4px 8px;
+  /* Markdown textarea editor fills pane */
+  .notes-editor-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .notes-editor-textarea {
+    flex: 1; width: 100%; border: none; outline: none; resize: none;
+    background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.88rem; line-height: 1.7; padding: 12px 24px 80px;
+    max-width: 740px; margin: 0 auto; box-sizing: border-box;
+    tab-size: 2;
   }
-  .notes-quill-wrap .ql-container.ql-snow {
-    border: none; flex: 1; overflow-y: auto; background: var(--bg);
-  }
-  .notes-quill-wrap .ql-editor { color: var(--text); font-size: 0.92rem; line-height: 1.75; min-height: 200px; padding: 12px 24px 80px; max-width: 740px; margin: 0 auto; }
-  /* Render Quill content with markdown-like typography (Obsidian-style) */
-  .notes-quill-wrap .ql-editor h1 { font-size: 1.6rem; font-weight: 700; margin: 0.5em 0 0.3em; letter-spacing: -0.01em; }
-  .notes-quill-wrap .ql-editor h2 { font-size: 1.25rem; font-weight: 600; margin: 0.8em 0 0.3em; }
-  .notes-quill-wrap .ql-editor h3 { font-size: 1.05rem; font-weight: 600; margin: 0.7em 0 0.25em; }
-  .notes-quill-wrap .ql-editor blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--dim); margin: 8px 0; }
-  .notes-quill-wrap .ql-editor pre { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 0.85em; }
-  .notes-quill-wrap .ql-editor hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
-  .ql-snow .ql-toolbar .ql-divider { width: 28px; }
-  .ql-snow .ql-toolbar .ql-divider svg { width: 18px; height: 18px; }
-  .notes-quill-wrap .ql-editor.ql-blank::before { color: var(--dim); font-style: normal; }
-  .notes-quill-wrap .ql-snow .ql-stroke { stroke: var(--dim); }
-  .notes-quill-wrap .ql-snow .ql-fill { fill: var(--dim); }
-  .notes-quill-wrap .ql-snow .ql-picker { color: var(--dim); }
-  .notes-quill-wrap .ql-snow .ql-picker-options { background: var(--card); border-color: var(--border); }
-  .notes-quill-wrap .ql-snow .ql-toolbar button:hover .ql-stroke,
-  .notes-quill-wrap .ql-snow .ql-toolbar button.ql-active .ql-stroke { stroke: var(--accent); }
-  .notes-quill-wrap .ql-snow .ql-toolbar button:hover .ql-fill,
-  .notes-quill-wrap .ql-snow .ql-toolbar button.ql-active .ql-fill { fill: var(--accent); }
-  .notes-quill-wrap .ql-snow .ql-picker-label { color: var(--dim); }
-  .notes-quill-wrap .ql-snow .ql-picker-label:hover,
-  .notes-quill-wrap .ql-snow .ql-picker-label.ql-active { color: var(--accent); }
+  .notes-editor-textarea::placeholder { color: var(--dim); }
   .notes-list-item.pinned { border-left: 2px solid var(--accent); }
   /* Pin button in editor header */
   .notes-pin-btn {
@@ -11104,27 +11080,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .notes-list-item .nli-title { font-size: 0.92rem; }
     .notes-list-item .nli-date { font-size: 0.74rem; }
     .notes-list { padding: 4px 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-    .notes-quill-wrap .ql-container.ql-snow { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    .notes-editor-textarea { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; font-size: 16px; padding: 12px 16px 96px; }
     .notes-preview { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-    /* Prevent double-tap zoom on action buttons */
-    .notes-list-item, .notes-delete-btn, .notes-pin-btn, .notes-new-btn, .notes-toggle-btn, .notes-expand-btn,
-    .notes-quill-wrap .ql-toolbar.ql-snow button { touch-action: manipulation; }
-    /* Sticky bottom toolbar — move Quill toolbar to bottom on mobile */
-    .notes-quill-wrap { flex-direction: column-reverse; }
-    .notes-quill-wrap .ql-toolbar.ql-snow {
-      position: sticky; bottom: 0; z-index: 5;
-      background: var(--bg); border-top: 1px solid var(--border); border-bottom: none;
-      padding: 6px 4px; overflow-x: auto; white-space: nowrap; flex-wrap: nowrap;
-      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    }
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-formats { display: inline-flex; margin-right: 8px; }
-    .notes-quill-wrap .ql-toolbar.ql-snow button { width: 36px; height: 36px; padding: 6px; }
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-picker { height: 36px; line-height: 36px; }
-    /* Hide less-used formatting on mobile to keep bar uncluttered */
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-strike,
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-underline,
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-clean { display: none; }
-    .notes-quill-wrap .ql-editor { font-size: 16px; min-height: 160px; padding: 12px 16px 96px; }
+    .notes-list-item, .notes-delete-btn, .notes-pin-btn, .notes-new-btn, .notes-toggle-btn, .notes-expand-btn { touch-action: manipulation; }
     .notes-preview { padding: 16px 16px 96px; font-size: 16px; }
     .notes-new-btn { width: 36px; height: 36px; font-size: 1.3rem; }
   }
@@ -12280,8 +12238,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button onclick="_notesPreviewSearchClear()" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.85rem;padding:0 2px;" title="Close">&times;</button>
       </div>
     </div>
-    <div class="notes-quill-wrap" id="notes-quill-wrap" style="display:none;">
-      <div id="notes-quill"></div>
+    <div class="notes-editor-wrap" id="notes-editor-wrap" style="display:none;">
+      <textarea id="notes-editor" class="notes-editor-textarea" placeholder="Start writing markdown..." oninput="_notesSaveDebounce()"></textarea>
     </div>
     <div class="notes-preview" id="notes-preview"></div>
     <div class="notes-empty-state" id="notes-empty-state">
@@ -13206,8 +13164,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="notes-mode-tab" id="peek-notes-tab-edit" onclick="_peekNotesSwitchMode('edit')">Edit</button>
         <button class="notes-mode-tab active" id="peek-notes-tab-preview" onclick="_peekNotesSwitchMode('preview')">Preview</button>
       </div>
-      <div class="notes-quill-wrap" id="peek-notes-quill-wrap" style="display:none;">
-        <div id="peek-notes-quill"></div>
+      <div class="notes-editor-wrap" id="peek-notes-editor-wrap" style="display:none;">
+        <textarea id="peek-notes-editor" class="notes-editor-textarea" placeholder="Start writing markdown..." oninput="_peekNotesSaveDebounce()"></textarea>
       </div>
       <div class="notes-preview" id="peek-notes-preview"></div>
       <div class="notes-empty-state" id="peek-notes-empty-state">
@@ -16806,12 +16764,12 @@ function _peekNewSchedule() {
 // ── Peek notes ──
 let _peekNotesAll = [];
 let _peekNotesActive = null;
-let _peekQuill = null;
 let _peekNotesSaveTimer = null;
 let _peekNotesLoading = false;
 let _peekNotesMode = 'preview';
 let _peekNotesSidebarOpen = true;
 let _peekNotesRawContent = '';
+function _peekNotesGetEditor() { return document.getElementById('peek-notes-editor'); }
 
 function _peekNotesFolder() {
   return '_sessions/' + peekSession;
@@ -16886,80 +16844,14 @@ function _peekNotesRenderList(notes) {
 function _peekNotesShowEmpty() {
   document.getElementById('peek-notes-empty-state').style.display = '';
   document.getElementById('peek-notes-mode-tabs').style.display = 'none';
-  document.getElementById('peek-notes-quill-wrap').style.display = 'none';
+  document.getElementById('peek-notes-editor-wrap').style.display = 'none';
   document.getElementById('peek-notes-preview').classList.remove('active');
   document.getElementById('peek-notes-preview').style.display = 'none';
   document.getElementById('peek-notes-title').value = '';
 }
 
 function _peekNotesInitQuill() {
-  if (_peekQuill) return;
-  // Reuse divider blot registered by main notes init (registers globally on Quill)
-  if (!_quillDividerRegistered && typeof Quill !== 'undefined') {
-    const BlockEmbed = Quill.import('blots/block/embed');
-    class DividerBlot extends BlockEmbed {
-      static create() { return super.create(); }
-      static value() { return true; }
-    }
-    DividerBlot.blotName = 'divider';
-    DividerBlot.tagName = 'hr';
-    Quill.register(DividerBlot);
-    _quillDividerRegistered = true;
-  }
-  _peekQuill = new Quill('#peek-notes-quill', {
-    theme: 'snow',
-    modules: {
-      toolbar: {
-        container: [
-          [{ header: [1, 2, 3, false] }],
-          ['bold', 'italic', 'underline', 'strike'],
-          ['blockquote', 'code-block'],
-          [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
-          ['link'],
-          ['divider'],
-          ['clean']
-        ],
-        handlers: {
-          divider: function() {
-            const range = _peekQuill.getSelection(true);
-            _peekQuill.insertText(range.index, '\n', 'user');
-            _peekQuill.insertEmbed(range.index + 1, 'divider', true, 'user');
-            _peekQuill.insertText(range.index + 2, '\n', 'user');
-            _peekQuill.setSelection(range.index + 3, 0, 'silent');
-          }
-        }
-      }
-    },
-    placeholder: 'Write your note…'
-  });
-  const _pdivBtn = document.querySelector('#peek-notes-panel .ql-toolbar .ql-divider');
-  if (_pdivBtn && !_pdivBtn.innerHTML) {
-    _pdivBtn.innerHTML = '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="3" x2="15" y1="9" y2="9" stroke-width="2"></line></svg>';
-    _pdivBtn.title = 'Insert horizontal divider';
-  }
-  if (typeof QuillMarkdown !== 'undefined') {
-    try { new QuillMarkdown(_peekQuill); } catch(e) {}
-  }
-  _peekQuill.on('text-change', (delta, old, source) => {
-    if (source === 'api' || _peekNotesLoading) return;
-    // Sync H1 → title
-    const first = _peekQuill.root.firstElementChild;
-    if (first && first.tagName === 'H1') {
-      const h1 = first.textContent.trim();
-      const ti = document.getElementById('peek-notes-title');
-      if (ti && ti.value !== h1) {
-        ti.value = h1;
-        if (_peekNotesActive) {
-          _peekNotesActive.title = h1;
-          const activeEl = document.querySelector('#peek-notes-list .notes-list-item.active');
-          if (activeEl) { const s = activeEl.querySelector('.nli-title'); if (s) s.textContent = h1 || _peekNotesActive.path.replace(/\.md$/, ''); }
-          const entry = _peekNotesAll.find(n => n.path === _peekNotesActive.path);
-          if (entry) entry.name = h1 || entry.path.replace(/\.md$/, '');
-        }
-      }
-    }
-    _peekNotesSaveDebounce();
-  });
+  // no-op — textarea needs no init
 }
 
 async function _peekNotesOpen(path) {
@@ -16978,19 +16870,15 @@ async function _peekNotesOpen(path) {
     const data = await r.json();
     _peekNotesActive = { path: data.path };
     _peekNotesRawContent = data.content || '';
-    const h1html = _peekNotesRawContent.match(/<h1[^>]*>(.*?)<\/h1>/i);
     const h1md = _peekNotesRawContent.match(/^#\s+(.+)$/m);
-    const titleFromContent = h1html ? h1html[1].replace(/<[^>]+>/g, '') : (h1md ? h1md[1] : '');
+    const titleFromContent = h1md ? h1md[1] : '';
     const titleFromPath = path.replace(/\.md$/, '').split('/').pop();
     _peekNotesActive.title = titleFromContent || titleFromPath;
     document.getElementById('peek-notes-title').value = _peekNotesActive.title;
     const listEntry = _peekNotesAll.find(n => n.path === data.path);
     if (listEntry) listEntry.name = _peekNotesActive.title;
-    _peekNotesLoading = true;
-    const isHtml = /<[a-z][\s\S]*>/i.test(_peekNotesRawContent);
-    if (isHtml) _peekQuill.root.innerHTML = _peekNotesRawContent;
-    else _peekQuill.setText(_peekNotesRawContent || '');
-    setTimeout(() => { _peekNotesLoading = false; }, 0);
+    const editor = _peekNotesGetEditor();
+    if (editor) { _peekNotesLoading = true; editor.value = _peekNotesRawContent; setTimeout(() => { _peekNotesLoading = false; }, 0); }
     document.getElementById('peek-notes-empty-state').style.display = 'none';
     document.getElementById('peek-notes-mode-tabs').style.display = 'flex';
     _peekNotesSwitchMode('preview');
@@ -17020,7 +16908,7 @@ async function _peekNotesNew() {
   const urlPath = filename.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
   await apiCall(API + '/api/notes/' + urlPath, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content: '<h1>' + displayName + '</h1>' })
+    body: JSON.stringify({ content: '# ' + displayName + '\n' })
   });
   _peekNotesAll.unshift({ path: filename, name: displayName, updated: Math.floor(Date.now() / 1000), pinned: false, size: 0 });
   _peekNotesRenderList(_peekNotesAll);
@@ -17037,8 +16925,9 @@ function _peekNotesSaveDebounce() {
 }
 
 async function _peekNotesSave() {
-  if (!_peekNotesActive || !_peekQuill) return;
-  const content = _peekQuill.root.innerHTML === '<p><br></p>' ? '' : _peekQuill.root.innerHTML;
+  const editor = _peekNotesGetEditor();
+  if (!_peekNotesActive || !editor) return;
+  const content = editor.value;
   _peekNotesRawContent = content;
   const pathKey = _peekNotesActive.path.replace(/\.md$/, '');
   const statusEl = document.getElementById('peek-notes-save-status');
@@ -17051,20 +16940,14 @@ async function _peekNotesSave() {
 }
 
 function _peekNotesTitleChange() {
-  if (!_peekNotesActive || !_peekQuill) return;
+  const editor = _peekNotesGetEditor();
+  if (!_peekNotesActive || !editor) return;
   const newTitle = document.getElementById('peek-notes-title').value;
   _peekNotesActive.title = newTitle;
-  const first = _peekQuill.root.firstElementChild;
-  const isH1 = first && first.tagName === 'H1';
-  const oldLen = isH1 ? first.textContent.length : 0;
-  if (isH1) {
-    if (oldLen > 0) _peekQuill.deleteText(0, oldLen, 'api');
-    if (newTitle) _peekQuill.insertText(0, newTitle, 'api');
-  } else {
-    _peekQuill.insertText(0, (newTitle || '') + '\n', 'api');
-    _peekQuill.formatLine(0, 1, 'header', 1, 'api');
-  }
-  // Update sidebar immediately
+  const lines = editor.value.split('\n');
+  if (lines[0] && lines[0].match(/^#\s/)) { lines[0] = '# ' + newTitle; }
+  else { lines.unshift('# ' + newTitle); }
+  editor.value = lines.join('\n');
   const activeEl = document.querySelector('#peek-notes-list .notes-list-item.active');
   if (activeEl) { const s = activeEl.querySelector('.nli-title'); if (s) s.textContent = newTitle || _peekNotesActive.path.replace(/\.md$/, ''); }
   const entry = _peekNotesAll.find(n => n.path === _peekNotesActive.path);
@@ -17100,25 +16983,20 @@ function _peekNotesSwitchMode(mode) {
   _peekNotesMode = mode;
   document.getElementById('peek-notes-tab-edit').classList.toggle('active', mode === 'edit');
   document.getElementById('peek-notes-tab-preview').classList.toggle('active', mode === 'preview');
-  const quillWrap = document.getElementById('peek-notes-quill-wrap');
+  const editorWrap = document.getElementById('peek-notes-editor-wrap');
   const preview = document.getElementById('peek-notes-preview');
   if (mode === 'preview') {
-    if (_peekQuill) {
-      const rawIsHtml = /<[a-z][\s\S]*>/i.test(_peekNotesRawContent);
-      if (rawIsHtml) {
-        preview.innerHTML = _peekQuill.root.innerHTML;
-      } else {
-        preview.innerHTML = renderMarkdown(_peekNotesRawContent) || '<span style="color:var(--dim);font-size:0.85rem;">Empty note</span>';
-      }
-      preview.classList.add('md-content');
-    }
+    const editor = _peekNotesGetEditor();
+    const content = editor ? editor.value : _peekNotesRawContent;
+    preview.innerHTML = renderMarkdown(content) || '<span style="color:var(--dim);font-size:0.85rem;">Empty note</span>';
+    preview.classList.add('md-content');
     preview.style.display = '';
     preview.classList.add('active');
-    quillWrap.style.display = 'none';
+    editorWrap.style.display = 'none';
   } else {
     preview.classList.remove('active');
     preview.style.display = 'none';
-    quillWrap.style.display = 'flex';
+    editorWrap.style.display = 'flex';
   }
 }
 
@@ -21656,30 +21534,8 @@ function _pwaCb(e) {
   const k = e.key.toLowerCase();
   if (k !== 'a' && k !== 'c' && k !== 'x' && k !== 'v') return false;
   const ae = document.activeElement;
-  // Quill editor: handle clipboard via Quill API (Chrome PWA native paste unreliable on contenteditable)
-  if (ae && ae.isContentEditable && ae.closest('#notes-quill') && typeof _quill !== 'undefined' && _quill) {
-    if (k === 'v') {
-      e.preventDefault();
-      navigator.clipboard.readText().then(text => {
-        if (!text) return;
-        const range = _quill.getSelection(true);
-        if (range) { _quill.deleteText(range.index, range.length); _quill.insertText(range.index, text, 'user'); _quill.setSelection(range.index + text.length); }
-      }).catch(() => {});
-      return true;
-    }
-    if (k === 'a') { e.preventDefault(); _quill.setSelection(0, _quill.getLength()); return true; }
-    if (k === 'c' || k === 'x') {
-      const range = _quill.getSelection();
-      if (range && range.length > 0) {
-        const text = _quill.getText(range.index, range.length);
-        e.preventDefault();
-        navigator.clipboard.writeText(text).catch(() => {});
-        if (k === 'x') { _quill.deleteText(range.index, range.length, 'user'); }
-        return true;
-      }
-    }
-    return false;
-  }
+  // Textarea (notes editor): let browser handle natively
+  if (ae && (ae.id === 'notes-editor' || ae.id === 'peek-notes-editor')) return false;
   // Other contentEditable elements: let browser handle natively
   if (ae && ae.isContentEditable) return false;
   const inp = (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ? ae : null;
@@ -25303,7 +25159,7 @@ async function wsAddNewNotePane() {
   try {
     await fetch(API + '/api/notes/' + slug, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ content: '<h1>Untitled</h1><p><br></p>' })
+      body: JSON.stringify({ content: '# Untitled\n' })
     });
   } catch(e) {}
   wsAddNotePane(slug + '.md');
@@ -25325,14 +25181,13 @@ function wsAddNotePane(path, x, y, w, h) {
       '<button class="gp-close" onclick="wsRemoveNotePane(\'' + safePath + '\')">&#x2715;</button>' +
     '</div>' +
     '<div class="gp-note-body" id="' + sid + '-body">' +
-      '<div id="' + sid + '-editor"></div>' +
+      '<textarea id="' + sid + '-editor" class="notes-editor-textarea" style="width:100%;height:100%;border:none;outline:none;resize:none;background:var(--bg);color:var(--text);font-family:\'SF Mono\',\'Fira Code\',\'Consolas\',monospace;font-size:0.85rem;line-height:1.6;padding:8px 12px;" placeholder="Write your note…"></textarea>' +
     '</div>' +
     '<div class="gp-note-status" id="' + sid + '-status"></div>';
 
   const widget = _grid.addWidget({ id: nid, x, y, w: w || 4, h: h || 7, content });
-  _notePanes[nid] = { widget, quill: null, path, saveTimer: null };
+  _notePanes[nid] = { widget, path, saveTimer: null };
 
-  // Init Quill in the pane
   setTimeout(() => _initNotePaneQuill(nid), 50);
   _gridSaveLayout();
 }
@@ -25343,35 +25198,13 @@ function _initNotePaneQuill(nid) {
   const sid = _gpSafeId(nid);
   const editorEl = document.getElementById(sid + '-editor');
   if (!editorEl) return;
-
-  const q = new Quill('#' + sid + '-editor', {
-    theme: 'snow',
-    modules: {
-      toolbar: [
-        [{ header: [1, 2, 3, false] }],
-        ['bold', 'italic', 'underline', 'strike'],
-        ['blockquote', 'code-block'],
-        [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
-        ['link'], ['clean']
-      ]
-    },
-    placeholder: 'Write your note\u2026'
-  });
-  pane.quill = q;
-
-  // Load content
   _loadNotePaneContent(nid);
-
-  // Auto-save on edit
-  q.on('text-change', (delta, old, source) => {
-    if (source === 'api') return;
-    // Update title from H1
-    const first = q.root.firstElementChild;
-    if (first && first.tagName === 'H1') {
+  editorEl.addEventListener('input', () => {
+    const h1m = editorEl.value.match(/^#\s+(.+)$/m);
+    if (h1m) {
       const titleEl = document.getElementById(sid + '-title');
-      if (titleEl) titleEl.textContent = first.textContent.trim() || 'Untitled';
+      if (titleEl) titleEl.textContent = h1m[1] || 'Untitled';
     }
-    // Debounced save
     if (pane.saveTimer) clearTimeout(pane.saveTimer);
     pane.saveTimer = setTimeout(() => _saveNotePaneContent(nid), 800);
   });
@@ -25379,18 +25212,18 @@ function _initNotePaneQuill(nid) {
 
 async function _loadNotePaneContent(nid) {
   const pane = _notePanes[nid];
-  if (!pane || !pane.quill) return;
+  if (!pane) return;
   const sid = _gpSafeId(nid);
   const statusEl = document.getElementById(sid + '-status');
+  const editorEl = document.getElementById(sid + '-editor');
+  if (!editorEl) return;
   const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
 
   let data;
   try {
     data = await fetch(API + '/api/notes/' + pathKey).then(r => r.json());
-    // Cache
     _idb.set('amux_note_' + pane.path, JSON.stringify(data));
   } catch(e) {
-    // Try IDB cache
     try {
       const cached = await _idb.get('amux_note_' + pane.path);
       if (cached) data = JSON.parse(cached);
@@ -25398,26 +25231,22 @@ async function _loadNotePaneContent(nid) {
   }
   if (!data) { if (statusEl) statusEl.textContent = 'Could not load note'; return; }
 
-  const isHtml = /<[a-z][\s\S]*>/i.test(data.content);
-  if (isHtml) {
-    pane.quill.root.innerHTML = data.content || '';
-  } else {
-    pane.quill.setText(data.content || '');
-  }
-  // Update title
-  const first = pane.quill.root.firstElementChild;
-  if (first && first.tagName === 'H1') {
+  editorEl.value = data.content || '';
+  const h1m = (data.content || '').match(/^#\s+(.+)$/m);
+  if (h1m) {
     const titleEl = document.getElementById(sid + '-title');
-    if (titleEl) titleEl.textContent = first.textContent.trim() || 'Untitled';
+    if (titleEl) titleEl.textContent = h1m[1] || 'Untitled';
   }
 }
 
 async function _saveNotePaneContent(nid) {
   const pane = _notePanes[nid];
-  if (!pane || !pane.quill) return;
+  if (!pane) return;
   const sid = _gpSafeId(nid);
   const statusEl = document.getElementById(sid + '-status');
-  const content = pane.quill.root.innerHTML === '<p><br></p>' ? '' : pane.quill.root.innerHTML;
+  const editorEl = document.getElementById(sid + '-editor');
+  if (!editorEl) return;
+  const content = editorEl.value;
   const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
 
   const result = await apiCall(API + '/api/notes/' + pathKey, {
@@ -28249,38 +28078,29 @@ async function _notesTrashDelete(file) {
 }
 let _notesSaveTimer = null;
 let _notesAllNotes = [];
-let _quill = null;
 let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
-let _notesOpenAbort = null; // AbortController for in-flight note fetches
-let _notesLoadingContent = false; // suppress text-change saves while loading note content
-let _notesMode = 'preview'; // 'edit' | 'preview'
-let _notesRawContent = ''; // raw server content for the open note (for markdown preview)
+let _notesOpenAbort = null;
+let _notesLoadingContent = false;
+let _notesMode = 'preview';
+let _notesRawContent = '';
+
+function _notesGetEditor() { return document.getElementById('notes-editor'); }
 
 function _notesPreviewBindCheckboxes(container) {
-  // Make data-list=check items interactive in preview — clicking toggles Quill delta
-  container.querySelectorAll('li[data-list="checked"], li[data-list="unchecked"]').forEach(li => {
-    li.style.cursor = 'pointer';
-    li.onclick = (e) => {
-      e.preventDefault();
-      if (!_quill) return;
-      const checked = li.dataset.list === 'checked';
-      li.dataset.list = checked ? 'unchecked' : 'checked';
-      // Find this item's index in the Quill delta and toggle it
-      const text = li.textContent;
-      let idx = 0;
-      _quill.getContents().ops.forEach(op => {
-        if (typeof op.insert === 'string') {
-          if (op.attributes?.list === 'checked' || op.attributes?.list === 'unchecked') {
-            const lineText = op.insert.replace(/\n$/, '');
-            if (lineText === text) {
-              _quill.formatLine(idx, 1, 'list', checked ? 'unchecked' : 'checked', 'api');
-            }
-          }
-          idx += op.insert.length;
-        } else {
-          idx += 1;
+  container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.onclick = (e) => {
+      const editor = _notesGetEditor();
+      if (!editor || !_notesActive) return;
+      const lines = editor.value.split('\n');
+      const label = cb.parentElement?.textContent?.trim() || '';
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/^(\s*[-*]\s*)\[([ xX])\]\s*(.*)/);
+        if (m && m[3].trim() === label.replace(/^\s*/, '').trim()) {
+          lines[i] = m[1] + '[' + (cb.checked ? 'x' : ' ') + '] ' + m[3];
+          break;
         }
-      });
+      }
+      editor.value = lines.join('\n');
       _notesSaveDebounce();
     };
   });
@@ -28298,9 +28118,9 @@ function _notesPreviewBindTapToEdit(container) {
   });
   container.addEventListener('dblclick', (e) => {
     if (e.target.closest('a')) return;
-    if (e.target.closest('li[data-list="checked"], li[data-list="unchecked"]')) return;
+    if (e.target.closest('input[type="checkbox"]')) return;
     _notesSwitchMode('edit');
-    setTimeout(() => { if (_quill) _quill.focus(); }, 30);
+    setTimeout(() => { const ed = _notesGetEditor(); if (ed) ed.focus(); }, 30);
   });
 }
 
@@ -28493,29 +28313,24 @@ function _notesSwitchMode(mode) {
   _notesMode = mode;
   document.getElementById('notes-tab-edit').classList.toggle('active', mode === 'edit');
   document.getElementById('notes-tab-preview').classList.toggle('active', mode === 'preview');
-  const quillWrap = document.getElementById('notes-quill-wrap');
+  const editorWrap = document.getElementById('notes-editor-wrap');
   const preview = document.getElementById('notes-preview');
   const searchBar = document.getElementById('notes-preview-search');
   if (mode === 'preview') {
-    if (_quill) {
-      const rawIsHtml = /<[a-z][\s\S]*>/i.test(_notesRawContent);
-      if (rawIsHtml) {
-        preview.innerHTML = _quill.root.innerHTML;
-      } else {
-        preview.innerHTML = renderMarkdown(_notesRawContent) || '<span style="color:var(--dim);font-size:0.85rem;">Empty note</span>';
-      }
-      preview.classList.add('md-content');
-      _notesPreviewBindCheckboxes(preview);
-      _notesPreviewBindTapToEdit(preview);
-    }
+    const editor = _notesGetEditor();
+    const content = editor ? editor.value : _notesRawContent;
+    preview.innerHTML = renderMarkdown(content) || '<span style="color:var(--dim);font-size:0.85rem;">Empty note</span>';
+    preview.classList.add('md-content');
+    _notesPreviewBindCheckboxes(preview);
+    _notesPreviewBindTapToEdit(preview);
     preview.classList.add('active');
-    quillWrap.style.display = 'none';
-    _previewSearchOrigHTML = preview.innerHTML;  // capture for search restore
+    editorWrap.style.display = 'none';
+    _previewSearchOrigHTML = preview.innerHTML;
     if (searchBar) searchBar.style.display = 'flex';
   } else {
     _notesPreviewSearchClear();
     preview.classList.remove('active');
-    quillWrap.style.display = 'flex';
+    editorWrap.style.display = 'flex';
     if (searchBar) searchBar.style.display = 'none';
   }
 }
@@ -28636,90 +28451,21 @@ function _notesApplySidebarState() {
   }
 }
 
-let _quillDividerRegistered = false;
+let _notesEditorReady = false;
 function _notesInitQuill() {
-  if (_quill) return;
-  // Register divider (horizontal rule) blot for Quill (once)
-  if (!_quillDividerRegistered && typeof Quill !== 'undefined') {
-    const BlockEmbed = Quill.import('blots/block/embed');
-    class DividerBlot extends BlockEmbed {
-      static create() { return super.create(); }
-      static value() { return true; }
+  if (_notesEditorReady) return;
+  const editor = _notesGetEditor();
+  if (!editor) return;
+  _notesEditorReady = true;
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + 2;
+      _notesSaveDebounce();
     }
-    DividerBlot.blotName = 'divider';
-    DividerBlot.tagName = 'hr';
-    Quill.register(DividerBlot);
-    _quillDividerRegistered = true;
-  }
-  _quill = new Quill('#notes-quill', {
-    theme: 'snow',
-    modules: {
-      toolbar: {
-        container: [
-          [{ header: [1, 2, 3, false] }],
-          ['bold', 'italic', 'underline', 'strike'],
-          ['blockquote', 'code-block'],
-          [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
-          ['link'],
-          ['divider'],
-          ['clean']
-        ],
-        handlers: {
-          divider: function() {
-            const range = _quill.getSelection(true);
-            _quill.insertText(range.index, '\n', 'user');
-            _quill.insertEmbed(range.index + 1, 'divider', true, 'user');
-            _quill.insertText(range.index + 2, '\n', 'user');
-            _quill.setSelection(range.index + 3, 0, 'silent');
-          }
-        }
-      }
-    },
-    placeholder: 'Write your note…'
-  });
-  // Quill doesn't render any visual content for custom-format buttons — inject the icon ourselves
-  const _divBtn = document.querySelector('.notes-quill-wrap .ql-toolbar .ql-divider');
-  if (_divBtn && !_divBtn.innerHTML) {
-    _divBtn.innerHTML = '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="3" x2="15" y1="9" y2="9" stroke-width="2"></line></svg>';
-    _divBtn.title = 'Insert horizontal divider';
-  }
-  // Enable inline markdown shortcuts (** → bold, # → heading, etc.)
-  if (typeof QuillMarkdown !== 'undefined') {
-    try { new QuillMarkdown(_quill); } catch(e) { console.warn('quilljs-markdown init failed:', e); }
-  }
-  _quill.on('text-change', (delta, old, source) => {
-    if (source === 'api' || _notesLoadingContent) return;
-    // Expand @today → full date + time
-    const text = _quill.getText();
-    const atIdx = text.indexOf('@today');
-    if (atIdx !== -1) {
-      const now = new Date();
-      const stamp = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-        + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      _quill.deleteText(atIdx, 6, 'api');
-      _quill.insertText(atIdx, stamp, 'api');
-      _quill.setSelection(atIdx + stamp.length, 0, 'api');
-    }
-    // Sync H1 → title input when user edits the heading in Quill directly
-    const first = _quill.root.firstElementChild;
-    if (first && first.tagName === 'H1') {
-      const h1Text = first.textContent.trim();
-      const titleEl = document.getElementById('notes-title');
-      if (titleEl && titleEl.value !== h1Text) {
-        titleEl.value = h1Text;
-        if (_notesActive) {
-          _notesActive.title = h1Text;
-          const activeEl = document.querySelector('#notes-list .notes-list-item.active');
-          if (activeEl) {
-            const s = activeEl.querySelector('.nli-title');
-            if (s) s.textContent = h1Text || _notesActive.path.replace(/\.md$/, '');
-          }
-          const entry = _notesAllNotes.find(n => n.path === _notesActive.path);
-          if (entry) entry.name = h1Text || entry.path.replace(/\.md$/, '');
-        }
-      }
-    }
-    _notesSaveDebounce();
   });
 }
 
@@ -28992,27 +28738,23 @@ function _notesSearchFilter(q) {
 }
 
 function _notesRenderContent(data) {
-  // Populate UI from note data (shared by cache + network paths)
   _notesActive = { path: data.path };
   _notesRawContent = data.content || '';
   localStorage.setItem('amux_last_note', data.path);
-  const h1html = data.content.match(/<h1[^>]*>(.*?)<\/h1>/i);
   const h1md = data.content.match(/^#\s+(.+)$/m);
-  const titleFromContent = h1html ? h1html[1].replace(/<[^>]+>/g, '') : (h1md ? h1md[1] : '');
+  const titleFromContent = h1md ? h1md[1] : '';
   const titleFromPath = data.path.replace(/\.md$/, '').split('/').pop();
   _notesActive.title = titleFromContent || titleFromPath;
   document.getElementById('notes-title').value = _notesActive.title;
   const listEntry = _notesAllNotes.find(n => n.path === data.path);
   if (listEntry) listEntry.name = _notesActive.title;
-  if (!_quill) _notesInitQuill();
-  const isHtml = /<[a-z][\s\S]*>/i.test(data.content);
-  _notesLoadingContent = true;
-  if (isHtml) {
-    _quill.root.innerHTML = data.content;
-  } else {
-    _quill.setText(data.content || '');
+  _notesInitQuill();
+  const editor = _notesGetEditor();
+  if (editor) {
+    _notesLoadingContent = true;
+    editor.value = data.content || '';
+    setTimeout(() => { _notesLoadingContent = false; }, 0);
   }
-  setTimeout(() => { _notesLoadingContent = false; }, 0);
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-mode-tabs').style.display = 'flex';
   _notesSwitchMode('preview');
@@ -29088,18 +28830,14 @@ async function _notesOpen(path) {
     return; // cache already displayed, silently fail revalidation
   }
 
-  // Only overwrite editor if content actually changed AND user isn't editing right now
-  // (avoid clobbering in-progress typing during revalidation)
-  if (rendered && _quill) {
-    const localHtml = _quill.root.innerHTML === '<p><br></p>' ? '' : _quill.root.innerHTML;
+  if (rendered) {
+    const editor = _notesGetEditor();
     const serverContent = data.content || '';
-    if (localHtml === serverContent) {
-      // No change — just update metadata
+    if (editor && editor.value === serverContent) {
       _notesActive.path = data.path;
       return;
     }
-    // If Quill has focus, user is editing — skip server overwrite and let debounced save win
-    if (_quill.hasFocus()) return;
+    if (editor && document.activeElement === editor) return;
   }
 
   _notesRenderContent(data);
@@ -29126,7 +28864,7 @@ async function _notesNew(folder) {
   const urlPath = filename.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
   await apiCall(API + '/api/notes/' + urlPath, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content: `<h1>${displayName}</h1>` })
+    body: JSON.stringify({ content: '# ' + displayName + '\n' })
   });
   // Insert at top of list without re-fetching
   _notesAllNotes.unshift({ path: filename, name: displayName, updated: Math.floor(Date.now() / 1000), pinned: false, size: 0 });
@@ -29138,22 +28876,17 @@ async function _notesNew(folder) {
 }
 
 function _notesTitleChange() {
-  if (!_notesActive || !_quill) return;
+  const editor = _notesGetEditor();
+  if (!_notesActive || !editor) return;
   const newTitle = document.getElementById('notes-title').value;
   _notesActive.title = newTitle;
-  // Sync via Quill API (not direct DOM — Quill's delta would reconcile back and override)
-  // Read DOM only to detect; modify only via Quill API with source='api'
-  const firstElem = _quill.root.firstElementChild;
-  const isH1 = firstElem && firstElem.tagName === 'H1';
-  const oldH1Len = isH1 ? firstElem.textContent.length : 0;
-  if (isH1) {
-    if (oldH1Len > 0) _quill.deleteText(0, oldH1Len, 'api');
-    if (newTitle) _quill.insertText(0, newTitle, 'api');
+  const lines = editor.value.split('\n');
+  if (lines[0] && lines[0].match(/^#\s/)) {
+    lines[0] = '# ' + newTitle;
   } else {
-    _quill.insertText(0, (newTitle || '') + '\n', 'api');
-    _quill.formatLine(0, 1, 'header', 1, 'api');
+    lines.unshift('# ' + newTitle);
   }
-  // Update sidebar immediately
+  editor.value = lines.join('\n');
   const activeEl = document.querySelector('#notes-list .notes-list-item.active');
   if (activeEl) {
     const titleEl = activeEl.querySelector('.nli-title');
@@ -29170,8 +28903,9 @@ function _notesSaveDebounce() {
 }
 
 async function _notesSave() {
-  if (!_notesActive || !_quill) return;
-  const content = _quill.root.innerHTML === '<p><br></p>' ? '' : _quill.root.innerHTML;
+  const editor = _notesGetEditor();
+  if (!_notesActive || !editor) return;
+  const content = editor.value;
   _notesRawContent = content;
   const pathKey = _notesActive.path.replace(/\.md$/, '');
   const statusEl = document.getElementById('notes-save-status');
@@ -29246,11 +28980,12 @@ async function _notesDelete() {
 
 function _notesShowEmpty() {
   document.getElementById('notes-empty-state').style.display = 'flex';
-  document.getElementById('notes-quill-wrap').style.display = 'none';
+  document.getElementById('notes-editor-wrap').style.display = 'none';
   document.getElementById('notes-mode-tabs').style.display = 'none';
   document.getElementById('notes-preview').classList.remove('active');
   document.getElementById('notes-title').value = '';
-  if (_quill) _quill.setText('');
+  const editor = _notesGetEditor();
+  if (editor) editor.value = '';
   _notesMode = 'edit';
   // On mobile, show sidebar when no note is open
   if (window.innerWidth <= 600 && !_notesSidebarOpen) {
@@ -32607,7 +32342,7 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json(notes)
 
         if method == "GET" and path == "/api/notes/trash":
-            trash_dir = CC_NOTES / ".trash"
+            trash_dir = CC_NOTES_TRASH
             items = []
             if trash_dir.exists():
                 for f in sorted(trash_dir.glob("*.md"), key=lambda p: -p.stat().st_mtime):
@@ -32616,7 +32351,7 @@ class CCHandler(BaseHTTPRequestHandler):
 
         if method == "POST" and path.startswith("/api/notes/trash/") and path.endswith("/restore"):
             fname = path[len("/api/notes/trash/"):-len("/restore")]
-            src = _safe_note_path(fname, CC_NOTES / ".trash")
+            src = _safe_note_path(fname, CC_NOTES_TRASH)
             if not src:
                 return self._json({"error": "invalid"}, 400)
             if not src.exists():
@@ -32632,7 +32367,7 @@ class CCHandler(BaseHTTPRequestHandler):
 
         if method == "DELETE" and path.startswith("/api/notes/trash/"):
             fname = path[len("/api/notes/trash/"):]
-            f = _safe_note_path(fname, CC_NOTES / ".trash")
+            f = _safe_note_path(fname, CC_NOTES_TRASH)
             if not f:
                 return self._json({"error": "invalid"}, 400)
             if f.exists(): f.unlink()
@@ -32680,7 +32415,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "path": new_rel})
             if method == "DELETE":
                 if note_path.exists():
-                    trash_dir = CC_NOTES / ".trash"
+                    trash_dir = CC_NOTES_TRASH
                     trash_dir.mkdir(parents=True, exist_ok=True)
                     dest = trash_dir / note_path.name
                     if dest.exists():
