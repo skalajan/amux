@@ -1269,6 +1269,9 @@ def _log_path(session: str) -> Path:
 _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
+_peek_cache: dict[str, tuple[float, int, str]] = {}  # session -> (monotonic_time, lines, output)
+_PEEK_CACHE_TTL = 2.0  # seconds — multiple clients polling same session share one subprocess
+
 
 def save_session_log(session: str, content: str, force: bool = False):
     """Append content to session log, trimming from the front when > MAX_LOG_BYTES.
@@ -32020,7 +32023,14 @@ class CCHandler(BaseHTTPRequestHandler):
 
             if method == "GET" and action == "peek":
                 lines = int(qs.get("lines", ["200"])[0])
-                output = tmux_capture(session_name, lines)
+                now = time.monotonic()
+                cached = _peek_cache.get(session_name)
+                if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
+                    output = cached[2]
+                else:
+                    output = tmux_capture(session_name, lines)
+                    if output:
+                        _peek_cache[session_name] = (now, lines, output)
                 if not output:
                     output = load_session_log(session_name, tail_bytes=65_536) or "(no output)"
                 return self._json({"name": session_name, "output": output})
@@ -36245,10 +36255,18 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
         if method == "GET":
             if action == "peek":
                 lines = int(qs.get("lines", ["80"])[0])
-                output = tmux_capture(name, lines)
+                now = time.monotonic()
+                cached = _peek_cache.get(name)
+                if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
+                    output = cached[2]
+                else:
+                    output = tmux_capture(name, lines)
+                    if output:
+                        _peek_cache[name] = (now, lines, output)
                 if output:
-                    # Also save snapshot while we have it
-                    threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
+                    last_save = _last_log_save.get(name, 0)
+                    if now - last_save >= _LOG_SAVE_INTERVAL:
+                        threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
                     return self._json({"name": name, "output": output})
                 # Not running or empty — serve saved log (tail only to limit memory)
                 saved = load_session_log(name, tail_bytes=65_536)
