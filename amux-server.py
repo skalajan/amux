@@ -11131,7 +11131,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-preview mark.search-hit.current { background: rgba(250,204,21,0.7); outline: 2px solid rgba(250,204,21,0.9); }
   /* Mobile notes improvements — Bear/iA Writer inspired */
   @media (max-width: 600px) {
-    #notes-view { height: calc(100dvh - 122px); }
+    #notes-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); }
     /* Hide mode tabs entirely on mobile — preview is tap-to-edit */
     .notes-mode-tabs { display: none !important; }
     .notes-editor-header { padding: 10px 12px; min-height: 48px; }
@@ -11430,7 +11430,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .crm-log-field textarea { resize: vertical; min-height: 70px; }
   .crm-log-actions { display: flex; gap: 8px; justify-content: flex-end; }
   @media (max-width: 600px) {
-    #crm-view { height: calc(100dvh - 122px); position: relative; }
+    #crm-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); position: relative; }
     .crm-sidebar {
       position: absolute; top: 0; left: 0; bottom: 0; z-index: 10;
       width: 100% !important; min-width: 0 !important; border-right: none;
@@ -11527,7 +11527,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .map-geocoder-gmaps-link { font-size: 0.7rem; color: var(--accent); text-decoration: none; display: inline-block; margin-top: 2px; }
   .map-geocoder-gmaps-link:hover { text-decoration: underline; }
   @media (max-width: 600px) {
-    #map-view { height: calc(100dvh - 122px); background: var(--bg); }
+    #map-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); background: var(--bg); }
     .map-sidebar { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 1005; width: 100% !important; min-width: 0 !important; box-shadow: none; overflow: hidden; }
     .map-sidebar.hidden { transform: translateX(-110%); }
     .map-open-btn { display: flex; }
@@ -11599,7 +11599,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .metrics-speedtest-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .metrics-speedtest-status { font-size: 0.78rem; color: var(--dim); }
   @media (max-width: 600px) {
-    #metrics-view { height: calc(100dvh - 122px); position: relative; }
+    #metrics-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); position: relative; }
     .metrics-sidebar { position: absolute; top: 0; left: 0; bottom: 0; z-index: 10; width: 100% !important; min-width: 0 !important; border-right: none; }
     .metrics-sidebar.collapsed { width: 100% !important; opacity: 0; pointer-events: none; position: absolute; }
     .metrics-main { width: 100%; padding: 40px 12px 12px; }
@@ -11664,7 +11664,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .graph-side-links .chip { font-size: 0.7rem; padding: 3px 10px; border-radius: 10px; cursor: pointer; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
   .graph-side-links .chip:hover { background: var(--hover); }
   @media (max-width: 600px) {
-    #graph-view { height: calc(100dvh - 122px); position: relative; }
+    #graph-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); position: relative; }
     .graph-sidebar {
       position: absolute; top: 0; left: 0; bottom: 0; z-index: 10;
       width: 100% !important; min-width: 0 !important; border-right: none;
@@ -11752,7 +11752,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #jrnl-map-pane { height: 100%; }
   .jrnl-map-container { width: 100%; height: 100%; }
   @media (max-width: 600px) {
-    #journal-view { height: calc(100dvh - 122px); position: relative; }
+    #journal-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); position: relative; }
     .jrnl-sidebar {
       position: absolute; top: 0; left: 0; bottom: 0; z-index: 10;
       width: 100% !important; min-width: 0 !important; border-right: none;
@@ -22499,6 +22499,7 @@ let _mapFilterTags = new Set();
 let _mapSearchQ = '';
 let _mapMarkers = {};
 let _mapDropMode = false;
+let _mapMobileSidebarInited = false; // mobile: show the map (not the pin list) on first open
 let _mapEditingPin = null;
 let _mapEditingTag = null;
 
@@ -22583,6 +22584,13 @@ function _mapInit() {
     });
   } else {
     setTimeout(function() { _map.invalidateSize(); }, 50);
+  }
+  // On mobile the sidebar overlays the entire map; default to showing the MAP
+  // on first open this session (otherwise an empty pin list hides the map).
+  // Desktop keeps its persisted side-by-side preference.
+  if (window.innerWidth <= 600 && !_mapMobileSidebarInited) {
+    _mapMobileSidebarInited = true;
+    _mapSettings.sidebarOpen = false;
   }
   _mapApplySidebarState();
   _mapRenderTags();
