@@ -1326,7 +1326,7 @@ _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, str]] = {}  # session -> (monotonic_time, lines, output)
-_PEEK_CACHE_TTL = 2.0  # seconds — multiple clients polling same session share one subprocess
+_PEEK_CACHE_TTL = 4.0  # seconds — must exceed client poll interval (3s) to avoid cache misses
 
 
 def save_session_log(session: str, content: str, force: bool = False):
@@ -37981,7 +37981,7 @@ def main():
 
     # Register all recurring jobs with the unified scheduler
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
-    schedule_job(_rate_limit_loop,       interval=3,                    name="rate_limit",  initial_delay=4)
+    schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
