@@ -9925,6 +9925,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .peek-tasks-add { display: flex; gap: 8px; flex-shrink: 0; }
   .peek-tasks-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  /* Kanban view of session issues: let the inner .board-columns scroll horizontally */
+  .peek-tasks-list.peek-issues-kanban { overflow-y: auto; }
+  .peek-tasks-list.peek-issues-kanban .board-columns { flex: 1; min-height: 0; }
   .peek-issue-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px;
     border-radius: 8px; border: 1px solid var(--border); cursor: pointer; transition: background 0.15s; }
   .peek-issue-item:hover { background: var(--hover); border-color: var(--accent); }
@@ -13292,6 +13295,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Issues panel (board issues for this session) -->
   <div id="peek-issues-panel" class="peek-tasks-panel">
     <div class="peek-tasks-add" style="gap:10px;">
+      <div class="board-view-toggle">
+        <button id="piv-list" class="bv-btn" onclick="setPeekIssuesView('list')" title="List view">&#x2630;</button>
+        <button id="piv-kanban" class="bv-btn" onclick="setPeekIssuesView('kanban')" title="Board view">&#x25A4;</button>
+      </div>
       <span id="peek-issues-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn primary" style="font-size:0.8rem;padding:5px 12px;" onclick="openBoardAdd('backlog')">+ New issue</button>
     </div>
@@ -16886,7 +16893,18 @@ function peekGitOpenPR() {
 }
 
 // ── Peek Issues (board issues for this session) ──────────────────────────────
+let _peekIssuesView = localStorage.getItem('amux_peek_issues_view') || 'list';
+let _peekIssuesSortables = [];
+
+function setPeekIssuesView(mode) {
+  _peekIssuesView = mode;
+  localStorage.setItem('amux_peek_issues_view', mode);
+  renderPeekIssues();
+}
+
 function renderPeekIssues() {
+  // Don't rebuild mid-drag — a board SSE refresh would destroy the active Sortable.
+  if (document.body.classList.contains('board-dragging')) return;
   const list = document.getElementById('peek-issues-list');
   const count = document.getElementById('peek-issues-count');
   const items = (boardItems || []).filter(i => i.session === peekSession && !i.deleted);
@@ -16896,10 +16914,25 @@ function renderPeekIssues() {
     if (items.length > 0) { tabCount.textContent = items.length; tabCount.classList.add('has-count'); }
     else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
   }
+  // Sync toggle active state
+  const bL = document.getElementById('piv-list'), bK = document.getElementById('piv-kanban');
+  if (bL) bL.classList.toggle('active', _peekIssuesView === 'list');
+  if (bK) bK.classList.toggle('active', _peekIssuesView === 'kanban');
+  // Tear down any kanban Sortables from a previous render
+  _peekIssuesSortables.forEach(s => { try { s.destroy(); } catch(e) {} });
+  _peekIssuesSortables = [];
+  list.classList.toggle('peek-issues-kanban', _peekIssuesView === 'kanban');
+
   if (!items.length) {
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">No issues for this session yet.</div>';
     return;
   }
+
+  if (_peekIssuesView === 'kanban') {
+    _renderPeekIssuesKanban(items, list);
+    return;
+  }
+
   list.innerHTML = items.map(item => {
     const sty = statusStyle(item.status || 'todo');
     const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
@@ -16910,6 +16943,87 @@ function renderPeekIssues() {
       '<span class="peek-issue-meta">' + badge + due + '</span>' +
       '</div>';
   }).join('');
+}
+
+function _renderPeekIssuesKanban(items, list) {
+  // Group this session's issues by status, mirroring the regular board columns.
+  const cols = {};
+  boardStatuses.forEach(s => { cols[s.id] = []; });
+  items.forEach(item => {
+    const s = item.status || 'todo';
+    if (cols[s] !== undefined) cols[s].push(item);
+    else (cols['todo'] = cols['todo'] || []).push(item);
+  });
+
+  let html = '<div class="board-columns" id="peek-issues-cols">';
+  boardStatuses.forEach(stObj => {
+    const st = stObj.id;
+    const stCol = cols[st] || [];
+    const sty = statusStyle(st);
+    html += '<div class="board-col" data-col="' + st + '">';
+    html += '<div class="board-col-header" style="cursor:default;">';
+    html += '<span style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
+    html += '<span class="col-count">' + stCol.length + '</span>';
+    html += '</div>';
+    if (stCol.length === 0) html += '<div class="board-empty">Nothing here</div>';
+    stCol.sort((a, b) => {
+      const pp = (b.pinned || 0) - (a.pinned || 0);
+      if (pp !== 0) return pp;
+      const ap = a.pos || 0, bp = b.pos || 0;
+      if (ap === 0 && bp === 0) return (b.updated || 0) - (a.updated || 0);
+      if (ap === 0) return 1;
+      if (bp === 0) return -1;
+      return ap - bp;
+    });
+    stCol.forEach(item => { html += _renderBoardCard(item); });
+    html += '<button class="board-add-btn" onclick="openBoardAdd(\'' + st + '\')">+ Add</button>';
+    html += '</div>';
+  });
+  html += '</div>';
+  list.innerHTML = html;
+
+  // Drag-to-change-status, scoped to this session's columns (separate Sortable
+  // group so it never interferes with the main board).
+  if (typeof Sortable === 'undefined') return;
+  list.querySelectorAll('.board-col').forEach(colEl => {
+    _peekIssuesSortables.push(Sortable.create(colEl, {
+      group: 'peek-issues',
+      animation: 120,
+      handle: '.board-drag-handle',
+      ghostClass: 'board-sortable-ghost',
+      chosenClass: 'board-sortable-chosen',
+      dragClass: 'board-sortable-drag',
+      filter: '.board-col-header, .board-add-btn, .board-empty',
+      preventOnFilter: false,
+      delay: 120,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 3,
+      swapThreshold: 0.6,
+      onStart: function() { document.body.classList.add('board-dragging'); },
+      onEnd: function(evt) {
+        document.body.classList.remove('board-dragging');
+        const id = evt.item.dataset.id;
+        const newStatus = evt.to.dataset.col;
+        if (!id || !newStatus) { renderPeekIssues(); return; }
+        const cards = [...evt.to.querySelectorAll('.board-card[data-id]')];
+        const myIdx = cards.findIndex(el => el.dataset.id === id);
+        const prevEl = myIdx > 0 ? cards[myIdx - 1] : null;
+        const nextEl = myIdx >= 0 && myIdx < cards.length - 1 ? cards[myIdx + 1] : null;
+        const prevItem = prevEl ? boardItems.find(i => i.id === prevEl.dataset.id) : null;
+        const nextItem = nextEl ? boardItems.find(i => i.id === nextEl.dataset.id) : null;
+        const prevPos = prevItem && prevItem.pos ? prevItem.pos : null;
+        const nextPos = nextItem && nextItem.pos ? nextItem.pos : null;
+        let newPos;
+        if (prevPos != null && nextPos != null) newPos = (prevPos + nextPos) / 2;
+        else if (prevPos != null) newPos = prevPos + 1024;
+        else if (nextPos != null) newPos = nextPos - 1024;
+        else newPos = Date.now() / 1000;
+        const item = boardItems.find(i => i.id === id);
+        if (item && (item.status !== newStatus || item.pos !== newPos)) moveBoardItem(id, newStatus, newPos);
+        renderPeekIssues();
+      }
+    }));
+  });
 }
 // ── Peek Schedules (scheduler tasks for this session) ────────────────────────
 async function _peekUpdateTabCounts() {
