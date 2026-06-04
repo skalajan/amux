@@ -2877,12 +2877,14 @@ INSERT OR IGNORE INTO statuses (id, label, position, is_builtin) VALUES
     ('doing',     'In Progress',  2, 1),
     ('review',    'In Review',    3, 1),
     ('done',      'Done',         4, 1),
-    ('discarded', 'Discarded',    5, 1);
+    ('verified',  'Verified',     5, 1),
+    ('discarded', 'Discarded',    6, 1);
 -- Migrate existing DBs: when 'review' was inserted into a pre-existing table,
 -- 'done' and 'discarded' kept their old positions (3, 4) and would tie with
 -- 'review' at 3, breaking ORDER BY position. Idempotent fix:
 UPDATE statuses SET position = 4 WHERE id = 'done'      AND position <> 4;
-UPDATE statuses SET position = 5 WHERE id = 'discarded' AND position <> 5;
+-- 'verified' inserted at position 5 above shifts 'discarded' to 6.
+UPDATE statuses SET position = 6 WHERE id = 'discarded' AND position <> 6;
 CREATE TABLE IF NOT EXISTS issues (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -3291,7 +3293,7 @@ case "$cmd" in
   board)
     sub="$1"; shift 2>/dev/null || true
     case "$sub" in
-      done|doing|todo|backlog|discarded)
+      done|doing|todo|backlog|review|verified|discarded)
         for id in "$@"; do
           curl -sk -X PATCH -H 'Content-Type: application/json' \
             -d "{\"status\":\"$sub\"}" "$AMUX_URL/api/board/$id" >/dev/null
@@ -3548,7 +3550,9 @@ def _init_db():
         ("backlog",   "Backlog"),
         ("todo",      "To Do"),
         ("doing",     "In Progress"),
+        ("review",    "In Review"),
         ("done",      "Done"),
+        ("verified",  "Verified"),
         ("discarded", "Discarded"),
     ]):
         db.execute(
@@ -3888,7 +3892,7 @@ def _migrate_flat_to_sqlite():
         return  # nothing to migrate
     # Import statuses
     statuses = raw.get("statuses", list(_DEFAULT_STATUSES))
-    builtin_ids = {"backlog", "todo", "doing", "done", "discarded"}
+    builtin_ids = {"backlog", "todo", "doing", "review", "done", "verified", "discarded"}
     existing_ids = {s["id"] for s in statuses}
     for s in _DEFAULT_STATUSES:
         if s["id"] not in existing_ids:
@@ -3998,7 +4002,7 @@ def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
         # Check for existing active issue for this session
         existing = db.execute(
             "SELECT id, status FROM issues WHERE session=? AND deleted IS NULL "
-            "AND status NOT IN ('done','discarded') ORDER BY created DESC LIMIT 1",
+            "AND status NOT IN ('done','verified','discarded') ORDER BY created DESC LIMIT 1",
             (session_name,)
         ).fetchone()
         now = int(time.time())
@@ -4047,7 +4051,7 @@ def _session_board_issue_id(session_name: str) -> str | None:
     try:
         row = get_db().execute(
             "SELECT id FROM issues WHERE session=? AND deleted IS NULL "
-            "AND status NOT IN ('done','discarded') ORDER BY created DESC LIMIT 1",
+            "AND status NOT IN ('done','verified','discarded') ORDER BY created DESC LIMIT 1",
             (session_name,)
         ).fetchone()
         return row["id"] if row else None
@@ -4067,7 +4071,7 @@ def _complete_session_board_issue(session_name: str):
         rows = db.execute(
             "SELECT i.id FROM issues i "
             "WHERE i.session=? AND i.deleted IS NULL "
-            "AND i.status NOT IN ('done','discarded','review') "
+            "AND i.status NOT IN ('done','verified','discarded','review') "
             "ORDER BY i.created DESC",
             (session_name,)
         ).fetchall()
@@ -4159,6 +4163,7 @@ _DEFAULT_STATUSES = [
     {"id": "doing",     "label": "In Progress"},
     {"id": "review",    "label": "In Review"},
     {"id": "done",      "label": "Done"},
+    {"id": "verified",  "label": "Verified"},
     {"id": "discarded", "label": "Discarded"},
 ]
 
@@ -4167,7 +4172,7 @@ def _load_board(done_limit: int = 100) -> list:
     """Load non-deleted issues from SQLite, with tags joined.
 
     To keep payloads manageable, only the most recent `done_limit` items in
-    terminal statuses (done/discarded) are returned.  Pass done_limit=0 for
+    terminal statuses (done/verified/discarded) are returned.  Pass done_limit=0 for
     unlimited (all items).
     """
     db = get_db()
@@ -4177,17 +4182,17 @@ def _load_board(done_limit: int = 100) -> list:
                COALESCE(i.pos, 0) AS pos,
                GROUP_CONCAT(t.tag) AS tags_csv"""
     if done_limit > 0:
-        # Active items (unlimited) UNION most recent done/discarded
+        # Active items (unlimited) UNION most recent done/verified/discarded
         rows = db.execute(
             f"""SELECT {_COLS}
                 FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id
-                WHERE i.deleted IS NULL AND i.status NOT IN ('done','discarded')
+                WHERE i.deleted IS NULL AND i.status NOT IN ('done','verified','discarded')
                 GROUP BY i.id
               UNION ALL
               SELECT * FROM (
                 SELECT {_COLS}
                 FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id
-                WHERE i.deleted IS NULL AND i.status IN ('done','discarded')
+                WHERE i.deleted IS NULL AND i.status IN ('done','verified','discarded')
                 GROUP BY i.id
                 ORDER BY i.updated DESC
                 LIMIT ?
@@ -13034,7 +13039,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="field-group">
       <label class="field-label">Status</label>
-      <select id="be-status"><option value="backlog">Backlog</option><option value="todo">To Do</option><option value="doing">In Progress</option><option value="done">Done</option><option value="discarded">Discarded</option></select>
+      <select id="be-status"><option value="backlog">Backlog</option><option value="todo">To Do</option><option value="doing">In Progress</option><option value="review">In Review</option><option value="done">Done</option><option value="verified">Verified</option><option value="discarded">Discarded</option></select>
     </div>
     <div class="field-group">
       <label class="field-label">Due date <span class="field-optional">(optional)</span></label>
@@ -22305,7 +22310,7 @@ function _fmtRelTime(ts) {
 // ═══════ BOARD ═══════
 let activeView = 'sessions';
 let boardItems = [];
-let boardStatuses = [{id:'backlog',label:'Backlog'},{id:'todo',label:'To Do'},{id:'doing',label:'In Progress'},{id:'done',label:'Done'},{id:'discarded',label:'Discarded'}];
+let boardStatuses = [{id:'backlog',label:'Backlog'},{id:'todo',label:'To Do'},{id:'doing',label:'In Progress'},{id:'review',label:'In Review'},{id:'done',label:'Done'},{id:'verified',label:'Verified'},{id:'discarded',label:'Discarded'}];
 let _boardSortables = [];
 let _boardColSortable = null;
 let boardTimer = null;
@@ -22336,6 +22341,7 @@ const _BUILT_IN_STATUS_STYLE = {
   'todo':      {bg:'rgba(139,148,158,0.12)',color:'var(--dim)',border:'rgba(139,148,158,0.3)',dot:'var(--dim)'},
   'doing':     {bg:'rgba(210,153,34,0.15)',color:'var(--yellow)',border:'rgba(210,153,34,0.4)',dot:'var(--yellow)'},
   'done':      {bg:'rgba(63,185,80,0.15)',color:'var(--green)',border:'rgba(63,185,80,0.4)',dot:'var(--green)'},
+  'verified':  {bg:'rgba(45,212,191,0.15)',color:'#2dd4bf',border:'rgba(45,212,191,0.4)',dot:'#2dd4bf'},
   'discarded': {bg:'rgba(139,148,158,0.08)',color:'rgba(139,148,158,0.5)',border:'rgba(139,148,158,0.2)',dot:'rgba(139,148,158,0.4)'},
 };
 // Light-mode versions of the same statuses — opaque/dark enough on white
@@ -22344,6 +22350,7 @@ const _BUILT_IN_STATUS_STYLE_LIGHT = {
   'todo':      {bg:'rgba(101,109,118,0.1)',color:'#57606a',border:'rgba(101,109,118,0.3)',dot:'#57606a'},
   'doing':     {bg:'rgba(154,103,0,0.1)',color:'#7d4e00',border:'rgba(154,103,0,0.35)',dot:'#7d4e00'},
   'done':      {bg:'rgba(26,127,55,0.1)',color:'#1a7f37',border:'rgba(26,127,55,0.35)',dot:'#1a7f37'},
+  'verified':  {bg:'rgba(13,148,136,0.1)',color:'#0d9488',border:'rgba(13,148,136,0.35)',dot:'#0d9488'},
   'discarded': {bg:'rgba(101,109,118,0.07)',color:'#57606a',border:'rgba(101,109,118,0.2)',dot:'#57606a'},
 };
 const _CUSTOM_STATUS_PALETTE = [
@@ -24101,7 +24108,7 @@ function renderBoard() {
     oldRects[id] = { top: r.top, left: r.left };
   });
 
-  const builtIn = new Set(['backlog','todo','doing','done','discarded']);
+  const builtIn = new Set(['backlog','todo','doing','review','done','verified','discarded']);
   let html = '';
   boardStatuses.forEach(stObj => {
     const st = stObj.id;
@@ -33967,7 +33974,7 @@ class CCHandler(BaseHTTPRequestHandler):
             if status_m:
                 sid = status_m.group(1)
                 if method == "DELETE":
-                    if sid in ("backlog", "todo", "doing", "review", "done", "discarded"):
+                    if sid in ("backlog", "todo", "doing", "review", "done", "verified", "discarded"):
                         return self._json({"error": "cannot delete built-in status"}, 400)
                     db.execute("DELETE FROM statuses WHERE id = ? AND is_builtin = 0", (sid,))
                     db.execute(
@@ -33996,7 +34003,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     (tag,),
                 ).fetchall()
                 total = len(rows)
-                done = sum(1 for r in rows if r["status"] in ("done", "discarded"))
+                done = sum(1 for r in rows if r["status"] in ("done", "verified", "discarded"))
                 return self._json({"tag": tag, "total": total, "done": done, "complete": total > 0 and done == total})
 
             # POST /api/board/<id>/claim — atomic task claim for multi-agent coordination
