@@ -3977,6 +3977,14 @@ def _update_meta(name: str, **kwargs):
     _save_meta(name, meta)
 
 
+def _session_instructions(name: str) -> str:
+    """Per-session standing instruction — free text amux re-sends to the session
+    whenever it (re)starts, so a directive (e.g. 'act autonomously, don't ask the
+    user') survives stops and context compaction. amux assigns the text no meaning;
+    the model interprets it. Set/applied via /api/sessions/<name>/instructions."""
+    return (_load_meta(name).get("instructions") or "").strip()
+
+
 def _summarize_task_bg(session_name: str, text: str):
     """Call Claude Haiku in a background thread to summarize a message into a 3-word task label,
     then auto-create a board issue for the session."""
@@ -7179,6 +7187,12 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             _save_meta(name, meta)
             if pending_log_reload:
                 _start_pending_log_reload_thread(name, pending_log_reload_reason)
+            # Re-send this session's standing instruction once it's booted and ready,
+            # so directives survive restarts/compaction (closed-loop autonomy config).
+            _instr = _session_instructions(name)
+            if _instr:
+                threading.Thread(target=_send_after_ready, args=(name, _instr, 60),
+                                 daemon=True, name=f"instr-{name}").start()
             return True, "started"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
@@ -36848,6 +36862,8 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if action == "info":
                 info = get_session_info(name)
                 return self._json(info)
+            if action == "instructions":
+                return self._json({"name": name, "instructions": _session_instructions(name)})
             if action == "meta":
                 cfg = parse_env_file(env_file)
                 meta = _load_meta(name)
@@ -37079,6 +37095,25 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # 409 = session exists but is not running (user-caused, not a server error)
                 code = 200 if ok else (409 if msg == "not running" else 500)
                 return self._json({"ok": ok, "message": msg}, code)
+            if action == "instructions":
+                # Set the per-session standing instruction and/or apply it now.
+                # Body: {"instructions": "<text>"} to save, {"apply": true} to send.
+                body = self._read_body()
+                saved = False
+                if "instructions" in body:
+                    _update_meta(name, instructions=(body.get("instructions") or "").strip())
+                    saved = True
+                applied = False
+                if body.get("apply"):
+                    instr = _session_instructions(name)
+                    if instr:
+                        if is_running(name):
+                            send_text(name, instr)
+                        else:
+                            threading.Thread(target=_send_after_ready, args=(name, instr, 60), daemon=True).start()
+                        applied = True
+                return self._json({"ok": True, "instructions": _session_instructions(name),
+                                   "saved": saved, "applied": applied})
             if action == "keys":
                 body = self._read_body()
                 keys = body.get("keys", "")
