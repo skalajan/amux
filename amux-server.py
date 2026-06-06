@@ -5528,6 +5528,37 @@ def _session_dirty_files(name: str, work_dir: str) -> list:
         return []
 
 
+def _checkout_busy_cotenant(name: str, work_dir: str) -> str:
+    """Name of another session that shares this EXACT working tree and is currently
+    busy (active/waiting), or "" if none.
+
+    When two sessions cwd into the same checkout (e.g. several agents in one
+    monorepo root), uncommitted files there cannot be attributed to either by
+    path — git sees one shared tree. The ownership partition in
+    _session_dirty_files only excludes *subdirectory* cwds, so co-tenants of the
+    same root each see the union of everyone's dirt. Holding a session
+    accountable for that union is what derailed a session into nearly committing
+    a peer's in-flight WIP. So when a busy co-tenant exists, callers must NOT
+    nudge or gate this session on the shared dirt. Uses the snapshot loop's
+    cached status (cheap, no extra tmux capture)."""
+    try:
+        wd = str(Path(work_dir).expanduser().resolve())
+    except Exception:
+        return ""
+    for f in CC_SESSIONS.glob("*.env"):
+        other = f.stem
+        if other == name:
+            continue
+        try:
+            od = parse_env_file(f).get("CC_DIR")
+            od = str(Path(od).expanduser().resolve()) if od else None
+        except Exception:
+            od = None
+        if od == wd and _session_prev_status.get(other) in ("active", "waiting"):
+            return other
+    return ""
+
+
 def _commit_guard_enabled() -> bool:
     """Global on/off for the idle commit-guard (configurable in the UI settings →
     persisted as AMUX_COMMIT_GUARD in ~/.amux/server.env). Default ON."""
@@ -5548,6 +5579,14 @@ def _commit_guard(name: str) -> bool:
         files = _session_dirty_files(name, wd)
         if not files:
             _commit_guard_nudged.pop(name, None)   # clean → re-arm for the next episode
+            return False
+        peer = _checkout_busy_cotenant(name, wd)
+        if peer:
+            # Shared checkout with an actively-working peer → this dirt is
+            # unattributable by path. Nudging would blame `name` for the peer's
+            # in-flight work (the exact failure that derailed a session). Skip.
+            slog(f"[commit-guard] {name}: shared checkout with active '{peer}' — "
+                 f"dirt unattributable, skipping nudge")
             return False
         if _commit_guard_nudged.get(name):
             return False   # already nudged this episode; don't re-nag, allow normal flow
@@ -34507,6 +34546,11 @@ class CCHandler(BaseHTTPRequestHandler):
                         wd = _session_work_dir(eff_session) if eff_session else None
                         if wd:
                             dirty = _session_dirty_files(eff_session, wd)
+                            # Don't block on dirt we can't attribute: if a peer is
+                            # actively working the same checkout, the uncommitted
+                            # files may be theirs, not this task's.
+                            if dirty and _checkout_busy_cotenant(eff_session, wd):
+                                dirty = []
                             if dirty:
                                 return self._json({
                                     "error": "session has uncommitted changes; commit before "
