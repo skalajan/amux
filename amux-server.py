@@ -12326,6 +12326,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <option value="sonnet">sonnet</option>
             <option value="opus">opus</option>
             <option value="haiku">haiku</option>
+            <option value="claude-fable-5">claude-fable-5</option>
             <option value="claude-opus-4-8">claude-opus-4-8</option>
             <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
             <option value="claude-opus-4-7">claude-opus-4-7</option>
@@ -13738,6 +13739,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <option value="opus">opus</option>
       <option value="sonnet">sonnet</option>
       <option value="haiku">haiku</option>
+      <option value="claude-fable-5">claude-fable-5</option>
       <option value="claude-opus-4-8">claude-opus-4-8</option>
       <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
       <option value="claude-opus-4-7">claude-opus-4-7</option>
@@ -16089,6 +16091,7 @@ function editField(session, field, current, provider) {
   } else if (field === 'model') {
     const claudeModels = [
       {v:'',l:'Default'},{v:'opus',l:'opus'},{v:'sonnet',l:'sonnet'},{v:'haiku',l:'haiku'},
+      {v:'claude-fable-5',l:'claude-fable-5'},
       {v:'claude-opus-4-8',l:'claude-opus-4-8'},{v:'claude-opus-4-8[1m]',l:'claude-opus-4-8 [1M]'},
       {v:'claude-opus-4-7',l:'claude-opus-4-7'},{v:'claude-opus-4-7[1m]',l:'claude-opus-4-7 [1M]'},
       {v:'claude-opus-4-6',l:'claude-opus-4-6'},{v:'claude-opus-4-6[1m]',l:'claude-opus-4-6 [1M]'},
