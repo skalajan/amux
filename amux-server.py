@@ -1314,6 +1314,9 @@ def tmux_target(session: str) -> str:
 
 def is_running(session: str) -> bool:
     """Check if Claude is running in this session's tmux pane."""
+    iterm2_id = _session_iterm2_id(session)
+    if iterm2_id:
+        return _iterm2_session_exists(iterm2_id)
     try:
         r = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],
@@ -1350,6 +1353,9 @@ def is_running(session: str) -> bool:
 
 
 def tmux_capture(session: str, lines: int = 500) -> str:
+    iterm2_id = _session_iterm2_id(session)
+    if iterm2_id:
+        return _iterm2_capture(iterm2_id)
     try:
         r = subprocess.run(
             ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-S", f"-{lines}"],
@@ -1371,6 +1377,116 @@ def _tmux_capture_batch(sessions: list, lines: int = 30) -> dict:
         return name, tmux_capture(name, lines)
     with ThreadPoolExecutor(max_workers=min(len(sessions), 16)) as pool:
         return dict(pool.map(_cap, sessions))
+
+
+# ── iTerm2 integration (AppleScript via osascript) ────────────────────────────
+
+def _iterm2_applescript(script: str, timeout: int = 8) -> str:
+    """Run an AppleScript and return stdout, or '' on error."""
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _iterm2_list_panes() -> list:
+    """Return list of dicts describing every open iTerm2 pane.
+    Each dict: {id, name, tty, window, tab}"""
+    script = """
+tell application "iTerm2"
+    set out to ""
+    set wi to 0
+    repeat with w in windows
+        set ti to 0
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                set out to out & (id of s) & "|" & (name of s) & "|" & (tty of s) & "|" & wi & "|" & ti & "\n"
+            end repeat
+            set ti to ti + 1
+        end repeat
+        set wi to wi + 1
+    end repeat
+    return out
+end tell"""
+    raw = _iterm2_applescript(script)
+    panes = []
+    for line in raw.splitlines():
+        parts = line.split("|")
+        if len(parts) >= 5:
+            panes.append({"id": parts[0], "name": parts[1], "tty": parts[2],
+                          "window": int(parts[3]), "tab": int(parts[4])})
+    return panes
+
+
+def _iterm2_capture(session_id: str) -> str:
+    """Return the visible screen content of an iTerm2 pane by its session ID."""
+    sid = session_id.replace('"', '')
+    script = f"""
+tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if (id of s) = "{sid}" then
+                    return contents of s
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return ""
+end tell"""
+    return _iterm2_applescript(script, timeout=10)
+
+
+def _iterm2_session_exists(session_id: str) -> bool:
+    """Return True if the iTerm2 pane with this ID is still open."""
+    return bool(_iterm2_capture(session_id))
+
+
+def _iterm2_send(session_id: str, text: str) -> tuple[bool, str]:
+    """Send text (followed by newline) to an iTerm2 pane."""
+    sid = session_id.replace('"', '')
+    # Write text to a temp file to avoid AppleScript quoting issues
+    import tempfile as _tmp
+    with _tmp.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+        f.write(text)
+        tmp_path = f.name
+    try:
+        script = f"""
+tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if (id of s) = "{sid}" then
+                    set fileRef to open for access POSIX file "{tmp_path}"
+                    set txt to read fileRef as «class utf8»
+                    close access fileRef
+                    tell s to write text txt
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return "not found"
+end tell"""
+        result = _iterm2_applescript(script, timeout=15)
+        if result == "ok":
+            return True, "sent"
+        return False, result or "not found"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _session_iterm2_id(name: str) -> str:
+    """Return the stored iTerm2 session ID for an amux session, or ''."""
+    env_file = CC_SESSIONS / f"{name}.env"
+    if not env_file.exists():
+        return ""
+    return parse_env_file(env_file).get("CC_ITERM2_SESSION_ID", "").strip()
 
 
 def _log_path(session: str) -> Path:
@@ -6497,7 +6613,7 @@ def _validate_model_name(value) -> tuple[bool, str, str]:
     return True, normalized, ""
 
 
-_SESSION_PROVIDERS = ("claude", "codex", "gemini")
+_SESSION_PROVIDERS = ("claude", "codex", "gemini", "iterm2")
 
 
 _PROVIDER_YOLO_FLAGS = (
@@ -6520,6 +6636,7 @@ def _provider_label(provider: str) -> str:
         "claude": "Claude Code",
         "codex": "Codex",
         "gemini": "Gemini",
+        "iterm2": "iTerm2",
     }.get(provider, provider or "Claude Code")
 
 
@@ -6846,6 +6963,9 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
+    # iTerm2 sessions are managed externally — nothing to start
+    if _session_iterm2_id(name):
+        return (True, "running") if is_running(name) else (False, "iTerm2 pane not found")
     with _get_session_lock(name):
         if is_running(name):
             return True, "already running"
@@ -7597,6 +7717,9 @@ def _get_send_lock(name: str) -> threading.Lock:
 _auto_waking = set()
 
 def send_text(name: str, text: str) -> tuple[bool, str]:
+    iterm2_id = _session_iterm2_id(name)
+    if iterm2_id:
+        return _iterm2_send(iterm2_id, text)
     # Don't send into a resume picker — text lands in the search box and
     # corrupts session selection. Wait for Claude to finish loading.
     _actions_st = _session_auto_actions.get(name, {})
@@ -9090,6 +9213,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .badge.claude { background: rgba(88,166,255,0.18); color: var(--accent); }
   .badge.codex { background: rgba(16,185,129,0.2); color: #10b981; }
   .badge.gemini { background: rgba(168,85,247,0.2); color: #c084fc; }
+  .badge.iterm2 { background: rgba(0,200,160,0.18); color: #00c8a0; }
 
   /* Expanded panel */
   .panel { display: none; margin-top: 12px; }
@@ -12310,6 +12434,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="header-add-menu" id="add-menu">
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openCreate()"><span class="mi">&#x2795;</span> New session</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
+        <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>
       </div>
     </div>
     <div class="settings-wrap">
@@ -13499,6 +13624,26 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="connect-list" style="max-height:260px;overflow-y:auto;margin-bottom:14px;"></div>
     <div class="edit-actions">
       <button class="btn" onclick="closeConnect()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Connect iTerm2 pane modal -->
+<div id="iterm2-connect-overlay" class="edit-overlay" onclick="if(event.target===this)closeConnectIterm2()">
+  <div class="edit-box" style="min-width:400px;max-width:560px;">
+    <h3>&#x1F5A5; Connect iTerm2 pane</h3>
+    <p style="font-size:0.82rem;color:var(--dim);margin:0 0 12px;">Pick an open iTerm2 pane to watch and send messages to from amux.</p>
+    <div id="iterm2-pane-list" style="max-height:300px;overflow-y:auto;margin-bottom:14px;display:flex;flex-direction:column;gap:6px;">
+      <div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">Loading iTerm2 panes…</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      <label style="font-size:0.82rem;color:var(--dim);">Session name in amux</label>
+      <input id="iterm2-session-name" class="send-input" style="min-height:34px;padding:6px 10px;font-size:0.88rem;"
+        placeholder="e.g. my-terminal" autocomplete="off" autocorrect="off">
+    </div>
+    <div class="edit-actions">
+      <button class="btn" onclick="closeConnectIterm2()">Cancel</button>
+      <button class="btn primary" id="iterm2-connect-btn" onclick="connectIterm2Pane()" disabled>Connect</button>
     </div>
   </div>
 </div>
@@ -15191,12 +15336,13 @@ function flagValue(flags, flag) {
 function providerLabel(provider) {
   if (provider === 'codex') return 'Codex';
   if (provider === 'gemini') return 'Gemini';
+  if (provider === 'iterm2') return 'iTerm2';
   return 'Claude';
 }
 
 function sessionProvider(s) {
   const p = ((s && s.provider) || 'claude').toLowerCase();
-  return (p === 'codex' || p === 'gemini') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'iterm2') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
@@ -21629,6 +21775,85 @@ async function doConnect(tmuxName) {
     body: JSON.stringify({ tmux_name: tmuxName })
   });
   await fetchSessions();
+}
+
+// ── Connect iTerm2 pane ──
+let _iterm2SelectedPaneId = null;
+
+async function openConnectIterm2() {
+  _iterm2SelectedPaneId = null;
+  document.getElementById('iterm2-session-name').value = '';
+  document.getElementById('iterm2-connect-btn').disabled = true;
+  document.getElementById('iterm2-connect-overlay').classList.add('active');
+  const list = document.getElementById('iterm2-pane-list');
+  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">Loading iTerm2 panes…</div>';
+  try {
+    const r = await fetch(API + '/api/iterm2/sessions');
+    const d = await r.json();
+    const panes = d.panes || [];
+    if (!panes.length) {
+      list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">No open iTerm2 panes found.<br>Make sure iTerm2 is running.</div>';
+      return;
+    }
+    list.innerHTML = panes.map(p => `
+      <div class="connect-item iterm2-pane-item" data-id="${esc(p.id)}" data-name="${esc(p.name)}"
+           onclick="_selectIterm2Pane(this, '${esc(p.id)}', '${esc(p.name)}')"
+           style="cursor:pointer;padding:10px 12px;border:1px solid var(--border);border-radius:6px;transition:border-color 0.15s;"
+           onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="if(!this.classList.contains('selected'))this.style.borderColor='var(--border)'">
+        <div style="font-weight:500;font-size:0.88rem;">${esc(p.name)}</div>
+        <div style="font-size:0.75rem;color:var(--dim);margin-top:2px;">${esc(p.tty)} &nbsp;·&nbsp; window ${p.window}, tab ${p.tab}</div>
+      </div>`).join('');
+  } catch(e) {
+    list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;text-align:center;padding:20px;">Failed to reach iTerm2.<br>Make sure iTerm2 is running.</div>';
+  }
+}
+
+function _selectIterm2Pane(el, id, name) {
+  document.querySelectorAll('.iterm2-pane-item').forEach(e => {
+    e.classList.remove('selected');
+    e.style.borderColor = 'var(--border)';
+    e.style.background = '';
+  });
+  el.classList.add('selected');
+  el.style.borderColor = 'var(--accent)';
+  el.style.background = 'rgba(88,166,255,0.06)';
+  _iterm2SelectedPaneId = id;
+  const inp = document.getElementById('iterm2-session-name');
+  if (!inp.value) {
+    // Auto-fill session name from pane title, sanitized
+    inp.value = name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'iterm2';
+  }
+  document.getElementById('iterm2-connect-btn').disabled = false;
+}
+
+function closeConnectIterm2() {
+  document.getElementById('iterm2-connect-overlay').classList.remove('active');
+  _iterm2SelectedPaneId = null;
+}
+
+async function connectIterm2Pane() {
+  if (!_iterm2SelectedPaneId) return;
+  const name = document.getElementById('iterm2-session-name').value.trim();
+  if (!name) { showToast('Enter a session name'); return; }
+  const btn = document.getElementById('iterm2-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  try {
+    const r = await fetch(API + '/api/sessions', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, provider: 'iterm2', iterm2_session_id: _iterm2SelectedPaneId })
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast('Error: ' + (d.error || r.status)); btn.disabled = false; btn.textContent = 'Connect'; return; }
+    closeConnectIterm2();
+    await fetchSessions();
+    showToast('Connected: ' + name);
+    setTimeout(() => openPeek(name), 300);
+  } catch(e) {
+    showToast('Error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
 }
 
 // ── Create session ──
@@ -35266,6 +35491,11 @@ class CCHandler(BaseHTTPRequestHandler):
             provider = body.get("provider", "").strip().lower()
             if provider and provider in _SESSION_PROVIDERS:
                 cfg["CC_PROVIDER"] = provider
+            if provider == "iterm2":
+                iterm2_sid = body.get("iterm2_session_id", "").strip()
+                if not iterm2_sid:
+                    return self._json({"error": "iterm2_session_id required for iterm2 provider"}, 400)
+                cfg["CC_ITERM2_SESSION_ID"] = iterm2_sid
             mcp = body.get("mcp", "").strip().lower()
             if mcp and mcp == "chrome":
                 cfg["CC_MCP"] = mcp
@@ -35285,6 +35515,10 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json(resp)
 
         # GET /api/sessions/self?session=<name> — convenience for a session to look itself up
+        if method == "GET" and path == "/api/iterm2/sessions":
+            panes = _iterm2_list_panes()
+            return self._json({"panes": panes})
+
         if method == "GET" and path == "/api/sessions/self":
             sname = qs.get("session", [None])[0] or self.headers.get("X-Amux-Session", "")
             if not sname:
