@@ -5492,14 +5492,16 @@ def _detect_claude_status(raw_output: str) -> str:
             status_bar = ls.lower()
             break
 
-    # "esc to interrupt" (may be truncated to "esc to" or "esc t…") → active
-    # Scan the last few lines directly instead of gating on status_bar detection:
-    # in background-tasks mode the "esc to interrupt · ctrl+t to hide tasks" line
-    # REPLACES the ⏵⏵/bypass-permissions status bar, so status_bar will be empty
-    # even though Claude is actively working.
-    for l in lines[-5:]:
-        if re.search(r"esc t", l.lower()):
-            return "active"
+    # "esc to interrupt" → active, BUT only when there is no standard status bar.
+    # In background-tasks mode the "esc to interrupt · ctrl+t to hide tasks" line
+    # REPLACES the ⏵⏵/bypass-permissions bar (status_bar is empty) even though
+    # Claude is working. When a normal status bar IS present, "esc to interrupt"
+    # appears there at ALL times (even at idle), so we skip this check and let
+    # the spinner scan below determine the real state.
+    if not status_bar:
+        for l in lines[-5:]:
+            if re.search(r"esc t", l.lower()):
+                return "active"
 
     # ── 2. Scan last 12 lines bottom-up for the most recent signal ──
     for l in reversed(lines[-12:]):
