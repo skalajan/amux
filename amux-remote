@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# amux-remote — drive a remote amux server over its REST API.
+#
+# The `amux` CLI is local-only: `amux ls` reads ~/.amux on the machine it runs
+# on. This wrapper talks to a remote amux dashboard (e.g. over Tailscale) so you
+# can list, peek, and message sessions running on another box.
+#
+# Config (env or ~/.amux/remote.env):
+#   AMUX_URL    base URL of the remote server, e.g. https://desktop.tailnet.ts.net:8822
+#   AMUX_TOKEN  auth token from the remote's ~/.amux/auth_token
+#
+# Usage:
+#   amux-remote ls                     list sessions
+#   amux-remote peek <name> [lines]    print a session's recent output (default 80)
+#   amux-remote send <name> <text...>  send text/prompt to a session
+#   amux-remote start <name>           start a session
+#   amux-remote stop <name>            stop a session
+#   amux-remote info <name>            session status/meta as JSON
+#   amux-remote url                    print the configured server URL
+#   amux-remote curl <path> [args...]  raw authenticated curl against the API
+
+set -euo pipefail
+
+BOLD=$'\033[1m' DIM=$'\033[2m' GREEN=$'\033[32m' CYAN=$'\033[36m' RED=$'\033[31m' RESET=$'\033[0m'
+
+# Optional config file (process env always wins).
+REMOTE_ENV="${HOME}/.amux/remote.env"
+if [[ -f "$REMOTE_ENV" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$REMOTE_ENV"; set +a
+fi
+
+die() { echo "${RED}error:${RESET} $*" >&2; exit 1; }
+
+require_config() {
+  [[ -n "${AMUX_URL:-}" ]]   || die "AMUX_URL is not set (export it or put it in $REMOTE_ENV)"
+  [[ -n "${AMUX_TOKEN:-}" ]] || die "AMUX_TOKEN is not set (get it from the remote's ~/.amux/auth_token)"
+  AMUX_URL="${AMUX_URL%/}"  # strip trailing slash
+}
+
+# api <METHOD> <path> [curl args...]
+api() {
+  local method="$1" path="$2"; shift 2
+  curl -sk -X "$method" \
+    -H "Authorization: Bearer ${AMUX_TOKEN}" \
+    "$@" \
+    "${AMUX_URL}${path}"
+}
+
+cmd_ls() {
+  require_config
+  api GET /api/sessions | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit("could not parse response (check AMUX_URL / AMUX_TOKEN)")
+if isinstance(data, dict) and data.get("error"):
+    sys.exit("server: " + str(data["error"]))
+B=lambda s:"\033[1m"+s+"\033[0m"; D=lambda s:"\033[2m"+s+"\033[0m"; G="\033[32m"; R="\033[0m"
+data = data or []
+print(f"{len(data)} sessions\n")
+for s in data:
+    st = s.get("status","") or ""
+    icon = f"{G}*{R}" if st in ("active","working") else " "
+    name = s.get("name","")
+    desc = s.get("desc","") or ""
+    print(f" {icon} {name:24} {st:10} " + (D(desc) if desc else ""))
+'
+}
+
+cmd_peek() {
+  require_config
+  local name="${1:-}"; local lines="${2:-80}"
+  [[ -n "$name" ]] || die "usage: amux-remote peek <name> [lines]"
+  api GET "/api/sessions/${name}/peek?lines=${lines}" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit("server: "+str(d["error"])) if isinstance(d,dict) and d.get("error") else print(d.get("output",""))'
+}
+
+cmd_send() {
+  require_config
+  local name="${1:-}"; shift || true
+  local text="$*"
+  [[ -n "$name" && -n "$text" ]] || die "usage: amux-remote send <name> <text...>"
+  local payload
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$text")
+  api POST "/api/sessions/${name}/send" -H 'Content-Type: application/json' -d "$payload" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(("\033[32m✓\033[0m sent" if d.get("ok") else "\033[31m✗\033[0m "+str(d.get("message","failed"))))'
+}
+
+cmd_simple_post() {  # start/stop/clear
+  require_config
+  local action="$1" name="${2:-}"
+  [[ -n "$name" ]] || die "usage: amux-remote ${action} <name>"
+  api POST "/api/sessions/${name}/${action}" \
+    | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: d={}
+print(("\033[32m✓\033[0m "+sys.argv[1] if (not isinstance(d,dict) or d.get("ok",True)) and not (isinstance(d,dict) and d.get("error")) else "\033[31m✗\033[0m "+str(d.get("error") or d.get("message","failed"))))' "$action"
+}
+
+cmd_info() {
+  require_config
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: amux-remote info <name>"
+  api GET "/api/sessions/${name}/info" | python3 -m json.tool 2>/dev/null || api GET "/api/sessions/${name}/info"
+}
+
+cmd_curl() {
+  require_config
+  local path="${1:-}"; shift || true
+  [[ -n "$path" ]] || die "usage: amux-remote curl <path> [curl args...]"
+  [[ "$path" == /* ]] || path="/$path"
+  api GET "$path" "$@"
+}
+
+usage() {
+  cat <<EOF
+${BOLD}amux-remote${RESET} — drive a remote amux server over its REST API
+
+${BOLD}Config${RESET} (env or ~/.amux/remote.env):
+  AMUX_URL    ${DIM}e.g. https://desktop.tailnet.ts.net:8822${RESET}
+  AMUX_TOKEN  ${DIM}from the remote's ~/.amux/auth_token${RESET}
+
+${BOLD}Commands${RESET}
+  ${CYAN}ls${RESET}                      list sessions
+  ${CYAN}peek${RESET} <name> [lines]     print recent output (default 80)
+  ${CYAN}send${RESET} <name> <text...>   send text/prompt to a session
+  ${CYAN}start${RESET} <name>            start a session
+  ${CYAN}stop${RESET} <name>             stop a session
+  ${CYAN}info${RESET} <name>             session status/meta as JSON
+  ${CYAN}url${RESET}                     print the configured server URL
+  ${CYAN}curl${RESET} <path> [args...]   raw authenticated GET against the API
+EOF
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  ls|list)    cmd_ls "$@" ;;
+  peek)       cmd_peek "$@" ;;
+  send)       cmd_send "$@" ;;
+  start)      cmd_simple_post start "$@" ;;
+  stop)       cmd_simple_post stop "$@" ;;
+  info|meta)  cmd_info "$@" ;;
+  curl)       cmd_curl "$@" ;;
+  url)        require_config; echo "$AMUX_URL" ;;
+  ""|help|-h|--help) usage ;;
+  *)          die "unknown command: $cmd (try: amux-remote help)" ;;
+esac

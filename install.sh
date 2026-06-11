@@ -31,8 +31,13 @@ $SUDO chmod +x "$INSTALL_DIR/amux"
 # Copy server next to the CLI so amux serve can find it
 $SUDO cp "$SCRIPT_DIR/amux-server.py" "$INSTALL_DIR/amux-server.py"
 
+# Copy the remote wrapper (drive a remote amux over its REST API)
+$SUDO cp "$SCRIPT_DIR/amux-remote" "$INSTALL_DIR/amux-remote"
+$SUDO chmod +x "$INSTALL_DIR/amux-remote"
+
 echo "${GREEN}✓${RESET} installed ${BOLD}amux${RESET} → $INSTALL_DIR/amux"
 echo "${GREEN}✓${RESET} installed ${BOLD}amux-server.py${RESET} → $INSTALL_DIR/amux-server.py"
+echo "${GREEN}✓${RESET} installed ${BOLD}amux-remote${RESET} → $INSTALL_DIR/amux-remote"
 echo ""
 echo "Quick start:"
 echo "  amux register myproject --dir ~/Dev/myproject --yolo"
