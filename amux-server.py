@@ -1013,9 +1013,9 @@ def _find_claude_pid(name: str) -> int:
             if not line.strip():
                 continue
             cpid = int(line.strip())
-            sf = Path.home() / ".claude" / "sessions" / f"{cpid}.json"
-            if sf.exists():
-                return cpid
+            for _home in _claude_config_homes():
+                if (_home / "sessions" / f"{cpid}.json").exists():
+                    return cpid
         return 0
     except Exception:
         return 0
@@ -1025,23 +1025,111 @@ def _read_claude_session_name(claude_pid: int) -> str:
     """Read the session name from Claude's PID-keyed session file."""
     if claude_pid <= 1:
         return ""
-    sf = Path.home() / ".claude" / "sessions" / f"{claude_pid}.json"
-    try:
-        if not sf.is_file() or sf.stat().st_size > 1_000_000:
-            return ""
-        data = json.loads(sf.read_text(errors="replace"))
-        return data.get("name", "")
-    except Exception:
-        return ""
+    # PIDs are unique system-wide, so scanning every config home is safe.
+    for _home in _claude_config_homes():
+        sf = _home / "sessions" / f"{claude_pid}.json"
+        try:
+            if not sf.is_file() or sf.stat().st_size > 1_000_000:
+                continue
+            data = json.loads(sf.read_text(errors="replace"))
+            return data.get("name", "")
+        except Exception:
+            continue
+    return ""
 
 
 def _validate_cc_session_name(name: str) -> bool:
     return bool(name and len(name) <= 64 and _VALID_CC_SESSION_NAME.match(name))
 
 
-def _cc_session_exists_in_project(session_name: str, work_dir: str) -> bool:
+# ── Per-session Claude account routing (CLAUDE_CONFIG_DIR) ──────────────────
+# Sessions whose working dir is under a "work" path launch with the work
+# Claude.ai account; everything else uses the personal account. An explicit
+# CC_CONFIG_DIR in the session env overrides auto-detection. Configure via
+# ~/.amux/server.env or shell env:
+#   AMUX_WORK_PATHS          colon-separated roots (default ~/Desktop/Projects/Fidoo)
+#   AMUX_WORK_CONFIG_DIR     default ~/.claude-work
+#   AMUX_PERSONAL_CONFIG_DIR default ~/.claude-personal
+
+def _pick_claude_config_dir(work_dir: str) -> str:
+    """Auto-pick the Claude config dir (account) for a working directory."""
+    work_cfg = os.environ.get("AMUX_WORK_CONFIG_DIR", str(Path.home() / ".claude-work"))
+    personal_cfg = os.environ.get("AMUX_PERSONAL_CONFIG_DIR", str(Path.home() / ".claude-personal"))
+    work_paths = os.environ.get("AMUX_WORK_PATHS", str(Path.home() / "Desktop" / "Projects" / "Fidoo"))
+    try:
+        wd = Path(work_dir).expanduser().resolve()
+        for p in work_paths.split(":"):
+            if not p.strip():
+                continue
+            base = Path(p).expanduser().resolve()
+            if wd == base or base in wd.parents:
+                return str(Path(work_cfg).expanduser())
+    except Exception:
+        pass
+    return str(Path(personal_cfg).expanduser())
+
+
+def _session_claude_config_dir(cfg: dict) -> str:
+    """Effective CLAUDE_CONFIG_DIR for a session env dict.
+
+    Explicit CC_CONFIG_DIR wins; otherwise auto-detect from CC_DIR.
+    Claude provider only — returns '' for codex/gemini/iterm2 sessions."""
+    if (cfg.get("CC_PROVIDER") or "claude").strip().lower() != "claude":
+        return ""
+    explicit = cfg.get("CC_CONFIG_DIR", "").strip()
+    if explicit:
+        return str(Path(explicit).expanduser())
+    return _pick_claude_config_dir(cfg.get("CC_DIR", str(Path.home())))
+
+
+def _session_claude_home(name: str) -> Path:
+    """Claude config home for a registered session (falls back to ~/.claude)."""
+    try:
+        f = CC_SESSIONS / f"{name}.env"
+        if f.exists():
+            d = _session_claude_config_dir(parse_env_file(f))
+            if d:
+                return Path(d)
+    except Exception:
+        pass
+    return CLAUDE_HOME
+
+
+def _claude_config_homes() -> list:
+    """All Claude config homes amux sessions may run under (existing dirs only,
+    default ~/.claude always first)."""
+    homes = [CLAUDE_HOME]
+    for env_var, default in (("AMUX_WORK_CONFIG_DIR", ".claude-work"),
+                             ("AMUX_PERSONAL_CONFIG_DIR", ".claude-personal")):
+        p = Path(os.environ.get(env_var, str(Path.home() / default))).expanduser()
+        if p.is_dir() and p not in homes:
+            homes.append(p)
+    return homes
+
+
+def _claude_project_dir(work_dir: str) -> Path:
+    """Transcript project dir for work_dir, searched across all config homes.
+
+    A session's transcripts live under whichever config home it was launched
+    with, so readers must look beyond ~/.claude. Prefers the most recently
+    modified match; falls back to the default-home path."""
+    pname = _project_name(work_dir)
+    best, best_mtime = None, -1.0
+    for home in _claude_config_homes():
+        d = home / "projects" / pname
+        if d.is_dir():
+            try:
+                mt = d.stat().st_mtime
+            except OSError:
+                continue
+            if mt > best_mtime:
+                best, best_mtime = d, mt
+    return best or (CLAUDE_HOME / "projects" / pname)
+
+
+def _cc_session_exists_in_project(session_name: str, work_dir: str, claude_home: Path = None) -> bool:
     """Check if a Claude Code session with this name exists in the project directory."""
-    proj_dir = CLAUDE_HOME / "projects" / _project_name(work_dir)
+    proj_dir = (claude_home or CLAUDE_HOME) / "projects" / _project_name(work_dir)
     if not proj_dir.is_dir():
         return False
     try:
@@ -1060,13 +1148,13 @@ def _cc_session_exists_in_project(session_name: str, work_dir: str) -> bool:
     return False
 
 
-def _cc_session_id_for_name(session_name: str, work_dir: str) -> str:
+def _cc_session_id_for_name(session_name: str, work_dir: str, claude_home: Path = None) -> str:
     """Return the UUID of a uniquely-named Claude Code session, or '' if ambiguous/missing.
 
     When exactly one session matches, return its UUID so we can --resume <uuid>
     (which bypasses the interactive picker). When multiple match, return '' to
     force a fresh --name start instead of opening the picker."""
-    proj_dir = CLAUDE_HOME / "projects" / _project_name(work_dir)
+    proj_dir = (claude_home or CLAUDE_HOME) / "projects" / _project_name(work_dir)
     if not proj_dir.is_dir():
         return ""
     matches = []
@@ -1099,8 +1187,13 @@ def _refresh_token_cache():
     from datetime import datetime
     result = {}
     ts_result = {}
-    projects_dir = Path.home() / ".claude" / "projects"
-    if not projects_dir.is_dir():
+    # Sessions may run under any Claude config home (work/personal routing)
+    all_proj_dirs = []
+    for _home in _claude_config_homes():
+        _pd = _home / "projects"
+        if _pd.is_dir():
+            all_proj_dirs.extend(_pd.iterdir())
+    if not all_proj_dirs:
         _token_cache["data"] = result
         _token_cache["timestamps"] = ts_result
         _token_cache["time"] = now
@@ -1113,7 +1206,7 @@ def _refresh_token_cache():
             raw_dir = cfg.get("CC_DIR", "")
             if raw_dir:
                 needed_proj_keys.add(str(Path(raw_dir).expanduser().resolve()).replace("/", "-"))
-    for proj_dir in projects_dir.iterdir():
+    for proj_dir in all_proj_dirs:
         if not proj_dir.is_dir():
             continue
         if needed_proj_keys and proj_dir.name not in needed_proj_keys:
@@ -1180,9 +1273,10 @@ def _refresh_token_cache():
             if file_last_ts:
                 ts_result[(proj_dir.name, conv_id)] = file_last_ts
         if dir_total > 0:
-            result[proj_dir.name] = dir_total
+            # Same project name can exist under several config homes — sum them
+            result[proj_dir.name] = result.get(proj_dir.name, 0) + dir_total
         if last_ts > 0:
-            ts_result[proj_dir.name] = last_ts
+            ts_result[proj_dir.name] = max(ts_result.get(proj_dir.name, 0), last_ts)
     _token_cache["data"] = result
     _token_cache["timestamps"] = ts_result
     _token_cache["time"] = now
@@ -1583,8 +1677,7 @@ def backup_session_jsonl(session: str, reason: str = "manual") -> str | None:
     wd = _session_work_dir_early(session)
     if not wd:
         return None
-    resolved = str(Path(wd).expanduser().resolve())
-    project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+    project_dir = _claude_project_dir(wd)
     if not project_dir.is_dir():
         return None
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -2245,8 +2338,7 @@ def _last_meaningful_user_message(work_dir: str) -> str:
     """Extract the last meaningful user message (>20 chars) from the session's JSONL history."""
     if not work_dir:
         return ""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+    project_dir = _claude_project_dir(work_dir)
     if not project_dir.is_dir():
         return ""
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -2871,9 +2963,7 @@ def get_claude_stats(work_dir: str) -> dict:
     """
     if not work_dir:
         return {"tokens": 0, "last_active": ""}
-    # Map dir path to Claude project directory name
-    project_name = work_dir.replace("/", "-")
-    project_dir = CLAUDE_HOME / "projects" / project_name
+    project_dir = _claude_project_dir(work_dir)
     if not project_dir.is_dir():
         return {"tokens": 0, "last_active": ""}
     # Find the most recent JSONL file
@@ -2907,9 +2997,7 @@ def detect_active_model(work_dir: str, conversation_id: str = "") -> str:
     """Detect the model in use from the session's own JSONL conversation file."""
     if not work_dir:
         return ""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_name = resolved.replace("/", "-")
-    project_dir = CLAUDE_HOME / "projects" / project_name
+    project_dir = _claude_project_dir(work_dir)
     if not project_dir.is_dir():
         return ""
     # Prefer the session's own conversation JSONL file
@@ -3387,11 +3475,18 @@ def _init_claude_config():
         settings_file.write_text(_json.dumps(settings, indent=2))
 
 
-def _auto_trust_dir(work_dir: str):
-    """Pre-trust a directory in ~/.claude.json so Claude doesn't show the folder trust dialog."""
+def _auto_trust_dir(work_dir: str, config_dir: str = ""):
+    """Pre-trust a directory in .claude.json so Claude doesn't show the folder trust dialog.
+
+    When the session runs with CLAUDE_CONFIG_DIR (work/personal account routing),
+    Claude reads <config_dir>/.claude.json instead of ~/.claude.json."""
     import json as _json
     import pathlib as _pathlib
-    claude_json = _pathlib.Path.home() / ".claude.json"
+    if config_dir:
+        claude_json = _pathlib.Path(config_dir) / ".claude.json"
+        claude_json.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        claude_json = _pathlib.Path.home() / ".claude.json"
     try:
         cfg = _json.loads(claude_json.read_text()) if claude_json.exists() else {}
     except Exception:
@@ -3552,7 +3647,15 @@ esac
 """
     stub_path = _pathlib.Path("/usr/local/bin/amux")
     try:
-        if not stub_path.exists() or stub_path.read_text() != _amux_stub:
+        if not stub_path.exists():
+            stub_path.write_text(_amux_stub)
+            stub_path.chmod(0o755)
+        elif (not stub_path.is_symlink()
+              and "amux CLI stub" in stub_path.read_text()[:200]
+              and stub_path.read_text() != _amux_stub):
+            # Self-update only when the installed file IS the stub. Never follow
+            # a symlink or overwrite a full custom CLI — write_text() resolves
+            # symlinks and has previously clobbered a user's forked CLI in-repo.
             stub_path.write_text(_amux_stub)
             stub_path.chmod(0o755)
     except Exception:
@@ -5079,8 +5182,13 @@ def get_daily_token_stats() -> dict:
     """Get today's token usage across all Claude Code sessions and amux sessions."""
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
-    projects_dir = CLAUDE_HOME / "projects"
-    if not projects_dir.is_dir():
+    # Sessions may run under any Claude config home (work/personal routing)
+    all_proj_dirs = []
+    for _home in _claude_config_homes():
+        _pd = _home / "projects"
+        if _pd.is_dir():
+            all_proj_dirs.extend(_pd.iterdir())
+    if not all_proj_dirs:
         return {"today": today, "total_tokens": 0, "total_input": 0, "total_output": 0, "sessions": []}
 
     # Get amux session dirs for labeling (multiple sessions can share a dir)
@@ -5095,8 +5203,9 @@ def get_daily_token_stats() -> dict:
     total_in = 0
     total_out = 0
     session_stats = []
+    _per_proj = {}  # proj_name -> stats entry (same dir may exist in several homes)
 
-    for proj_dir in projects_dir.iterdir():
+    for proj_dir in all_proj_dirs:
         if not proj_dir.is_dir():
             continue
         proj_in = 0
@@ -5145,23 +5254,31 @@ def get_daily_token_stats() -> dict:
                 continue
         if proj_in + proj_out > 0:
             proj_name = proj_dir.name
-            amux_names = amux_dirs.get(proj_name, [])
-            if amux_names:
-                label = ", ".join(sorted(amux_names))
+            prev = _per_proj.get(proj_name)
+            if prev:
+                prev["input"] += proj_in
+                prev["output"] += proj_out
+                prev["total"] += proj_in + proj_out
             else:
-                # Show short path: ~/Dev/project instead of /Users/you/Dev/project
-                # proj_name is like "-Users-you-Dev" → "/Users/you/Dev"
-                full = "/" + proj_name.lstrip("-").replace("-", "/")
-                home = str(Path.home())
-                label = "~" + full[len(home):] if full.startswith(home) else full
-            session_stats.append({
-                "name": label,
-                "proj_dir": proj_name,
-                "amux": bool(amux_names),
-                "input": proj_in,
-                "output": proj_out,
-                "total": proj_in + proj_out,
-            })
+                amux_names = amux_dirs.get(proj_name, [])
+                if amux_names:
+                    label = ", ".join(sorted(amux_names))
+                else:
+                    # Show short path: ~/Dev/project instead of /Users/you/Dev/project
+                    # proj_name is like "-Users-you-Dev" → "/Users/you/Dev"
+                    full = "/" + proj_name.lstrip("-").replace("-", "/")
+                    home = str(Path.home())
+                    label = "~" + full[len(home):] if full.startswith(home) else full
+                entry = {
+                    "name": label,
+                    "proj_dir": proj_name,
+                    "amux": bool(amux_names),
+                    "input": proj_in,
+                    "output": proj_out,
+                    "total": proj_in + proj_out,
+                }
+                _per_proj[proj_name] = entry
+                session_stats.append(entry)
             total_in += proj_in
             total_out += proj_out
 
@@ -5935,9 +6052,7 @@ def get_session_info(name: str) -> dict | None:
 def _find_latest_session_id(work_dir: str) -> str:
     """Find the most recent Claude Code conversation session ID for a working directory.
     Skips snapshot-only files that have no user/assistant messages (claude --resume exits on those)."""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_name = resolved.replace("/", "-")
-    project_dir = CLAUDE_HOME / "projects" / project_name
+    project_dir = _claude_project_dir(work_dir)
     if not project_dir.is_dir():
         return ""
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -6468,7 +6583,7 @@ def _compose_memory(global_content: str, session_content: str) -> str:
 def _capture_claude_memory_changes(name: str, work_dir: str):
     """Capture changes Claude made to MEMORY.md during the previous session."""
     pname = _project_name(work_dir)
-    claude_mem_file = CLAUDE_HOME / "projects" / pname / "memory" / "MEMORY.md"
+    claude_mem_file = _session_claude_home(name) / "projects" / pname / "memory" / "MEMORY.md"
     session_file = CC_MEMORY / f"{name}.md"
     if not claude_mem_file.exists() or claude_mem_file.is_symlink():
         return
@@ -6493,7 +6608,7 @@ def _write_claude_memory(name: str, work_dir: str):
     global_content = _GLOBAL_MEM_FILE.read_text(errors="replace") if _GLOBAL_MEM_FILE.exists() else ""
     session_content = session_file.read_text(errors="replace") if session_file.exists() else ""
     composed = _compose_memory(global_content, session_content)
-    claude_mem_dir = CLAUDE_HOME / "projects" / pname / "memory"
+    claude_mem_dir = _session_claude_home(name) / "projects" / pname / "memory"
     claude_mem_file = claude_mem_dir / "MEMORY.md"
     try:
         claude_mem_dir.mkdir(parents=True, exist_ok=True)
@@ -6991,26 +7106,32 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         # Claude Code v2.1.69+ rejects --dangerously-skip-permissions when running as root.
         if os.getuid() == 0 and "--dangerously-skip-permissions" in flags:
             flags = flags.replace("--dangerously-skip-permissions", "").strip()
-        _auto_trust_dir(work_dir)
+        provider = cfg.get("CC_PROVIDER", "claude").strip().lower()
+        # Per-session Claude account: explicit CC_CONFIG_DIR or auto-detected
+        # work/personal from the working dir (see _pick_claude_config_dir).
+        claude_config_dir = _session_claude_config_dir(cfg)
+        _claude_home = Path(claude_config_dir) if claude_config_dir else CLAUDE_HOME
+        if claude_config_dir:
+            print(f"[start] {name}: CLAUDE_CONFIG_DIR={claude_config_dir}")
+        _auto_trust_dir(work_dir, claude_config_dir)
         _ensure_memory(name, work_dir)
 
         # Determine session resume strategy: name-based (new) > UUID (migration) > fresh
         meta = _load_meta(name)
-        provider = cfg.get("CC_PROVIDER", "claude").strip().lower()
         _uuid_re = re.compile(r'^[0-9a-fA-F-]{36}$')
         if not _skip_conv_id and provider == "claude":
             cc_session_name = meta.get("cc_session_name", "")
             conv_id = meta.get("cc_conversation_id", "")
             if cc_session_name and _validate_cc_session_name(cc_session_name):
-                _sid = _cc_session_id_for_name(cc_session_name, work_dir)
+                _sid = _cc_session_id_for_name(cc_session_name, work_dir, _claude_home)
                 if _sid:
                     # Use UUID to resume — bypasses interactive picker
                     session_flag = f'--resume {_sid}'
                     print(f"[start] {name}: resume={cc_session_name} (uuid={_sid})")
-                elif _cc_session_exists_in_project(cc_session_name, work_dir):
+                elif _cc_session_exists_in_project(cc_session_name, work_dir, _claude_home):
                     # Multiple sessions with this name — fall back to UUID if available
                     if conv_id and _uuid_re.match(conv_id):
-                        conv_file = CLAUDE_HOME / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
+                        conv_file = _claude_home / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
                         if conv_file.exists():
                             session_flag = f'--resume {conv_id}'
                             print(f"[start] {name}: resume via UUID fallback (ambiguous name '{cc_session_name}', uuid={conv_id})")
@@ -7029,7 +7150,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             elif conv_id and _uuid_re.match(conv_id):
                 # Migration path: old UUID-based session
                 conv_file = (
-                    CLAUDE_HOME / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
+                    _claude_home / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
                 )
                 if conv_file.exists():
                     session_flag = f"--resume {conv_id}"
@@ -7176,6 +7297,9 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 print(f"[start] {name}: gemini fresh start {gemini_session_id}")
         else:
             cmd = "claude"
+            if claude_config_dir:
+                # Env-prefix selects the Claude.ai account (work vs personal)
+                cmd = f"CLAUDE_CONFIG_DIR={shlex.quote(claude_config_dir)} claude"
             if default_flags:
                 cmd += f" {_shell_quote_flags(default_flags)}"
             if flags:
@@ -7204,7 +7328,11 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
                 try:
                     import json as _j2
-                    _cj = Path.home() / ".claude.json"
+                    # The session's account config lives in its CLAUDE_CONFIG_DIR
+                    if claude_config_dir:
+                        _cj = Path(claude_config_dir) / ".claude.json"
+                    else:
+                        _cj = Path.home() / ".claude.json"
                     if _cj.exists():
                         _has_oauth = bool(_j2.loads(_cj.read_text()).get("oauthAccount"))
                 except Exception:
@@ -7221,6 +7349,10 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 shell_rc += "unset ANTHROPIC_API_KEY; "
             # Forward select env vars into the tmux session.
             _env_args = []
+            if claude_config_dir:
+                # Covers manual `claude` invocations typed in the pane; the
+                # launch command itself carries its own env-prefix.
+                _env_args += ["-e", f"CLAUDE_CONFIG_DIR={claude_config_dir}"]
             if _has_oauth:
                 _env_args += ["-e", "ANTHROPIC_API_KEY="]
             else:
@@ -7416,6 +7548,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                     # Rebuild cmd with --name instead of --resume
                     fresh_flag = f'--name {shlex.quote(name)}'
                     cmd_fresh = "claude"
+                    if claude_config_dir:
+                        cmd_fresh = f"CLAUDE_CONFIG_DIR={shlex.quote(claude_config_dir)} claude"
                     if default_flags:
                         cmd_fresh += f" {_shell_quote_flags(default_flags)}"
                     if flags:
@@ -35654,6 +35788,16 @@ class CCHandler(BaseHTTPRequestHandler):
             if creator:
                 cfg["CC_CREATOR"] = creator
             cfg["CC_FLAGS"] = ""
+            # Optional explicit Claude account: absolute path, or the
+            # shortcuts "work"/"personal". Unset = auto-detect at start
+            # from the working dir (see _pick_claude_config_dir).
+            config_dir = str(body.get("config_dir", "")).strip()
+            if config_dir:
+                if config_dir == "work":
+                    config_dir = os.environ.get("AMUX_WORK_CONFIG_DIR", str(Path.home() / ".claude-work"))
+                elif config_dir == "personal":
+                    config_dir = os.environ.get("AMUX_PERSONAL_CONFIG_DIR", str(Path.home() / ".claude-personal"))
+                cfg["CC_CONFIG_DIR"] = str(Path(config_dir).expanduser())
             provider = body.get("provider", "").strip().lower()
             if provider and provider in _SESSION_PROVIDERS:
                 cfg["CC_PROVIDER"] = provider
@@ -38188,7 +38332,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     work_dir = cfg.get("CC_DIR", "")
                     if work_dir:
                         pname = _project_name(work_dir)
-                        claude_link = CLAUDE_HOME / "projects" / pname / "memory" / "MEMORY.md"
+                        claude_link = _session_claude_home(new_name) / "projects" / pname / "memory" / "MEMORY.md"
                         try:
                             if claude_link.is_symlink():
                                 claude_link.unlink()
@@ -38564,21 +38708,22 @@ def _enforce_archived_stopped():
 
 def _cleanup_old_transcripts():
     """Remove conversation transcripts older than 7 days and larger than 50 MB."""
-    projects_dir = Path.home() / ".claude" / "projects"
-    if not projects_dir.is_dir():
-        return
     cutoff = time.time() - 7 * 86400
     cleaned = 0
     freed = 0
-    for jsonl in projects_dir.rglob("*.jsonl"):
-        try:
-            st = jsonl.stat()
-            if st.st_size > 50_000_000 and st.st_mtime < cutoff:
-                freed += st.st_size
-                jsonl.unlink(missing_ok=True)
-                cleaned += 1
-        except Exception:
-            pass
+    for _home in _claude_config_homes():
+        projects_dir = _home / "projects"
+        if not projects_dir.is_dir():
+            continue
+        for jsonl in projects_dir.rglob("*.jsonl"):
+            try:
+                st = jsonl.stat()
+                if st.st_size > 50_000_000 and st.st_mtime < cutoff:
+                    freed += st.st_size
+                    jsonl.unlink(missing_ok=True)
+                    cleaned += 1
+            except Exception:
+                pass
     if cleaned:
         slog(f"[cleanup] removed {cleaned} old transcripts, freed {freed / 2**20:.0f} MB")
 
@@ -38881,6 +39026,9 @@ def _validate_api_key_job():
         slog(f"[key-validate] API key check failed: {error}")
 
 
+_restart_pending = threading.Event()
+
+
 def _watch_self(server):
     """Watch amux-server.py for changes and restart on modification.
 
@@ -38915,6 +39063,10 @@ def _watch_self(server):
                     slog(f"[restart] ABORTED — syntax error: {se}")
                     mtime = new_mtime  # update mtime so we re-check on next change
                     continue
+                # Signal main() to stay alive after serve_forever() returns —
+                # otherwise interpreter teardown kills this daemon thread
+                # before it reaches os.execv below.
+                _restart_pending.set()
                 # Shutdown with timeout — don't let stuck threads block restart
                 t = threading.Thread(target=server.shutdown, daemon=True)
                 t.start()
@@ -39299,6 +39451,12 @@ def main():
                 _s.server_close()
             except Exception:
                 pass
+    if _restart_pending.is_set():
+        # serve_forever() returned because _watch_self is restarting us.
+        # Park the main thread so the watcher reaches os.execv — exec
+        # replaces the whole process, so this sleep never completes on a
+        # successful restart. The timeout is a backstop if execv fails.
+        time.sleep(15)
 
 
 def _run_selftests() -> int:

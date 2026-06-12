@@ -223,6 +223,12 @@ parse_claude_flags() {
         fi
         shift
         ;;
+      # Opt-out of the implicit yolo default (see end of parse_claude_flags).
+      # Use this when you explicitly want Claude Code's normal permission prompts.
+      --no-yolo)
+        CC_NO_YOLO=1
+        shift
+        ;;
       # Working directory — resolve to absolute path, create if needed.
       # We previously fell back to the literal $2 if cd failed, which silently
       # let relative paths slip into the session env file (CC_DIR=./foo). On
@@ -234,6 +240,22 @@ parse_claude_flags() {
         CC_DIR="$(cd "$2" && pwd)" || die "cannot resolve --dir to absolute path: $2"
         shift 2
         ;;
+      # Claude config directory — selects which account to launch as.
+      # --config-dir specifies an absolute path; --work / --personal are
+      # shortcuts for the standard locations (see pick_default_config_dir).
+      --config-dir)
+        mkdir -p "$2" || die "cannot create --config-dir: $2"
+        CC_CONFIG_DIR="$(cd "$2" && pwd)" || die "cannot resolve --config-dir to absolute path: $2"
+        shift 2
+        ;;
+      --work)
+        CC_CONFIG_DIR="${AMUX_WORK_CONFIG_DIR:-$HOME/.claude-work}"
+        shift
+        ;;
+      --personal)
+        CC_CONFIG_DIR="${AMUX_PERSONAL_CONFIG_DIR:-$HOME/.claude-personal}"
+        shift
+        ;;
       # Everything else goes to extra args
       *)
         CC_EXTRA_ARGS+=("$1")
@@ -241,7 +263,43 @@ parse_claude_flags() {
         ;;
     esac
   done
+  # Default: enable --dangerously-skip-permissions (a.k.a. --yolo). amux sessions
+  # run unattended inside tmux, so permission prompts deadlock them. Opt out per
+  # session with --no-yolo, or globally with AMUX_NO_YOLO=1.
+  if [[ "${CC_NO_YOLO:-}" != "1" && "${AMUX_NO_YOLO:-}" != "1" ]]; then
+    local already_yolo=0 f
+    for f in "${CC_FLAGS[@]:-}"; do
+      case "$f" in
+        --dangerously-skip-permissions|--allow-dangerously-skip-permissions) already_yolo=1; break ;;
+      esac
+    done
+    [[ $already_yolo -eq 0 ]] && CC_FLAGS+=("--dangerously-skip-permissions")
+  fi
   CC_FLAGS_STR="${CC_FLAGS[*]:-}"
+}
+
+# pick_default_config_dir <resolved_dir> — decide which Claude config dir
+# (= which Claude.ai account) a new session should use when neither
+# --config-dir nor --work nor --personal was passed.
+#
+# Rule: personal by default; work when the resolved working dir is under
+# any path listed in $AMUX_WORK_PATHS (colon-separated). Configurable via:
+#   AMUX_WORK_PATHS          (default: $HOME/Desktop/Projects/Fidoo)
+#   AMUX_WORK_CONFIG_DIR     (default: $HOME/.claude-work)
+#   AMUX_PERSONAL_CONFIG_DIR (default: $HOME/.claude-personal)
+pick_default_config_dir() {
+  local resolved="$1"
+  local work_paths="${AMUX_WORK_PATHS:-$HOME/Desktop/Projects/Fidoo}"
+  local work_dir="${AMUX_WORK_CONFIG_DIR:-$HOME/.claude-work}"
+  local personal_dir="${AMUX_PERSONAL_CONFIG_DIR:-$HOME/.claude-personal}"
+  local IFS=':' p
+  for p in $work_paths; do
+    [[ -z "$p" ]] && continue
+    case "$resolved" in
+      "$p"|"$p"/*) echo "$work_dir"; return ;;
+    esac
+  done
+  echo "$personal_dir"
 }
 
 # ── Commands ─────────────────────────────────────────────────────────────────
@@ -263,6 +321,9 @@ cmd_register() {
     *) die "CC_DIR must be absolute, got: $resolved_dir" ;;
   esac
 
+  # Auto-detect Claude config dir (account) if not explicitly set.
+  [[ -z "${CC_CONFIG_DIR:-}" ]] && CC_CONFIG_DIR="$(pick_default_config_dir "$resolved_dir")"
+
   local file="$CC_SESSIONS/$name.env"
   cat > "$file" <<EOF
 # amux session: $name
@@ -270,9 +331,11 @@ cmd_register() {
 CC_NAME="$name"
 CC_DIR="$resolved_dir"
 CC_FLAGS="${CC_FLAGS_STR}"
+CC_CONFIG_DIR="$CC_CONFIG_DIR"
 EOF
 
   echo "${GREEN}registered${RESET} ${BOLD}$name${RESET} → $resolved_dir"
+  echo "  config-dir: $CC_CONFIG_DIR"
   [[ -n "$CC_FLAGS_STR" ]] && echo "  flags: $CC_FLAGS_STR"
 }
 
@@ -359,7 +422,15 @@ cmd_start() {
       fi
     fi
   else
-    [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model sonnet"
+    # Always enable Claude Code's per-session remote-control URL
+    # (claude.ai/code/session_XXX). Complementary to amux's dashboard — gives
+    # a stable per-session browser handle for that one session.
+    # Opt out per host with: AMUX_NO_REMOTE_CONTROL=1
+    [[ "${AMUX_NO_REMOTE_CONTROL:-}" == "1" ]] || [[ "$cmd" == *"--remote-control"* ]] || cmd="$cmd --remote-control"
+    # Default model: override per-session with --model on amux register,
+    # or globally with $AMUX_DEFAULT_MODEL.
+    local default_model="${AMUX_DEFAULT_MODEL:-claude-opus-4-7[1m]}"
+    [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model $(printf '%q' "$default_model")"
   fi
 
   # Create tmux session and attach
@@ -370,7 +441,18 @@ cmd_start() {
   local shell_setup=""
   if [[ "$provider" != "codex" ]]; then
     shell_setup="unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-    if [[ -f "$HOME/.claude.json" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null; then
+    # Per-session Claude config dir (account isolation: work vs personal vs ...).
+    # Injecting the export *inside* the tmux command ensures correctness
+    # regardless of whether the tmux server was started before or after amux
+    # itself had CLAUDE_CONFIG_DIR set — tmux server env doesn't update on
+    # client reconnect.
+    if [[ -n "${CC_CONFIG_DIR:-}" ]]; then
+      shell_setup="${shell_setup}export CLAUDE_CONFIG_DIR=$(printf '%q' "$CC_CONFIG_DIR"); "
+    fi
+    # OAuth check: look in the *session's* config dir so ANTHROPIC_API_KEY only
+    # gets unset when this session's target account actually has OAuth.
+    local oauth_file="${CC_CONFIG_DIR:-$HOME}/.claude.json"
+    if [[ -f "$oauth_file" ]] && grep -q '"oauthAccount"' "$oauth_file" 2>/dev/null; then
       shell_setup="${shell_setup}unset ANTHROPIC_API_KEY; "
     fi
   fi
@@ -397,6 +479,9 @@ cmd_exec() {
     *) die "CC_DIR must be absolute, got: $resolved_dir" ;;
   esac
 
+  # Auto-detect Claude config dir (account) if not explicitly set.
+  [[ -z "${CC_CONFIG_DIR:-}" ]] && CC_CONFIG_DIR="$(pick_default_config_dir "$resolved_dir")"
+
   # Register if not exists, or update
   local file="$CC_SESSIONS/$name.env"
   cat > "$file" <<EOF
@@ -405,6 +490,7 @@ cmd_exec() {
 CC_NAME="$name"
 CC_DIR="$resolved_dir"
 CC_FLAGS="${CC_FLAGS_STR}"
+CC_CONFIG_DIR="$CC_CONFIG_DIR"
 EOF
 
   # Start
@@ -1044,6 +1130,113 @@ ${BOLD}Examples:${RESET}
 EOF
 }
 
+# ── Server-API passthrough commands (ported from the server's CLI stub) ──────
+# These talk to the running amux server; used by Claude sessions (crm, share)
+# and remote control (restart, sessions).
+
+cmd_crm() {
+  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
+  local sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    add)
+      # Usage: amux crm add "Name" [company=X] [email=Y] [role=Z] [phone=P] [linkedin=L]
+      local json
+      json=$(python3 -c "
+import sys,json
+args=sys.argv[1:]; fields={}; name_parts=[]
+for a in args:
+    if '=' in a: k,v=a.split('=',1); fields[k]=v
+    else: name_parts.append(a)
+if name_parts: fields['name']=' '.join(name_parts)
+print(json.dumps(fields))" "$@")
+      curl -sk -X POST -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print(d.get('id','error'),'-',d.get('error','created'))" ;;
+    update)
+      local cid="${1:-}"; shift 2>/dev/null || true
+      local json
+      json=$(python3 -c "
+import sys,json; fields={}
+for a in sys.argv[1:]:
+    if '=' in a: k,v=a.split('=',1); fields[k]=v
+print(json.dumps(fields))" "$@")
+      curl -sk -X PATCH -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('updated' if d.get('ok') else d.get('error','failed'))" ;;
+    get)
+      local cid="${1:-}"
+      curl -sk "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
+import json,sys
+c=json.load(sys.stdin)
+if 'error' in c: print('Error:',c['error']); sys.exit(1)
+print(c.get('id'),c.get('name'))
+for f in ('company','role','email','phone','linkedin','twitter'):
+    v=c.get(f,'')
+    if v: print('  '+f+':',v)
+tags=c.get('tags',[])
+if tags: print('  tags:',', '.join(tags))
+ixs=c.get('interactions',[])
+if ixs: print('  last interaction:',ixs[0].get('date'),'-',ixs[0].get('notes','')[:60])" ;;
+    log)
+      local cid="${1:-}"; shift 2>/dev/null || true; local notes="$*"
+      curl -sk -X POST -H 'Content-Type: application/json' \
+        -d "{\"notes\":\"$notes\",\"date\":\"$(date +%Y-%m-%d)\",\"type\":\"other\"}" \
+        "$AMUX_API/api/crm/contacts/$cid/interactions" ;;
+    followups|fu)
+      curl -sk "$AMUX_API/api/crm/followups" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)
+if not items: print('No pending follow-ups')
+for i in items: print(i.get('follow_up_date',''),i.get('name',''),'-',i.get('follow_up_note',''))" ;;
+    list|ls|"")
+      curl -sk "$AMUX_API/api/crm/contacts" | python3 -c "
+import json,sys
+cs=json.load(sys.stdin)
+if not cs: print('No contacts yet')
+for c in cs: print(c.get('id',''),c.get('name',''),c.get('company',''))" ;;
+    *) die "amux crm: unknown subcommand: $sub" ;;
+  esac
+}
+
+cmd_restart() {
+  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
+  local session="${1:-}"
+  [[ -n "$session" ]] || die "Usage: amux restart <session>"
+  echo "Stopping $session..."
+  curl -sk -X POST "$AMUX_API/api/sessions/$session/stop" >/dev/null
+  sleep 1
+  echo "Starting $session..."
+  curl -sk -X POST "$AMUX_API/api/sessions/$session/start" >/dev/null
+  echo "Restarted $session"
+}
+
+cmd_sessions_api() {
+  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
+  curl -sk "$AMUX_API/api/sessions" | python3 -c "
+import json,sys
+for s in json.load(sys.stdin): print(s['name'], '(running)' if s.get('running') else '')"
+}
+
+cmd_share() {
+  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
+  local session="${1:-}"; shift 2>/dev/null || true
+  local perms="${1:-output}"
+  [[ -n "$session" ]] || die "Usage: amux share <session> [perms]"
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "{\"perms\":\"$perms\"}" "$AMUX_API/api/sessions/$session/share" | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('url','error: '+d.get('error','unknown')))"
+}
+
+cmd_unshare() {
+  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
+  local session="${1:-}"; shift 2>/dev/null || true
+  local token="${1:-}"
+  [[ -n "$session" ]] || die "Usage: amux unshare <session> [token]"
+  curl -sk -X DELETE -H 'Content-Type: application/json' \
+    -d "{\"token\":\"$token\"}" "$AMUX_API/api/sessions/$session/share" >/dev/null
+  echo "revoked"
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -1070,6 +1263,11 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     stop-all)         cmd_stop_all ;;
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
+    crm)              shift; cmd_crm "$@" ;;
+    restart)          shift; cmd_restart "$@" ;;
+    sessions)         cmd_sessions_api ;;
+    share)            shift; cmd_share "$@" ;;
+    unshare)          shift; cmd_unshare "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;
     "")               cmd_dashboard ;;
