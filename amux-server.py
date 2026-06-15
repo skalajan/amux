@@ -7036,6 +7036,20 @@ printf '\\nAmux-Session: %s\\n' "$AMUX_SESSION" >> "$msg_file"
 exit 0
 """
 
+_AMUX_HOOK_SNIPPET = (
+    "\n" + _AMUX_HOOK_MARKER + "\n"
+    'if [ -n "$AMUX_SESSION" ] && ! grep -q "^Amux-Session: " "$1" 2>/dev/null; then\n'
+    "  printf '\\nAmux-Session: %s\\n' \"$AMUX_SESSION\" >> \"$1\"\n"
+    "fi\n"
+)
+
+
+def _commit_stamp_enabled() -> bool:
+    """Whether to stamp commits with an Amux-Session trailer (toggle via
+    AMUX_COMMIT_STAMP in ~/.amux/server.env). Default ON. When off, the hook
+    installer instead removes any previously-installed stamp."""
+    return os.environ.get("AMUX_COMMIT_STAMP", "1").strip().lower() not in ("0", "false", "off", "no")
+
 
 def _install_amux_commit_hook(work_dir: str) -> None:
     """Install a non-destructive prepare-commit-msg hook that stamps commits
@@ -7052,6 +7066,9 @@ def _install_amux_commit_hook(work_dir: str) -> None:
         hooks_dir = os.path.join(git_dir, "hooks")
         os.makedirs(hooks_dir, exist_ok=True)
         hook_path = os.path.join(hooks_dir, "prepare-commit-msg")
+        if not _commit_stamp_enabled():
+            _remove_amux_commit_hook(hook_path)
+            return
         if os.path.exists(hook_path):
             try:
                 existing = open(hook_path).read()
@@ -7060,18 +7077,32 @@ def _install_amux_commit_hook(work_dir: str) -> None:
             if _AMUX_HOOK_MARKER in existing:
                 return  # already installed
             # Foreign hook present — append our stamping logic so both run.
-            snippet = (
-                "\n" + _AMUX_HOOK_MARKER + "\n"
-                'if [ -n "$AMUX_SESSION" ] && ! grep -q "^Amux-Session: " "$1" 2>/dev/null; then\n'
-                "  printf '\\nAmux-Session: %s\\n' \"$AMUX_SESSION\" >> \"$1\"\n"
-                "fi\n"
-            )
             with open(hook_path, "a") as fh:
-                fh.write(snippet)
+                fh.write(_AMUX_HOOK_SNIPPET)
             return
         with open(hook_path, "w") as fh:
             fh.write(_AMUX_HOOK_BODY)
         os.chmod(hook_path, 0o755)
+    except Exception:
+        pass
+
+
+def _remove_amux_commit_hook(hook_path: str) -> None:
+    """Undo a previously-installed stamp hook: delete our standalone hook, or
+    strip our appended snippet from a foreign hook. Best-effort."""
+    try:
+        if not os.path.exists(hook_path):
+            return
+        content = open(hook_path).read()
+        if _AMUX_HOOK_MARKER not in content:
+            return  # not ours — leave it alone
+        if content.strip() == _AMUX_HOOK_BODY.strip():
+            os.remove(hook_path)  # the file was solely ours
+            return
+        stripped = content.replace(_AMUX_HOOK_SNIPPET, "")
+        if stripped != content:
+            with open(hook_path, "w") as fh:
+                fh.write(stripped)
     except Exception:
         pass
 
