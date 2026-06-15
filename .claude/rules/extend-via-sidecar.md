@@ -14,7 +14,18 @@ Therefore, before adding a feature, prefer this order:
    to invoke, never inlined into `amux-server.py`.
 3. **In-file change** — only when (1) and (2) genuinely can't work. If you must
    touch `amux-server.py`, keep the change minimal and generic enough to upstream
-   (a reusable endpoint/event), not a personal one-off.
+   (a reusable endpoint/event), not a personal one-off. When a feature must be
+   first-class UI (a real dashboard tab) yet a sidecar/iframe won't do, still
+   **split the bulk into referenced files** and keep only a tiny inline footprint
+   — see the worked example below.
+
+**Worked example — the session chat tab** ([`../../docs/session-chat.md`](../../docs/session-chat.md)):
+a crucial, first-class dashboard tab that a sidecar/iframe couldn't deliver
+cleanly. Resolved the clause-3 way: feature code in `chat.js` / `chat.css` /
+`amux_chat.py` (upstream has none → conflict-immune), with a **~20-line inline
+footprint** in marked `# ── session-chat ──` fences and the Python module wired
+via `amux_chat.init(ctx)` dependency injection. This is the template for any
+future "must be in-file" feature: split first, inline minimally.
 
 Why: upstream tracks only `amux-server.py` and `skills/` — new files under
 `docs/`, `.claude/`, or a sidecar at repo root are never touched by the updater
