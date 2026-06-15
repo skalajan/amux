@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Anthropic Agentic Billing Change June 15, 2026: What Every Developer Must Know &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Starting June 15, 2026, Claude Agent SDK, claude -p, and Claude Code GitHub Actions move to a separate tiered credit pool — not your plan's interactive usage bucket. Complete breakdown: what changed, which tools are affected, new credit limits, cost math, and how to manage programmatic spend.">
+  <meta name="keywords" content="anthropic billing change june 2026, claude agent sdk billing, claude -p cost, claude code github actions billing, anthropic agentic billing, claude code sdk pricing 2026, claude agent sdk pricing, programmatic claude billing, claude max billing change, anthropic june 15 change">
+  <link rel="canonical" href="https://amux.io/guides/anthropic-agentic-billing-june-2026/">
+  <meta property="og:title" content="Anthropic Agentic Billing Change June 15, 2026: Complete Developer Guide">
+  <meta property="og:description" content="Starting June 15, 2026, Claude Agent SDK, claude -p, and GitHub Actions usage moves to a separate credit pool. Full breakdown of what changes, who is affected, new cost math, and how to stay within budget.">
+  <meta property="og:url" content="https://amux.io/guides/anthropic-agentic-billing-june-2026/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Anthropic Agentic Billing Change June 15, 2026: What Every Developer Must Know">
+  <meta name="twitter:description" content="Claude Agent SDK, claude -p, and GitHub Actions move to a separate credit pool on June 15. Full cost breakdown and what to do before the change.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Anthropic Agentic Billing June 2026","item":"https://amux.io/guides/anthropic-agentic-billing-june-2026/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Anthropic Agentic Billing Change June 15, 2026: What Every Developer Must Know","description":"Starting June 15, 2026, Claude Agent SDK, claude -p, and Claude Code GitHub Actions move off subscription limits onto a separate tiered credit pool. Full breakdown of what changed, who is affected, and how to manage programmatic spend.","url":"https://amux.io/guides/anthropic-agentic-billing-june-2026/","datePublished":"2026-06-12","dateModified":"2026-06-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/anthropic-agentic-billing-june-2026/"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What changed with Anthropic billing on June 15, 2026?","acceptedAnswer":{"@type":"Answer","text":"Starting June 15, 2026, programmatic Claude usage — Claude Agent SDK, claude -p (non-interactive mode), Claude Code GitHub Actions, and third-party apps authenticating via the Agent SDK — no longer counts against your subscription's interactive usage limits. Instead, it draws from a separate monthly credit pool included with your plan: $20/month for Pro, $100/month for Max 5x, and $200/month for Max 20x. These credits are billed at standard API rates. Once exhausted, additional programmatic usage is billed directly at API prices. Interactive Claude Code sessions (the terminal REPL) stay on the subscription rate-limit bucket as before."}},{"@type":"Question","name":"Does this affect regular Claude Code terminal usage?","acceptedAnswer":{"@type":"Answer","text":"No. Interactive Claude Code usage — the conversational terminal REPL where you type prompts and Claude responds — stays on your subscription rate-limit bucket exactly as before. The June 15 change only affects programmatic usage: claude -p (pipe mode), Claude Agent SDK invocations, Claude Code GitHub Actions, and third-party tools that authenticate via the Agent SDK."}},{"@type":"Question","name":"What is 'claude -p' and why does it matter?","acceptedAnswer":{"@type":"Answer","text":"'claude -p' is Claude Code's non-interactive pipe mode — it accepts a prompt via stdin and returns a response without requiring a terminal session. It is commonly used in shell scripts, CI/CD pipelines, Makefiles, and automation workflows. Starting June 15, 2026, every 'claude -p' invocation draws from the programmatic credit pool (not subscription limits), which affects any automated pipeline that calls Claude programmatically."}},{"@type":"Question","name":"What are the new credit pool amounts?","acceptedAnswer":{"@type":"Answer","text":"The monthly credit pools included with each Claude plan, effective June 15, 2026: Pro plan — $20/month in credits; Max 5x plan — $100/month in credits; Max 20x plan — $200/month in credits. These credits are consumed at standard API list prices (not the discounted subscription rate). When credits are exhausted, usage bills directly to your payment method at API rates. Interactive Claude Code usage does NOT draw from these credits."}},{"@type":"Question","name":"Which tools are affected by the June 15 billing change?","acceptedAnswer":{"@type":"Answer","text":"The following tools are moved to the programmatic credit pool: (1) Claude Agent SDK — any code using the Python or TypeScript SDK to call Claude programmatically; (2) claude -p — the non-interactive pipe mode of Claude Code; (3) Claude Code GitHub Actions — any CI/CD workflow using the official Claude Code Action; (4) Third-party applications — any app that authenticates via the Agent SDK using your subscription. The interactive Claude Code terminal is NOT affected."}},{"@type":"Question","name":"How much do Agent SDK calls actually cost?","acceptedAnswer":{"@type":"Answer","text":"Costs depend on the model and token counts. At standard API prices for Claude Opus 4.6 (the default for Claude Code): input tokens cost $15 per million, output tokens cost $75 per million, and prompt cache writes cost $3.75 per million. A typical Agent SDK task using 50K input + 10K output tokens costs approximately $1.50. At $20/month in credits (Pro plan), that is roughly 13 Agent SDK tasks before credits are exhausted. Workflows with high output token counts (code generation) hit limits faster than mostly-read tasks."}},{"@type":"Question","name":"What happens after the credit pool is exhausted?","acceptedAnswer":{"@type":"Answer","text":"After the monthly credit pool is exhausted, programmatic usage (Agent SDK, claude -p, GitHub Actions) continues but bills directly to your payment method at standard API list prices. There is no hard cutoff that stops your agents mid-task. You will receive usage billing on top of your subscription fee. To avoid surprise charges, set up billing alerts in your Anthropic account settings and monitor programmatic usage separately from interactive usage."}},{"@type":"Question","name":"How does this affect Claude Code GitHub Actions?","acceptedAnswer":{"@type":"Answer","text":"Every Claude Code GitHub Action run now draws from the programmatic credit pool. A CI/CD pipeline that calls Claude for code review, test generation, or automated PRs will consume credits proportional to the tokens processed. For a team running 50 CI/CD jobs per day with a 10K token average per job, that is approximately 1.5M tokens/month — at Sonnet 4.6 rates ($3/M input, $15/M output), roughly $12-18/month in programmatic credits. This fits within the Pro tier's $20 credit but would exceed it for heavier workloads requiring upgrade to Max 5x."}},{"@type":"Question","name":"Can I use amux to track programmatic spending?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux reads Claude Code JSONL transcript files and aggregates token usage per session, letting you see which sessions (interactive vs programmatic) are consuming the most tokens. For sessions launched via claude -p or the Agent SDK, amux's token tracking shows daily and per-task token counts that map directly to credit pool consumption. This visibility helps you identify expensive automation workflows before they exhaust the monthly pool. See the token-spend tracking guide for setup instructions."}}]}</script>
+
+  <style>
+    .deadline-alert { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.35); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; display: flex; align-items: flex-start; gap: 0.75rem; }
+    .deadline-alert .alert-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 0.05rem; }
+    .deadline-alert strong { color: #f87171; }
+    .tier-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.85rem; }
+    .tier-table th, .tier-table td { padding: 0.65rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .tier-table th { font-weight: 600; background: var(--bg-card, #232838); }
+    .tier-table tr:last-child td { border-bottom: none; }
+    .cost-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.35rem 1.5rem; margin-bottom: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .cost-card h4 { margin: 0 0 0.6rem; font-size: 0.98rem; }
+    .cost-card .math { background: rgba(0,0,0,0.3); border-radius: 6px; padding: 0.7rem 0.9rem; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.7; margin: 0.5rem 0; }
+    .cost-card .verdict { font-size: 0.85rem; margin: 0.5rem 0 0; color: var(--dim); }
+    .affected-list { list-style: none; margin: 0; padding: 0; }
+    .affected-list li { padding: 0.6rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; gap: 0.75rem; align-items: flex-start; font-size: 0.9rem; }
+    .affected-list li:last-child { border-bottom: none; }
+    .check { color: #6ee7b7; }
+    .cross { color: #f87171; }
+    .neutral { color: #94a3b8; }
+    .warn-box { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0; font-size: 0.9rem; }
+    .warn-box strong { color: #fbbf24; }
+    .info-box { background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0; font-size: 0.9rem; }
+    .info-box strong { color: #60a5fa; }
+    .stat-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .stat-box { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
+    .stat-box .stat-num { font-size: 1.8rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
+    .stat-box .stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
+    @media (max-width: 600px) { .stat-row { grid-template-columns: 1fr; } .tier-table { font-size: 0.78rem; } .tier-table th, .tier-table td { padding: 0.45rem 0.4rem; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Anthropic Agentic Billing June 2026</span></div>
+
+    <h1>Anthropic Agentic Billing Change: What Every Developer Must Know (June 15, 2026)</h1>
+    <p class="subtitle">Starting <strong>June 15, 2026</strong>, <a href="https://docs.anthropic.com/en/docs/agents/sdk" target="_blank" rel="noopener">Claude Agent SDK</a>, <code>claude&nbsp;-p</code>, and <a href="https://docs.github.com/en/actions" target="_blank" rel="noopener">Claude Code GitHub Actions</a> move off your plan&rsquo;s subscription limits onto a <strong>separate tiered credit pool</strong>. Here is the complete breakdown of what changed, who is affected, and how to manage costs before and after the change.</p>
+
+    <div class="deadline-alert">
+      <span class="alert-icon">&#x26A0;&#xFE0F;</span>
+      <div><strong>June 15, 2026 (3 days away).</strong> Programmatic Claude usage &mdash; Agent SDK, <code>claude -p</code>, GitHub Actions, third-party SDK apps &mdash; stops counting against subscription interactive limits. A new credit pool activates. Interactive <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> terminal sessions are unchanged. Check your <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">Anthropic console</a> to set billing alerts before June 15.</div>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>TL;DR:</strong> Programmatic Claude usage gets its own credit pool matching your plan price: <strong>Pro = $20/mo</strong>, <strong>Max 5x = $100/mo</strong>, <strong>Max 20x = $200/mo</strong>. Credits bill at standard API rates. Once exhausted, usage bills beyond the subscription. Interactive <code>claude</code> terminal sessions are NOT affected. CI/CD pipelines, shell scripts using <code>claude -p</code>, and Agent SDK code all draw from the new pool starting June 15.
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-changed" style="color:var(--dim);text-decoration:none;">What Changed and Why</a></li>
+        <li><a href="#affected" style="color:var(--dim);text-decoration:none;">Which Tools Are Affected</a></li>
+        <li><a href="#credit-pools" style="color:var(--dim);text-decoration:none;">New Credit Pool Tiers</a></li>
+        <li><a href="#cost-math" style="color:var(--dim);text-decoration:none;">Cost Math: Real Examples</a></li>
+        <li><a href="#github-actions" style="color:var(--dim);text-decoration:none;">Impact on Claude Code GitHub Actions</a></li>
+        <li><a href="#checklist" style="color:var(--dim);text-decoration:none;">Pre-June 15 Checklist</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring Programmatic Spend with amux</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─── WHAT CHANGED ─── -->
+    <h2 id="what-changed">What Changed and Why</h2>
+
+    <p>Before June 15, 2026, all Claude usage &mdash; whether you typed a prompt interactively in the <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> terminal or called the <a href="https://docs.anthropic.com/en/docs/agents/sdk" target="_blank" rel="noopener">Agent SDK</a> from a Python script &mdash; drew from the same rate-limit bucket included with your plan. A Claude Pro subscriber got a single pool of usage that covered everything: interactive conversations, <code>claude -p</code> calls in shell scripts, SDK invocations, and <a href="https://docs.github.com/en/actions" target="_blank" rel="noopener">GitHub Actions</a>.</p>
+
+    <p>Starting <strong>June 15, 2026</strong>, <a href="https://support.claude.com/en/articles/15036540" target="_blank" rel="noopener">Anthropic splits this into two buckets</a>:</p>
+
+    <ul>
+      <li><strong>Interactive bucket</strong> &mdash; Claude Code terminal (REPL), claude.ai web, Claude desktop app. Stays on subscription rate limits, unchanged.</li>
+      <li><strong>Programmatic credit pool</strong> &mdash; Claude Agent SDK, <code>claude -p</code>, Claude Code GitHub Actions, third-party apps via Agent SDK. Gets its own monthly credit allowance, billed at API rates. Once exhausted, usage bills as pay-as-you-go API charges on top of your subscription.</li>
+    </ul>
+
+    <p>Anthropic's reasoning: agentic and programmatic workloads have fundamentally different cost profiles from interactive chat. A single Agent SDK workflow can consume more tokens in one run than weeks of interactive chat. Separating the pools lets Anthropic offer predictable subscription pricing for interactive use while giving programmatic users a transparent, scalable cost model.</p>
+
+    <div class="info-box">
+      <strong>Confirmed by primary sources.</strong> This change is documented in <a href="https://support.claude.com/en/articles/15036540" target="_blank" rel="noopener">Anthropic's official support article</a> and independently confirmed by <a href="https://zed.dev/blog" target="_blank" rel="noopener">Zed's engineering blog</a>, <a href="https://thenewstack.io/" target="_blank" rel="noopener">The New Stack</a>, <a href="https://techtimes.com/" target="_blank" rel="noopener">TechTimes</a>, and developer community discussions on <a href="https://news.ycombinator.com/" target="_blank" rel="noopener">Hacker News</a>.
+    </div>
+
+    <!-- ─── AFFECTED TOOLS ─── -->
+    <h2 id="affected">Which Tools Are Affected</h2>
+
+    <ul class="affected-list">
+      <li>
+        <span class="cross">&#x25B6;</span>
+        <div>
+          <strong><a href="https://docs.anthropic.com/en/docs/agents/sdk" target="_blank" rel="noopener">Claude Agent SDK</a></strong> (Python + TypeScript)<br>
+          <span style="color:var(--muted);font-size:0.86rem;">Any code using <code>anthropic.Anthropic()</code> or <code>@anthropic-ai/sdk</code> to call Claude programmatically. This includes agent frameworks, scripts, batch processing, and custom tooling built on the SDK.</span>
+        </div>
+      </li>
+      <li>
+        <span class="cross">&#x25B6;</span>
+        <div>
+          <strong><code>claude -p</code> &mdash; Claude Code non-interactive mode</strong><br>
+          <span style="color:var(--muted);font-size:0.86rem;">The pipe/print mode of Claude Code, used in shell scripts, Makefiles, CI/CD hooks, and automation. Example: <code>echo "review this code" | claude -p</code> or <code>claude -p --output-format json "summarize changes"</code>.</span>
+        </div>
+      </li>
+      <li>
+        <span class="cross">&#x25B6;</span>
+        <div>
+          <strong><a href="https://docs.anthropic.com/en/docs/claude-code/github-actions" target="_blank" rel="noopener">Claude Code GitHub Actions</a></strong><br>
+          <span style="color:var(--muted);font-size:0.86rem;">The official Anthropic GitHub Action that runs Claude Code in CI/CD pipelines — for automated code review, PR summaries, test generation, and documentation updates.</span>
+        </div>
+      </li>
+      <li>
+        <span class="cross">&#x25B6;</span>
+        <div>
+          <strong>Third-party applications via Agent SDK</strong><br>
+          <span style="color:var(--muted);font-size:0.86rem;">Any third-party tool that authenticates using your Claude subscription through the Agent SDK (rather than an API key). If a tool asks you to log in with your Claude subscription, it may be affected.</span>
+        </div>
+      </li>
+      <li>
+        <span class="check">&#x25B6;</span>
+        <div>
+          <strong>Interactive Claude Code terminal &mdash; NOT affected</strong><br>
+          <span style="color:var(--muted);font-size:0.86rem;">The conversational REPL you open in a terminal, type prompts into, and read responses from. This stays on subscription rate limits exactly as before. Your daily interactive workflow is unchanged.</span>
+        </div>
+      </li>
+    </ul>
+
+    <!-- ─── CREDIT POOLS ─── -->
+    <h2 id="credit-pools">New Credit Pool Tiers</h2>
+
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="stat-num">$20</div>
+        <div class="stat-label">Pro plan<br>monthly credit pool</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">$100</div>
+        <div class="stat-label">Max 5x plan<br>monthly credit pool</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">$200</div>
+        <div class="stat-label">Max 20x plan<br>monthly credit pool</div>
+      </div>
+    </div>
+
+    <p>Each plan includes a monthly credit pool for programmatic usage, with the credit amount matching the plan's subscription price:</p>
+
+    <table class="tier-table">
+      <thead>
+        <tr><th>Plan</th><th>Subscription Cost</th><th>Programmatic Credit Pool</th><th>Interactive Usage</th><th>After Credits Exhausted</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Claude Pro</strong></td>
+          <td>$20/month</td>
+          <td><strong>$20/month</strong> at API rates</td>
+          <td>Unchanged rate limits</td>
+          <td>Pay-as-you-go API rates</td>
+        </tr>
+        <tr>
+          <td><strong>Claude Max 5x</strong></td>
+          <td>$100/month</td>
+          <td><strong>$100/month</strong> at API rates</td>
+          <td>5x subscription limits</td>
+          <td>Pay-as-you-go API rates</td>
+        </tr>
+        <tr>
+          <td><strong>Claude Max 20x</strong></td>
+          <td>$200/month</td>
+          <td><strong>$200/month</strong> at API rates</td>
+          <td>20x subscription limits</td>
+          <td>Pay-as-you-go API rates</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="warn-box">
+      <strong>Credits are not "free" in the traditional sense.</strong> The credit pool is included with your subscription but consumed at standard API list prices — the same rates you'd pay if you had a direct API key. The credits don't go further just because they're bundled. A $20 credit pool consumed by Claude Opus 4.6 at $15/M input tokens yields approximately 1.33M input tokens, or about 13–20 typical Agent SDK tasks.
+    </div>
+
+    <!-- ─── COST MATH ─── -->
+    <h2 id="cost-math">Cost Math: Real Examples</h2>
+
+    <p>The following examples use <a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Anthropic's standard API pricing</a> for the models commonly used with Claude Code. All costs are in USD.</p>
+
+    <div class="cost-card">
+      <h4>Example 1: Daily shell scripts using <code>claude -p</code></h4>
+      <div class="math">5 script calls/day × 30 days = 150 calls/month
+Each call: ~5K input + ~1K output tokens
+Input cost: 150 × 5,000 × ($15 / 1,000,000) = $11.25/mo
+Output cost: 150 × 1,000 × ($75 / 1,000,000) = $11.25/mo
+Total: ~$22.50/month</div>
+      <p class="verdict">Result: Exceeds the Pro plan's $20 credit pool. You'd pay ~$2.50 as overage at API rates. Consider upgrading to Max 5x or switching lighter automation to Sonnet 4.6 (3–5x cheaper output).</p>
+    </div>
+
+    <div class="cost-card">
+      <h4>Example 2: Agent SDK workflow for nightly code review</h4>
+      <div class="math">1 nightly run × 30 days = 30 runs/month
+Each run: ~50K input + ~15K output tokens (large codebase review)
+Input cost: 30 × 50,000 × ($15 / 1,000,000) = $22.50/mo
+Output cost: 30 × 15,000 × ($75 / 1,000,000) = $33.75/mo
+Total: ~$56.25/month</div>
+      <p class="verdict">Result: Exceeds both Pro ($20) and Max 5x ($100 if combined with other usage) credit pools. Consider batching reviews (weekly instead of nightly), using Sonnet 4.6 for initial triage, or routing to the direct API with a separate key.</p>
+    </div>
+
+    <div class="cost-card">
+      <h4>Example 3: Lightweight automation — commit message generation</h4>
+      <div class="math">10 commits/day × 22 working days = 220 calls/month
+Each call: ~2K input (diff) + ~0.2K output (commit message)
+Input cost: 220 × 2,000 × ($3 / 1,000,000) = $1.32/mo  (Sonnet 4.6)
+Output cost: 220 × 200 × ($15 / 1,000,000) = $0.66/mo
+Total: ~$2/month</div>
+      <p class="verdict">Result: Well within the Pro plan's $20 credit pool. Lightweight <code>claude -p</code> automation using Sonnet 4.6 for simple tasks is very cost-effective even after the billing change.</p>
+    </div>
+
+    <div class="cost-card">
+      <h4>Example 4: amux parallel agent fleet (10 sessions, overnight)</h4>
+      <div class="math">10 agents × 4 hours/night × 22 nights/month = 880 agent-hours
+Average: 25K input + 8K output tokens per agent per hour
+Input cost: 880 × 25,000 × ($15 / 1,000,000) = $330/mo
+Output cost: 880 × 8,000 × ($75 / 1,000,000) = $528/mo
+Total: ~$858/month</div>
+      <p class="verdict">Result: A 10-agent overnight fleet is a heavy workload that far exceeds any subscription credit pool. For this scale, use a <a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">direct API key</a> via <code>ANTHROPIC_API_KEY</code> environment variable rather than subscription auth. <a href="/guides/ai-coding-agent-costs/">See the full cost guide</a> for fleet cost optimization strategies.</p>
+    </div>
+
+    <!-- ─── GITHUB ACTIONS ─── -->
+    <h2 id="github-actions">Impact on Claude Code GitHub Actions</h2>
+
+    <p>The <a href="https://docs.anthropic.com/en/docs/claude-code/github-actions" target="_blank" rel="noopener">Claude Code GitHub Action</a> lets teams automate code review, PR summaries, test generation, and documentation updates in their CI/CD pipelines. Starting June 15, every Action run draws from the programmatic credit pool.</p>
+
+    <p>Common Action use cases and estimated monthly costs (assuming 50 PRs/month for a small team):</p>
+
+    <table class="tier-table">
+      <thead>
+        <tr><th>Use Case</th><th>Tokens per Run</th><th>50 PRs/month (Sonnet 4.6)</th><th>50 PRs/month (Opus 4.6)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>PR summary</td>
+          <td>~3K in / ~0.5K out</td>
+          <td>~$1/mo</td>
+          <td>~$3/mo</td>
+        </tr>
+        <tr>
+          <td>Code review comments</td>
+          <td>~15K in / ~3K out</td>
+          <td>~$4.50/mo</td>
+          <td>~$15/mo</td>
+        </tr>
+        <tr>
+          <td>Test file generation</td>
+          <td>~20K in / ~8K out</td>
+          <td>~$7.50/mo</td>
+          <td>~$25/mo</td>
+        </tr>
+        <tr>
+          <td>Full automated review pipeline</td>
+          <td>~50K in / ~15K out</td>
+          <td>~$18/mo</td>
+          <td>~$56/mo</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Claude Sonnet 4.6</a> pricing: $3/M input, $15/M output. <a href="https://www.anthropic.com/claude/opus" target="_blank" rel="noopener">Claude Opus 4.6</a> pricing: $15/M input, $75/M output. For CI/CD automation, <strong>Sonnet 4.6 is almost always the right choice</strong> — it costs 5× less than Opus for similar code review quality on most tasks.</p>
+
+    <div class="info-box">
+      <strong>Tip for GitHub Actions.</strong> Set the model explicitly in your Action config: <code>model: claude-sonnet-4-6</code> to avoid accidentally using Opus for routine automation. Reserve Opus for tasks requiring deep reasoning (architectural analysis, complex bug diagnosis).
+    </div>
+
+    <!-- ─── CHECKLIST ─── -->
+    <h2 id="checklist">Pre-June 15 Checklist</h2>
+
+    <ol style="line-height:2.2;font-size:0.93rem;">
+      <li><strong>Audit programmatic usage.</strong> Run <code>grep -r "claude -p\|anthropic\|claude-code" .github/ scripts/ Makefile</code> to find every place your automation calls Claude.</li>
+      <li><strong>Estimate monthly token volume.</strong> Use the cost examples above to project whether your usage fits within your plan's credit pool. If it doesn't, upgrade your plan or switch to direct API key auth.</li>
+      <li><strong>Set billing alerts.</strong> In the <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">Anthropic Console</a>, set spending alerts at 50%, 80%, and 100% of your credit pool so you're notified before hitting overage charges.</li>
+      <li><strong>Choose the right model for each task.</strong> Use <a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Claude Sonnet 4.6</a> for routine automation (code review, summaries, formatting) and Opus only for complex reasoning tasks. This alone can reduce costs by 5×.</li>
+      <li><strong>For heavy workloads, use a direct API key.</strong> Set <code>ANTHROPIC_API_KEY</code> in your environment and Claude Code / SDK tools will use it instead of subscription auth, bypassing the credit pool entirely and billing directly at API rates.</li>
+      <li><strong>Review third-party integrations.</strong> Check if any tools your team uses authenticate via your Claude subscription. They'll now draw from the credit pool. Check the tool's docs for a dedicated API key path.</li>
+      <li><strong>Update <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> session configs.</strong> If you launch amux agents via <code>claude -p</code> or the Agent SDK (rather than the interactive terminal), those sessions now draw from the credit pool. See <a href="/guides/token-spend-tracking/">token spend tracking</a> to monitor them.</li>
+    </ol>
+
+    <!-- ─── MONITORING ─── -->
+    <h2 id="monitoring">Monitoring Programmatic Spend with amux</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> reads <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> JSONL transcript files and shows per-session token usage in the web dashboard. After June 15, this lets you see which agent sessions are consuming programmatic credits versus interactive quota.</p>
+
+    <ul>
+      <li>Sessions launched interactively (where you type prompts) use the subscription interactive bucket.</li>
+      <li>Sessions launched via <code>claude -p</code>, shell hooks, or Agent SDK calls draw from the credit pool.</li>
+      <li>amux's token tracking shows daily token counts per session, letting you identify high-cost automation and set session-level spending thresholds.</li>
+    </ul>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;margin:1.5rem 0;">
+      <code style="display:block;font-size:0.85rem;line-height:1.7;"># View per-session token usage in amux
+curl -sk http://localhost:8822/api/sessions | python3 -c "
+import json, sys
+sessions = json.load(sys.stdin)
+for s in sessions:
+    tokens = s.get('token_count', 0)
+    print(f\"{s['name']:30} {tokens:>10,} tokens\")
+"
+
+# Or open the amux dashboard at http://localhost:8822
+# → Sessions tab → each session shows token usage</code>
+    </div>
+
+    <p>For a more detailed breakdown, use the <a href="/guides/token-spend-tracking/">token spend tracking guide</a>, which covers setting up per-session JSONL monitoring, daily cost reports, and Slack/email alerts when a session exceeds a budget threshold.</p>
+
+    <!-- ─── FAQ ─── -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Does this affect my regular Claude Code terminal sessions?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">No. Interactive Claude Code usage — the terminal REPL where you type prompts and read responses — stays on subscription rate limits exactly as before. The June 15 change only affects programmatic usage: <code>claude -p</code>, Agent SDK calls, GitHub Actions, and third-party apps via the SDK.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">What happens when I exhaust the monthly credit pool?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">Usage continues uninterrupted but bills as pay-as-you-go API charges on top of your subscription. There is no hard cutoff. Your agents will not fail mid-task. You will see overage charges on your next billing statement. Set spending alerts in the <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">Anthropic Console</a> to be notified before hitting the limit.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">How do I avoid overage charges?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">Three strategies: (1) Use <a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Claude Sonnet 4.6</a> instead of Opus for routine automation — 5× cheaper with comparable results for most tasks. (2) Set an <code>ANTHROPIC_API_KEY</code> environment variable for heavy workloads — SDK and <code>claude -p</code> tools use the key directly, bypassing the subscription credit pool. (3) Batch operations to reduce token overhead (fewer, larger calls instead of many small calls).</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Is claude -p (pipe mode) the same as Claude Code interactive mode?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;"><code>claude -p</code> (or <code>claude --print</code>) is Claude Code's non-interactive mode — it accepts a prompt as an argument or via stdin and exits after responding. It is used in scripts, Makefiles, and CI/CD. It is different from the interactive terminal REPL (where you open a conversation and type back and forth). As of June 15, 2026, <code>claude -p</code> draws from the programmatic credit pool, not the interactive bucket.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Should I switch to a direct API key instead of subscription auth?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">For heavy programmatic workloads that would exceed your credit pool, a direct <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">API key</a> is cleaner — you pay exactly what you use, with no subscription bundle overhead. Set <code>ANTHROPIC_API_KEY</code> in your environment and <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, Agent SDK tools, and GitHub Actions will use it automatically. For lighter automation that fits within the credit pool, subscription auth is simpler — no key rotation required.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Do the credit pools roll over month to month?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">No. Based on Anthropic's standard credit policies, unused programmatic credits do not roll over to the next month. Credits reset on your billing cycle date. Plan usage accordingly — don't save heavy automation work for end-of-month if you have unused credits; start CI/CD pipelines early in the cycle.</div>
+    </details>
+
+    <!-- ─── CTA ─── -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;margin:3rem 0;text-align:center;">
+      <h3 style="margin:0 0 0.75rem;">Track Token Spend Across All Your Agent Sessions</h3>
+      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux shows per-session token usage, daily cost estimates, and multi-agent spend visibility — helping you stay within budget before and after the June 15 billing change.</p>
+      <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#6ee7b7;color:#0d1117;font-weight:700;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">View on GitHub</a>
+        <a href="/guides/token-spend-tracking/" style="border:1px solid var(--border);color:var(--dim);font-weight:600;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">Token Spend Tracking Guide</a>
+      </div>
+    </div>
+
+    <!-- ─── RELATED ─── -->
+    <h3>Related Guides</h3>
+    <ul style="font-size:0.9rem;line-height:2.2;">
+      <li><a href="/guides/ai-coding-agent-costs/">AI Coding Agent Costs in 2026: The Complete Breakdown</a></li>
+      <li><a href="/guides/claude-code-headless/">Claude Code Headless Mode &mdash; The Complete Self-Hosting Guide</a></li>
+      <li><a href="/guides/gemini-cli-to-antigravity-cli/">Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI</a></li>
+      <li><a href="/guides/claude-code-max-plan/">How to Get 10x More Out of Your Claude Code Max Plan</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents in Parallel: Cost &amp; Architecture Guide</a></li>
+    </ul>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <strong>amux</strong>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        <a href="/docs/">Documentation</a>
+        <a href="/guides/">Guides</a>
+        <a href="/blog/">Blog</a>
+        <a href="/pricing/">Pricing</a>
+      </div>
+      <div class="footer-col">
+        <strong>Guides</strong>
+        <a href="/guides/getting-started/">Getting Started</a>
+        <a href="/guides/claude-code-tutorial/">Claude Code Tutorial</a>
+        <a href="/guides/ai-coding-agent-costs/">Cost Guide</a>
+        <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a>
+      </div>
+      <div class="footer-col">
+        <strong>Compare</strong>
+        <a href="/compare/">All Comparisons</a>
+        <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>
+        <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a>
+        <a href="/compare/amux-vs-goose/">amux vs Goose</a>
+      </div>
+    </div>
+    <p class="footer-copy">&copy; 2026 <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek, Inc.</a> &mdash; amux is MIT licensed. <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
+  </footer>
+
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux').then(r=>r.json()).then(d=>{
+      const el = document.getElementById('gh-stars');
+      if(el && d.stargazers_count) el.textContent = '★ ' + (d.stargazers_count >= 1000 ? (d.stargazers_count/1000).toFixed(1)+'k' : d.stargazers_count);
+    }).catch(()=>{});
+    document.querySelectorAll('details').forEach(d=>{
+      d.addEventListener('toggle', ()=>{
+        const icon = d.querySelector('summary span');
+        if(icon) icon.textContent = d.open ? '−' : '+';
+      });
+    });
+  </script>
+</body>
+</html>

@@ -2457,6 +2457,8 @@ def _at_shell_prompt(clean_output: str) -> bool:
     return False
 
 
+_snapshot_running = False
+
 def _snapshot_all_sessions():
     """Capture scrollback for health checks on all running sessions.
 
@@ -2470,6 +2472,16 @@ def _snapshot_all_sessions():
     4. Auto-restart: if CC_AUTO_CONTINUE=1 and Claude has exited to a shell prompt,
        restart it automatically (handles context-limit exits mid-task).
     """
+    global _snapshot_running
+    if _snapshot_running:
+        return
+    _snapshot_running = True
+    try:
+        _snapshot_all_sessions_inner()
+    finally:
+        _snapshot_running = False
+
+def _snapshot_all_sessions_inner():
     # Fetch running tmux sessions once to avoid spawning a subprocess per session
     running_sessions = set()
     try:
@@ -2490,7 +2502,7 @@ def _snapshot_all_sessions():
         if tmux_name(name) not in running_sessions:
             continue
         try:
-            output = tmux_capture(name, 5000)
+            output = tmux_capture(name, 500)
             if not output:
                 continue
 
@@ -8398,7 +8410,8 @@ def _email_sync() -> None:
     slog(f"[email] syncing lookback={lookback_seconds//60}min")
     messages = _mail_fetch_messages(lookback_seconds)
     if messages is None:
-        return  # timed out — don't update last_synced so next run retries with same window
+        _email_set_synced(now_ts)  # advance past the window to break timeout spirals
+        return
     for msg in messages:
         # Use message-id as dedup key; fall back to subject+date hash
         msg_id = msg["msg_id"] or f"{msg['subject']}|{msg['date']}"
@@ -18790,13 +18803,18 @@ async function refreshPeek() {
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     lastPeekHTML = newHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
-    applyPeekSearch(hasSearch);
+    // When user has scrolled up, skip DOM update to avoid fidgeting the view.
+    // Buffer in lastPeekHTML and flush when they resume.
+    if (!_peekScrollLocked || hasSearch) {
+      applyPeekSearch(hasSearch);
+    }
     if (!_peekScrollLocked && atBottom && !hasSearch) {
       body.scrollTop = body.scrollHeight;
       _hideScrollLockBadge(body);
     } else if (_peekScrollLocked) {
       _showScrollLockBadge(body, () => {
         _peekScrollLocked = false;
+        applyPeekSearch(false);
         body.scrollTop = body.scrollHeight;
         _hideScrollLockBadge(body);
       });

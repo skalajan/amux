@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Gemini CLI stops serving requests on June 18, 2026. This complete migration guide covers what changes, what stays the same, step-by-step migration to Antigravity CLI (agy), pricing, and how to run Antigravity sessions alongside Claude Code with amux.">
+  <meta name="keywords" content="gemini cli deprecated, gemini cli migration, gemini cli to antigravity, antigravity cli setup, what replaces gemini cli, gemini cli june 18, agy cli, antigravity cli guide, gemini cli shutdown, migrate from gemini cli, antigravity cli vs claude code, gemini cli replacement 2026">
+  <link rel="canonical" href="https://amux.io/guides/gemini-cli-to-antigravity-cli/">
+  <meta property="og:title" content="Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI (2026)">
+  <meta property="og:description" content="Gemini CLI stops serving requests June 18, 2026. Step-by-step migration guide to Antigravity CLI — what changes, what stays, and how to update your workflow.">
+  <meta property="og:url" content="https://amux.io/guides/gemini-cli-to-antigravity-cli/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI">
+  <meta name="twitter:description" content="Step-by-step migration from Gemini CLI to Antigravity CLI. What changes, what stays the same, new pricing, and how to update your scripts before June 18.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Gemini CLI to Antigravity CLI Migration","item":"https://amux.io/guides/gemini-cli-to-antigravity-cli/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI (2026)","description":"Gemini CLI stops serving requests on June 18, 2026. This complete migration guide covers what changes, step-by-step migration to Antigravity CLI, pricing, and how to run Antigravity sessions alongside Claude Code with amux.","url":"https://amux.io/guides/gemini-cli-to-antigravity-cli/","datePublished":"2026-06-12","dateModified":"2026-06-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/gemini-cli-to-antigravity-cli/"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is replacing Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Google is replacing Gemini CLI with Antigravity CLI — a terminal-native coding agent that is part of the broader Google Antigravity 2.0 platform. The CLI command changes from 'gemini' to 'agy'. Antigravity CLI has been available to all users since May 19, 2026, and Gemini CLI stops serving requests on June 18, 2026 for Google AI Pro, Ultra, and free-tier users. Enterprise customers have a longer migration window."}},{"@type":"Question","name":"When does Gemini CLI stop working?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI stops serving requests on June 18, 2026 for Google AI Pro/Ultra and individual free-tier users. Google announced this on May 19, 2026 in a Developers Blog post. Enterprise Gemini CLI customers have a separate, longer migration timeline. After June 18, running 'gemini' in your terminal will return an error pointing you to migrate to Antigravity CLI."}},{"@type":"Question","name":"What is the Antigravity CLI command?","acceptedAnswer":{"@type":"Answer","text":"The Antigravity CLI command is 'agy' (not 'gemini'). This is the primary breaking change in the migration. Any shell scripts, CI/CD pipelines, or aliases that call 'gemini' need to be updated to call 'agy'. Most flags and interactive workflows carry over, but you should verify your specific commands against the official Antigravity CLI documentation."}},{"@type":"Question","name":"Is Antigravity CLI open source?","acceptedAnswer":{"@type":"Answer","text":"No. Antigravity CLI is not open source, unlike Gemini CLI which was available under the Apache 2.0 license on GitHub. Google positioned the switch to Antigravity as a move to a 'premier agent-first development platform' — a more enterprise-grade offering that does not carry the open-source license of its predecessor."}},{"@type":"Question","name":"Do my Gemini CLI extensions still work in Antigravity CLI?","acceptedAnswer":{"@type":"Answer","text":"Extensions have been renamed to plugins in Antigravity CLI. The functionality is preserved but the configuration format and discovery paths may differ. Google's announcement confirmed that Extensions are now called Antigravity plugins, and a migration path exists. Check the official Antigravity CLI documentation for the updated plugin format and any changes to the configuration schema."}},{"@type":"Question","name":"Does Antigravity CLI still have a 1M token context window?","acceptedAnswer":{"@type":"Answer","text":"Yes. Antigravity CLI retains the 1 million token context window that Gemini CLI was known for. The underlying Gemini 3.5 Flash and Pro models accessible through Antigravity support the same 1M-token context. This is one of Antigravity CLI's key advantages over Claude Code, which has a 200K token context window."}},{"@type":"Question","name":"What happens to my Gemini CLI free tier?","acceptedAnswer":{"@type":"Answer","text":"The Gemini CLI free tier (1,000 requests/day with a Google account) ends with Gemini CLI on June 18, 2026. Antigravity CLI is tied to Google AI Pro and Ultra plans. The individual free-tier access path that Gemini CLI offered is not directly replicated in Antigravity — you need a Google AI Pro subscription (part of Google One AI Premium or a standalone plan) to use Antigravity CLI."}},{"@type":"Question","name":"Can I use Antigravity CLI with amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages any terminal agent session through tmux — Claude Code, Codex CLI, Aider, and now Antigravity CLI. You can run 'agy' sessions in amux-managed tmux windows alongside Claude Code sessions, track their output from the web dashboard, and coordinate tasks across agents using the shared kanban board. Just replace 'gemini' with 'agy' in your amux session launch commands."}},{"@type":"Question","name":"What is Google Antigravity?","acceptedAnswer":{"@type":"Answer","text":"Google Antigravity 2.0 is Google's agent-first development platform, announced at Google I/O on May 19, 2026. It includes a VS Code fork (the Antigravity IDE), a CLI tool (agy), a Python/TypeScript SDK, Managed Agents in the Gemini API, and an Enterprise Agent Platform. Antigravity replaces Gemini CLI, Gemini Code Assist IDE extensions, and positions Google to compete directly with Claude Code and Cursor in the agentic coding market. It runs on Gemini 3.5 Flash with a 1M-token context window."}},{"@type":"Question","name":"What is the difference between Gemini CLI and Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI (now Antigravity CLI) and Claude Code are both terminal-native coding agents but differ in key dimensions: Antigravity CLI uses Gemini models with a 1M token context window; Claude Code uses Anthropic's Claude models (Opus 4.6) with a 200K context window. Antigravity CLI's free tier is ending; Claude Code has no free tier but Pro starts at $20/month. Claude Code scored 80.8% on SWE-bench Verified versus Gemini 3.1 Pro at 80.6% — near parity for agentic coding tasks. Both support hooks, subagents, and multi-agent orchestration. amux can run both in parallel from one dashboard."}}]}</script>
+
+  <style>
+    .deadline-alert { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.35); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; display: flex; align-items: flex-start; gap: 0.75rem; }
+    .deadline-alert .alert-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 0.05rem; }
+    .deadline-alert strong { color: #f87171; }
+    .step-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .step-card .step-num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: rgba(110,231,183,0.15); border-radius: 50%; font-size: 0.82rem; font-weight: 700; color: #6ee7b7; margin-right: 0.6rem; flex-shrink: 0; }
+    .step-card h3 { display: flex; align-items: center; margin: 0 0 0.75rem; font-size: 1.05rem; }
+    .step-card code { display: block; background: rgba(0,0,0,0.35); border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.84rem; margin: 0.5rem 0; overflow-x: auto; }
+    .change-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.85rem; }
+    .change-table th, .change-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .change-table th { font-weight: 600; background: var(--bg-card, #232838); }
+    .change-table tr:last-child td { border-bottom: none; }
+    .change-table .old { color: #f87171; }
+    .change-table .new { color: #6ee7b7; }
+    .change-table .same { color: #60a5fa; }
+    .cmp-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.83rem; }
+    .cmp-table th, .cmp-table td { padding: 0.6rem 0.7rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .cmp-table th { font-weight: 600; background: var(--bg-card, #232838); white-space: nowrap; }
+    .cmp-table td:first-child { font-weight: 600; }
+    .check { color: #6ee7b7; }
+    .cross { color: #f87171; }
+    .neutral { color: #94a3b8; }
+    .warn-box { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0; font-size: 0.9rem; }
+    .warn-box strong { color: #fbbf24; }
+    .info-box { background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0; font-size: 0.9rem; }
+    .info-box strong { color: #60a5fa; }
+    @media (max-width: 600px) { .cmp-table { font-size: 0.76rem; } .cmp-table th, .cmp-table td { padding: 0.5rem 0.4rem; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Gemini CLI to Antigravity CLI Migration</span></div>
+
+    <h1>Gemini CLI Is Ending June 18: Complete Migration Guide to Antigravity CLI</h1>
+    <p class="subtitle"><a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> stops serving requests on <strong>June 18, 2026</strong>. <a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">Google announced</a> the transition to <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity CLI</a> (<code>agy</code>) on May 19 — here is everything you need to migrate before the deadline.</p>
+
+    <div class="deadline-alert">
+      <span class="alert-icon">&#x26A0;&#xFE0F;</span>
+      <div><strong>Deadline: June 18, 2026.</strong> Gemini CLI (<code>gemini</code> command) stops responding for Google AI Pro, Ultra, and individual free-tier users. Enterprise customers have a separate extended timeline. The new command is <code>agy</code>. Antigravity CLI has been GA since May 19, 2026.</div>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>TL;DR:</strong> Replace <code>gemini</code> with <code>agy</code> in all scripts and aliases. Your <strong>Hooks, Subagents, and Agent Skills</strong> migrate unchanged. <strong>Extensions</strong> are now called <strong>plugins</strong>. The free tier (1,000 req/day) ends &mdash; Antigravity requires a Google AI Pro subscription. Gemini CLI was Apache 2.0 open source; Antigravity CLI is not. The 1M token context window is retained.
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-happened" style="color:var(--dim);text-decoration:none;">What Happened to Gemini CLI</a></li>
+        <li><a href="#deadline" style="color:var(--dim);text-decoration:none;">June 18 Deadline: What Stops Working</a></li>
+        <li><a href="#what-changes" style="color:var(--dim);text-decoration:none;">What Changes in Antigravity CLI</a></li>
+        <li><a href="#what-stays" style="color:var(--dim);text-decoration:none;">What Stays the Same</a></li>
+        <li><a href="#migration-steps" style="color:var(--dim);text-decoration:none;">Step-by-Step Migration Guide</a></li>
+        <li><a href="#pricing" style="color:var(--dim);text-decoration:none;">Pricing Changes</a></li>
+        <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">Comparison: Gemini CLI vs Antigravity CLI vs Claude Code</a></li>
+        <li><a href="#amux" style="color:var(--dim);text-decoration:none;">Running Antigravity CLI with amux</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─── WHAT HAPPENED ─── -->
+    <h2 id="what-happened">What Happened to Gemini CLI</h2>
+
+    <p><a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> launched in mid-2025 as a free, open-source terminal coding agent powered by <a href="https://deepmind.google/technologies/gemini/" target="_blank" rel="noopener">Gemini 2.5 Pro</a>. It was notable for two things that set it apart from <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> and <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>: a genuinely generous free tier (1,000 requests/day with a Google account) and a 1 million token context window — five times larger than Claude Code's 200K limit.</p>
+
+    <p>On May 19, 2026, at <a href="https://io.google/" target="_blank" rel="noopener">Google I/O 2026</a>, Google announced <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity 2.0</a> — a full agent-first development platform to compete directly with <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> and <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>. The platform includes a <a href="https://code.visualstudio.com/" target="_blank" rel="noopener">VS Code</a> fork (the Antigravity IDE), the <a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">Antigravity CLI</a> (<code>agy</code>), an SDK, and <a href="https://ai.google.dev/" target="_blank" rel="noopener">Managed Agents in the Gemini API</a>.</p>
+
+    <p>Google's message to Gemini CLI users in the transition announcement was direct: <em>"your workflows have simply outgrown those early days of 2025."</em> Gemini CLI was reframed as an early experiment; Antigravity CLI is positioned as the production-grade successor and Google's <em>"premier agent-first development platform."</em></p>
+
+    <!-- ─── DEADLINE ─── -->
+    <h2 id="deadline">June 18 Deadline: What Stops Working</h2>
+
+    <p>On <strong>June 18, 2026</strong>, <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> stops serving requests for the following user groups:</p>
+
+    <ul>
+      <li><strong>Google AI Pro subscribers</strong> (formerly Google One AI Premium) — must migrate to Antigravity CLI</li>
+      <li><strong>Google AI Ultra subscribers</strong> — must migrate to Antigravity CLI</li>
+      <li><strong>Individual free-tier users</strong> (1,000 req/day Google account login) — must migrate to a paid Google AI plan and Antigravity CLI</li>
+    </ul>
+
+    <div class="warn-box">
+      <strong>Enterprise timeline is different.</strong> Enterprise <a href="https://codeassist.google.com/" target="_blank" rel="noopener">Gemini Code Assist</a> customers (Standard and Enterprise tiers) have a separate, longer migration window. If your organization uses Gemini CLI through <a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener">Vertex AI</a> or enterprise contracts, contact your Google account team for your specific deadline.
+    </div>
+
+    <p>After June 18, running <code>gemini</code> in your terminal will fail. If you have shell scripts, <a href="https://docs.github.com/en/actions" target="_blank" rel="noopener">GitHub Actions</a>, CI/CD pipelines, <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> configurations, or <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> session launchers that call <code>gemini</code>, they will break. The migration window is short — audit your toolchain now.</p>
+
+    <!-- ─── WHAT CHANGES ─── -->
+    <h2 id="what-changes">What Changes in Antigravity CLI</h2>
+
+    <table class="change-table">
+      <thead>
+        <tr><th>Dimension</th><th class="old">Gemini CLI (old)</th><th class="new">Antigravity CLI (new)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>CLI command</strong></td><td class="old"><code>gemini</code></td><td class="new"><code>agy</code></td></tr>
+        <tr><td><strong>Extensions</strong></td><td class="old">Extensions (<code>~/.gemini/extensions/</code>)</td><td class="new">Plugins (renamed, new path)</td></tr>
+        <tr><td><strong>Open source</strong></td><td class="old">&#x2714; Apache 2.0 (GitHub)</td><td class="new">&#x2718; Closed source</td></tr>
+        <tr><td><strong>Free tier</strong></td><td class="old">1,000 req/day (Google account)</td><td class="new">Requires Google AI Pro/Ultra plan</td></tr>
+        <tr><td><strong>Underlying model</strong></td><td class="old">Gemini 2.5 Pro / Flash</td><td class="new">Gemini 3.5 Flash / Pro</td></tr>
+        <tr><td><strong>IDE integration</strong></td><td class="old">Gemini Code Assist (VS Code extension)</td><td class="new">Antigravity IDE (VS Code fork)</td></tr>
+        <tr><td><strong>Config directory</strong></td><td class="old"><code>~/.gemini/</code></td><td class="new"><code>~/.antigravity/</code> (verify against docs)</td></tr>
+        <tr><td><strong>Custom commands</strong></td><td class="old"><code>~/.gemini/commands/*.toml</code></td><td class="new">Updated format (see docs)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="info-box">
+      <strong>The most disruptive change</strong> for most developers is the CLI command rename from <code>gemini</code> to <code>agy</code>. This is a one-line find-and-replace in most scripts, but it will break any automation that calls the old binary name.
+    </div>
+
+    <!-- ─── WHAT STAYS ─── -->
+    <h2 id="what-stays">What Stays the Same</h2>
+
+    <p><a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">Google confirmed</a> that the following Gemini CLI capabilities are fully retained in Antigravity CLI:</p>
+
+    <table class="change-table">
+      <thead>
+        <tr><th>Feature</th><th class="same">Status in Antigravity CLI</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Agent Skills</strong></td><td class="same">&#x2714; Fully retained, same format</td></tr>
+        <tr><td><strong>Hooks</strong></td><td class="same">&#x2714; Fully retained, same format</td></tr>
+        <tr><td><strong>Subagents</strong></td><td class="same">&#x2714; Fully retained, same orchestration model</td></tr>
+        <tr><td><strong>1M token context window</strong></td><td class="same">&#x2714; Retained (Gemini 3.5 models)</td></tr>
+        <tr><td><strong>Multi-turn interactive sessions</strong></td><td class="same">&#x2714; Same interactive workflow</td></tr>
+        <tr><td><strong>File injection (<code>@</code> prefix)</strong></td><td class="same">&#x2714; Retained</td></tr>
+        <tr><td><strong>Shell passthrough (<code>!</code> prefix)</strong></td><td class="same">&#x2714; Retained</td></tr>
+        <tr><td><strong>Slash commands</strong></td><td class="same">&#x2714; Retained (verify specific commands)</td></tr>
+      </tbody>
+    </table>
+
+    <p>Google explicitly noted that <em>"there won't be a 1:1 feature parity on day one"</em> — some Gemini CLI-specific features may arrive in Antigravity CLI in later releases. Check the <a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">official transition announcement</a> and <a href="https://antigravity.google/docs" target="_blank" rel="noopener">Antigravity CLI docs</a> for the current feature parity table.</p>
+
+    <!-- ─── MIGRATION STEPS ─── -->
+    <h2 id="migration-steps">Step-by-Step Migration Guide</h2>
+
+    <div class="step-card">
+      <h3><span class="step-num">1</span>Install Antigravity CLI</h3>
+      <p>Antigravity CLI has been available to all users since May 19, 2026. Install it via the official installer or your package manager:</p>
+      <code># macOS (Homebrew)
+brew install google-antigravity/tap/agy
+
+# Linux (direct install)
+curl -fsSL https://dl.antigravity.google/install.sh | sh
+
+# Verify installation
+agy --version</code>
+      <p style="font-size:0.82rem;color:var(--muted);">See the <a href="https://antigravity.google/docs/cli/install" target="_blank" rel="noopener">official installation docs</a> for the latest method — install paths may change before June 18.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">2</span>Authenticate with your Google AI account</h3>
+      <p>Antigravity CLI requires a Google AI Pro or Ultra subscription (the individual free tier ended with Gemini CLI). Sign in to link your account:</p>
+      <code># Interactive login
+agy auth login
+
+# Verify your session
+agy auth status</code>
+      <p>If you don't have a Google AI Pro subscription, you'll need to sign up at <a href="https://ai.google/" target="_blank" rel="noopener">ai.google</a> before proceeding.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">3</span>Update shell scripts and aliases</h3>
+      <p>This is the most critical step. Find every occurrence of the <code>gemini</code> command across your scripts, aliases, and CI/CD configs:</p>
+      <code># Find all scripts calling 'gemini'
+grep -r "gemini" ~/.zshrc ~/.bashrc ~/.profile ~/scripts/ .github/ 2>/dev/null
+
+# Bulk replace in scripts (macOS)
+find ~/scripts -name "*.sh" -exec sed -i '' 's/\bgemini\b/agy/g' {} +
+
+# Update shell aliases
+# Change: alias g='gemini'
+# To:     alias g='agy'</code>
+      <p>Also check: <a href="https://docs.github.com/en/actions" target="_blank" rel="noopener">GitHub Actions</a> workflows, <a href="https://www.gnu.org/software/make/" target="_blank" rel="noopener">Makefile</a> targets, <a href="https://www.docker.com/" target="_blank" rel="noopener">Dockerfile</a> RUN commands, and any <a href="https://cron.d/" target="_blank" rel="noopener">cron jobs</a> that invoke Gemini CLI.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">4</span>Migrate Extensions to Plugins</h3>
+      <p>Gemini CLI Extensions are now called <strong>Plugins</strong> in Antigravity CLI. The extension directory and configuration format have changed. For each extension you used:</p>
+      <code># Gemini CLI (old)
+ls ~/.gemini/extensions/
+
+# Antigravity CLI (new) — verify exact path in docs
+ls ~/.antigravity/plugins/</code>
+      <p>Check the <a href="https://antigravity.google/docs/cli/plugins" target="_blank" rel="noopener">Antigravity CLI plugins documentation</a> for the updated manifest format. Simple extensions (no binary dependencies) typically migrate by renaming the config file; complex extensions may need updates.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">5</span>Migrate custom TOML commands</h3>
+      <p>If you used Gemini CLI's custom command feature (<code>~/.gemini/commands/*.toml</code>, released July 2025), verify the new path and format for Antigravity CLI:</p>
+      <code># Gemini CLI custom commands (old)
+ls ~/.gemini/commands/
+
+# Move and verify format
+# Check: https://antigravity.google/docs/cli/commands</code>
+      <p>The TOML-based command format may have been updated. Test each custom command interactively with <code>agy</code> after copying.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">6</span>Test your core workflows</h3>
+      <p>Validate that your most-used workflows function in Antigravity CLI before the June 18 deadline:</p>
+      <code># Test interactive session
+agy
+
+# Test non-interactive (headless) mode
+agy -p "Summarize the changes in the last 5 commits"
+
+# Test with file injection
+agy -p "Review this file" @src/main.py
+
+# Test subagent invocation (if you use them)
+agy --agent-skills</code>
+      <p>Run this at least a week before June 18 so you have time to troubleshoot any edge cases.</p>
+    </div>
+
+    <div class="step-card">
+      <h3><span class="step-num">7</span>Update amux session configs (if applicable)</h3>
+      <p>If you manage Gemini CLI sessions through <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, update your session launch commands to use <code>agy</code>:</p>
+      <code># Old amux session launch
+tmux new-session -s gemini-agent -d 'gemini -p "work on feature branch"'
+
+# New amux session launch
+tmux new-session -s antigravity-agent -d 'agy -p "work on feature branch"'</code>
+      <p>See <a href="#amux">Running Antigravity CLI with amux</a> below for more on managing Antigravity sessions alongside <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>.</p>
+    </div>
+
+    <!-- ─── PRICING ─── -->
+    <h2 id="pricing">Pricing Changes</h2>
+
+    <p>The pricing model change is one of the most significant shifts in the transition. <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> was unusually generous for a production-grade AI tool: 1,000 requests per day at no cost with a standard Google account login (via OAuth), giving access to Gemini 2.5 Pro at zero marginal cost. This drew significant adoption from developers who found <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>'s $20/month minimum too expensive for exploration.</p>
+
+    <p><a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity CLI</a> requires a Google AI Pro or Ultra subscription:</p>
+
+    <table class="cmp-table">
+      <thead>
+        <tr><th>Plan</th><th>CLI Access</th><th>Models</th><th>Price</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Individual free tier</strong></td><td class="cross">&#x2718; Ends June 18 with Gemini CLI</td><td>&mdash;</td><td>$0</td></tr>
+        <tr><td><strong>Google AI Pro</strong></td><td class="check">&#x2714; Antigravity CLI included</td><td>Gemini 3.5 Flash / Pro</td><td>~$20/mo</td></tr>
+        <tr><td><strong>Google AI Ultra</strong></td><td class="check">&#x2714; Antigravity CLI included</td><td>Gemini 3.5 Pro (higher limits)</td><td>~$100–200/mo</td></tr>
+        <tr><td><strong>Gemini API (pay-as-you-go)</strong></td><td class="check">&#x2714; Via API key</td><td>Gemini 3.5 Flash / Pro</td><td>Per token (see <a href="https://ai.google.dev/pricing" target="_blank" rel="noopener">ai.google.dev/pricing</a>)</td></tr>
+        <tr><td><strong>Enterprise (Vertex AI)</strong></td><td class="check">&#x2714; Separate timeline</td><td>All Gemini models</td><td>Enterprise contract</td></tr>
+      </tbody>
+    </table>
+
+    <div class="warn-box">
+      <strong>Developers who relied on Gemini CLI's free tier</strong> face the biggest disruption. A Google AI Pro subscription ($20/month) brings pricing in line with <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code Pro</a> ($20/month). Developers evaluating both should read the <a href="/guides/ai-coding-tools-compared-2026/">AI Coding Tools Comparison</a> for a full cost analysis.
+    </div>
+
+    <!-- ─── COMPARISON ─── -->
+    <h2 id="comparison">Comparison: Gemini CLI vs Antigravity CLI vs Claude Code</h2>
+
+    <p>With <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> ending and <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity CLI</a> launching, many developers are re-evaluating their terminal coding agent. Here is how the three main options compare as of June 2026:</p>
+
+    <div style="overflow-x:auto;">
+      <table class="cmp-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th><a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener" style="color:inherit">Gemini CLI</a><br><span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(ending Jun 18)</span></th>
+            <th><a href="https://antigravity.google/" target="_blank" rel="noopener" style="color:inherit">Antigravity CLI</a><br><span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(successor)</span></th>
+            <th><a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener" style="color:inherit">Claude Code</a><br><span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(<a href="https://www.anthropic.com/" target="_blank" rel="noopener" style="color:inherit">Anthropic</a>)</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>CLI command</strong></td><td><code>gemini</code></td><td class="new"><code>agy</code></td><td><code>claude</code></td></tr>
+          <tr><td><strong>Underlying model</strong></td><td><a href="https://deepmind.google/technologies/gemini/pro/" target="_blank" rel="noopener">Gemini 2.5 Pro</a></td><td><a href="https://deepmind.google/technologies/gemini/" target="_blank" rel="noopener">Gemini 3.5 Flash/Pro</a></td><td><a href="https://www.anthropic.com/claude/opus" target="_blank" rel="noopener">Claude Opus 4.6</a></td></tr>
+          <tr><td><strong>Context window</strong></td><td>1M tokens</td><td class="same">1M tokens</td><td>200K tokens</td></tr>
+          <tr><td><strong>Free tier</strong></td><td>1,000 req/day</td><td class="cross">None (Pro required)</td><td class="cross">None (Pro required)</td></tr>
+          <tr><td><strong>Starting price</strong></td><td class="cross">$0 (ending)</td><td>~$20/mo (Google AI Pro)</td><td>$20/mo (<a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Claude Pro</a>)</td></tr>
+          <tr><td><strong>Open source</strong></td><td class="check">&#x2714; Apache 2.0</td><td class="cross">&#x2718; Closed source</td><td class="cross">&#x2718; Closed source</td></tr>
+          <tr><td><strong>Hooks</strong></td><td class="check">&#x2714;</td><td class="check">&#x2714;</td><td class="check">&#x2714; (CLAUDE.md + hooks)</td></tr>
+          <tr><td><strong>Subagents</strong></td><td class="check">&#x2714;</td><td class="check">&#x2714;</td><td class="check">&#x2714; (Agent SDK)</td></tr>
+          <tr><td><strong>Extensions/Plugins</strong></td><td>&#x2714; Extensions</td><td>&#x2714; Plugins</td><td class="check">&#x2714; <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP servers</a></td></tr>
+          <tr><td><strong>SWE-bench Verified</strong></td><td><a href="https://swebench.com/" target="_blank" rel="noopener">~80.6%</a> (Gemini 3.1 Pro)</td><td>~80.6%+ (Gemini 3.5)</td><td class="check"><a href="https://www.anthropic.com/research/claude-opus-4" target="_blank" rel="noopener">~80.8%</a></td></tr>
+          <tr><td><strong>IDE integration</strong></td><td><a href="https://codeassist.google.com/" target="_blank" rel="noopener">Gemini Code Assist</a></td><td><a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity IDE</a></td><td><a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://code.visualstudio.com/" target="_blank" rel="noopener">VS Code</a></td></tr>
+          <tr><td><strong>Multi-session mgmt</strong></td><td>Manual tmux</td><td>Manual tmux</td><td class="check"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The practical coding performance between Antigravity CLI and <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> is close &mdash; Anthropic's Claude Opus 4.6 scores approximately 80.8% on <a href="https://swebench.com/" target="_blank" rel="noopener">SWE-bench Verified</a> versus Gemini 3.1 Pro at approximately 80.6%, a gap well within noise. The differentiators are elsewhere: Antigravity's 1M context window gives it a structural advantage for large codebases; Claude Code's ecosystem (MCP servers, hooks, <a href="/guides/best-claude-code-session-managers-2026/">session managers</a>, Agent SDK) gives it an orchestration edge.</p>
+
+    <!-- ─── AMUX ─── -->
+    <h2 id="amux">Running Antigravity CLI with amux</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for managing multiple AI coding agent sessions from a single web dashboard. It works with any terminal-based agent &mdash; including Antigravity CLI. If you run Antigravity sessions alongside <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> sessions, amux coordinates them through shared <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> windows.</p>
+
+    <div class="info-box">
+      <strong>amux is agent-agnostic.</strong> The web dashboard, <a href="/guides/kanban-board-for-agents/">kanban board</a>, REST API, <a href="/guides/self-healing-configuration/">self-healing watchdog</a>, and inter-session messaging all work with any process running in a tmux session. Replacing <code>gemini</code> with <code>agy</code> in your amux session launch commands is all that is required.
+    </div>
+
+    <p>To launch an Antigravity CLI session via amux:</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;margin:1.5rem 0;">
+      <code style="display:block;font-size:0.85rem;line-height:1.7;"># Install amux (if not already installed)
+pip install amux
+
+# Launch amux server
+amux serve &
+
+# Create a new Antigravity CLI session
+# In the amux web dashboard or via REST API:
+# POST /api/sessions { "name": "agy-worker-1", "command": "agy" }
+
+# Or create via tmux directly (amux picks it up)
+tmux new-session -s agy-worker-1 -d 'agy'
+
+# Assign it a task via the amux kanban board
+# and monitor output in the web dashboard at http://localhost:8822</code>
+    </div>
+
+    <p>With amux, you can run 5–20 Antigravity CLI agents in parallel, assign them tasks from a shared board, inspect their output without switching terminals, and set up a <a href="/guides/self-healing-configuration/">self-healing watchdog</a> to restart crashed sessions automatically. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub repo</a> for setup instructions.</p>
+
+    <!-- ─── FAQ ─── -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">What is replacing Gemini CLI?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">Google is replacing Gemini CLI with <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity CLI</a> — the terminal component of the <a href="https://antigravity.google/" target="_blank" rel="noopener">Google Antigravity 2.0</a> platform. The CLI command changes from <code>gemini</code> to <code>agy</code>. Antigravity CLI has been available to all users since May 19, 2026, and Gemini CLI stops serving requests on June 18, 2026 for Google AI Pro, Ultra, and free-tier users.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">When exactly does Gemini CLI stop working?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">June 18, 2026 for Google AI Pro/Ultra and individual free-tier users. <a href="https://codeassist.google.com/" target="_blank" rel="noopener">Enterprise Gemini Code Assist</a> customers have a separate, longer migration window. The <a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">official Google announcement</a> was made on May 19, 2026.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Is Antigravity CLI open source like Gemini CLI was?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">No. <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> was available under the Apache 2.0 license on <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">GitHub</a>, making it fully forkable and self-hostable. Antigravity CLI is a closed-source product tied to Google AI subscriptions. This is a significant shift that affects developers who value open-source tooling or who ran Gemini CLI on private infrastructure without sending traffic to Google's API.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">What happens to the free tier (1,000 req/day)?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">The Gemini CLI free tier (1,000 requests/day with a Google account via OAuth) ends on June 18, 2026. Antigravity CLI requires a <a href="https://ai.google/" target="_blank" rel="noopener">Google AI Pro</a> subscription (approximately $20/month). There is no equivalent free tier in Antigravity CLI. Developers who used Gemini CLI specifically for its free access will need to pay for a subscription or evaluate alternatives like <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a> (fully open source, bring your own API key) or <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Do my Gemini CLI Hooks still work in Antigravity CLI?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">Yes. <a href="https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/" target="_blank" rel="noopener">Google confirmed</a> that Hooks are fully retained in Antigravity CLI. Agent Skills and Subagents are also retained. Extensions are renamed to Plugins and the configuration path may differ — check the <a href="https://antigravity.google/docs/cli/plugins" target="_blank" rel="noopener">Antigravity CLI plugins documentation</a> to verify your extension format is compatible.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">Should I switch to Claude Code instead of Antigravity CLI?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">It depends on your priorities. <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity CLI</a> retains the 1M token context window, which matters for large monorepos or long-running sessions. <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> has a richer orchestration ecosystem — <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP servers</a>, <a href="/guides/claude-code-hooks-cookbook/">hooks</a>, the <a href="https://docs.anthropic.com/en/docs/agents/sdk" target="_blank" rel="noopener">Agent SDK</a>, and multi-session tools like <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> and <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>. SWE-bench scores are near parity (~80.8% vs ~80.6%). Both cost around $20/month at the entry tier. If the Antigravity migration is smooth, many developers will stay; if the free tier loss or closed-source shift is a dealbreaker, now is a natural switching point. See the <a href="/guides/ai-coding-tools-compared-2026/">full AI Coding Tools Comparison</a> for more.</div>
+    </details>
+
+    <details style="margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <summary style="padding:1rem 1.25rem;cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;">What is the new Antigravity CLI command?<span style="color:var(--muted);font-size:0.9rem;">+</span></summary>
+      <div style="padding:0 1.25rem 1rem;">The new command is <code>agy</code> — replacing <code>gemini</code>. This is the core breaking change in the migration. Update all shell scripts, aliases, CI/CD configurations, and automation that calls <code>gemini</code> to call <code>agy</code> instead. Most workflows are otherwise compatible.</div>
+    </details>
+
+    <!-- ─── CTA ─── -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;margin:3rem 0;text-align:center;">
+      <h3 style="margin:0 0 0.75rem;">Orchestrate Antigravity CLI alongside Claude Code</h3>
+      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux is a free, open-source control plane for running multiple AI coding agent sessions in parallel — including Antigravity CLI. Web dashboard, self-healing watchdog, kanban board, mobile app.</p>
+      <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#6ee7b7;color:#0d1117;font-weight:700;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">View on GitHub</a>
+        <a href="/guides/getting-started/" style="border:1px solid var(--border);color:var(--dim);font-weight:600;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">Getting Started Guide</a>
+      </div>
+    </div>
+
+    <!-- ─── RELATED GUIDES ─── -->
+    <h3>Related Guides</h3>
+    <ul style="font-size:0.9rem;line-height:2.2;">
+      <li><a href="/guides/ai-coding-tools-compared-2026/">AI Coding Tools Compared: Antigravity vs Claude Code vs Cursor (2026)</a></li>
+      <li><a href="/guides/best-claude-code-session-managers-2026/">Best Claude Code Session Managers 2026 &mdash; 6 Tools Compared</a></li>
+      <li><a href="/guides/best-ai-model-for-coding-2026/">Best AI Model for Coding 2026: Benchmarks &amp; Real-World Results</a></li>
+      <li><a href="/guides/ai-coding-agent-costs/">AI Coding Agent Cost Guide 2026: Budgeting for Claude Code, Cursor &amp; More</a></li>
+      <li><a href="/guides/claude-code-hooks-cookbook/">Claude Code Hooks Cookbook: Automation Recipes</a></li>
+    </ul>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <strong>amux</strong>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        <a href="/docs/">Documentation</a>
+        <a href="/guides/">Guides</a>
+        <a href="/blog/">Blog</a>
+        <a href="/pricing/">Pricing</a>
+      </div>
+      <div class="footer-col">
+        <strong>Guides</strong>
+        <a href="/guides/getting-started/">Getting Started</a>
+        <a href="/guides/claude-code-tutorial/">Claude Code Tutorial</a>
+        <a href="/guides/multi-agent-orchestrator-architecture/">Multi-Agent Architecture</a>
+        <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a>
+      </div>
+      <div class="footer-col">
+        <strong>Compare</strong>
+        <a href="/compare/">All Comparisons</a>
+        <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>
+        <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a>
+        <a href="/compare/amux-vs-goose/">amux vs Goose</a>
+      </div>
+    </div>
+    <p class="footer-copy">&copy; 2026 <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek, Inc.</a> &mdash; amux is MIT licensed. <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
+  </footer>
+
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux').then(r=>r.json()).then(d=>{
+      const el = document.getElementById('gh-stars');
+      if(el && d.stargazers_count) el.textContent = '★ ' + (d.stargazers_count >= 1000 ? (d.stargazers_count/1000).toFixed(1)+'k' : d.stargazers_count);
+    }).catch(()=>{});
+    document.querySelectorAll('details').forEach(d=>{
+      d.addEventListener('toggle', ()=>{
+        const icon = d.querySelector('summary span');
+        if(icon) icon.textContent = d.open ? '−' : '+';
+      });
+    });
+  </script>
+</body>
+</html>
