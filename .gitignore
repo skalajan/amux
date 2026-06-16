@@ -6,6 +6,7 @@ __pycache__/
 node_modules/
 package-lock.json
 scratch/
+.omc/
 
 # Compiled app binary (rebuild via ./build-desktop.sh)
 Amux.app/Contents/MacOS/amux
