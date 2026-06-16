@@ -239,8 +239,16 @@ endpoints. Verify the liveness-critical facts: (a) exactly when Claude writes JS
 entries (per-turn vs incremental) — decides how much the liveness tier carries;
 (b) the slot → live JSONL file + pipe-pane log-file mapping; (c) per-session
 `git diff` feasibility from the known cwd; (d) the DI `init(ctx)` seam + the
-static-asset serving approach (§2.4). Output: reused functions + minimal new
-endpoints + confirmed liveness signal + the exact inline-footprint list.
+static-asset serving approach (§2.4); (e) **tool-lifecycle granularity** — whether
+the live JSONL (or a Claude Code hook) exposes a distinct *"tool started"* marker
+before the matching `tool_result`. If it does, the liveness tier can show a
+specific `🔧 running Edit · auth.py…` card instead of a generic "⚙️ working…",
+matching OpenClaw's explicit `thinking`/`responding`/`tool-use` lifecycle events
+(its Gateway emits these natively; we'd derive them from JSONL/hook markers since
+we observe the runtime rather than own it). Decides whether the §2.3 state machine
+gains a `tool-running` sub-state. Output: reused functions + minimal new
+endpoints + confirmed liveness signal + tool-lifecycle verdict + the exact
+inline-footprint list.
 
 **Phase 1 — Read-only chat + liveness (MVP).**
 - Create `amux_chat.py` (structured turns from JSONL + a `chat` SSE event +
