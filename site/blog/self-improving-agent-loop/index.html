@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>The Self-Improving Agent Loop: How amux Gets Smarter Every Run — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="One command scaffolds a closed orchestrator loop: parallel agents, a verify gate, and a constraints note that accumulates lessons across runs. The swarm gets smarter every tick.">
+  <meta name="keywords" content="self-improving AI agents, orchestrator loop, agent swarm, Claude Code orchestration, amux, parallel agents, agent memory">
+  <link rel="canonical" href="https://amux.io/blog/self-improving-agent-loop/">
+  <meta property="og:title" content="The Self-Improving Agent Loop: How amux Gets Smarter Every Run">
+  <meta property="og:description" content="One command scaffolds a closed orchestrator loop: parallel agents, a verify gate, and a constraints note that accumulates lessons across runs. The swarm gets smarter every tick.">
+  <meta property="og:url" content="https://amux.io/blog/self-improving-agent-loop/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"The Self-Improving Agent Loop","item":"https://amux.io/blog/self-improving-agent-loop/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"The Self-Improving Agent Loop: How amux Gets Smarter Every Run","description":"One command scaffolds a closed orchestrator loop: parallel agents, a verify gate, and a constraints note that accumulates lessons across runs. The swarm gets smarter every tick.","url":"https://amux.io/blog/self-improving-agent-loop/","datePublished":"2026-06-19","dateModified":"2026-06-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/self-improving-agent-loop/"}}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>The Self-Improving Agent Loop</span></div>
+    <h1>The Self-Improving Agent Loop: How amux Gets Smarter Every Run</h1>
+    <p class="subtitle">One command. Parallel agents. A verify gate. A constraints note that accumulates lessons. Run 50 is smarter than run 1 — automatically.</p>
+
+    <h2>The Problem with Agent Swarms</h2>
+    <p>Running agents in parallel is solved. The hard part is making them <em>learn</em> from each run without retraining a model. Most setups do the same thing on run 50 as they did on run 1. The context window closes, the lessons disappear, and you're back to square one.</p>
+    <p>amux solves this with a three-part structure: a mission note, a state note overwritten every tick, and a constraints note that only ever grows. The constraints note is the memory. Every run appends what it learned. The next run loads it before doing anything else.</p>
+
+    <h2>One Command to Start</h2>
+    <pre><code>/orchestrate -g "validate batch objects in MVS, run hybrid search evals across RRF and weighted variants, measure precision/recall/latency, fix issues as found" -s "ts-gke, backend"</code></pre>
+    <p>That single command:</p>
+    <ul>
+      <li>Derives a slug from the goal (<code>mmv2-retrieval-eval</code>)</li>
+      <li>Fills the v2 loop template with your goal, the authorized session set, and inferred issue prefixes (<code>TG-</code>, <code>BACKE-</code>)</li>
+      <li>Creates three notes: mission brief, state (overwritten each tick), constraints (append-only)</li>
+      <li>Wires a scheduler entry that fires every 2h at the orchestrator session</li>
+    </ul>
+    <p>From that point the loop runs without human input. Each tick: load state → peek sessions → think → act → verify to prod → distill a lesson → persist.</p>
+
+    <h2>The Closed Loop</h2>
+    <p>Most orchestration systems are one-shot: you fire a prompt, agents do work, you check the output. amux's loop is different. The orchestrator session runs on a schedule, loads its own state from a note, observes what changed, decides what to do next, and writes its conclusions back before it stops.</p>
+    <p>Two thinking gates enforce deliberate reasoning:</p>
+    <ul>
+      <li><strong>Before acting</strong>: diagnose what's actually blocked vs. just slow, check for cross-session conflicts, decide whether doing nothing is better than acting</li>
+      <li><strong>Before persisting</strong>: distill what happened into 0–2 constraint lines — only write ones that would have changed behavior this tick</li>
+    </ul>
+    <p>The constraints note is append-only. It starts with one seeded rule and grows from there:</p>
+    <pre><code>2026-06-17 — stage explicit git paths only, never git add -A.
+Reason: commit 5407ac1473 swept another session's staged deletions
+into the wrong commit and broke import mvs.agent repo-wide (AMUX-1315).
+
+2026-06-19 — verify each batch object exists in MVS before running
+evals. Silent absence looks like a precision problem but is actually
+a data-pipeline problem. Check existence first, eval second.</code></pre>
+    <p>By run 10, the orchestrator is carrying a decade of hard-won rules into every tick automatically.</p>
+
+    <h2>Access Control Is a First-Class Feature</h2>
+    <p>Every loop defines exactly which sessions the orchestrator can interact with — peek, send, or post board issues. Any session outside that table gets a board item for the human instead of a direct message.</p>
+    <p>This matters in practice. During a real incident, our orchestrator couldn't deliver a standing rule to a session outside its authorized set. That limitation turned out to be the strongest argument for the durable fix: a behavioral rule you can't deliver to every session is a rule that doesn't work. The loop escalated to the board; the human made the policy call.</p>
+    <table>
+      <thead><tr><th>Session</th><th>Peek</th><th>Send</th><th>Post issues</th><th>Lane</th></tr></thead>
+      <tbody>
+        <tr><td><code>ts-gke</code></td><td>✓</td><td>✓</td><td>✓</td><td>Search quality, batch verification, evals</td></tr>
+        <tr><td><code>backend</code></td><td>✓</td><td>✓</td><td>✓</td><td>Evals API, write pipeline</td></tr>
+        <tr><td><code>orchestrator</code></td><td>—</td><td>—</td><td>✓</td><td>AMUX- escalations to Ethan</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Issues vs. Tasks</h2>
+    <p>The amux board serves two distinct roles inside a loop. Conflating them is how you lose track of what's real work and what's just coordination noise.</p>
+    <ul>
+      <li><strong>Prefixed issues</strong> (<code>TG-</code>, <code>BACKE-</code>, <code>AMUX-</code>): durable, survive context compaction, multiple sessions can reference the same one, closed only when fully verified in prod</li>
+      <li><strong>Tick-level tasks</strong>: ephemeral routing within a single tick — "confirm deploy SHA for TG-83" — reference issues but aren't issues themselves</li>
+    </ul>
+    <p>The verified standard for closing an issue is strict: committed on main, CI green, staging E2E green, prod deployed, proven with real traffic evidence, and the amux issue closed. Not "deploy succeeded." Real evidence.</p>
+
+    <h2>The Skills Tab</h2>
+    <p>The <code>/orchestrate</code> command is one of dozens of slash skills available in amux. The new Skills tab gives you a searchable browser for all of them — custom skills stored in SQLite, project-level <code>.claude/commands/</code> files, and built-in Claude Code commands.</p>
+    <p>Every skill card is expandable. Click ▾ to see the full markdown body: headings, bullets, and code blocks each with their own Copy button. One click to grab any example command and paste it into a session.</p>
+
+    <h2>Expand All Active Sessions</h2>
+    <p>Small feature, high leverage: the ⚡ button in the session list expands every running non-idle session at once. Same button in Workspace mode adds terminal panes for all active sessions simultaneously. When you have 7+ agents in flight, "show me what's happening" should be one click.</p>
+
+    <h2>The Primitives Were Already There</h2>
+    <p>This pattern doesn't require a specialized multi-agent platform. Here's how the pieces map:</p>
+    <table>
+      <thead><tr><th>What you need</th><th>amux primitive</th></tr></thead>
+      <tbody>
+        <tr><td>Parallel agents</td><td>Sessions (each runs Claude Code independently)</td></tr>
+        <tr><td>Task queue</td><td>Board with prefixed issues + atomic claim</td></tr>
+        <tr><td>Inter-agent messaging</td><td><code>POST /api/sessions/:name/send</code></td></tr>
+        <tr><td>Output observation</td><td><code>GET /api/sessions/:name/peek</code></td></tr>
+        <tr><td>Skill / constraint storage</td><td>Notes API (<code>/api/notes/:slug</code>)</td></tr>
+        <tr><td>Background loop</td><td>Scheduler (<code>/api/schedules</code>)</td></tr>
+        <tr><td>Verify gate</td><td>Orchestrator session with authorized-set enforcement</td></tr>
+      </tbody>
+    </table>
+    <p>The scheduler is the last primitive. It was already built. <code>/orchestrate</code> just wires everything together.</p>
+
+    <h2>What's Next</h2>
+    <p><code>/orchestrate list</code> to see all active loops and their last-tick state. <code>/orchestrate stop &lt;slug&gt;</code> to disable a scheduler entry and archive its notes. Right now you manage those manually via the Scheduler tab — automating it is the obvious next step.</p>
+    <p>We're also watching whether the constraints note format holds up over 20+ runs. The hypothesis is that it becomes genuine organizational memory that survives session restarts and context compaction. Early evidence from our production orchestrator suggests yes.</p>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Run a self-improving agent loop in your own codebase. Open source, Python 3 + tmux.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux serve  # → https://localhost:8822
+# Then: /orchestrate -g "your goal" -s "session-a, session-b"</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="/docs/">Docs</a>
+        <a href="/blog/">Blog</a>
+        <a href="/compare/">Compare</a>
+        <a href="https://github.com/mixpeek/amux">GitHub</a>
+        <a href="/privacy/">Privacy</a>
+      </div>
+      <p class="footer-copy">&copy; 2026 amux. Open source AI agent orchestration.</p>
+    </div>
+  </footer>
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux').then(r=>r.json()).then(d=>{const el=document.getElementById('gh-stars');if(el&&d.stargazers_count)el.textContent='★ '+d.stargazers_count.toLocaleString();}).catch(()=>{});
+  </script>
+</body>
+</html>

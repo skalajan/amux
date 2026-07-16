@@ -95,6 +95,23 @@ load_session() {
 # Load global defaults
 load_defaults() {
   [[ -f "$CC_DEFAULTS" ]] && source "$CC_DEFAULTS"
+  # Load ~/.amux/server.env so CLI-spawned sessions see the same AMUX_* knobs
+  # the server process uses (e.g. AMUX_CLAUDE_CMD). Parsed manually rather than
+  # `source`d so values are never shell-expanded — mirrors the Python loader at
+  # the top of amux-server.py, which treats entries as literal key=value pairs
+  # and is safe for values containing $, backticks, etc.
+  local _se="$CC_HOME/server.env"
+  if [[ -f "$_se" ]]; then
+    local _k _v
+    while IFS='=' read -r _k _v; do
+      # Trim all leading/trailing whitespace (matches Python's .strip()).
+      # Standard glob [![:space:]] — no extglob needed.
+      _k="${_k#"${_k%%[![:space:]]*}"}"; _k="${_k%"${_k##*[![:space:]]}"}"
+      _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"
+      [[ -z "$_k" || "$_k" == \#* || -z "$_v" ]] && continue
+      export "$_k=$_v"
+    done < "$_se"
+  fi
 }
 
 # Get tmux session name (prefixed to avoid conflicts)
@@ -103,19 +120,23 @@ tmux_name() { echo "amux-$1"; }
 # Migrate a cmux-* or cc-* tmux session to amux-* if needed
 migrate_tmux() {
   local name="$1"
-  if tmux has-session -t "amux-$name" 2>/dev/null; then return; fi
+  if tmux has-session -t "=amux-$name" 2>/dev/null; then return; fi
   for old_prefix in "cmux-" "cc-"; do
-    if tmux has-session -t "${old_prefix}${name}" 2>/dev/null; then
-      tmux rename-session -t "${old_prefix}${name}" "amux-$name" 2>/dev/null || true
+    if tmux has-session -t "=${old_prefix}${name}" 2>/dev/null; then
+      tmux rename-session -t "=${old_prefix}${name}" "amux-$name" 2>/dev/null || true
       break
     fi
   done
 }
 
-# Check if tmux session is alive
+# Check if tmux session is alive.
+# NOTE: tmux's -t prefix-matches session names by default, so a bare
+# "amux-foo" would also match a running "amux-foo-worker". Prefix the
+# target with '=' to force an exact match. Name resolution / abbreviation
+# is already handled safely upstream by resolve_session().
 is_running() {
   migrate_tmux "$1"
-  tmux has-session -t "$(tmux_name "$1")" 2>/dev/null
+  tmux has-session -t "=$(tmux_name "$1")" 2>/dev/null
 }
 
 # ─── Shell-safe flag quoting ─────────────────────────────────────────────────
@@ -340,19 +361,35 @@ EOF
 }
 
 cmd_start() {
-  local name
+  local name dry_run=false detach=false
   name=$(resolve_session "${1:-}")
   shift 2>/dev/null || true
-  need_tmux
+  # Strip our own flags before inline claude args. Placed before `--` so
+  # `amux start NAME --detach -- --some-claude-flag` still works.
+  #   --detach / -d : start the tmux session but don't attach (scripts, CI, boot)
+  while [[ "${1:-}" == "--dry-run" || "${1:-}" == "--detach" || "${1:-}" == "-d" ]]; do
+    case "$1" in
+      --dry-run)    dry_run=true ;;
+      --detach|-d)  detach=true ;;
+    esac
+    shift
+  done
+  # dry-run is a pure command preview — no tmux session is spawned, so the
+  # tmux dependency only matters for the real start path.
+  $dry_run || need_tmux
   load_defaults
   load_session "$name"
 
   local tname
   tname=$(tmux_name "$name")
 
-  if is_running "$name"; then
+  if ! $dry_run && is_running "$name"; then
+    if $detach; then
+      echo "${YELLOW}already running:${RESET} $name"
+      return
+    fi
     echo "${YELLOW}already running:${RESET} $name — attaching..."
-    tmux attach-session -t "$tname"
+    tmux attach-session -t "=$tname"
     return
   fi
 
@@ -385,7 +422,7 @@ cmd_start() {
       cmd="codex"
     fi
   else
-    cmd="claude"
+    cmd="${AMUX_CLAUDE_CMD:-claude}"
   fi
   # Apply global defaults from defaults.env (skip for codex — Claude flags don't apply)
   if [[ "$provider" != "codex" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
@@ -456,13 +493,24 @@ cmd_start() {
       shell_setup="${shell_setup}unset ANTHROPIC_API_KEY; "
     fi
   fi
+  if $dry_run; then
+    echo "${BOLD}$name${RESET} in $dir"
+    echo "  ${DIM}$cmd${RESET}"
+    return
+  fi
   tmux new-session -d -s "$tname" -n "$name" -c "$dir" "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
   # Lock the window name so Claude can't overwrite it with escape sequences
-  tmux set-option -t "$tname" allow-rename off 2>/dev/null
-  tmux set-window-option -t "$tname" automatic-rename off 2>/dev/null
+  tmux set-option -t "=$tname" allow-rename off 2>/dev/null
+  tmux set-window-option -t "=$tname" automatic-rename off 2>/dev/null
   echo "${GREEN}started${RESET} ${BOLD}$name${RESET} in $dir"
   echo "  ${DIM}$cmd${RESET}"
-  tmux attach-session -t "$tname"
+  # The session is already created detached (new-session -d). Only attach when
+  # not asked to detach — --detach makes `amux start` script/CI/boot friendly.
+  if $detach; then
+    echo "  ${DIM}detached — attach with: amux attach $name${RESET}"
+    return
+  fi
+  tmux attach-session -t "=$tname"
 }
 
 cmd_exec() {
@@ -504,7 +552,7 @@ cmd_attach() {
   local tname
   tname=$(tmux_name "$name")
   is_running "$name" || die "session '$name' is not running. Start with: amux start $name"
-  tmux attach-session -t "$tname"
+  tmux attach-session -t "=$tname"
 }
 
 cmd_peek() {
@@ -518,7 +566,7 @@ cmd_peek() {
   is_running "$name" || die "session '$name' is not running"
 
   echo "${BOLD}── $name ──${RESET}"
-  tmux capture-pane -t "$tname" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
+  tmux capture-pane -t "=$tname:" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
   echo "${BOLD}── end ──${RESET}"
 }
 
@@ -535,12 +583,17 @@ cmd_send() {
   # Check for --keys flag
   if [[ "${1:-}" == "--keys" ]]; then
     shift
-    tmux send-keys -t "$tname" "$@"
+    tmux send-keys -t "=$tname:" "$@"
     echo "${GREEN}sent keys${RESET} to $name"
   else
     local text="$*"
     [[ -n "$text" ]] || die "usage: amux send <name> <text>  or  amux send <name> --keys 'C-c'"
-    tmux send-keys -t "$tname" "$text" Enter
+    # Send text literally (-l), then Enter as a separate key after a short
+    # delay. Claude Code's TUI buffers/debounces input; sending text and Enter
+    # in one send-keys call lets Enter arrive before the text is processed.
+    tmux send-keys -t "=$tname:" -l "$text"
+    sleep 0.05
+    tmux send-keys -t "=$tname:" Enter
     echo "${GREEN}sent${RESET} to $name: $text"
   fi
 }
@@ -553,7 +606,7 @@ cmd_stop() {
   local tname
   tname=$(tmux_name "$name")
   if is_running "$name"; then
-    tmux kill-session -t "$tname"
+    tmux kill-session -t "=$tname"
     echo "${RED}stopped${RESET} $name"
   else
     echo "${DIM}$name is not running${RESET}"
@@ -621,7 +674,7 @@ cmd_ls() {
     # Preview last output line if running
     local preview=""
     if is_running "$name" 2>/dev/null; then
-      preview=$(tmux capture-pane -t "$(tmux_name "$name")" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
       [[ -n "$preview" ]] && preview=" ${DIM}│ $preview${RESET}"
     fi
 
@@ -1068,7 +1121,8 @@ ${BOLD}amux${RESET} — phone-friendly Claude Code session manager ${DIM}v${CC_V
 
 ${BOLD}Session management:${RESET}
   amux register <name> [flags]   Register a session with Claude Code flags
-  amux start <name>              Start a registered session in tmux
+  amux start <name> [--detach]   Start a registered session in tmux (-d = don't attach)
+                                (--dry-run: print the command without spawning)
   amux exec <name> [flags]       Register + start in one step
   amux stop <name>               Stop a running session
   amux rm <name>                 Remove a session (stops if running)
@@ -1099,6 +1153,16 @@ ${BOLD}Board:${RESET}
   amux board doing <ID>          Mark issue as in progress
   amux board todo <ID>           Mark issue as todo
   amux board status <ID> <s>     Set any status
+
+${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${RESET}
+  amux tunnel status             Show tunnel state and public URL
+  amux tunnel url                Print just the public URL
+  amux tunnel start [PORT]       Expose a port (default: the amux server)
+  amux tunnel stop               Stop the tunnel
+
+${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
+  amux alert "message" [reason]  Fire an immediate alert to the amux owner
+                                 Only for things needing attention NOW.
 
 ${BOLD}Claude Code flags (on register/exec):${RESET}
   --model <model>              Model: opus, sonnet, haiku, or full ID
@@ -1237,6 +1301,103 @@ cmd_unshare() {
   echo "revoked"
 }
 
+cmd_tunnel() {
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local subcmd="${1:-status}"; shift 2>/dev/null || true
+
+  case "$subcmd" in
+    start)
+      local port="${1:-}"
+      local payload='{}'
+      [[ -n "$port" ]] && payload="{\"port\":$port}"
+      curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
+        "$AMUX_API/api/tunnel/start" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    # amux-server restarts on save; a mid-restart request returns nothing.
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
+if d.get('error'):
+    sys.exit('error: ' + str(d['error']))
+print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.get('url') or '(registering)'))
+"
+      ;;
+    stop)
+      curl -sk -X POST "$AMUX_API/api/tunnel/stop" >/dev/null && echo "tunnel stopped"
+      ;;
+    status|"")
+      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
+if not d.get('configured'):
+    print('not configured — set AMUX_TUNNEL_TOKEN in ~/.amux/server.env')
+    print('(the tunnel needs an active amux cloud subscription)')
+    sys.exit(0)
+print('running :', d.get('running'))
+print('url     :', d.get('url') or '-')
+print('target  :', d.get('target') or '-')
+print('requests:', d.get('requests', 0))
+if d.get('error'): print('error   :', d['error'])
+"
+      ;;
+    url)
+      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try:
+    u = json.loads(raw).get('url')
+except ValueError:
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
+print(u) if u else sys.exit('tunnel not running')
+"
+      ;;
+    *)
+      cat <<EOF
+${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
+
+  amux tunnel status          Show tunnel state and public URL
+  amux tunnel url             Print just the public URL
+  amux tunnel start [PORT]    Start the tunnel (default: the amux server itself)
+  amux tunnel stop            Stop the tunnel
+
+Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
+Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
+~/.amux/server.env, then \`touch amux-server.py\` to reload.
+EOF
+      ;;
+  esac
+}
+
+cmd_alert() {
+  # Urgent owner alert — USE SPARINGLY. Fires an in-app push + iMessage to the
+  # amux owner (Ethan). For anything a session needs the owner to see NOW.
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local msg="${1:-}"
+  [[ -n "$msg" ]] || die "Usage: amux alert \"<message>\" [reason]
+This is a FIRE ALARM — only for things that need the owner immediately
+(prod down, data at risk, a go/no-go only they can make). Not for status updates."
+  local reason="${2:-}"
+  local sess="${AMUX_SESSION:-cli}"
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
+    "$AMUX_API/api/alert/owner" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try: d = json.loads(raw)
+except ValueError: sys.exit('amux server not responding')
+if d.get('error'): sys.exit('alert failed: ' + str(d['error']))
+if d.get('deduped'): print('(deduped — an identical alert fired <60s ago)'); sys.exit(0)
+ch = d.get('channels', {})
+print('alert sent →', ', '.join('%s: %s' % (k, v) for k, v in ch.items()) or '(no channels)')
+"
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -1268,6 +1429,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     sessions)         cmd_sessions_api ;;
     share)            shift; cmd_share "$@" ;;
     unshare)          shift; cmd_unshare "$@" ;;
+    tunnel|t)         shift; cmd_tunnel "$@" ;;
+    alert)            shift; cmd_alert "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;
     "")               cmd_dashboard ;;

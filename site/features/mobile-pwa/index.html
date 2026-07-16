@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Mobile PWA — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How amux's PWA handles offline sync: queue reconciliation, Background Sync, drafts, and auto-retry — manage agents from your phone even without connectivity.">
-  <meta name="keywords" content="amux PWA, mobile AI management, progressive web app, iOS Android agents">
+  <title>amux iOS App — The Remote Control for Your AI Engineering Team (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The amux iOS app is the remote control for your AI engineering team. Monitor live Claude Code sessions, approve actions, inspect terminal output, and recover stalled agents — from anywhere.">
+  <meta name="keywords" content="amux iOS app, monitor Claude Code from phone, AI agent remote control, remote control AI engineering team, amux mobile dashboard 2026">
   <link rel="canonical" href="https://amux.io/features/mobile-pwa/">
-  <meta property="og:title" content="Mobile PWA — amux">
-  <meta property="og:description" content="How amux's PWA handles offline sync: queue reconciliation, Background Sync, drafts, and auto-retry.">
+  <meta property="og:title" content="amux iOS App — The Remote Control for Your AI Engineering Team (2026) — amux">
+  <meta property="og:description" content="The amux iOS app is the remote control for your AI engineering team. Monitor live Claude Code sessions, approve actions, inspect terminal output, and recover stalled agents — from anywhere.">
   <meta property="og:url" content="https://amux.io/features/mobile-pwa/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,9 +20,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Mobile PWA","item":"https://amux.io/features/mobile-pwa/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Mobile PWA","description":"Install amux as a Progressive Web App on your phone for mobile agent management.","url":"https://amux.io/features/mobile-pwa/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","featureList":"Mobile PWA"}}</script>
-  </head>
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"iOS App & Mobile","item":"https://amux.io/features/mobile-pwa/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux iOS App — The Remote Control for Your AI Engineering Team (2026)","description":"The amux iOS app is the remote control for your AI engineering team. Monitor live Claude Code sessions, approve actions, inspect terminal output, and recover stalled agents — from anywhere.","datePublished":"2026-07-11","dateModified":"2026-07-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/features/mobile-pwa/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What does the amux iOS app actually do?","acceptedAnswer":{"@type":"Answer","text":"It's the remote control for your AI engineering team. The app connects to your amux server and lets you monitor live Claude Code sessions, approve pending actions, inspect terminal output via the peek panel, steer agents with new instructions, manage the kanban board, and recover stalled sessions — all from your iPhone. It doesn't create agents; it monitors and manages them while they run on your laptop or server."}},{"@type":"Question","name":"Is the iOS app different from the web dashboard?","acceptedAnswer":{"@type":"Answer","text":"The iOS app is optimized for one-handed mobile use with touch targets ≥44px, a native SwiftUI feel, and a peek panel that reflows to phone width. The web dashboard is the full desktop experience. Both connect to the same amux server, so changes sync in real time."}},{"@type":"Question","name":"How do I connect when I'm away from home?","acceptedAnswer":{"@type":"Answer","text":"Use amux tunnel (amux tunnel start 8822 — requires amux cloud subscription) for a stable public HTTPS URL at https://<id>.t.amux.io/. Or use Tailscale for encrypted remote access. Both work with the iOS app."}},{"@type":"Question","name":"What can I do from the iOS app?","acceptedAnswer":{"@type":"Answer","text":"You can: see all agent sessions with live status; peek at terminal output and the plan strip for any agent; send steering instructions; continue, stop, or restart sessions; manage board issues; check notes and CRM; and approve permission prompts before agents stall."}},{"@type":"Question","name":"Is there an Android app?","acceptedAnswer":{"@type":"Answer","text":"There's no native Android app, but amux's dashboard is a full Progressive Web App (PWA). Open your amux URL in Chrome for Android and tap 'Add to Home Screen' — you get a standalone installable app with offline action queuing via Background Sync."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -37,84 +39,146 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Mobile PWA</span></div>
-    <h1>Mobile PWA</h1>
-<p class="subtitle">Install amux on your phone. Manage agents from anywhere &mdash; even offline.</p>
-<p>amux&rsquo;s dashboard is a full Progressive Web App. Install it on iOS or Android for native-like access to your agent fleet. Every mutation you make while offline &mdash; starting sessions, moving board items, sending commands &mdash; queues locally and replays automatically when you reconnect.</p>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>iOS App &amp; Mobile</span></div>
 
-<h2>How offline sync works</h2>
-<p>Most PWAs just cache static pages. amux goes further: it queues <em>mutations</em> and replays them in order, with smart conflict resolution, so you can manage agents from your phone on a subway or a plane and have everything sync when you surface.</p>
+    <div class="kicker">// feature</div>
+    <h1>The Remote Control for Your AI Engineering Team</h1>
+    <p class="lede">Keep your AI coding agents running &mdash; even when you&rsquo;re away from your desk. The amux iOS app connects to your agent fleet and puts full monitoring, steering, and recovery in your pocket.</p>
 
-<h3>1. The offline queue</h3>
-<p>Every API call goes through a single wrapper function: <code>apiCall()</code>. When the network is down, mutations (POST, PATCH, DELETE) are pushed onto an offline queue stored in both localStorage and IndexedDB. Read-only GET requests return cached data instead.</p>
-<p>Each queued operation records:</p>
-<ul>
-  <li>The HTTP method and URL</li>
-  <li>The request body</li>
-  <li>A timestamp</li>
-  <li>The operation type (e.g. <code>start-session</code>, <code>board-move</code>, <code>send-command</code>)</li>
-</ul>
-<p>Dual storage (localStorage + IndexedDB) means the queue survives both page refreshes and service worker restarts.</p>
+    <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+      <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="44" style="display:block;margin:12px 0"/>
+    </a>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: July 13, 2026</p>
 
-<h3>2. Queue reconciliation</h3>
-<p>Before replaying, amux runs <code>reconcileQueue()</code> to remove contradictory operations. If you started a session then stopped it while offline, both operations are dropped &mdash; the net effect is zero, and replaying them in sequence would waste API calls and potentially leave the session in the wrong state.</p>
-<p>The reconciler walks the queue and removes inverse pairs:</p>
-<ul>
-  <li><strong>start + stop</strong> on the same session &rarr; skip both</li>
-  <li><strong>Multiple board moves</strong> on the same item &rarr; keep only the last</li>
-</ul>
-<p>This keeps replay fast and idempotent.</p>
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> The amux iOS app is a companion app &mdash; not an agent creator. Like GitHub Mobile or Tailscale, it lets you monitor and manage systems running elsewhere. In this case: your AI coding agents running on your laptop or server. Your agents do the work; amux puts the dashboard in your pocket.
+    </div>
 
-<h3>3. Background Sync</h3>
-<p>When you queue an operation, amux registers a <code>sync</code> event with the browser&rsquo;s <a href="https://developer.mozilla.org/en-US/docs/Web/API/Background_Synchronization_API">Background Sync API</a>. This means the browser will fire a sync event when connectivity returns &mdash; even if the PWA tab is closed.</p>
-<p>The service worker&rsquo;s sync handler reads the queue from IndexedDB (service workers can&rsquo;t access localStorage), replays each operation in order, and clears the queue on success.</p>
+    <h2>It&rsquo;s a companion app, not an agent creator</h2>
+    <p>Think about how other tools handle mobile:</p>
+    <ul>
+      <li><strong>GitHub Mobile</strong> &mdash; doesn&rsquo;t run CI; lets you monitor it</li>
+      <li><strong>Vercel Mobile</strong> &mdash; doesn&rsquo;t build your app; lets you watch deploys</li>
+      <li><strong>Tailscale</strong> &mdash; doesn&rsquo;t run your servers; lets you reach them</li>
+      <li><strong>Kubernetes Dashboard</strong> &mdash; doesn&rsquo;t schedule pods; shows what&rsquo;s running</li>
+      <li><strong>amux iOS</strong> &mdash; doesn&rsquo;t run your agents; lets you monitor and control them</li>
+    </ul>
+    <p>Your Claude Code sessions, Codex sessions, and Gemini CLI sessions run on your laptop or a server. amux is the operations console you carry around.</p>
 
-<h3>4. The sync banner</h3>
-<p>When the app comes back online (or you open the PWA after being offline), a progress banner appears at the top of the screen showing each queued operation as it replays:</p>
-<ul>
-  <li>Operation name and target (e.g. &ldquo;Starting session worker-3&rdquo;)</li>
-  <li>Progress count (e.g. &ldquo;2 / 5&rdquo;)</li>
-  <li>Success/failure status for each item</li>
-</ul>
-<p>Drafts (sessions you created while offline) sync first, since other operations may depend on them existing.</p>
+    <h2>What you can do from your phone</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Use case</th><th>What it looks like</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Check overnight runs</strong></td><td>Wake up, open amux, scan the board &mdash; see what finished without going to your desk</td></tr>
+          <tr><td><strong>Approve permission prompts</strong></td><td>An agent waiting for your input? Find it in the session list and unblock it in two taps</td></tr>
+          <tr><td><strong>See why an agent stalled</strong></td><td>Tap the session &rarr; peek panel &rarr; read live terminal output to find the exact error</td></tr>
+          <tr><td><strong>Assign a new task</strong></td><td>Drop a follow-up task on any idle session directly from the board tab</td></tr>
+          <tr><td><strong>Steer with new context</strong></td><td>Send an instruction mid-run from the steering bar to redirect an agent</td></tr>
+          <tr><td><strong>Keep coding while traveling</strong></td><td>Your fleet keeps shipping; you keep full visibility from any network</td></tr>
+        </tbody>
+      </table>
+    </div>
 
-<h3>5. Auto-retry on visibility change</h3>
-<p>As a fallback for browsers that don&rsquo;t support Background Sync, amux also listens for <code>visibilitychange</code> events. When you switch back to the amux tab, it checks for queued operations and replays them immediately. This covers Safari on iOS, which has limited Background Sync support.</p>
+    <h2>Two ways to access your control center</h2>
 
-<h3>6. Service worker caching</h3>
-<p>The service worker uses a two-strategy cache:</p>
-<ul>
-  <li><strong>Cache-first</strong> for static assets (CSS, JS, images, fonts) &mdash; instant loads, updated in the background</li>
-  <li><strong>Network-first</strong> for HTML pages &mdash; always gets fresh content, falls back to cache when offline</li>
-  <li><strong>Skip</strong> for API calls &mdash; the app-level <code>apiCall()</code> wrapper handles offline queueing, so the service worker stays out of the way</li>
-</ul>
+    <h3>A. Native iOS App (recommended)</h3>
+    <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+      <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="44" style="display:block;margin:8px 0 12px"/>
+    </a>
+    <ul>
+      <li>Native SwiftUI feel with optimized touch targets (&ge;44&times;44px)</li>
+      <li>Full peek panel, plan strip, and steering bar</li>
+      <li>Subagent transcript switcher &uarr;/&darr; navigation</li>
+      <li>App Store ID: id6760410435</li>
+    </ul>
 
-<h2>Offline drafts</h2>
-<p>You can create new sessions while offline. These are saved as &ldquo;drafts&rdquo; in IndexedDB with a local UUID. When connectivity returns, drafts are synced first (before the rest of the queue), converting them into real registered sessions. Any commands you queued for a draft session are replayed against the newly-created real session.</p>
+    <h3>B. Progressive Web App (iOS &amp; Android)</h3>
+    <p>Open your amux server URL (<code>http://&lt;your-laptop-ip&gt;:8822</code>) in Safari (iOS) or Chrome (Android) and tap &ldquo;Add to Home Screen.&rdquo;</p>
+    <ul>
+      <li>Standalone full-screen icon &mdash; feels like a native app</li>
+      <li>Offline action queue via Background Sync</li>
+      <li>No App Store required &mdash; works on Android too</li>
+      <li>Note: Safari is required for iOS PWA installation; Chrome on iOS cannot install PWAs</li>
+    </ul>
 
-<h2>What works offline</h2>
-<table>
-  <thead><tr><th>Action</th><th>Offline behavior</th></tr></thead>
-  <tbody>
-    <tr><td>View sessions</td><td>Shows cached state from last online fetch</td></tr>
-    <tr><td>Start / stop sessions</td><td>Queued, replayed on reconnect</td></tr>
-    <tr><td>Send commands</td><td>Queued, replayed in order</td></tr>
-    <tr><td>Move board items</td><td>Queued, reconciled before replay</td></tr>
-    <tr><td>Create board items</td><td>Queued, replayed on reconnect</td></tr>
-    <tr><td>Create sessions (drafts)</td><td>Saved locally, synced first on reconnect</td></tr>
-    <tr><td>Peek at terminal output</td><td>Shows last cached output</td></tr>
-  </tbody>
-</table>
+    <h2>Remote access options</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Option</th><th>Setup</th><th>Works away from home</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>amux tunnel</strong></td><td><code>amux tunnel start 8822</code></td><td>Yes &mdash; stable <code>*.t.amux.io</code> URL</td><td><a href="/cloud/">Cloud subscription</a></td></tr>
+          <tr><td><strong>Tailscale</strong></td><td>Install on laptop + phone, join same tailnet</td><td>Yes &mdash; encrypted mesh VPN</td><td>Free tier available</td></tr>
+          <tr><td><strong>LAN only</strong></td><td>None</td><td>No &mdash; same network only</td><td>Free</td></tr>
+          <tr><td><strong>Cloud VPS</strong></td><td>Run amux on a server with public IP</td><td>Yes &mdash; direct IP access</td><td>VPS cost</td></tr>
+        </tbody>
+      </table>
+    </div>
 
-<h2>Install</h2>
-<p><strong>iOS:</strong> Open amux in Safari &rarr; tap Share &rarr; Add to Home Screen.</p>
-<p><strong>Android:</strong> Open amux in Chrome &rarr; tap the install banner or Menu &rarr; Install app.</p>
-<p>The PWA uses HTTPS with a service worker, so your browser will prompt for installation automatically. For certificate setup on your phone, see the <a href="/guides/getting-started/">getting started guide</a>.</p>
+    <h2>Mobile capability comparison</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Feature</th><th>amux iOS/PWA</th><th>Claude Code alone</th><th>Devin mobile</th><th>SSH + tmux</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Live session status</td><td>&#10003;</td><td>&#10007;</td><td>&#10003; (cloud)</td><td>Possible, clunky</td></tr>
+          <tr><td>Peek terminal output</td><td>&#10003;</td><td>&#10007;</td><td>&#10003;</td><td>&#10003;</td></tr>
+          <tr><td>Approve actions</td><td>&#10003;</td><td>&#10007;</td><td>&#10003;</td><td>&#10003;</td></tr>
+          <tr><td>Steer agents</td><td>&#10003;</td><td>&#10007;</td><td>&#10003;</td><td>&#10007;</td></tr>
+          <tr><td>Offline action queue</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
+          <tr><td>Kanban board</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
+          <tr><td>Self-hosted</td><td>&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10003;</td></tr>
+          <tr><td>Native app</td><td>&#10003; (iOS)</td><td>&#10007;</td><td>&#10003;</td><td>&#10007;</td></tr>
+        </tbody>
+      </table>
+    </div>
 
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <h2>Frequently asked questions</h2>
+
+    <h3>What does the amux iOS app actually do?</h3>
+    <p>It&rsquo;s the remote control for your AI engineering team. The app connects to your amux server and lets you monitor live Claude Code sessions, approve pending actions, inspect terminal output via the peek panel, steer agents with new instructions, manage the kanban board, and recover stalled sessions &mdash; all from your iPhone. It doesn&rsquo;t create agents; it monitors and manages them while they run on your laptop or server.</p>
+
+    <h3>Is the iOS app different from the web dashboard?</h3>
+    <p>The iOS app is optimized for one-handed mobile use with touch targets &ge;44px, a native SwiftUI feel, and a peek panel that reflows to phone width. The web dashboard is the full desktop experience. Both connect to the same amux server, so changes sync in real time.</p>
+
+    <h3>How do I connect when I&rsquo;m away from home?</h3>
+    <p>Use <a href="/features/tunnel/">amux tunnel</a> (<code>amux tunnel start 8822</code> &mdash; requires <a href="/cloud/">amux cloud</a>) for a stable public HTTPS URL. Or use Tailscale for encrypted remote access over any network. Both work seamlessly with the iOS app.</p>
+
+    <h3>What can I do from the iOS app?</h3>
+    <p>You can: see all agent sessions with live status dots; peek at terminal output and the plan strip for any agent; send steering instructions; continue, stop, or restart sessions; manage board issues; check notes and CRM; and approve permission prompts before agents stall.</p>
+
+    <h3>Is there an Android app?</h3>
+    <p>There&rsquo;s no native Android app, but amux&rsquo;s dashboard is a full Progressive Web App (PWA). Open your amux URL in Chrome for Android and tap &ldquo;Add to Home Screen&rdquo; &mdash; you get a standalone installable app with offline action queuing via Background Sync.</p>
+
+    <div class="cta-box">
+      <h3>Build agents anywhere. Operate them from anywhere.</h3>
+      <p>amux is an open-source control plane for AI coding agents &mdash; self-healing, phone-first, MIT licensed, single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # &rarr; https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;align-items:center">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#11088; Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+        <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+          <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="38"/>
+        </a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/mobile-management-pwa/">Managing AI agents from your phone &mdash; full guide</a></li>
+      <li><a href="/guides/claude-code-plan-monitoring/">Monitoring Claude Code agents in real time</a></li>
+      <li><a href="/guides/detached-agent-sessions/">Running Claude Code agents in the background (detached)</a></li>
+      <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep &mdash; overnight agent setup</a></li>
+      <li><a href="/features/tunnel/">amux tunnel &mdash; expose localhost as a stable HTTPS URL</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -161,7 +225,6 @@ amux serve  # &rarr; https://localhost:8822</code></pre><a class="btn btn-primar
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

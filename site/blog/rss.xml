@@ -9,6 +9,13 @@
     <atom:link href="https://amux.io/blog/rss.xml" rel="self" type="application/rss+xml"/>
     <image><url>https://amux.io/og-image.png</url><title>amux</title><link>https://amux.io/</link></image>
   <item>
+    <title><![CDATA[The Self-Improving Agent Loop: How amux Gets Smarter Every Run]]></title>
+    <description><![CDATA[One command scaffolds a closed orchestrator loop: parallel agents, a verify gate, and a constraints note that accumulates lessons across runs. The swarm gets smarter every tick.]]></description>
+    <link>https://amux.io/blog/self-improving-agent-loop/</link>
+    <guid isPermaLink="true">https://amux.io/blog/self-improving-agent-loop/</guid>
+    <pubDate>Thu, 19 Jun 2026 08:00:00 GMT</pubDate>
+  </item>
+  <item>
     <title><![CDATA[AI Coding Tools Pricing Compared (2026): What Every Setup Actually Costs]]></title>
     <description><![CDATA[Comprehensive pricing comparison of every major AI coding tool in 2026. Claude Code, Cursor, Copilot, Devin, Codex, and more — including what multi-agent setups actually cost per month.]]></description>
     <link>https://amux.io/blog/ai-coding-tools-pricing-2026/</link>
