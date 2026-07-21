@@ -2,6 +2,40 @@
 
 Custom changes layered on top of upstream `mixpeek/amux`.
 
+## Local Delta Registry
+
+The single canonical list of every fork-local edit to a tracked file
+(`amux-server.py`, `amux`). Both the feature-dev rules
+([`.claude/rules/extend-via-sidecar.md`](.claude/rules/extend-via-sidecar.md))
+and the sync SOP ([`docs/upstream-sync.md`](docs/upstream-sync.md)) point here
+for the area list and per-area resolution notes — this table is their **only**
+home. Any new in-file change gets a row here in the same commit (see
+`extend-via-sidecar.md`'s post-conditions checklist).
+
+**Grep landmarks** must be strings unique to the local delta (verified: none of
+them currently match `upstream/main`) — not upstream-shared symbols. **Sentinel
+status** is "retrofitted" only for account-routing (the lazy-retrofit dogfood
+anchor); every other row is gate-tracked by its grep landmarks alone until it's
+next touched (see `extend-via-sidecar.md`).
+
+> **Audit note (2026-07-21):** the "restart-race fix" previously listed under
+> `amux-server.py`'s files-touched line below (`_HIBERNATE_STARTUP_GRACE` /
+> hibernate-restart death-loop patch, commit `a257fba`) is confirmed **already
+> present in `upstream/main`** — it merged upstream at some point and is no
+> longer a local delta. It has no registry row below and should not be treated
+> as one; this is the delta-shrinking-to-zero outcome Principle 5 aims for.
+
+| Area | Tracked file(s) | Grep landmarks (unique-to-local) | Sentinel status | Reapply-hunk anchor | Resolution note | Upstreamable? |
+|---|---|---|---|---|---|---|
+| Account routing / multi-home | `amux-server.py` | `_pick_claude_config_dir`, `_session_claude_config_dir`, `_claude_config_homes`, `_claude_project_dir`, `AMUX_WORK_PATHS` | **Retrofitted** — `AMUX-LOCAL:account-routing` sentinel at `amux-server.py:~1643` | Self-contained function block `_pick_claude_config_dir` → `_cc_session_id_for_name` (~1643–1773); bounded by the `AMUX-LOCAL:account-routing` sentinel, not a hunk positioned on an upstream landmark — merges via git's own 3-way merge | Keep `_pick_claude_config_dir`, `_session_claude_config_dir`, `_claude_config_homes`, `_claude_project_dir` — keep local one-liners like `project_dir = _claude_project_dir(...)` over upstream's `CLAUDE_HOME / "projects" / ...` | N (personal Fidoo work-path defaults; mechanism not pursued upstream) |
+| Token stats — multi-home iteration | `amux-server.py` | `# Sessions may run under any Claude config home (work/personal routing)` (comment inside `_refresh_token_cache`) | Not sentinel-wrapped (lazy retrofit — gate-tracked by grep landmark only) | `_refresh_token_cache` (upstream-owned function name; local delta is the `_claude_config_homes()` iteration grafted inside it) | Adopt upstream's token-stats logic, but iterate all config homes (`_claude_config_homes()`) instead of just `~/.claude` | N (depends on account-routing existing upstream first) |
+| `start_session()` cmd build — `CLAUDE_CONFIG_DIR` prefix | `amux-server.py` | `CLAUDE_CONFIG_DIR={shlex.quote(claude_config_dir)}`, `Env-prefix selects the Claude.ai account` | Not sentinel-wrapped (lazy retrofit) | `cmd = _custom_claude or "claude"` (upstream-owned base command build in `start_session()`, ~line 10823) | Keep the `CLAUDE_CONFIG_DIR=` env prefix wrapped around whatever base command upstream uses | N (depends on account-routing) |
+| `POST /api/sessions` — `config_dir` block | `amux-server.py` | `config_dir = str(body.get("config_dir", "")).strip()` | Not sentinel-wrapped (lazy retrofit) | `creator = body.get("creator", "").strip()` (upstream-owned field immediately above, ~line 45980) | Keep the `config_dir` (`"work"`/`"personal"`/path) block | **Y** — generic `config_dir` field, strongest PR candidate |
+| Stub-writer guard | `amux-server.py` | `Self-update only when the installed file IS the stub. Never follow` | Not sentinel-wrapped (lazy retrofit) | `_sync_skills_and_cli` stub-install block (upstream-owned function; local delta is the symlink + content-marker guard grafted inside, ~lines 6023–6035) | Keep the symlink + content-marker guard (`stub_path.is_symlink()` check + `"amux CLI stub"` marker match) around whatever upstream does with the stub-install block — never let it write through a symlink or overwrite a non-stub file | N (fork-specific incident fix tied to this host's `/usr/local/bin/amux` symlink install layout) |
+| `AMUX_COMMIT_STAMP` toggle | `amux-server.py` | `AMUX_COMMIT_STAMP` | Not sentinel-wrapped (lazy retrofit) | `_commit_stamp_enabled` / `_install_amux_commit_hook` (upstream-owned commit-stamp hook; local delta is the on/off toggle inside) | Keep the `AMUX_COMMIT_STAMP` toggle in the commit-stamp hook install/enable logic — graft around whatever upstream changes to the hook-install mechanism | **Y** — strongest PR candidate |
+| `amux` CLI — config-dir flags & auto-detect (Hunks 1–5) | `amux` | `pick_default_config_dir`, `AMUX_WORK_PATHS`, `CC_CONFIG_DIR` | Not sentinel-wrapped (lazy retrofit; bash CLI, not amux-server.py — same policy applies) | `parse_claude_flags`, `cmd_register`, `cmd_exec`, `cmd_start` shell_setup block (see Hunks 1–5 below) | Keep the MODIFICATIONS.md hunks (config-dir flags, auto-detect + persist) AND upstream's new commands — both sides | N (tied to account-routing feature, not pursued upstream) |
+| `amux` CLI — remote-control/model defaults & yolo-by-default (Hunks 6–7) | `amux` | `AMUX_NO_REMOTE_CONTROL`, `AMUX_DEFAULT_MODEL`, `claude-opus-4-7[1m]`, `AMUX_NO_YOLO` | Not sentinel-wrapped (lazy retrofit) | `cmd_start` claude-branch, `else` of the `provider == "codex"` check (see Hunks 6–7 below) | Keep the MODIFICATIONS.md hunks (yolo default, default model, remote-control) AND upstream's new commands — both sides | N (personal defaults — Opus-1M, yolo, remote-control — not pursued upstream) |
+
 Goal: per-session Claude account selection. The session's `CLAUDE_CONFIG_DIR` decides which Claude.ai account is used inside the tmux pane — work vs personal vs anything else.
 
 > **2026-06-12 — implemented in BOTH the CLI and the server.**
