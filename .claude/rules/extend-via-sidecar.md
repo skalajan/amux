@@ -79,7 +79,7 @@ touched — don't go retrofit them preemptively.
 **Commit conventions:**
 - One commit per completed task; single-line commit message, no body, no
   trailers, no co-author line.
-- `AMUX_COMMIT_STAMP=0` for merge commits (see `upstream-sync.md` step 6).
+- `AMUX_COMMIT_STAMP=0` for merge commits (see `upstream-sync.md` step 7).
 - Never edit `amux-server.py` in place during a merge — the live server
   watches its mtime and re-execs on change; conflict markers would break it.
   Merge in a temp worktree instead (`upstream-sync.md` step 3).
