@@ -99,5 +99,25 @@ in-app auto-updater self-clobber every local delta mid-session, bypassing the
 registry and the pre-merge gate entirely. (Also documented in
 `docs/upstream-sync.md` Notes.)
 
+**Author-time advisory check (deferred as an automated hook).** This repo has
+no `.claude/settings.json` hook infrastructure right now (it was deliberately
+removed — see `git log` for "chore: remove local .claude/settings.json"), so
+the sentinel/registry post-condition above isn't machine-enforced yet. Until
+that infra exists again, run this manually before committing any staged change
+to `amux-server.py` or `amux`:
+
+```bash
+git diff --cached -- amux-server.py amux | grep -q '^+.*AMUX-LOCAL:' \
+  && ! git diff --cached --name-only | grep -qx 'MODIFICATIONS.md' \
+  && echo "WARNING: staged AMUX-LOCAL sentinel change with no MODIFICATIONS.md update — add/update its Local Delta Registry row first" \
+  || true
+```
+
+If/when `.claude/settings.json` PostToolUse hooks come back, wire this as a
+**PostToolUse-on-Edit check, advisory only** — it must never block a commit
+and must never fire during `docs/upstream-sync.md`'s weekly merge run (a
+legitimate merge commit touches `amux-server.py` with `AMUX-LOCAL:` lines but
+no *new* registry delta in that same diff).
+
 Related: [single-file.md](single-file.md) governs not splitting `amux-server.py`
 into modules; this rule governs not modifying it at all when a sidecar will do.
