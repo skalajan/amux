@@ -22,7 +22,7 @@ import uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import urllib.request, urllib.error
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 # Strip Claude Code env vars so child processes (new sessions) don't inherit them
 for _cv in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
@@ -144,6 +144,525 @@ def _is_path_allowed(p: Path) -> bool:
     except ValueError:
         pass
     return True
+
+
+# ── Ebook → self-contained HTML (pure stdlib) ────────────────────────────────
+# EPUB/FB2/CBZ are converted server-side into a single HTML doc with images/CSS
+# inlined as data URLs, so it renders in a sandboxed (no-network) iframe AND
+# caches cleanly for offline reading. Proprietary formats (MOBI/AZW/CBR/DJVU)
+# aren't decodable in stdlib — they fall through to a download card client-side.
+_EB_IMG_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+}
+EBOOK_RENDERABLE = {".epub", ".fb2", ".cbz", ".mobi", ".azw"}
+EBOOK_DOWNLOAD_ONLY = {".azw3", ".azw4", ".kfx", ".cbr", ".djvu", ".lit", ".pdb"}
+EBOOK_EXTS = EBOOK_RENDERABLE | EBOOK_DOWNLOAD_ONLY
+_EB_INLINE_BUDGET = 30 * 1024 * 1024  # stop inlining images past this (protect memory/IDB)
+_EB_READER_CSS = (
+    ":root{color-scheme:light}html,body{margin:0;padding:0;background:#f7f6f3}"
+    ".ebk{max-width:44em;margin:0 auto;padding:28px 24px 96px;"
+    "font:1.05rem/1.7 Georgia,'Iowan Old Style','Times New Roman',serif;color:#1a1a1a;-webkit-text-size-adjust:100%}"
+    ".ebk img{max-width:100%;height:auto;display:block;margin:1em auto}"
+    ".ebk h1,.ebk h2,.ebk h3{font-family:-apple-system,system-ui,sans-serif;line-height:1.25}"
+    ".ebk a{color:#0a58ca}.ebk-chap{border:0;border-top:1px solid #ddd;margin:2.5em 0}"
+    ".ebk pre,.ebk code{font-family:ui-monospace,Menlo,monospace}"
+    "@media(prefers-color-scheme:dark){html,body{background:#181818}.ebk{color:#e6e6e6}"
+    ".ebk a{color:#6ea8fe}.ebk-chap{border-top-color:#333}}"
+)
+
+
+def _eb_data_url(raw: bytes, ext: str) -> str:
+    import posixpath
+    mime = _EB_IMG_MIME.get(ext.lower(), "application/octet-stream")
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode())
+
+
+def _eb_wrap(inner: str, title) -> str:
+    t = re.sub(r"[<>]", "", title or "ebook")
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>%s</title><style>%s</style></head>"
+            "<body><div class='ebk'>%s</div></body></html>") % (t, _EB_READER_CSS, inner)
+
+
+def _eb_epub(raw: bytes):
+    import io, posixpath, zipfile
+    import xml.etree.ElementTree as ET
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    names = z.namelist()
+    lower = {n.lower(): n for n in names}
+    opf_path = None
+    cxml = lower.get("meta-inf/container.xml")
+    if cxml:
+        m = re.search(r'full-path="([^"]+)"', z.read(cxml).decode("utf-8", "replace"))
+        if m:
+            opf_path = m.group(1)
+    if not opf_path or opf_path not in names:
+        opf_path = next((n for n in names if n.lower().endswith(".opf")), None)
+    if not opf_path:
+        raise ValueError("EPUB: no OPF package found")
+    opf_dir = posixpath.dirname(opf_path)
+    root = ET.fromstring(z.read(opf_path))
+    href_by_id = {}
+    for it in root.findall(".//{*}manifest/{*}item"):
+        iid, href = it.get("id"), it.get("href")
+        if iid and href:
+            href_by_id[iid] = href
+    spine = [ir.get("idref") for ir in root.findall(".//{*}spine/{*}itemref") if ir.get("idref")]
+    if not spine:
+        spine = [i for i, h in href_by_id.items() if h.lower().endswith((".xhtml", ".html", ".htm"))]
+    title = None
+    tnode = root.find(".//{*}metadata/{*}title")
+    if tnode is not None and tnode.text:
+        title = tnode.text.strip()
+
+    def zpath(base_dir, href):
+        href = href.split("#")[0].split("?")[0]
+        return posixpath.normpath(posixpath.join(base_dir, href)) if base_dir else posixpath.normpath(href)
+
+    state = {"spent": 0}
+
+    def inline_asset(zp):
+        # ONLY inline images. Without this, an href/xlink:href to another
+        # chapter (TOC / next-prev links) would inline that whole HTML file as
+        # base64 — a 466 KB EPUB exploded to 20 MB and stalled mobile Safari.
+        if posixpath.splitext(zp)[1].lower() not in _EB_IMG_MIME:
+            return None
+        real = lower.get(zp.lower())
+        if not real or state["spent"] >= _EB_INLINE_BUDGET:
+            return None
+        try:
+            b = z.read(real)
+        except Exception:
+            return None
+        state["spent"] += len(b)
+        return _eb_data_url(b, posixpath.splitext(zp)[1])
+
+    def rewrite_css(css_text, css_dir):
+        def repl(m):
+            u = m.group(1).strip("'\"")
+            if u.startswith("data:") or u.startswith("http"):
+                return m.group(0)
+            du = inline_asset(zpath(css_dir, u))
+            return "url(%s)" % du if du else m.group(0)
+        return re.sub(r"url\(\s*([^)]+?)\s*\)", repl, css_text)
+
+    parts = []
+    for idref in spine:
+        href = href_by_id.get(idref)
+        if not href:
+            continue
+        zp = zpath(opf_dir, href)
+        real = lower.get(zp.lower())
+        if not real:
+            continue
+        try:
+            doc = z.read(real).decode("utf-8", "replace")
+        except Exception:
+            continue
+        doc_dir = posixpath.dirname(zp)
+        mb = re.search(r"<body[^>]*>(.*)</body>", doc, re.S | re.I)
+        frag = mb.group(1) if mb else doc
+
+        def link_repl(m):
+            h2 = re.search(r'href=["\']([^"\']+)["\']', m.group(0))
+            if not h2:
+                return ""
+            real2 = lower.get(zpath(doc_dir, h2.group(1)).lower())
+            if not real2:
+                return ""
+            try:
+                css = z.read(real2).decode("utf-8", "replace")
+            except Exception:
+                return ""
+            return "<style>%s</style>" % rewrite_css(css, posixpath.dirname(zpath(doc_dir, h2.group(1))))
+        frag = re.sub(r"<link\b[^>]*rel=[\"']stylesheet[\"'][^>]*>", link_repl, frag, flags=re.I)
+
+        def img_repl(m):
+            attr, q, url = m.group(1), m.group(2), m.group(3)
+            if url.startswith("data:") or url.startswith("http") or url.startswith("#"):
+                return m.group(0)
+            du = inline_asset(zpath(doc_dir, url))
+            return "%s=%s%s%s" % (attr, q, du, q) if du else m.group(0)
+        frag = re.sub(r'(src|href|xlink:href)\s*=\s*(["\'])([^"\']+)\2', img_repl, frag)
+        frag = re.sub(r"<script\b.*?</script>", "", frag, flags=re.S | re.I)
+        parts.append("<section class='ebk-doc'>%s</section>" % frag)
+    if not parts:
+        raise ValueError("EPUB: no readable content")
+    return _eb_wrap("<hr class='ebk-chap'>".join(parts), title), title
+
+
+def _eb_fb2(raw: bytes):
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(raw)
+    bins = {}
+    for b in root.findall(".//{*}binary"):
+        bid, ct = b.get("id"), b.get("content-type", "image/jpeg")
+        if bid and b.text:
+            bins[bid] = "data:%s;base64,%s" % (ct, b.text.strip())
+    title = None
+    tn = root.find(".//{*}title-info/{*}book-title")
+    if tn is not None and tn.text:
+        title = tn.text.strip()
+
+    def render(el):
+        tag = el.tag.split("}")[-1]
+        inner = el.text or ""
+        for c in el:
+            inner += render(c) + (c.tail or "")
+        if tag == "p":
+            return "<p>%s</p>" % inner
+        if tag == "empty-line":
+            return "<br>"
+        if tag == "title":
+            return "<h2>%s</h2>" % inner
+        if tag == "subtitle":
+            return "<h3>%s</h3>" % inner
+        if tag == "emphasis":
+            return "<em>%s</em>" % inner
+        if tag == "strong":
+            return "<strong>%s</strong>" % inner
+        if tag in ("section", "epigraph", "cite", "annotation", "poem", "stanza"):
+            return "<div class='fb2-%s'>%s</div>" % (tag, inner)
+        if tag == "v":
+            return "<div>%s</div>" % inner
+        if tag == "image":
+            href = el.get("href") or el.get("{http://www.w3.org/1999/xlink}href") or ""
+            src = bins.get(href.lstrip("#"))
+            return "<img src='%s'>" % src if src else ""
+        return inner
+
+    inner = "".join(render(bd) for bd in root.findall(".//{*}body"))
+    if not inner.strip():
+        raise ValueError("FB2: empty")
+    return _eb_wrap(inner, title), title
+
+
+def _eb_cbz(raw: bytes):
+    import io, posixpath, zipfile
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    imgs = sorted(n for n in z.namelist()
+                  if posixpath.splitext(n)[1].lower() in _EB_IMG_MIME and not n.startswith("__MACOSX"))
+    if not imgs:
+        raise ValueError("CBZ: no images")
+    parts, spent, shown = [], 0, 0
+    for n in imgs:
+        if spent >= _EB_INLINE_BUDGET:
+            parts.append("<p style='text-align:center;color:#999'>… %d more page(s) not shown (size limit)</p>"
+                         % (len(imgs) - shown))
+            break
+        try:
+            b = z.read(n)
+        except Exception:
+            continue
+        spent += len(b)
+        shown += 1
+        parts.append("<img src='%s'>" % _eb_data_url(b, posixpath.splitext(n)[1]))
+    return _eb_wrap("".join(parts), None), None
+
+
+# ---------------- MOBI / AZW (MOBI6, PalmDOC) ----------------
+_EB_IMG_MAGIC = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"), (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+]
+
+
+def _eb_img_mime(b):
+    for magic, mime in _EB_IMG_MAGIC:
+        if b.startswith(magic):
+            return mime
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _eb_palmdoc(data):
+    out = bytearray()
+    i, n = 0, len(data)
+    while i < n:
+        c = data[i]; i += 1
+        if c == 0:
+            out.append(0)
+        elif c <= 8:                      # 1..8: literal copy of next c bytes
+            out += data[i:i + c]; i += c
+        elif c <= 0x7f:                    # 9..0x7f: literal byte
+            out.append(c)
+        elif c <= 0xbf:                    # 0x80..0xbf: LZ77 length/distance pair
+            if i >= n:
+                break
+            c = (c << 8) | data[i]; i += 1
+            dist = (c >> 3) & 0x7ff
+            length = (c & 7) + 3
+            if dist == 0:
+                break
+            for _ in range(length):
+                out.append(out[-dist])
+        else:                             # 0xc0..0xff: space + (c ^ 0x80)
+            out.append(0x20); out.append(c ^ 0x80)
+    return bytes(out)
+
+
+def _eb_trailing_size(data):
+    num = 0
+    for v in bytearray(data[-4:]):
+        if v & 0x80:
+            num = 0
+        num = (num << 7) | (v & 0x7f)
+    return num
+
+
+def _eb_trim_trailing(data, extra_flags):
+    flags = extra_flags >> 1
+    while flags:
+        if flags & 1:
+            n = _eb_trailing_size(data)
+            if 0 < n <= len(data):
+                data = data[:-n]
+        flags >>= 1
+    if extra_flags & 1 and data:          # multibyte-char overlap
+        n = (bytearray(data[-1:])[0] & 3) + 1
+        if 0 < n <= len(data):
+            data = data[:-n]
+    return data
+
+
+def _eb_mobi(raw: bytes):
+    import struct
+    if raw[60:68] not in (b"BOOKMOBI", b"TEXtREAd"):
+        raise ValueError("not a MOBI/PalmDOC container")
+    nrec = struct.unpack(">H", raw[76:78])[0]
+    offsets = [struct.unpack(">I", raw[78 + i * 8: 82 + i * 8])[0] for i in range(nrec)]
+    offsets.append(len(raw))
+    records = [raw[offsets[i]:offsets[i + 1]] for i in range(nrec)]
+    rec0 = records[0]
+    comp, _, tlen, rcount, rsize, enc = struct.unpack(">HHIHHH", rec0[0:14])
+    if enc != 0:
+        raise ValueError("MOBI is DRM-encrypted")
+    if comp not in (1, 2):
+        raise ValueError("unsupported MOBI compression %d (HUFF/CDIC)" % comp)
+    encoding, first_img, title, extra_flags = "utf-8", 0, None, 0
+    if rec0[16:20] == b"MOBI":
+        mhlen = struct.unpack(">I", rec0[20:24])[0]
+        enc_code = struct.unpack(">I", rec0[28:32])[0]
+        encoding = "utf-8" if enc_code == 65001 else "cp1252"
+        first_img = struct.unpack(">I", rec0[108:112])[0]
+        fn_off = struct.unpack(">I", rec0[84:88])[0]
+        fn_len = struct.unpack(">I", rec0[88:92])[0]
+        if fn_off and fn_len and fn_off + fn_len <= len(rec0):
+            try:
+                title = rec0[fn_off:fn_off + fn_len].decode(encoding, "replace").strip()
+            except Exception:
+                pass
+        if mhlen >= 228 and len(rec0) >= 244:
+            extra_flags = struct.unpack(">H", rec0[242:244])[0]
+    parts = []
+    for i in range(1, rcount + 1):
+        if i >= len(records):
+            break
+        d = _eb_trim_trailing(records[i], extra_flags)
+        parts.append(_eb_palmdoc(d) if comp == 2 else d)
+    html = b"".join(parts).decode(encoding, "replace")
+
+    def img_repl(m):
+        try:
+            idx = int(m.group(1))
+        except ValueError:
+            return m.group(0)
+        rn = (first_img - 1) + idx if first_img else -1
+        if rn < 0 or rn >= len(records):
+            return m.group(0)
+        b = records[rn]
+        mime = _eb_img_mime(b)
+        if not mime:
+            return m.group(0)
+        return '<img src="data:%s;base64,%s">' % (mime, base64.b64encode(b).decode())
+    html = re.sub(r'<img[^>]*\brecindex=["\']?0*(\d+)["\']?[^>]*>', img_repl, html, flags=re.I)
+    html = re.sub(r"<\s*/?\s*mbp:[^>]*>", "", html, flags=re.I)
+    html = re.sub(r"<script\b.*?</script>", "", html, flags=re.S | re.I)
+    mb = re.search(r"<body[^>]*>(.*)</body>", html, re.S | re.I)
+    inner = mb.group(1) if mb else html
+    if not inner.strip():
+        raise ValueError("MOBI: no extractable text")
+    return _eb_wrap(inner, title), title
+
+
+def ebook_to_html(raw: bytes, ext: str):
+    """Dispatch by extension → (html, title). Raises on any failure."""
+    ext = ext.lower()
+    if ext == ".epub":
+        return _eb_epub(raw)
+    if ext == ".fb2":
+        return _eb_fb2(raw)
+    if ext == ".cbz":
+        return _eb_cbz(raw)
+    if ext in (".mobi", ".azw"):
+        return _eb_mobi(raw)
+    raise ValueError("unsupported ebook: " + ext)
+
+
+# ── Library index (a folder of ebooks → flat, metadata-rich book list) ───────
+# Prefers a Calibre metadata.db; falls back to scanning .opf sidecars/filenames.
+_LIB_EBOOK_EXTS = {".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".fb2", ".cbz", ".cbr", ".pdf", ".djvu"}
+_LIB_FMT_RANK = {"epub": 0, "azw3": 1, "mobi": 2, "fb2": 3, "cbz": 4, "pdf": 5, "azw": 6, "djvu": 9}
+
+
+def _lib_fmt_rank(fmt):
+    return _LIB_FMT_RANK.get(fmt.lower(), 8)
+
+
+def _lib_calibre(db_path, root, limit=5000):
+    con = sqlite3.connect("file:%s?mode=ro&immutable=1" % str(db_path), uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        books = {}
+        for r in con.execute("SELECT id,title,author_sort,path,has_cover,pubdate,series_index,timestamp "
+                             "FROM books ORDER BY timestamp DESC LIMIT ?", (limit,)):
+            books[r["id"]] = {
+                "id": r["id"], "title": r["title"] or "Untitled",
+                "authors": [], "tags": [], "series": None,
+                "series_index": r["series_index"], "formats": [],
+                "cover": None, "pubdate": (r["pubdate"] or "")[:10],
+                "rating": 0, "_path": r["path"], "_has_cover": r["has_cover"],
+            }
+
+        def link(sql):
+            for r in con.execute(sql):
+                if r["book"] in books:
+                    yield r
+        for r in link("SELECT bal.book, a.name FROM books_authors_link bal JOIN authors a ON a.id=bal.author ORDER BY bal.id"):
+            books[r["book"]]["authors"].append(r["name"])
+        for r in link("SELECT btl.book, t.name FROM books_tags_link btl JOIN tags t ON t.id=btl.tag ORDER BY t.name"):
+            books[r["book"]]["tags"].append(r["name"])
+        for r in link("SELECT bsl.book, s.name FROM books_series_link bsl JOIN series s ON s.id=bsl.series"):
+            books[r["book"]]["series"] = r["name"]
+        for r in link("SELECT brl.book, rt.rating FROM books_ratings_link brl JOIN ratings rt ON rt.id=brl.rating"):
+            books[r["book"]]["rating"] = round((r["rating"] or 0) / 2, 1)
+        for r in con.execute("SELECT book, format, name, uncompressed_size FROM data"):
+            b = books.get(r["book"])
+            if not b:
+                continue
+            fp = root / b["_path"] / ("%s.%s" % (r["name"], r["format"].lower()))
+            b["formats"].append({"fmt": r["format"].upper(), "path": str(fp),
+                                 "size": r["uncompressed_size"] or 0})
+    finally:
+        con.close()
+
+    out = []
+    for b in books.values():
+        b["formats"] = [f for f in b["formats"] if os.path.exists(f["path"])]
+        if not b["formats"]:
+            continue
+        if b["_has_cover"]:
+            cov = root / b["_path"] / "cover.jpg"
+            if cov.exists():
+                b["cover"] = str(cov)
+        b["formats"].sort(key=lambda f: _lib_fmt_rank(f["fmt"]))
+        if not b["authors"]:
+            b["authors"] = ["Unknown"]
+        for k in ("_path", "_has_cover"):
+            b.pop(k, None)
+        out.append(b)
+    out.sort(key=lambda x: (x["title"] or "").lower())
+    return out
+
+
+def _lib_parse_opf(opf):
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(opf.read_bytes())
+    except Exception:
+        return {}
+    def txt(tag):
+        e = root.find(".//{*}%s" % tag)
+        return (e.text or "").strip() if e is not None and e.text else None
+    authors = [e.text.strip() for e in root.findall(".//{*}creator") if e is not None and e.text]
+    tags = [e.text.strip() for e in root.findall(".//{*}subject") if e is not None and e.text]
+    series = None
+    for m in root.findall(".//{*}meta"):
+        if (m.get("name") or "") == "calibre:series":
+            series = m.get("content")
+    return {"title": txt("title"), "authors": authors, "tags": tags, "series": series}
+
+
+def _lib_opf_scan(root, limit=5000):
+    import posixpath
+    by_dir, count = {}, 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")][:2000]
+        ebs = [f for f in filenames if posixpath.splitext(f)[1].lower() in _LIB_EBOOK_EXTS]
+        if not ebs:
+            continue
+        d = Path(dirpath)
+        meta = _lib_parse_opf(d / "metadata.opf") if (d / "metadata.opf").exists() else {}
+        cover = None
+        for cname in ("cover.jpg", "cover.jpeg", "cover.png"):
+            if (d / cname).exists():
+                cover = str(d / cname); break
+        groups = {}
+        for f in ebs:
+            base, ext = posixpath.splitext(f)
+            groups.setdefault(base, []).append((ext.lower().lstrip("."), f))
+        for base, fmts in groups.items():
+            title = meta.get("title") or re.sub(r"\s*-\s*[^-]+$", "", base).strip() or base
+            authors = meta.get("authors") or []
+            if not authors:
+                m = re.search(r"-\s*([^-]+)$", base)
+                authors = [m.group(1).strip()] if m else ["Unknown"]
+            formats = []
+            for ext, fname in fmts:
+                fp = d / fname
+                formats.append({"fmt": ext.upper(), "path": str(fp),
+                                "size": fp.stat().st_size if fp.exists() else 0})
+            formats.sort(key=lambda x: _lib_fmt_rank(x["fmt"]))
+            by_dir[str(d / base)] = {
+                "id": count, "title": title, "authors": authors,
+                "tags": meta.get("tags") or [], "series": meta.get("series"),
+                "series_index": None, "formats": formats, "cover": cover,
+                "pubdate": "", "rating": 0,
+            }
+            count += 1
+            if count >= limit:
+                break
+        if count >= limit:
+            break
+    out = list(by_dir.values())
+    out.sort(key=lambda x: (x["title"] or "").lower())
+    return out
+
+
+def _lib_facets(books):
+    authors, formats, tags, series = {}, {}, {}, {}
+    for b in books:
+        for a in b["authors"]:
+            authors[a] = authors.get(a, 0) + 1
+        seen = set()
+        for f in b["formats"]:
+            if f["fmt"] not in seen:
+                formats[f["fmt"]] = formats.get(f["fmt"], 0) + 1
+                seen.add(f["fmt"])
+        for t in b["tags"]:
+            tags[t] = tags.get(t, 0) + 1
+        if b["series"]:
+            series[b["series"]] = series.get(b["series"], 0) + 1
+
+    def top(d, n=60):
+        return [{"name": k, "count": v} for k, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:n]]
+    return {"authors": top(authors), "formats": top(formats, 12), "tags": top(tags), "series": top(series)}
+
+
+def _lib_index(root):
+    db = root / "metadata.db"
+    if db.exists():
+        books, source = _lib_calibre(db, root), "calibre"
+    else:
+        books, source = _lib_opf_scan(root), "opf"
+    return {"is_library": bool(books), "source": source, "count": len(books),
+            "books": books, "facets": _lib_facets(books)}
 
 
 # Basenames/dirs that must NEVER be written via the file APIs regardless of
@@ -430,8 +949,10 @@ def _install_signal_handlers():
             pass
         slog(f"[SIGNAL] exiting due to {sig_name}")
         os._exit(128 + signum)
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+    # Ignore SIGHUP so the server survives terminal disconnects and
+    # os.execv auto-restarts (where nohup protection is lost).
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 # ── Torrent (aria2c RPC) helpers ──────────────────────────────────────────────
 _ARIA2_RPC_PORT = 6800
@@ -585,6 +1106,79 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
         return last or {"error": "browser call failed"}
     finally:
         lock.release()
+
+# ── Live-Chrome backend (CDP): same /api/browser verbs, executed in the USER'S
+# real Chrome (real logins, cookies, residential IP) via skills/chrome-cdp.
+# Design (2026-07-17, "get out of the model's way"): amux provides two execution
+# surfaces behind ONE tool interface — a profile browser for parallel/unattended
+# work, the live browser when acting-as-you matters. No agent loop lives here;
+# the session's model does all reasoning against these primitives.
+_CDP_SCRIPT = str(Path(__file__).resolve().parent / "skills" / "chrome-cdp" / "scripts" / "cdp.mjs")
+_live_targets: dict = {}   # amux browser-session name -> CDP target-id prefix
+
+def _cdp_call(args: list, timeout_s: int = 30) -> dict:
+    """Run one cdp.mjs command against the user's real Chrome."""
+    try:
+        r = subprocess.run(["node", _CDP_SCRIPT] + [str(a) for a in args],
+                           capture_output=True, text=True, timeout=timeout_s,
+                           cwd=str(Path(__file__).resolve().parent))
+    except subprocess.TimeoutExpired:
+        return {"error": "live-chrome operation timed out"}
+    except FileNotFoundError:
+        return {"error": "node not found — the live backend needs Node 22+"}
+    out = (r.stdout or "").strip(); err = (r.stderr or "").strip()
+    if r.returncode != 0:
+        msg = err or out or f"cdp exited {r.returncode}"
+        if "Allow" in msg or "Daemon failed" in msg:
+            msg += " | live backend drives YOUR Chrome — click 'Allow debugging?' on the tab (first use only)"
+        elif "ECONNREFUSED" in msg or "connect" in msg.lower():
+            msg += " | enable Chrome remote debugging (relaunch Chrome with --remote-debugging-port=9222)"
+        return {"error": msg[:500]}
+    return {"ok": True, "output": out}
+
+# Observation budgets: hard caps so a page dump can never flood the session's
+# context. The URL is always surfaced as the restorable pointer instead.
+_OBS_EVAL_CAP = 8_000
+_OBS_STATE_CAP = 24_000
+
+def _obs_cap(text, limit: int):
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…[truncated at {limit} chars — page stays live; re-query narrower or reopen via the url pointer]"
+
+_CDP_KEYS = {
+    "Enter": ("Enter", "Enter", 13, "\r"), "Tab": ("Tab", "Tab", 9, "\t"),
+    "Escape": ("Escape", "Escape", 27, ""), "Backspace": ("Backspace", "Backspace", 8, ""),
+    "ArrowDown": ("ArrowDown", "ArrowDown", 40, ""), "ArrowUp": ("ArrowUp", "ArrowUp", 38, ""),
+    "ArrowLeft": ("ArrowLeft", "ArrowLeft", 37, ""), "ArrowRight": ("ArrowRight", "ArrowRight", 39, ""),
+    "PageDown": ("PageDown", "PageDown", 34, ""), "PageUp": ("PageUp", "PageUp", 33, ""),
+}
+
+def _live_key(session: str, key: str) -> dict:
+    tid = _live_targets.get(session)
+    spec = _CDP_KEYS.get(key)
+    if not spec:
+        return {"error": f"unsupported key {key!r} on live backend (supported: {', '.join(sorted(_CDP_KEYS))})"}
+    k, code, vk, text = spec
+    events = [{"type": "rawKeyDown", "key": k, "code": code,
+               "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}]
+    if text:
+        events.append({"type": "char", "text": text, "key": k})
+    events.append({"type": "keyUp", "key": k, "code": code,
+                   "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk})
+    for ev in events:
+        r = _cdp_call(["evalraw", tid, "Input.dispatchKeyEvent", json.dumps(ev)], 10)
+        if not r.get("ok"):
+            return r
+    return {"ok": True, "key": key}
+
+def _live_url(session: str) -> str:
+    tid = _live_targets.get(session)
+    if not tid:
+        return ""
+    r = _cdp_call(["eval", tid, "location.href"], 10)
+    return (r.get("output") or "").strip() if r.get("ok") else ""
+
 
 def _bu_list_profiles() -> list:
     """List available Chrome profiles via browser-use."""
@@ -1483,8 +2077,8 @@ _event_log: "collections.deque[dict]" = collections.deque(maxlen=2000)
 _event_log_lock = threading.Lock()
 _req_tl = threading.local()  # per-request enrichment (set by handlers, read by _route)
 
-def _emit_event(etype: str, action: str, target: str = "", session: str = "",
-                detail: str = "", status: int = 200, ip: str = "") -> None:
+def _emit_http_event(etype: str, action: str, target: str = "", session: str = "",
+                     detail: str = "", status: int = 200, ip: str = "") -> None:
     # Don't emit semantic events (e.g. message-sent, started) for failed requests.
     # Downgrade to a plain http event so they don't spam the event log as false positives.
     if status >= 400 and etype != "http":
@@ -2287,6 +2881,13 @@ _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
 _PEEK_CACHE_TTL = 2.5  # seconds — long enough that multiple clients share one cached result
+_peek_live_cache: dict[str, tuple[float, dict]] = {}  # session -> (monotonic_time, response_dict)
+_PEEK_LIVE_CACHE_TTL = 0.35  # seconds — matches the fastest adaptive poll cadence
+# session -> the transcript string the last FULL peek response's history was built
+# from. A live=1 poll trims its frame against this exact text, so the seam stays
+# duplicate-free against the history the client is actually displaying — without
+# re-rendering the 120KB transcript on every poll. Written only for peeked sessions.
+_peek_transcript_cache: dict[str, str] = {}
 
 _transcript_render_cache: dict[tuple, tuple[float, int, str]] = {}  # (path, max_chars) -> (mtime, size, rendered)
 _jsonl_path_cache: dict[str, tuple[float, "Path | None"]] = {}  # session -> (monotonic, path)
@@ -2510,6 +3111,18 @@ _LAUNCH_MARKERS = re.compile(
 _BARE_PROMPT_RE = re.compile(r'^[A-Za-z0-9._-]{1,24}\$$')
 
 
+def _strip_scroll_pill(text: str) -> str:
+    """Claude Code's TUI draws a "Jump to bottom (click) ↓" scroll pill over its
+    own transcript when the view is scrolled up. tmux composites that pill into
+    the MIDDLE of whatever line it overlaps, so the peek shows a garbled line
+    (reported on mixpeek-funnel: "…plan nudge Jump to bottom (click) ↓ these
+    three…"). Strip the pill so the surrounding text reads cleanly. Conservative:
+    only acts when the exact pill marker is present."""
+    if not text or "Jump to bottom" not in text:
+        return text
+    return re.sub(r"\s*Jump to bottom \(click\)\s*[↓]?\s*", " ", text)
+
+
 def _strip_launch_noise(text: str) -> str:
     """Remove amux's session-launch scaffolding from a captured frame (the
     `unset …; cd …; claude --model … --name <s>` relaunch command, the macOS zsh
@@ -2618,6 +3231,16 @@ def _session_cc_tasks(name: str) -> dict:
     the amux board (the durable, gated ledger stays the source of truth).
     Returns {tasks, counts, active, total}."""
     try:
+        # Cross-link guard (AMUX-1730): if this session's metadata is pinned to
+        # ANOTHER session's Claude conversation — two amux sessions collided onto
+        # one conversation (both `--resume` the same id) — the resolved plan is
+        # the OTHER session's live, actively-updated plan bleeding onto this one,
+        # so it never clears (mixpeek-general showing mixpeek-frustrations'
+        # MF-323 plan, 2026-07-18). A session must only surface ITS OWN plan.
+        _owner = (_load_meta(name).get("cc_session_name") or "").strip()
+        if _owner and _owner != name:
+            return {"tasks": [], "counts": {}, "active": None, "total": 0,
+                    "_suppressed": "cross-linked to " + _owner}
         p = _session_jsonl_path(name)
         if not p:
             return {"tasks": [], "counts": {}, "active": None, "total": 0}
@@ -3140,6 +3763,48 @@ def _session_work_dir_early(name: str) -> str:
     return ""
 
 
+_GIT_AUTH_ERR = ("permission denied", "could not read username", "authentication failed",
+                 "host key verification failed", "publickey", "repository not found",
+                 "could not read from remote repository", "connection closed by remote",
+                 "connection refused", "operation timed out")
+
+def _https_equiv(remote_url: str) -> str:
+    """Anonymous-HTTPS equivalent of a git remote URL (public repos only).
+    git@github.com:owner/repo.git → https://github.com/owner/repo.git"""
+    m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?$", remote_url.strip())
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}.git"
+    return remote_url
+
+def _git_pull_with_fallback(repo_dir: str) -> tuple[bool, str]:
+    """git pull --ff-only; on an AUTH failure (SSH key missing in a cron env,
+    stale HTTPS credential — Doron's silent hourly failures, 2026-07-17), retry
+    anonymously over HTTPS: amux is a public repo, so UPDATING must never depend
+    on the user's git credentials. The origin remote config is left untouched."""
+    r = subprocess.run(["git", "pull", "--ff-only"],
+                       cwd=repo_dir, capture_output=True, text=True, timeout=30)
+    output = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        return True, output
+    if any(k in output.lower() for k in _GIT_AUTH_ERR):
+        ru = subprocess.run(["git", "remote", "get-url", "origin"],
+                            cwd=repo_dir, capture_output=True, text=True, timeout=10)
+        https_url = _https_equiv(ru.stdout.strip()) if ru.returncode == 0 else ""
+        br = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                            cwd=repo_dir, capture_output=True, text=True, timeout=10)
+        branch = br.stdout.strip() or "main"
+        if https_url.startswith("https://"):
+            r2 = subprocess.run(
+                ["git", "-c", "credential.helper=", "pull", "--ff-only", https_url, branch],
+                cwd=repo_dir, capture_output=True, text=True, timeout=30,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            out2 = (r2.stdout + r2.stderr).strip()
+            if r2.returncode == 0:
+                return True, (f"origin auth failed — pulled anonymously via {https_url}\n{out2}")
+            output += "\n[https fallback also failed] " + out2
+    return False, output
+
+
 def _install_channel() -> str:
     """How this copy of amux was installed: 'source' (git checkout — updates via
     git pull), 'brew' (Homebrew cellar), 'pip' (site-packages via pip/pipx), or
@@ -3195,6 +3860,7 @@ def backup_session_jsonl(session: str, reason: str = "manual") -> str | None:
                 old.unlink()
             except Exception:
                 pass
+        _emit_event(session, "checkpoint.created", {"reason": reason, "path": str(dest)}, source="jsonl-backup")
         return str(dest)
     except Exception:
         return None
@@ -3962,6 +4628,35 @@ def _rate_limit_loop():
         pass
 
 
+_EVENTS_RETENTION_DAYS = 30
+_events_last_sweep = [0.0]
+
+def _emit_event(session: str, etype: str, data: dict | None = None,
+                idem: str | None = None, source: str = "") -> None:
+    """Append one observable event to the session_events log (issue #48).
+    Append-only, never raises, idempotent when `idem` is set (INSERT OR IGNORE
+    on the unique key — a client retry or server-restart replay can't
+    double-record an externally visible action). Records observable state
+    transitions and action receipts ONLY — never model reasoning."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT OR IGNORE INTO session_events (ts, session, type, data, idem, source) "
+            "VALUES (?,?,?,?,?,?)",
+            (time.time(), session or "", etype,
+             json.dumps(data, ensure_ascii=False) if data else None, idem, source))
+        db.commit()
+        now = time.time()
+        if now - _events_last_sweep[0] > 3600:   # hourly retention sweep
+            _events_last_sweep[0] = now
+            db.execute("DELETE FROM session_events WHERE ts < ?",
+                       (now - _EVENTS_RETENTION_DAYS * 86400,))
+            db.commit()
+    except Exception as e:
+        try: slog(f"[events] emit failed ({etype}): {e}")
+        except Exception: pass
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients, and fan it out to
     any registered Web Push subscriptions so it reaches phones even when the
@@ -4058,18 +4753,50 @@ def _send_sms(phone: str, text: str):
 _urgent_alert_last = {}  # message-hash → ts, for a light flood guard
 
 
-def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
+def _record_owner_alert(origin: str, claimed: str, message: str, reason: str,
+                        channels: dict, deduped: bool) -> None:
+    """Append an owner-alert to the durable, provenance-stamped ledger (AMUX-1795),
+    so a safety-critical action is first-hand verifiable — who ACTUALLY fired it
+    (server-verified origin), not who a conversation believed did. Best-effort:
+    never let a ledger-write failure block the alarm itself."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT INTO owner_alerts (ts, origin, claimed, message, reason, channels, deduped) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (int(time.time()), origin or "", claimed or "", message or "", reason or "",
+             json.dumps(channels or {}), 1 if deduped else 0))
+        db.commit()
+    except Exception as e:
+        slog(f"[urgent-alert] LEDGER WRITE FAILED: {e}")
+
+
+def _send_urgent_alert(message: str, session: str = "", reason: str = "", origin: str = ""):
     """Owner URGENT alert — fan out to enabled channels (in-app push + SMS).
-    Meant to be used *sparingly*; a soft 60s dedupe blocks accidental repeats."""
+    Meant to be used *sparingly*; a soft 60s dedupe blocks accidental repeats.
+
+    `session` is the CLAIMED origin (self-reported by the caller/body). `origin` is
+    the SERVER-VERIFIED sender (X-Amux-Session, from the tmux identity). Every
+    attempt is recorded to the owner_alerts ledger with BOTH, so this
+    safety-critical action is first-hand verifiable and a claimed≠verified mismatch
+    (the AMUX-1730 entanglement signature) is caught rather than believed."""
     msg = (message or "").strip()
     if not msg:
         return {"ok": False, "error": "empty message"}
     if reason:
         msg = f"{msg}\n({reason})"
+    # Provenance red flag: the caller claims a DIFFERENT session than the one the
+    # server actually verified. Surface it loudly (this is the exact shape of the
+    # AMUX-1730 near-miss: a belief that some other session did the critical thing).
+    _mismatch = bool(origin and session and origin != session)
+    if _mismatch:
+        slog(f"[urgent-alert] PROVENANCE MISMATCH: verified origin={origin!r} but claimed session={session!r} — recording both")
     key = _hashlib.sha256((session + "|" + msg).encode()).hexdigest()[:16]
     now = time.time()
     if now - _urgent_alert_last.get(key, 0) < 60:
-        return {"ok": True, "deduped": True, "channels": {}, "message": msg}
+        _record_owner_alert(origin, session, msg, reason, {}, deduped=True)
+        return {"ok": True, "deduped": True, "channels": {}, "message": msg,
+                "origin": origin, "claimed": session, "provenance_mismatch": _mismatch}
     _urgent_alert_last[key] = now
     channels = {}
     if os.environ.get("AMUX_URGENT_PUSH", "1") != "0":
@@ -4080,10 +4807,16 @@ def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
             channels["push"] = f"error: {str(e)[:80]}"
     phone = os.environ.get("AMUX_OWNER_PHONE", "")
     if os.environ.get("AMUX_URGENT_SMS", "1") != "0" and phone:
-        ok, detail = _send_sms(phone, "amux URGENT: " + msg.replace("\n", " — "))
+        # Stamp the originating session into the SMS/iMessage so the owner has a
+        # reference for WHICH session raised the alarm (the push already carries
+        # it as the notification title; the SMS previously dropped it).
+        _sms_prefix = f"amux URGENT [{session}]: " if session else "amux URGENT: "
+        ok, detail = _send_sms(phone, _sms_prefix + msg.replace("\n", " — "))
         channels["sms"] = detail if ok else ("failed: " + detail)
-    slog(f"[urgent-alert] session={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
-    return {"ok": True, "channels": channels, "message": msg}
+    _record_owner_alert(origin, session, msg, reason, channels, deduped=False)
+    slog(f"[urgent-alert] origin={origin!r} claimed={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
+    return {"ok": True, "channels": channels, "message": msg,
+            "origin": origin, "claimed": session, "provenance_mismatch": _mismatch}
 _VAPID_CACHE = None
 _VAPID_PATH = CC_HOME / "vapid_private.pem"
 _PUSH_SUBS_PRESENT = None  # None=unknown, False=confirmed empty (skip), True=have subs
@@ -4478,7 +5211,7 @@ def _snapshot_all_sessions():
     finally:
         _snapshot_running = False
 
-def _steer_enqueue(name: str, text: str) -> str:
+def _steer_enqueue(name: str, text: str, guard: str = "") -> str:
     """Append a message to a session's durable steering queue (memory + DB).
     Delivered (batched) at the next turn boundary by _steer_try_deliver.
 
@@ -4486,12 +5219,21 @@ def _steer_enqueue(name: str, text: str) -> str:
     stacked — observed live on mvs-infra: recurring scheduled prompts piled up
     behind a busy session (the same PULSE health-loop queued twice runs the
     same loop back-to-back for nothing), and sender retries queued literal
-    duplicates ("YES to the census" ×2)."""
+    duplicates ("YES to the census" ×2).
+
+    `guard`: optional re-validation tag (e.g. "commit"). _steer_try_deliver
+    rechecks the condition at DELIVERY and drops the entry if it went stale —
+    a commit-guard nudge whose tree got committed while the nudge waited
+    (AMUX-1737). In-memory only; a restart-reloaded entry delivers without it."""
     msg_id = f"steer-{int(time.time()*1000)}"
-    entry = {"id": msg_id, "text": text, "queued_at": time.time()}
+    entry = {"id": msg_id, "text": text, "queued_at": time.time(), "guard": guard}
     with _steering_lock:
         q = _steering_queue.setdefault(name, [])
-        stale = [m for m in q if m["text"] == text and not m.get("_inflight")]
+        # One nudge max per guard type: a fresh commit-nudge REPLACES a queued
+        # one (file lists differ, so text-dedup alone never matched) — guard
+        # messages were stacking up and saturating queues (2026-07-17).
+        stale = [m for m in q if not m.get("_inflight")
+                 and (m["text"] == text or (guard and m.get("guard") == guard))]
         if stale:
             _steering_queue[name] = [m for m in q if m not in stale]
         _steering_queue[name].append(entry)
@@ -4506,12 +5248,14 @@ def _steer_enqueue(name: str, text: str) -> str:
     try:
         db = get_db()
         db.execute(
-            "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
-            (msg_id, name, text, entry["queued_at"]),
+            "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at, guard) VALUES(?,?,?,?,?)",
+            (msg_id, name, text, entry["queued_at"], guard or None),
         )
         db.commit()
     except Exception:
         pass
+    _emit_event(name, "message.queued", {"chars": len(text), "preview": text[:120], "guard": guard or None},
+                idem="q:" + msg_id, source="steering")
     return msg_id
 
 
@@ -4542,12 +5286,16 @@ def _steer_record_history(name: str, text: str, queued_at=None, msg_id: str = ""
 
 
 # A single tmux frame that momentarily reads idle is not proof a session
-# finished its task — captures tear, and a session pauses briefly between steps.
-# Before delivering steering we require the session to read idle/waiting
-# *continuously* for this settle window; any active/unknown frame in between
-# resets the timer. This trades a few seconds of latency for not interrupting a
-# session that only looked done for one frame. Tunable via env.
-_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "6"))
+# finished — captures tear. Before delivering steering we require the session to
+# read idle *continuously* for this settle window; any active/unknown frame in
+# between resets the timer. The PRIMARY "still working" gate is the animated
+# spinner (_detect_claude_status → 'active' throughout a turn), so this window
+# only needs to bridge the rare torn frame: with the 4s fast tick it means ~2
+# consecutive idle ticks. Kept short (4s) so a queued message lands promptly once
+# the session is actually done — a 9s value read as "idle but not picking up"
+# (2026-07-20). With the 2s fast tick this is ~2 consecutive idle ticks (~2-4s to
+# deliver). Tunable via env (raise it for a more conservative hold).
+_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "2"))
 _steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable observation
 
 
@@ -4578,6 +5326,38 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     deliverable = status == "idle"
     if deliverable and raw and _has_running_subagent(raw):
         deliverable = False  # main loop idle but a subagent is still running
+    # NOTE: do NOT gate on "esc to interrupt" here. On the current Claude Code the
+    # NORMAL idle status bar contains it ("⏵⏵ bypass permissions on … · esc to
+    # interrupt · ← N agents"), so holding on that string stalls steering forever
+    # for genuinely-idle sessions (regression 2026-07-20). The reliable "still
+    # generating" signal is the SPINNER, which _detect_claude_status already
+    # detects → status != 'idle' while the turn runs. The 6s continuous settle
+    # below is what guards against a torn/between-task frame.
+    # Re-validate commit-guard nudges at DELIVERY: a nudge enqueued when a session
+    # went idle-dirty is HELD while the session's next turn commits, then would
+    # deliver against a now-clean tree — a stale warning (AMUX-1737, fired 4/4
+    # today). When the session is idle again and the tree is clean, drop them.
+    if deliverable:
+        with _steering_lock:
+            _guard_ids = [m["id"] for m in _steering_queue.get(name, [])
+                          if m.get("guard") == "commit" and not m.get("_inflight")]
+        if _guard_ids:
+            _wd = _session_work_dir(name)
+            if _wd and not _session_dirty_files(name, _wd):
+                _drop = set(_guard_ids)
+                with _steering_lock:
+                    _steering_queue[name] = [m for m in _steering_queue.get(name, []) if m["id"] not in _drop]
+                try:
+                    _db = get_db()
+                    for _mid in _drop:
+                        _db.execute("DELETE FROM steering_queue WHERE id=?", (_mid,))
+                    _db.commit()
+                except Exception:
+                    pass
+                _commit_guard_nudged.pop(name, None)   # tree clean → re-arm the guard
+                slog(f"[commit-guard] {name}: tree clean at delivery — dropped {len(_drop)} stale nudge(s)")
+                _emit_event(name, "message.dropped", {"count": len(_drop), "reason": "tree clean at delivery"},
+                            source="commit-guard")
     with _steering_lock:
         queue = _steering_queue.get(name, [])
         if not queue or not deliverable:
@@ -4593,31 +5373,36 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             return  # idle, but not for long enough yet — keep waiting
         if any(m.get("_inflight") for m in queue):
             return
-        # Deliver the WHOLE queue as ONE turn (size-capped), not one message per
-        # turn boundary. Observed live on mvs-infra: per-message delivery let a
-        # busy session backlog 5+ messages, so a correction ("⚠️ before you act
-        # on my ruling") sat queued while the session could act on the wrong
-        # ruling for a full turn — and each drained message cost its own
-        # full-context turn. One batched turn delivers corrections WITH what
-        # they correct and costs 1× context instead of N×.
-        batch, size = [], 0
-        for m in queue:
-            if batch and size + len(m["text"]) > 12000:
-                break  # leave the rest for the next boundary
-            batch.append(m)
-            size += len(m["text"])
+        # Deliver ONE message per turn boundary, oldest first (2026-07-17). The
+        # queue is a sequential task list: batching N messages into one turn made
+        # the agent do them "all at once" instead of task-by-task. The original
+        # reason for batching — a correction sitting queued behind the thing it
+        # corrects — is covered differently now: Send (the default mode) types
+        # corrections straight into the live turn; Queue is the explicit
+        # do-these-in-order tool. A short trailer tells the agent more work is
+        # queued so it doesn't over-scope the current turn.
+        # Guard nudges (commit reminders etc.) must not spend their own turn
+        # ahead of real work: when real messages are queued, every guard item
+        # FOLDS into this delivery as a one-line reminder trailer (2026-07-17).
+        # A guard delivers standalone only when it's all the queue holds.
+        _non_guard = [m for m in queue if not m.get("guard")]
+        _folded = []
+        if _non_guard:
+            _folded = [m for m in queue if m.get("guard") and not m.get("_inflight")]
+            batch = [_non_guard[0]] + _folded
+        else:
+            batch = [queue[0]]
         for m in batch:
             m["_inflight"] = True
-    if len(batch) == 1:
-        combined = batch[0]["text"]
-    else:
-        now_t = time.time()
-        parts = [f"You have {len(batch)} queued messages (oldest first — read ALL "
-                 f"before acting; later ones may correct earlier ones):"]
-        for i, m in enumerate(batch, 1):
-            age = max(0, int((now_t - m.get("queued_at", now_t)) / 60))
-            parts.append(f"--- [{i}/{len(batch)}] queued {age}m ago ---\n{m['text']}")
-        combined = "\n\n".join(parts)
+        _remaining = len(queue) - len(batch)
+    combined = batch[0]["text"]
+    for g in _folded:
+        _first = (g["text"].splitlines() or [""])[0].strip()
+        combined += f"\n\n[amux reminder] {_first} Commit at your next good stopping point."
+    if _remaining > 0:
+        combined += (f"\n\n[amux: {_remaining} more queued message"
+                     f"{'s' if _remaining != 1 else ''} will deliver after this turn, "
+                     f"oldest first — finish THIS task first]")
     ok, err = send_text(name, combined, _from_steering=True)
     if ok:
         ids = {m["id"] for m in batch}
@@ -4636,6 +5421,8 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             pass
         for m in batch:
             _steer_record_history(name, m["text"], m.get("queued_at"), m["id"])
+            _emit_event(name, "message.delivered", {"preview": m["text"][:120]},
+                        idem="d:" + m["id"], source="steering")
         _push_alert("steering_delivered", name,
                     f"{len(batch)} steering message{'s' if len(batch) > 1 else ''} delivered to '{name}'")
     else:
@@ -4675,8 +5462,19 @@ def _snapshot_all_sessions_inner():
             running_sessions = set(r.stdout.splitlines())
     except Exception:
         return
-    _HIBERNATE_IDLE_SECS = 1800  # 30 minutes
+    _HIBERNATE_IDLE_SECS = int(os.environ.get("AMUX_HIBERNATE_IDLE_SECS", "1800") or "1800")  # 0 disables
     _HIBERNATE_STARTUP_GRACE = 600  # 10 min grace after server restart
+    # Auto-hibernate exists to prevent OOM when MANY Claude processes (400-750MB
+    # each) run at once. With only a handful of sessions the memory saved isn't
+    # worth the risk: waking a hibernated session goes through --resume, which can
+    # fail (large conversation / resume-picker) and fall back to a FRESH start,
+    # losing the whole conversation ("leave a session too long → auto clear").
+    # So only hibernate once enough sessions are running to actually threaten
+    # memory. Tunable: AMUX_HIBERNATE_MIN_SESSIONS, AMUX_HIBERNATE_IDLE_SECS=0 off.
+    _hib_min = int(os.environ.get("AMUX_HIBERNATE_MIN_SESSIONS", "8") or "8")
+    _running_amux = sum(1 for _e in CC_SESSIONS.glob("*.env")
+                        if tmux_name(_e.stem) in running_sessions)
+    _hibernate_enabled = _HIBERNATE_IDLE_SECS > 0 and _running_amux >= _hib_min
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
         if _is_session_blocked(name):
@@ -4758,9 +5556,13 @@ def _snapshot_all_sessions_inner():
             # Guard: 120s cooldown to avoid double-firing if the dialog lingers.
             if (_at_compact_resume_prompt(clean) and
                     now - actions.get("last_compact_prompt", 0) > 120):
-                _ac_row2 = get_db().execute("SELECT value FROM prefs WHERE key='auto_compact_enabled'").fetchone()
-                _ac_enabled2 = (_ac_row2 is None) or (_ac_row2[0] != "0")
-                if _ac_enabled2:
+                # Dedicated pref (default ON): auto_compact_enabled used to gate this
+                # too, so turning off auto-compaction ALSO silently disabled answering
+                # the resume dialog — sessions sat at the selector for hours
+                # (observability's 3am audit blocked until 4:22, 2026-07-17).
+                _ar_row = get_db().execute("SELECT value FROM prefs WHERE key='auto_resume_summary'").fetchone()
+                _ar_enabled = (_ar_row is None) or (_ar_row[0] != "0")
+                if _ar_enabled:
                     actions["last_compact_prompt"] = now
                     subprocess.run(
                         ["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
@@ -4768,6 +5570,8 @@ def _snapshot_all_sessions_inner():
                     )
                     _push_alert("auto_compact", name,
                                 f"Auto-selected 'Resume from summary' for '{name}'")
+                    _emit_event(name, "session.dialog_answered",
+                                {"dialog": "resume_from_summary", "choice": 1}, source="auto-resume")
 
             # ── 2. Reactive: thinking-block corruption → restart + replay ───
             if ("redacted_thinking" in clean and
@@ -4783,6 +5587,8 @@ def _snapshot_all_sessions_inner():
                         time.sleep(6)
                         send_text(sname, msg)
                     threading.Thread(target=_replay, daemon=True).start()
+                _emit_event(name, "session.crashed", {"reason": "thinking_block_corruption", "replayed": bool(last_msg)},
+                            source="self-heal")
                 _push_alert("thinking_reset", name,
                             f"Session '{name}' auto-restarted: thinking block corruption"
                             + (" — last message replayed" if last_msg else ""))
@@ -4802,6 +5608,8 @@ def _snapshot_all_sessions_inner():
                         time.sleep(6)
                         send_text(sname, msg)
                     threading.Thread(target=_replay_id, daemon=True).start()
+                _emit_event(name, "session.crashed", {"reason": "session_id_conflict", "replayed": bool(last_msg)},
+                            source="self-heal")
                 _push_alert("auto_restart", name,
                             f"Session '{name}' auto-restarted: session ID conflict resolved"
                             + (" — last message replayed" if last_msg else ""))
@@ -4830,6 +5638,7 @@ def _snapshot_all_sessions_inner():
                                            capture_output=True, timeout=5)
                             slog(f"[ghost-rescue] session={name} submitted stuck "
                                  f"amux message: {_ghost[:80]!r}")
+                            _emit_event(name, "message.rescued", {"preview": _ghost[:120]}, source="ghost-rescue")
                             _push_alert("ghost_rescue", name,
                                         f"Rescued a stuck message in '{name}' — it was typed but never submitted")
 
@@ -4979,7 +5788,7 @@ def _snapshot_all_sessions_inner():
             # Auto-continue sessions are hibernated too — auto-restart already
             # checks `not actions.get("hibernated")` so they won't bounce back.
             # They wake on next send_text (which calls start_session).
-            if status == "idle" and not actions.get("restarting"):
+            if _hibernate_enabled and status == "idle" and not actions.get("restarting"):
                 cfg_hib = parse_env_file(f)
                 _skip_hibernate = (
                     # Grace period after server restart: actions dict is wiped
@@ -5408,6 +6217,38 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_sched_runs_sched ON schedule_runs(schedule_id, ran_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sched_runs_ran   ON schedule_runs(ran_at DESC);
+-- Mutation audit: EVERY change to a schedule's fields (esp. the enabled flag)
+-- is recorded here so a flip is never unattributed again. Forensics after the
+-- 07-14 bulk-disable / unattributed re-enables (AMUX-1735).
+CREATE TABLE IF NOT EXISTS schedule_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id TEXT NOT NULL,
+    ts          INTEGER NOT NULL,
+    field       TEXT NOT NULL,
+    old_value   TEXT,
+    new_value   TEXT,
+    source      TEXT,
+    by_who      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sched_audit_sched ON schedule_audit(schedule_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sched_audit_ts    ON schedule_audit(ts DESC);
+-- Event-sourced session state (issue #48): every OBSERVABLE session action as an
+-- append-only event. Schema records state transitions and action receipts only —
+-- never model reasoning. idem = idempotency key for externally visible events
+-- (unique; INSERT OR IGNORE), so replays/retries can't double-record.
+CREATE TABLE IF NOT EXISTS session_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL NOT NULL,
+    session TEXT NOT NULL DEFAULT '',
+    type    TEXT NOT NULL,
+    data    TEXT,
+    idem    TEXT,
+    source  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sev_session ON session_events(session, id);
+CREATE INDEX IF NOT EXISTS idx_sev_type    ON session_events(type, id);
+CREATE INDEX IF NOT EXISTS idx_sev_ts      ON session_events(ts);
 -- Real calendar EVENTS — the only layer that syncs to Google Calendar by default.
 -- (The calendar shows three layers: events here, tasks=schedules, issues=board.)
 CREATE TABLE IF NOT EXISTS cal_events (
@@ -5674,6 +6515,65 @@ CREATE TABLE IF NOT EXISTS steering_history (
     delivered_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_steering_hist_session ON steering_history(session, delivered_at DESC);
+-- Durable, provenance-stamped ledger of owner URGENT alerts (a safety-critical
+-- action). AMUX-1795 (an AMUX-1730 cost case): a "rotate a LIVE secret" alert was
+-- BELIEVED sent because it was ATTRIBUTED to a session that had no first-hand
+-- record of doing it. `origin` is the SERVER-VERIFIED sender (X-Amux-Session,
+-- from the tmux identity — immune to conversation-name collisions); `claimed` is
+-- the self-reported body field. Any session can query this table (GET
+-- /api/alert/owner) to FIRST-HAND verify a safety-critical action actually
+-- happened and by whom, instead of trusting entangled conversation memory.
+CREATE TABLE IF NOT EXISTS owner_alerts (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       INTEGER NOT NULL,
+    origin   TEXT NOT NULL DEFAULT '',   -- server-verified X-Amux-Session (authoritative)
+    claimed  TEXT NOT NULL DEFAULT '',   -- self-reported body 'session' (mismatch = provenance red flag)
+    message  TEXT NOT NULL,
+    reason   TEXT NOT NULL DEFAULT '',
+    channels TEXT NOT NULL DEFAULT '',   -- JSON of the delivery result (push/sms)
+    deduped  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_owner_alerts_ts ON owner_alerts(ts DESC);
+-- ── Observability: durable per-turn token/cost ledger ───────────────────────
+-- One row per Claude API turn (from the JSONL usage records amux already reads),
+-- with a real $ cost and the task it belongs to. Persistent time-series so cost
+-- can be rolled up by task / session / model / day — the accounting reads JSONL +
+-- board, never the model itself. Parsed incrementally (ledger_cursor tracks the
+-- byte offset already consumed per conversation).
+CREATE TABLE IF NOT EXISTS token_ledger (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,               -- unix seconds of the turn
+    session      TEXT NOT NULL DEFAULT '',        -- owning amux session (customTitle)
+    conversation TEXT NOT NULL,                   -- JSONL stem (Claude session uuid)
+    model        TEXT NOT NULL DEFAULT '',
+    input        INTEGER NOT NULL DEFAULT 0,       -- fresh input tokens
+    cache_read   INTEGER NOT NULL DEFAULT 0,
+    cache_write  INTEGER NOT NULL DEFAULT 0,       -- cache_creation
+    output       INTEGER NOT NULL DEFAULT 0,
+    cost_usd     REAL NOT NULL DEFAULT 0,
+    task         TEXT NOT NULL DEFAULT ''          -- attributed board task id ('' = ambient)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_ts ON token_ledger(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_session ON token_ledger(session, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_task ON token_ledger(task, ts DESC);
+CREATE TABLE IF NOT EXISTS ledger_cursor (
+    conversation TEXT PRIMARY KEY,
+    offset       INTEGER NOT NULL DEFAULT 0,       -- bytes of the JSONL already ledgered
+    mtime        INTEGER NOT NULL DEFAULT 0
+);
+-- Task time-windows: when a board task was actively held (status 'doing') by a
+-- session. A ledger turn at time T for session S is billed to the task whose
+-- [entered_doing, left_doing] window for S contains T. Derived from board status
+-- transitions the user/agent already make — no model tagging.
+CREATE TABLE IF NOT EXISTS task_windows (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task          TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    session       TEXT NOT NULL DEFAULT '',
+    entered_doing INTEGER NOT NULL,
+    left_doing    INTEGER                          -- NULL = still open (currently doing)
+);
+CREATE INDEX IF NOT EXISTS idx_task_windows_session ON task_windows(session, entered_doing);
 """
 
 
@@ -5870,6 +6770,261 @@ def _auto_trust_dir(work_dir: str, config_dir: str = ""):
         claude_json.write_text(_json.dumps(cfg, indent=2))
 
 
+# ── Built-in skills shipped with amux (seeded once per install) ──────────────
+# /adhd — shape output for a reader with ADHD. Adapted from ayghri/i-have-adhd
+# (MIT). Every amux install gets it by default; a user can edit or delete it and
+# it won't come back (a pref flag gates the one-time seed).
+_ADHD_SKILL_MD = '''---
+name: adhd
+description: Shape output for a reader with ADHD. Use this skill whenever responding to ANY user message including coding tasks, debugging, explanations, planning, and casual conversation. Output should lead with concrete next actions, number multi-step work, externalize state across turns, suppress tangents, give specific time estimates, and make wins visible. Trigger even on casual messages and even when the user did not explicitly ask for brevity.
+---
+
+# adhd
+
+The reader has ADHD. Output is not just brief. It is shaped so an ADHD brain can act on it.
+
+## What ADHD changes about reading
+
+Five facts drive every rule below:
+
+1. Working memory is small. Anything not on screen is forgotten. Do not ask the reader to "keep in mind X."
+2. Knowing the answer is not doing the answer. The friction between "got it" and "done it" is where work dies.
+3. Starting is the hardest step. The first action must be obvious, small, and doable now.
+4. Time estimates feel uniform. "A bit of work" and "a few hours" register the same. Vague estimates fail.
+5. Dopamine is scarce. Visible progress matters. Buried wins do not register.
+
+## Rules
+
+### 1. Lead with the next action
+
+The first line is something the reader can do. Not context. Not a plan. The action.
+
+Bad: "Let's think about this. Your auth flow has a few moving pieces..."
+Good: "Run `npm install jsonwebtoken`, then edit `src/auth.ts:42`."
+
+If the answer is a command, path, or snippet, it goes first. Prose comes after, if at all.
+
+### 2. Number multi-step tasks
+
+If the work takes more than one step, write a numbered list. Each step is one bounded action. No step contains "and then" twice.
+
+Bad: "First open the file, find the function, swap it out, then run the tests."
+
+Good:
+```
+1. Open `src/auth.ts`
+2. Replace `verifyToken` (lines 42 to 58) with the snippet below
+3. Run `npm test -- auth.spec.ts`
+```
+
+### 3. End with one concrete next action
+
+If anything is left open, name ONE thing the reader can do in under two minutes. Even "open the file" counts.
+
+Bad: "Hope that helps. Let me know if you want to dig deeper."
+Good: "Next: run `npm test` and paste the first failing line."
+
+### 4. Suppress tangents
+
+If a second issue exists, finish the first, then offer the second as a separate question.
+
+Bad: "Here's the fix. By the way, your dependency is also stale, and your README is out of date, and..."
+Good: "Here's the fix. Separately: there is also a stale dependency. Want me to handle that next?"
+
+### 5. Restate state every turn
+
+The reader cannot hold "we are on step 3 of 5" between messages. Restate it.
+
+Bad: "Done. Ready for the next part?"
+Good: "Step 3 of 5 done: schema updated. Next: backfill the new column. Run the script?"
+
+### 6. Give specific time estimates
+
+Vague estimates fail. Ballpark in concrete units.
+
+Bad: "This will take some work."
+Good: "About 15 minutes if tests already cover this. An afternoon if not."
+
+### 7. Make completed work visible
+
+Show what now works, in concrete terms. Do not bury wins in a recap.
+
+Bad: "I've made some changes to the auth flow. Among other things..."
+Good: "Login now works with magic links. Try: `npm run dev`, open `/login`."
+
+### 8. Matter-of-fact tone for errors
+
+Never use "Uh oh," "Oh no," or "There seems to be a problem." State cause and fix.
+
+Bad: "Uh oh, the test is failing. There seems to be an issue..."
+Good: "Test fails at `auth.spec.ts:42`: expected 200, got 401. Cause: missing auth header. Fix: add `Authorization: Bearer ${token}` to the request."
+
+### 9. Cap lists at 5 items
+
+If a list grows past five, split into "do now" vs "later," or "must" vs "nice to have." Five items ranked beats ten unranked.
+
+### 10. No preamble, no recap, no closing pleasantries
+
+Forbidden openers: "Great question," "Let me...", "I'll...", "Sure!", "Looking at your...", "To answer your question..."
+
+Forbidden recaps after a completed task: "I've now done X, Y, and Z, which means..."
+
+Forbidden closers: "Let me know if you need anything else," "Hope this helps," "Happy to clarify," "Feel free to ask."
+
+Start with the answer. End when the answer is done.
+
+## When to break the rules
+
+Override the defaults when:
+
+1. User asks to "explain" or "walk me through." Explain fully. Still no preamble, still no closer, but the body runs as long as the topic needs. Add headers so the reader can skim back.
+2. Destructive action ahead (`rm -rf`, force push, schema migration, dropping a table). Confirm before acting. Safety wins over brevity.
+3. Debug spiral. If the last three turns have been "still broken," stop iterating on code. Name the assumption that might be wrong. Ask one diagnostic question.
+4. Real ambiguity in the request. One short clarifying question beats guessing and rewriting.
+
+## Pre-send check
+
+Before sending, delete:
+
+1. The first sentence if it announces what you are about to do.
+2. The last sentence if it asks "anything else?" or recaps what just happened.
+3. Any "by the way" sidebar.
+4. Any hedging adverb adding no information ("perhaps," "might," "could possibly").
+
+Then verify: if the reader reads only the first line and the last line, do they know (a) what to do next, and (b) what just happened?
+
+If yes, send.
+
+---
+_Ships with amux. Adapted from [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) (MIT)._
+'''
+
+# /amux — teach any session to drive the amux system it lives in.
+_AMUX_SKILL_MD = '''---
+description: Interact with amux — the shared board, other sessions, messages, and schedules. Use when the user says "add to the board", "ask another session", "what are my sessions doing", or wants to schedule recurring work.
+allowed-tools: Bash, Read
+argument-hint: [board|sessions|send|schedules|help] [args...]
+---
+
+# /amux — drive the amux system
+
+You are running inside an amux-managed session. Base URL: `$AMUX_URL` (default `https://localhost:8822`, self-signed TLS — always `curl -sk`). Your session name is `$AMUX_SESSION`.
+
+## Board (shared kanban)
+
+```bash
+curl -sk $AMUX_URL/api/board | python3 -m json.tool            # list
+curl -sk -X POST -H 'Content-Type: application/json' \\
+  -d '{"title":"...","status":"todo","session":"'$AMUX_SESSION'"}' $AMUX_URL/api/board   # add
+amux board doing ITEM-ID   # or: done / todo / backlog (CLI shorthand)
+```
+Keep exactly one item in `doing` while you work; mark it `done` with a result note when finished.
+
+## Sessions (the rest of the fleet)
+
+```bash
+curl -sk $AMUX_URL/api/sessions | python3 -c "import json,sys; [print(s['name'], s.get('status','')) for s in json.load(sys.stdin)]"
+curl -sk "$AMUX_URL/api/sessions/OTHER/peek?lines=100"          # see what another session is doing
+amux send OTHER "message"                                        # message it (origin-stamped — prefer over raw curl)
+```
+
+## Schedules (recurring prompts)
+
+```bash
+curl -sk -X POST -H 'Content-Type: application/json' \\
+  -d '{"title":"...","session":"'$AMUX_SESSION'","command":"the prompt","schedule_expr":"daily at 9am"}' \\
+  $AMUX_URL/api/schedules
+```
+Expressions: `daily at HH:MM`, `every 15m`, `every weekday at HH:MM`, or 5-field cron.
+
+Run whatever the arguments ask for. No arguments → show the board and the session list.
+'''
+
+# /handoff — package this session's state and hand it to another session.
+_HANDOFF_SKILL_MD = '''---
+description: Hand the current work off to another amux session — package what you were doing, where things stand, and what is next, then send it. Use when the user says "hand this off", "give this to X", or a task belongs in a different session.
+allowed-tools: Bash, Read
+argument-hint: <target-session> [optional note]
+---
+
+# /handoff — transfer work to another session
+
+Target session: the first argument. Remaining arguments are an optional note from the user.
+
+1. Write a handoff brief (keep it under ~25 lines):
+   - **Goal** — what the work is trying to achieve, in one line.
+   - **State** — what is DONE (with file paths / commit SHAs / URLs), what is IN FLIGHT, what is NOT started.
+   - **Next step** — the single next action the receiving session should take.
+   - **Gotchas** — anything non-obvious that cost you time (env quirks, failing tests, decisions already made and why).
+   - The user's note, if any.
+2. If there is a board item for this work, reassign it:
+   `curl -sk -X PATCH -H 'Content-Type: application/json' -d '{"session":"TARGET"}' $AMUX_URL/api/board/ITEM-ID`
+3. Send the brief: `amux send TARGET "<the brief>"` (origin-stamped; never impersonate).
+4. Confirm to the user: what was sent, to whom, and the board item moved (if any).
+
+Do NOT hand off uncommitted work silently — if the tree is dirty, say so and offer to commit first.
+'''
+
+# /standup — cross-fleet roundup: what happened, what's stuck, what's next.
+_STANDUP_SKILL_MD = '''---
+description: Fleet standup — summarize what every amux session did recently, what is in progress, what is blocked, and what needs the user. Use when the user says "standup", "what's going on", "catch me up", or "what did the fleet do today".
+allowed-tools: Bash, Read
+argument-hint: [hours-back, default 24]
+---
+
+# /standup — fleet roundup
+
+Window: the first argument in hours (default 24).
+
+1. Pull the data (all read-only):
+   - Sessions + status: `curl -sk $AMUX_URL/api/sessions`
+   - Board: `curl -sk $AMUX_URL/api/board`
+   - For each session that looks active/recently active, peek its tail:
+     `curl -sk "$AMUX_URL/api/sessions/NAME/peek?lines=60"`
+2. Report, in this order (skip empty sections):
+   - **Needs you** — sessions waiting on input, and the exact question each is stuck on.
+   - **Done** — board items moved to done/verified in the window, one line each.
+   - **In progress** — each `doing` item: session, what it is, and observable progress from the peek.
+   - **Stalled** — `doing` items with no visible movement; say what they appear stuck on.
+   - **Queue** — top `todo` items by session.
+3. Keep each line short: `session — thing — state`. Lead with **Needs you**. End with the single most useful next action for the user.
+'''
+
+_BUILTIN_SKILLS = {
+    "adhd": _ADHD_SKILL_MD,
+    "amux": _AMUX_SKILL_MD,
+    "handoff": _HANDOFF_SKILL_MD,
+    "standup": _STANDUP_SKILL_MD,
+}
+# v2: curated the shipped set (adhd + amux + handoff + standup). Bumping the key
+# re-runs the seed on existing installs; INSERT-if-absent means user-edited or
+# user-authored skills of the same name are never overwritten.
+_BUILTIN_SKILLS_SEED_KEY = "builtin_skills_seeded_v2"
+
+
+def _seed_builtin_skills():
+    """Seed amux's built-in skills (e.g. /adhd) into the skills table ONCE per
+    install, so every amux gets them by default. Gated by a pref flag so a user
+    who edits or deletes one keeps their choice — we never force it back."""
+    try:
+        db = get_db()
+        row = db.execute("SELECT value FROM prefs WHERE key=?", (_BUILTIN_SKILLS_SEED_KEY,)).fetchone()
+        if row and row["value"]:
+            return
+        now = int(time.time())
+        for name, content in _BUILTIN_SKILLS.items():
+            db.execute(
+                "INSERT INTO skills (name, content, updated) "
+                "SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM skills WHERE name=?)",
+                (name, content, now, name))
+        db.execute("INSERT INTO prefs (key, value) VALUES (?, ?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=?", (_BUILTIN_SKILLS_SEED_KEY, "1", "1"))
+        db.commit()
+        slog(f"[skills] seeded built-in skills: {', '.join(_BUILTIN_SKILLS)}")
+    except Exception as e:
+        slog(f"[skills] builtin seed failed: {e}")
+
+
 def _sync_skills_and_cli():
     """Sync skills to every provider's command dir and install the amux CLI stub (once at startup)."""
     import pathlib as _pathlib
@@ -5883,6 +7038,27 @@ AMUX_URL="${AMUX_URL:-https://localhost:8822}"
 cmd="$1"; shift 2>/dev/null || true
 
 case "$cmd" in
+  send)
+    # amux send <target-session> <message...>
+    # Injects X-Amux-Session=$AMUX_SESSION so the server stamps the TRUE origin
+    # (AMUX-1768): a relayed message can never be misattributed to another
+    # session, even under a conversation-name collision. Prefer this over a raw
+    # curl to /api/sessions/*/send — the raw form carries no verified origin.
+    target="$1"; shift 2>/dev/null || true
+    msg="$*"
+    if [ -z "$target" ] || [ -z "$msg" ]; then
+      echo "usage: amux send <session> <message>" >&2; exit 1
+    fi
+    body=$(MSG="$msg" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
+    curl -sk -X POST -H 'Content-Type: application/json' \
+      -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      -d "$body" "$AMUX_URL/api/sessions/$target/send" | TGT="$target" python3 -c "
+import json,sys,os
+try: d=json.load(sys.stdin)
+except Exception: print('send: no/invalid response'); sys.exit(1)
+if d.get('error'): print('send to '+os.environ['TGT']+' FAILED: '+str(d.get('error'))); sys.exit(1)
+print('sent to '+os.environ['TGT']+' (origin-stamped): '+str(d.get('message','ok')))
+" ;;
   board)
     sub="$1"; shift 2>/dev/null || true
     case "$sub" in
@@ -6272,6 +7448,9 @@ def _init_db():
         # AMUX-1713: gates are DERIVED from the item type. Default 'code' keeps the
         # strict merge/tests gate for existing items — never silently weaken a gate.
         "ALTER TABLE issues ADD COLUMN type TEXT NOT NULL DEFAULT 'code'",
+        # Guard tag must survive restarts: without it a restored commit-nudge
+        # delivered as a REAL message (own turn, no revalidation/folding).
+        "ALTER TABLE steering_queue ADD COLUMN guard TEXT",
     ]:
         try:
             db.execute(migration)
@@ -6309,13 +7488,14 @@ def _load_steering_from_db():
     """Populate _steering_queue from SQLite on startup."""
     db = get_db()
     rows = db.execute(
-        "SELECT id, session, text, queued_at FROM steering_queue ORDER BY queued_at ASC"
+        "SELECT id, session, text, queued_at, guard FROM steering_queue ORDER BY queued_at ASC"
     ).fetchall()
     with _steering_lock:
         _steering_queue.clear()
         for row in rows:
             _steering_queue.setdefault(row["session"], []).append(
-                {"id": row["id"], "text": row["text"], "queued_at": row["queued_at"]}
+                {"id": row["id"], "text": row["text"], "queued_at": row["queued_at"],
+                 "guard": (row["guard"] if "guard" in row.keys() else None) or ""}
             )
 
 
@@ -6885,6 +8065,7 @@ def _pickup_next_board_task(session_name: str):
         item_id, title, desc = row["id"], row["title"], row["desc"] or ""
         now = int(time.time())
         db.execute("UPDATE issues SET status='doing', updated=? WHERE id=?", (now, item_id))
+        _emit_event(session_name, "task.claimed", {"issue": item_id}, source="auto-pickup")
         db.commit()
         _board_changed()
         _append_board_log(item_id, "Auto-picked up from queue")
@@ -8089,8 +9270,27 @@ def _drain_and_fire_sched_events(now: float):
             slog(f"[sched] event-trigger firing '{s['title']}' → {s.get('session')}")
             _run_schedule(s)
             db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
-                       (datetime.now().strftime("%Y-%m-%dT%H:%M"), int(now), sid))
+                       (int(time.time()), int(now), sid))   # last_run = UTC unix, same clock as schedule_runs.ran_at (AMUX-1736)
             db.commit()
+
+
+def _sched_audit(schedule_id, field, old, new, source, by_who=""):
+    """Record a schedule field mutation (esp. `enabled`) for attribution/forensics.
+    Every path that flips a schedule's enabled flag — API PATCH, watch
+    auto-disable, run-once — logs here, so a mutation is never unattributed again
+    (AMUX-1735). `by_who` comes from the PATCH body's 'by'/'source_session' when
+    the caller supplies it; automated paths pass their own source tag."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT INTO schedule_audit (schedule_id, ts, field, old_value, new_value, source, by_who) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (schedule_id, int(time.time()), field, str(old), str(new), source, by_who or ""))
+        db.commit()
+        slog(f"[sched-audit] {schedule_id} {field}: {old!r} -> {new!r} via {source}"
+             + (f" by {by_who}" if by_who else " (UNATTRIBUTED)"))
+    except Exception as e:
+        slog(f"[sched-audit] failed for {schedule_id}: {e}")
 
 
 def _run_schedule(sched):
@@ -8138,6 +9338,9 @@ def _run_schedule(sched):
     except Exception as log_err:
         slog(f"[sched] failed to log run: {log_err}")
     _push_alert("scheduler", session, f"Ran schedule: {sched['title']}")
+    _emit_event(session or "", "schedule.fired",
+                {"schedule_id": sched["id"], "title": sched.get("title", ""), "status": status},
+                source="scheduler")
     # If watch mode is enabled (tmux only), monitor response in background
     if (sched.get("kind") or "tmux") == "tmux" and sched.get("watch") and status == "ok":
         threading.Thread(
@@ -8201,6 +9404,7 @@ def _watch_schedule_response(sched, pre_output: str):
         if done_action == "disable":
             db.execute("UPDATE schedules SET enabled=0, updated=? WHERE id=?", (now_ts, sched_id))
             db.commit()
+            _sched_audit(sched_id, "enabled", 1, 0, "watch-autodisable")
             _push_alert("scheduler", session,
                          f"Schedule '{sched['title']}' auto-disabled — done pattern matched")
             slog(f"[sched-watch] disabled schedule '{sched['title']}'")
@@ -8222,6 +9426,7 @@ def _watch_schedule_response(sched, pre_output: str):
             follow_up = done_action[8:]
             send_text(session, follow_up)
             db.execute("UPDATE schedules SET enabled=0, updated=? WHERE id=?", (now_ts, sched_id))
+            _sched_audit(sched_id, "enabled", 1, 0, "watch-done-command")
             db.execute(
                 "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
                 (sched_id, now_ts, "done", f"Matched '{done_pattern}' → sent: {follow_up}")
@@ -8278,12 +9483,13 @@ def _scheduler_loop():
                 now_ts = int(time.time())
                 if sched["sched_type"] == "once":
                     db.execute("UPDATE schedules SET enabled=0, last_run=?, updated=? WHERE id=?",
-                               (now_str, now_ts, sched["id"]))
+                               (now_ts, now_ts, sched["id"]))   # last_run = UTC unix (AMUX-1736)
+                    _sched_audit(sched["id"], "enabled", 1, 0, "run-once")
                 else:
                     expr = sched.get("schedule_expr") or ""
                     next_r = (_parse_next_run(expr) if expr else None) or _next_run_dt(sched)
                     db.execute("UPDATE schedules SET last_run=?, next_run=?, updated=? WHERE id=?",
-                               (now_str, next_r, now_ts, sched["id"]))
+                               (now_ts, next_r, now_ts, sched["id"]))   # last_run = UTC unix (AMUX-1736)
             if due:
                 db.commit()
         except Exception as e:
@@ -8442,6 +9648,226 @@ def get_daily_token_stats() -> dict:
 
 _metrics_cache: dict = {}
 _metrics_cache_lock = threading.Lock()
+# ── Observability: pricing + token/cost ledger + task attribution ────────────
+# Per-MTok USD prices: (fresh input, cache read, cache write, output). Matched by
+# a substring of the model name. Overridable via ~/.amux/prices.json (same shape).
+# Defaults track Anthropic's published tiers; adjust as prices change — the ledger
+# recomputes cost from these, the model never sees them.
+_MODEL_PRICES_DEFAULT = {
+    "opus":   (15.0, 1.50, 18.75, 75.0),
+    "sonnet": (3.0,  0.30, 3.75,  15.0),
+    "haiku":  (0.80, 0.08, 1.00,  4.0),
+    "fable":  (3.0,  0.30, 3.75,  15.0),
+    "_default": (3.0, 0.30, 3.75, 15.0),
+}
+_PRICES_PATH = _amux_home / "prices.json"
+_prices_cache = {"data": None, "mtime": 0.0}
+
+
+def _model_prices() -> dict:
+    """Prices table, merging ~/.amux/prices.json over the defaults (cached by mtime)."""
+    try:
+        mt = _PRICES_PATH.stat().st_mtime if _PRICES_PATH.exists() else 0.0
+    except Exception:
+        mt = 0.0
+    if _prices_cache["data"] is not None and mt == _prices_cache["mtime"]:
+        return _prices_cache["data"]
+    table = dict(_MODEL_PRICES_DEFAULT)
+    if mt:
+        try:
+            user = json.loads(_PRICES_PATH.read_text())
+            for k, v in user.items():
+                if isinstance(v, (list, tuple)) and len(v) == 4:
+                    table[k.lower()] = tuple(float(x) for x in v)
+        except Exception:
+            pass
+    _prices_cache["data"] = table
+    _prices_cache["mtime"] = mt
+    return table
+
+
+def _price_for_model(model: str) -> tuple:
+    m = (model or "").lower()
+    table = _model_prices()
+    for key, rates in table.items():
+        if key != "_default" and key in m:
+            return rates
+    return table["_default"]
+
+
+def _turn_cost_usd(model: str, inp: int, cache_read: int, cache_write: int, out: int) -> float:
+    pi, pcr, pcw, po = _price_for_model(model)
+    return (inp * pi + cache_read * pcr + cache_write * pcw + out * po) / 1_000_000.0
+
+
+_ledger_lock = threading.Lock()
+_LEDGER_MODELS_SKIP = {"<synthetic>", ""}
+
+
+def _index_token_ledger() -> int:
+    """Incrementally parse every conversation JSONL into the token_ledger. Reads
+    only bytes past each conversation's saved cursor, dedups Claude Code's
+    repeated thinking/tool_use usage lines, prices each turn, and stamps the owning
+    session. Returns rows inserted. Safe to call often — a fully-indexed tree is a
+    cheap stat + no-op."""
+    projects_dir = CLAUDE_HOME / "projects"
+    if not projects_dir.is_dir():
+        return 0
+    inserted = 0
+    with _ledger_lock:
+        db = get_db()
+        cursors = {r["conversation"]: (r["offset"], r["mtime"])
+                   for r in db.execute("SELECT conversation, offset, mtime FROM ledger_cursor")}
+        for proj_dir in projects_dir.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            for jf in proj_dir.glob("*.jsonl"):
+                conv = jf.stem
+                try:
+                    st = jf.stat()
+                except Exception:
+                    continue
+                off, cmt = cursors.get(conv, (0, 0))
+                if off >= st.st_size and cmt == int(st.st_mtime):
+                    continue  # nothing new
+                owner = _jsonl_owner_title(jf) or ""
+                rows = []
+                new_off = off
+                prev_sig = None
+                try:
+                    with jf.open("rb") as fh:
+                        if off > 0:
+                            fh.seek(off)
+                        for raw in fh:
+                            new_off += len(raw)
+                            try:
+                                e = json.loads(raw)
+                            except Exception:
+                                continue
+                            msg = e.get("message", {}) or {}
+                            u = msg.get("usage")
+                            if not u:
+                                prev_sig = None
+                                continue
+                            model = msg.get("model", "") or ""
+                            if model in _LEDGER_MODELS_SKIP:
+                                continue
+                            inp = int(u.get("input_tokens", 0) or 0)
+                            cr = int(u.get("cache_read_input_tokens", 0) or 0)
+                            cw = int(u.get("cache_creation_input_tokens", 0) or 0)
+                            out = int(u.get("output_tokens", 0) or 0)
+                            sig = (inp, cr, out)
+                            if sig == prev_sig:
+                                continue  # dedup thinking+tool_use repeat
+                            prev_sig = sig
+                            if inp + cr + cw + out == 0:
+                                continue
+                            ts_str = e.get("timestamp", "")
+                            try:
+                                ts = int(datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp())
+                            except Exception:
+                                ts = int(st.st_mtime)
+                            cost = _turn_cost_usd(model, inp, cr, cw, out)
+                            rows.append((ts, owner, conv, model, inp, cr, cw, out, cost))
+                except Exception:
+                    continue
+                if rows:
+                    db.executemany(
+                        "INSERT INTO token_ledger (ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                    inserted += len(rows)
+                db.execute("INSERT INTO ledger_cursor (conversation,offset,mtime) VALUES (?,?,?) "
+                           "ON CONFLICT(conversation) DO UPDATE SET offset=?, mtime=?",
+                           (conv, new_off, int(st.st_mtime), new_off, int(st.st_mtime)))
+        db.commit()
+    if inserted:
+        _attribute_ledger_tasks()
+    return inserted
+
+
+def _record_task_window(task: str, title: str, session: str, status: str, prev_status: str) -> None:
+    """Maintain task_windows from board status changes: opening a window when a
+    task enters 'doing', closing it when it leaves. Called from the board PATCH."""
+    if not task:
+        return
+    try:
+        db = get_db()
+        now = int(time.time())
+        if status == "doing" and prev_status != "doing":
+            # close any dangling open window for this task first, then open one
+            db.execute("UPDATE task_windows SET left_doing=? WHERE task=? AND left_doing IS NULL", (now, task))
+            db.execute("INSERT INTO task_windows (task,title,session,entered_doing,left_doing) VALUES (?,?,?,?,NULL)",
+                       (task, title or "", session or "", now))
+        elif prev_status == "doing" and status != "doing":
+            db.execute("UPDATE task_windows SET left_doing=? WHERE task=? AND left_doing IS NULL", (now, task))
+        db.commit()
+    except Exception:
+        pass
+
+
+def _attribute_ledger_tasks() -> None:
+    """Fill token_ledger.task for rows whose turn falls inside a task's doing-window
+    for the same session. Only touches unattributed rows. Cheap: windows are few."""
+    try:
+        db = get_db()
+        wins = db.execute("SELECT task, session, entered_doing, COALESCE(left_doing, ?) AS lo "
+                          "FROM task_windows ORDER BY entered_doing", (int(time.time()),)).fetchall()
+        if not wins:
+            return
+        for w in wins:
+            db.execute(
+                "UPDATE token_ledger SET task=? "
+                "WHERE task='' AND session=? AND ts>=? AND ts<=?",
+                (w["task"], w["session"], w["entered_doing"], w["lo"]))
+        db.commit()
+    except Exception:
+        pass
+
+
+def observability_rollup(days: int = 7, session: str = "") -> dict:
+    """Roll the ledger up into cost/token breakdowns by session, task, model, and
+    day. `session` scopes to one session (for the peek tab). Reads only the ledger."""
+    _index_token_ledger()  # make sure recent turns are captured
+    since = int(time.time()) - days * 86400
+    db = get_db()
+    where = "ts >= ?"
+    args: list = [since]
+    if session:
+        where += " AND session = ?"
+        args.append(session)
+
+    def rows(sql, extra=()):
+        return [dict(r) for r in db.execute(sql, tuple(args) + tuple(extra)).fetchall()]
+
+    tot = db.execute(f"SELECT COALESCE(SUM(cost_usd),0) c, COALESCE(SUM(input+cache_read+cache_write+output),0) t, "
+                     f"COALESCE(SUM(cache_read),0) cr, COALESCE(SUM(cache_read+cache_write),0) cache_all, "
+                     f"COUNT(*) turns FROM token_ledger WHERE {where}", tuple(args)).fetchone()
+    by_session = rows(f"SELECT session, COALESCE(SUM(cost_usd),0) cost, "
+                      f"SUM(input+cache_read+cache_write+output) tokens, COUNT(*) turns "
+                      f"FROM token_ledger WHERE {where} GROUP BY session ORDER BY cost DESC")
+    by_task = rows(f"SELECT l.task, COALESCE(SUM(l.cost_usd),0) cost, "
+                   f"SUM(l.input+l.cache_read+l.cache_write+l.output) tokens, COUNT(*) turns "
+                   f"FROM token_ledger l WHERE {where} GROUP BY l.task ORDER BY cost DESC")
+    by_model = rows(f"SELECT model, COALESCE(SUM(cost_usd),0) cost, COUNT(*) turns "
+                    f"FROM token_ledger WHERE {where} GROUP BY model ORDER BY cost DESC")
+    by_day = rows(f"SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') day, "
+                  f"COALESCE(SUM(cost_usd),0) cost, SUM(input+cache_read+cache_write+output) tokens "
+                  f"FROM token_ledger WHERE {where} GROUP BY day ORDER BY day")
+    # resolve task titles
+    titles = {r["task"]: r["title"] for r in db.execute("SELECT DISTINCT task, title FROM task_windows")}
+    for t in by_task:
+        t["title"] = ("Ambient (untasked)" if not t["task"] else titles.get(t["task"], t["task"]))
+    cache_all = tot["cache_all"] or 0
+    total_in_all = db.execute(f"SELECT COALESCE(SUM(input+cache_read+cache_write),0) x FROM token_ledger WHERE {where}",
+                              tuple(args)).fetchone()["x"] or 1
+    return {
+        "days": days, "session": session or None,
+        "total_cost": round(tot["c"], 4), "total_tokens": tot["t"], "total_turns": tot["turns"],
+        "cache_hit_pct": round(100.0 * (tot["cr"] or 0) / total_in_all, 1),
+        "by_session": by_session, "by_task": by_task, "by_model": by_model, "by_day": by_day,
+    }
+
+
 _metrics_cache_ts: float = 0.0
 _metrics_refreshing = False
 _METRICS_TTL = 8.0  # seconds
@@ -8848,6 +10274,14 @@ def _detect_claude_status(raw_output: str) -> str:
             return "idle"
         if "$ " in ls and not ls.startswith("❯"):
             return "idle"
+    # Empty-composer idle hint. When Claude rests at an EMPTY input it shows the
+    # "? for shortcuts" hint bar and a placeholder prompt (❯ Try "…"), which the
+    # ❯-endswith check above misses — so a genuinely idle session read '' (unknown)
+    # and its steering queue never delivered (gainz, 2026-07-20). Active turns show
+    # the spinner (handled above), never this hint, so it's an unambiguous idle signal.
+    for l in lines[-4:]:
+        if "? for shortcuts" in l.lower():
+            return "idle"
     return ""
 
 
@@ -9236,7 +10670,8 @@ def _commit_guard(name: str) -> bool:
             return False
         if is_running(name):
             _commit_guard_daily[(name, _day)] = _cnt + 1
-            _steer_enqueue(name, msg)
+            _steer_enqueue(name, msg, guard="commit")
+            _emit_event(name, "nudge.commit", {"files": n}, source="commit-guard")
         _push_alert("uncommitted", name, f"{n} uncommitted file(s) under {wd} — nudged to commit")
         slog(f"[commit-guard] {name}: nudged ({n} uncommitted)")
         return True
@@ -9295,6 +10730,11 @@ def list_sessions() -> list:
                 status = _detect_session_status(name, raw)
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
+            # Observable status transition → the event log (issue #48). Only on a
+            # real change between KNOWN states, never per poll tick.
+            if prev in ("active", "waiting", "idle") and status in ("active", "waiting", "idle") and status != prev:
+                _emit_event(name, "session." + ("working" if status == "active" else status),
+                            {"prev": prev}, source="status-loop")
             if status == "idle" and prev in ("active", "waiting"):
                 # A worker finished a turn → emit a closed-loop event so any
                 # orchestrator schedule subscribed to 'session_idle' can wake.
@@ -9442,6 +10882,28 @@ def _find_latest_session_id(work_dir: str) -> str:
     return ""
 
 
+def _conversation_owned_by_other(conv_id: str, this_session: str) -> str:
+    """Return the name of a DIFFERENT session whose meta already claims `conv_id`,
+    or '' if none. Two amux sessions must never share one Claude conversation:
+    when they do (shared CC_DIR + a borrowed/stale id), the two panes render one
+    JSONL and commands to one mirror into the other (mixpeek-general adopted
+    mixpeek-frustrations' f035d084, 2026-07-16). Used to refuse adopting a
+    neighbor's conversation id so a collision can never be cemented."""
+    if not conv_id:
+        return ""
+    for mf in CC_SESSIONS.glob("*.meta.json"):
+        other = mf.name[:-len(".meta.json")]
+        if other == this_session:
+            continue
+        try:
+            m = json.loads(mf.read_text(errors="replace"))
+        except Exception:
+            continue
+        if (m.get("cc_conversation_id") or "") == conv_id:
+            return other
+    return ""
+
+
 def _ascript_str(s: str) -> str:
     """Convert a Python string to an AppleScript expression with proper linefeed handling.
     Returns an expression like: ("line1" & linefeed & "line2")
@@ -9506,7 +10968,15 @@ def _live_conv_id(name: str, work_dir: str = "") -> str:
         pass
     if work_dir:
         try:
-            return _find_latest_session_id(work_dir)
+            cand = _find_latest_session_id(work_dir)
+            # In a SHARED work_dir the "latest jsonl" belongs to whichever session
+            # was last active, not necessarily this one. Adopting it cross-links two
+            # sessions onto one Claude conversation (the mixpeek-general/frustrations
+            # bug, 2026-07-16). Refuse a candidate another session already owns so a
+            # separated session can't silently re-grab its neighbor's conversation.
+            if cand and _conversation_owned_by_other(cand, name):
+                return ""
+            return cand
         except Exception:
             return ""
     return ""
@@ -11176,6 +12646,9 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                             "Board snapshot (startup):\n\n" + digest, 60)
                 threading.Thread(target=_send_boot_briefing, daemon=True,
                                  name=f"boot-{name}").start()
+            _emit_event(name, "session.started",
+                        {"resumed": bool(meta.get("cc_session_name") or meta.get("cc_conversation_id"))},
+                        source="start_session")
             return True, "started"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
@@ -11607,6 +13080,12 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0,
     return bool(sent_at and _jsonl_user_msg_since(name, text, sent_at))
 
 
+# Claude Code's @-mention autocomplete only opens for an @ that STARTS a token
+# (start of text or after whitespace). The old check ("@" in text) also matched
+# emails (mhoward@lucihub.com) and backticked `@backend` mentions, force-queueing
+# any such message while the session generated — even in Send mode (2026-07-17).
+_AT_PICKER_RE = re.compile(r'(?:^|\s)@\S')
+
 def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy: bool = False) -> tuple[bool, str]:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
@@ -11680,7 +13159,25 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
                         ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
                         capture_output=True, text=True, timeout=5
                     )
-                    for line in reversed(cap.stdout.splitlines()):
+                    pane = cap.stdout
+                    # NOT at an interactive selection picker: there the "❯" marks
+                    # the HIGHLIGHTED OPTION, not a composer suggestion — typing
+                    # its label ("2. Hand off…") corrupts the selection. Bail so
+                    # the caller presses a raw Enter and selects it instead.
+                    # Detect the picker by its FOOTER hint ("↑/↓ to navigate" /
+                    # "Enter to select"), which is unique to a live selector — a
+                    # composer's status bar never has it. Scan only the last few
+                    # NON-"❯" lines: scanning the whole pane false-fired whenever
+                    # the transcript merely quoted those phrases, which made Enter
+                    # refuse to submit a real composer suggestion ("pressing enter
+                    # does nothing"). Excluding the "❯" line lets a suggestion that
+                    # happens to contain "to navigate" still submit.
+                    _nonblank = [_l for _l in pane.splitlines() if _l.strip()]
+                    _footer = [_l for _l in _nonblank[-4:] if not _l.lstrip().startswith("❯")]
+                    if any(("to navigate" in _l.lower() or "enter to select" in _l.lower())
+                           for _l in _footer):
+                        return True, "no suggestion found"
+                    for line in reversed(pane.splitlines()):
                         line = line.strip()
                         if line.startswith("❯") or line.startswith(">"):
                             suggested = line.lstrip("❯>\xa0 ").strip()
@@ -11711,15 +13208,21 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             # lands it at the next genuinely-idle boundary. Deliberate user sends
             # (defer_if_busy=False, the default) still go straight through so a
             # human can answer/interrupt on purpose.
-            if defer_if_busy and (_generating or _waiting):
+            if defer_if_busy and _waiting:
+                # ONLY a live selector parks an automated send: typing there +
+                # the picker-closing Escape would REJECT the pending tool
+                # (backend→gtm-engine AskUserQuestion kill, 2026-07-15). A merely
+                # GENERATING target is safe to type into — Claude Code queues the
+                # input and submits it at the turn end — so session-to-session
+                # sends now go direct instead of queueing (Ethan, 2026-07-17).
                 _steer_enqueue(name, text)
-                return True, "queued (steering) — session busy, delivers at turn boundary"
+                return True, "queued (steering) — session at a selector, delivers when it resolves"
             # Safety net for the steering path itself: if the session slipped into
             # a selector between the settle capture and this send, don't Escape
             # (that rejects the tool) — keep the batch queued for the next tick.
             if _waiting and _from_steering:
                 return False, "session at a selector — retry at next idle boundary"
-            if _generating and ("@" in text or text.lstrip().startswith("/")):
+            if _generating and (_AT_PICKER_RE.search(text) or text.lstrip().startswith("/")):
                 # @/slash text can't be queued as typed input while a turn is
                 # running: the autocomplete picker opens on type and eats the
                 # Enter, and the picker-closer (Escape) would interrupt the
@@ -11744,12 +13247,26 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             _esc_at = 0.0
             _sent_at = time.time()   # JSONL evidence gate: only messages stamped after this count
             if not _generating:
-                # Close any picker left open by a previous attempt, so the C-u below
-                # actually reaches the input. Without this a retry appends and the
-                # message is submitted twice ("msg msg").
-                subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
-                _esc_at = time.monotonic()
-                time.sleep(0.05)
+                # FRESH re-check right before the Escape. The _detect_claude_status
+                # capture above can be stale or misread a live turn as idle; the
+                # picker-closing Escape then lands as an INTERRUPT and cuts off the
+                # session's response ("[Request interrupted by user]" — queued
+                # messages killing active work, 2026-07-18). "esc to interrupt" in
+                # the pane is the reliable generating signal: if it's there, the
+                # session is mid-turn — do NOT Escape.
+                if "esc to interrupt" in (tmux_capture(name, 12) or "").lower():
+                    _generating = True
+                    if _from_steering:
+                        # Steering must land at a real idle boundary, never type
+                        # into a live turn — re-queue for the next tick.
+                        return False, "session started generating — retry at next turn boundary"
+                else:
+                    # Close any picker left open by a previous attempt, so the C-u
+                    # below actually reaches the input. Without this a retry appends
+                    # and the message is submitted twice ("msg msg").
+                    subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                    _esc_at = time.monotonic()
+                    time.sleep(0.05)
             # Type into a clean input line. A mid-render send can paint characters
             # onto the terminal without them entering Claude's input buffer ("ghost
             # text") — Enter then submits an empty buffer and the message is lost.
@@ -11782,7 +13299,7 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             # 20ms is ample for a local PTY; paste-buffer (long text) is atomic so
             # needs even less, but we use the same value for simplicity.
             time.sleep(0.02)
-            if not _generating and ("@" in text or text.lstrip().startswith("/")):
+            if not _generating and (_AT_PICKER_RE.search(text) or text.lstrip().startswith("/")):
                 # An @mention (@path or @session) or slash opens Claude's autocomplete
                 # picker while typing. A bare Enter then SELECTS a picker entry —
                 # rewriting the @path and NOT submitting. Escape closes the picker and
@@ -11899,7 +13416,7 @@ def _channel_deliver(sender: str, recipient: str, text: str) -> tuple[bool, str]
     """
     safe_sender = sender if _VALID_SESSION_NAME_RE.match(sender) else "unknown"
     wrapped = (
-        f"[amux channel message from @{safe_sender}]\n"
+        f"[amux channel message from session '{safe_sender}']\n"
         f"{text}\n"
         f"---\n"
         f"This is from another amux session, not from the user. "
@@ -11933,6 +13450,9 @@ _ALLOWED_TMUX_KEYS = frozenset({
     "PageUp", "PageDown", "IC", "DC",  # Insert, Delete
     "C-c", "C-d", "C-z", "C-l", "C-a", "C-e", "C-k", "C-u",
     "C-r", "C-p", "C-n", "C-b", "C-f", "C-w",
+    "C-o", "C-x",  # C-o = the "Accept & continue" quick-key chip; C-x = the Ctrl+X
+                   # peek shortcut. Both are sent by the UI — omitting them made
+                   # send_keys 500 → offline queue retried forever (2026-07-18).
     "M-b", "M-f", "M-d",  # Alt/Meta combos
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "y", "n", "q",  # common single-char confirmations
@@ -12935,32 +14455,164 @@ def _gmail_find_message_by_rfc822(account: str, rfc822_id: str) -> dict | None:
 
 
 def _gmail_reply_send(account: str, rfc822_message_id: str, body: str,
-                       include_signature: bool = True, reply_all: bool = False) -> dict:
+                       include_signature: bool = True, reply_all: bool = False,
+                       allow_self: bool = False) -> dict:
     """Reply in-thread (clean body + signature, correct In-Reply-To/References/
     threadId) to the message identified by its RFC822 Message-ID header."""
+    import email.utils as _eu
+    # Cross-account: find the message in the sending account, else any other
+    # connected account — so a thread that lives on info@ can be replied to from
+    # ethan@ (threading then rides on In-Reply-To/References, not the account-local
+    # threadId). Fixes the "message not found -> fresh non-threaded send" fallback.
     orig = _gmail_find_message_by_rfc822(account, rfc822_message_id)
+    thread_account = account
     if not orig:
-        return {"error": "message not found in this account — check message_id / account"}
+        for _acct in _gmail_connected_accounts():
+            if _acct == account:
+                continue
+            _found = _gmail_find_message_by_rfc822(_acct, rfc822_message_id)
+            if _found:
+                orig, thread_account = _found, _acct
+                break
+    if not orig:
+        return {"error": "message not found in any connected account — check message_id"}
     headers = {h["name"].lower(): h["value"]
                for h in orig.get("payload", {}).get("headers", [])}
-    thread_id = orig.get("threadId", "")
+    # threadId is account-local; only valid if the message lives in the SENDING
+    # account. Cross-account replies thread via In-Reply-To/References instead.
+    thread_id = orig.get("threadId", "") if thread_account == account else ""
     orig_msgid = headers.get("message-id", rfc822_message_id)
     if not orig_msgid.startswith("<"):
         orig_msgid = f"<{orig_msgid}>"
     subject = headers.get("subject", "") or ""
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
-    to_addr = headers.get("from", "")
-    cc = ""
+    # Recipient resolution: the reply goes to the EXTERNAL party, never to one of
+    # our own accounts. This fixes the reply-to-self bug: replying to our OWN sent
+    # message (From=us) previously set to_addr=us and emailed ourselves. Exclude
+    # the sending account, every connected account, and all our owned domains.
+    _our_domains = ("mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com")
+    _connected = {a.lower() for a in _gmail_connected_accounts()} | {account.lower()}
+
+    def _external(hdr: str) -> list:
+        out = []
+        for _name, addr in _eu.getaddresses([hdr or ""]):
+            a = (addr or "").strip()
+            if not a:
+                continue
+            al = a.lower()
+            if al in _connected or any(al.endswith("@" + d) for d in _our_domains):
+                continue
+            out.append(a)
+        return out
+
+    from_ext = _external(headers.get("from", ""))
+    to_ext = _external(headers.get("to", ""))
+    cc_ext = _external(headers.get("cc", ""))
     if reply_all:
-        extras = [headers.get("to", ""), headers.get("cc", "")]
-        parts = [p.strip() for chunk in extras for p in chunk.split(",")
-                 if p.strip() and account.lower() not in p.lower()]
-        cc = ", ".join(dict.fromkeys(parts))  # dedup, preserve order
+        all_ext = list(dict.fromkeys(from_ext + to_ext + cc_ext))
+        to_addr, cc = ", ".join(all_ext), ""
+    else:
+        # the party who last spoke (From) if external, else the original recipient(s)
+        to_addr, cc = ", ".join(from_ext or to_ext), ""
+    if not to_addr and allow_self:
+        # VERIFY MODE (AMUX-1739 follow-up): an operator proving that replies
+        # thread inline needs to reply between OWNED accounts — the exact test
+        # the self-loop guard otherwise forbids. Reply to the original sender
+        # (even if ours), or the original recipients, excluding only the
+        # sending account itself.
+        import email.utils as _eu2
+        _raw_from = [a for _n, a in _eu2.getaddresses([headers.get("from", "") or ""]) if a and a.lower() != account.lower()]
+        _raw_to = [a for _n, a in _eu2.getaddresses([headers.get("to", "") or ""]) if a and a.lower() != account.lower()]
+        to_addr = ", ".join(_raw_from or _raw_to)
+    if not to_addr:
+        # NEVER fall back to emailing ourselves (without explicit allow_self).
+        return {"error": "no external recipient on this thread (would email ourselves) — "
+                         "pass an explicit 'to' via /api/email/send, or use "
+                         "{\"allow_self\": true} to run a threading self-test between owned accounts"}
     references = (headers.get("references", "") + " " + orig_msgid).strip()
-    return _gmail_compose_send(account, to_addr, subject, body, cc=cc,
+    _res = _gmail_compose_send(account, to_addr, subject, body, cc=cc,
                                in_reply_to=orig_msgid, references=references,
                                thread_id=thread_id, include_signature=include_signature)
+    # Threading proof for the caller: the original's thread id (account-local)
+    # and whether the reply landed in the SAME thread — assertable evidence.
+    if isinstance(_res, dict) and not _res.get("error"):
+        _res["orig_thread_id"] = thread_id or orig.get("threadId", "")
+        _res["threaded"] = bool(thread_id) and _res.get("thread_id") == thread_id
+    return _res
+
+
+def _gmail_get_message_full(account: str, rfc822_id: str) -> dict | None:
+    """Full message (headers + body + attachment parts) by RFC822 Message-ID via
+    the INDEXED rfc822msgid: query — the fast path for /api/email/message. The
+    old handler swept every mailbox of every Mail.app account with AppleScript
+    and timed out >45s on Outlook-origin ids (the mhoward miss, AMUX-1739)."""
+    try:
+        svc = _gmail_service(account)
+        if not svc:
+            return None
+        rid = rfc822_id.strip().lstrip("<").rstrip(">")
+        res = svc.users().messages().list(
+            userId="me", q=f"rfc822msgid:{rid}", maxResults=1).execute()
+        msgs = res.get("messages", [])
+        if not msgs:
+            return None
+        return svc.users().messages().get(
+            userId="me", id=msgs[0]["id"], format="full").execute()
+    except Exception as e:
+        slog(f"[gmail] get_full {account}: {e}")
+        return None
+
+
+def _gmail_walk_attachments(payload: dict) -> list:
+    """List attachment parts (filename/mime/size/attachment_id), recursively."""
+    out = []
+    def _walk(p):
+        for part in (p or {}).get("parts", []) or []:
+            fn = part.get("filename") or ""
+            bd = part.get("body", {}) or {}
+            if fn and (bd.get("attachmentId") or bd.get("data")):
+                out.append({"filename": fn,
+                            "mime_type": part.get("mimeType", ""),
+                            "size": bd.get("size", 0),
+                            "attachment_id": bd.get("attachmentId", "")})
+            _walk(part)
+    _walk(payload or {})
+    return out
+
+
+def _gmail_latest_matching(account: str, from_addr: str = "", with_addr: str = "",
+                            subject_contains: str = "", newer_days: int = 0) -> dict | None:
+    """Resolve 'the latest message from/with X' to its RFC822 Message-ID + meta.
+    from_addr → sender match (reply-by-selector); with_addr → either direction
+    (new-thread guard). Returns None on no match or any API error (fail-open)."""
+    try:
+        svc = _gmail_service(account)
+        if not svc:
+            return None
+        if from_addr:
+            q = f"from:{from_addr}"
+        elif with_addr:
+            q = f"(from:{with_addr} OR to:{with_addr})"
+        else:
+            return None
+        if newer_days:
+            q += f" newer_than:{int(newer_days)}d"
+        res = svc.users().messages().list(userId="me", q=q, maxResults=10).execute()
+        for m in res.get("messages", []):   # newest first
+            meta = svc.users().messages().get(
+                userId="me", id=m["id"], format="metadata",
+                metadataHeaders=["From", "To", "Subject", "Message-ID", "Date"]).execute()
+            h = {x["name"].lower(): x["value"] for x in meta.get("payload", {}).get("headers", [])}
+            if subject_contains and subject_contains.lower() not in (h.get("subject", "") or "").lower():
+                continue
+            return {"message_id": h.get("message-id", ""), "subject": h.get("subject", ""),
+                    "from": h.get("from", ""), "to": h.get("to", ""), "date": h.get("date", ""),
+                    "gmail_message_id": m["id"], "thread_id": meta.get("threadId", ""),
+                    "account": account}
+    except Exception as e:
+        slog(f"[gmail] latest_matching {account}: {e}")
+    return None
 
 
 def _gmail_inbox_messages(account: str, count: int = 20, q: str = "") -> dict:
@@ -13862,6 +15514,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transition: opacity 0.25s, transform 0.25s cubic-bezier(.4,0,.2,1);
   }
   .overlay.active { pointer-events: auto; opacity: 1; transform: none; }
+  /* ── Generic centered modal (calendar event editor) ─────────────────────────
+     These classes had NO rules — openEventModal's markup rendered as unstyled
+     flow content stacked at the page bottom (the "Edit event at the bottom of
+     the screen" bug, 2026-07-16). */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 300;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .modal-overlay.active { display: flex; }
+  .modal-overlay .modal {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    width: 100%; max-width: 440px; max-height: min(86dvh, 640px);
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .modal-header h3 { font-size: 1rem; }
+  .modal-close {
+    background: none; border: none; color: var(--dim); font-size: 1.3rem;
+    cursor: pointer; min-width: 44px; min-height: 32px; line-height: 1;
+  }
+  .modal-body { padding: 14px 16px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .modal-body .input {
+    width: 100%; box-sizing: border-box; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: 0.9rem; outline: none;
+  }
+  .modal-body input[type=date].input, .modal-body input[type=time].input { width: auto; flex: 1; min-width: 0; }
+  .modal-footer { padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .modal-footer .btn.danger { color: var(--red); border-color: var(--red); }
   .overlay-header {
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 8px; flex-shrink: 0;
@@ -13927,13 +15614,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .overlay-body .md-link:active { color: #e8c547; }
   /* Box-drawing tables/frames: keep monospace alignment, scroll sideways instead
      of wrapping (which detached borders and shredded rows on narrow screens). */
-  .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; max-width: 100%;
+  .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; overflow-y: hidden; max-width: 100%;
     word-break: normal; overflow-wrap: normal; -webkit-overflow-scrolling: touch;
     /* Only claim HORIZONTAL pans; vertical scroll gestures pass through to the
        peek-body. Without this, iOS treats each box block as its own touch-scroll
        context and traps the vertical swipe when your finger lands on one — which
-       are the ──── rules around every prompt, so you couldn't scroll up past ❯. */
-    touch-action: pan-x; overscroll-behavior: contain; }
+       are the ──── rules around every prompt, so you couldn't scroll up past ❯.
+       overflow-y:hidden is load-bearing: overflow-x:auto ALONE makes the browser
+       COMPUTE overflow-y to `auto` (CSS spec), so a table TALLER than the viewport
+       becomes a vertical scroll container that — with overscroll containment —
+       swallows the wheel/swipe instead of chaining to peek-body ("can't scroll a
+       very tall table", 2026-07-15). Boxes are content-height, so hidden clips
+       nothing. Scope the overscroll containment to X so vertical still chains. */
+    touch-action: pan-x; overscroll-behavior-x: contain; }
   .overlay-body .peek-box::-webkit-scrollbar { height: 6px; }
   .overlay-body .peek-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22); border-radius: 3px; }
   /* Emoji occupy exactly 2 monospace cells inside tables so borders stay aligned
@@ -14205,9 +15898,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-crumb { color: var(--accent); cursor: pointer; }
   .fe-crumb:hover { text-decoration: underline; }
   .fe-crumb-sep { color: var(--dim); margin: 0 2px; }
+  /* ONE scroll container for header + rows (both axes) with a STICKY header —
+     header and rows share the exact same horizontal scroll, so columns can
+     never desync (the two-container version misaligned on iOS). */
+  .fe-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
   .fe-col-headers {
     display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
+    position: sticky; top: 0; z-index: 2;
     background: var(--card);
   }
   .fe-col-hdr {
@@ -14256,6 +15954,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     padding: 4px 14px; font-size: 0.7rem; color: var(--dim); flex-shrink: 0;
     border-top: 1px solid var(--border); background: var(--card);
   }
+  .lib-facet {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text); font-size: 0.72rem; padding: 4px 6px; max-width: 130px;
+    cursor: pointer; outline: none;
+  }
+  #lib-grid .lib-card:active { transform: scale(0.98); }
+  #lib-grid .lib-card { transition: transform 0.08s; }
   .fe-back-row {
     display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
@@ -14263,9 +15968,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .fe-back-row:hover { background: var(--hover, rgba(139,148,158,0.07)); }
   @media (max-width: 600px) {
-    .fe-col-headers { grid-template-columns: minmax(0,1fr) 32px; }
-    .fe-row, .fe-back-row { grid-template-columns: minmax(0,1fr) 32px; }
-    .fe-cell-size, .fe-cell-date, .fe-col-hdr:nth-child(2), .fe-col-hdr:nth-child(3) { display: none; }
+    /* Keep every column on mobile and let the table scroll sideways (standard
+       mobile data-table UX) instead of hiding Size/Modified. min-width forces
+       the horizontal overflow #fe-scroll then scrolls; header stays aligned. */
+    .fe-col-headers, .fe-row, .fe-back-row { min-width: 460px; }
     .fe-cell-name { padding: 7px 8px; }
     .fe-cell-name span { font-size: 0.9rem; }
     .fe-menu-btn { opacity: 0.5; font-size: 1.1rem; }
@@ -14458,6 +16164,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
     border-bottom: 1px solid var(--border); background: var(--bg); pointer-events: none; }
   .at-item .at-at { color: var(--accent); }
+  .at-item b { color: var(--accent); font-weight: 700; }
 
   /* Search input with clear button */
   .search-wrap {
@@ -14531,6 +16238,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: none; position: fixed; inset: 0; z-index: 8000;
   }
   #wt-overlay.open { display: block; }
+  #wt-overlay.open + #wt-tooltip { display: block; }
   #wt-backdrop {
     position: fixed; inset: 0; z-index: 8001;
     transition: opacity 0.2s;
@@ -14543,7 +16251,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     pointer-events: none;
   }
   #wt-tooltip {
-    position: fixed; z-index: 8003;
+    display: none;
+    position: fixed; z-index: 8503;
     background: var(--bg, #fff); border: 1px solid var(--border, #e2e2e5);
     border-radius: 14px; padding: 20px 22px 16px;
     max-width: 340px; width: calc(100vw - 40px);
@@ -14563,6 +16272,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .wt-footer {
     display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 8px;
+    flex-wrap: wrap;   /* narrow/zoomed screens: dots + buttons wrap instead of clipping */
   }
   .wt-dots { display: flex; gap: 5px; }
   .wt-dot {
@@ -14571,7 +16281,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .wt-dot.active { background: var(--accent, #0a0a0a); }
   .wt-dot.done { background: var(--dim, #999); }
-  .wt-btns { display: flex; gap: 6px; }
+  .wt-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   .wt-btn {
     padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border, #e2e2e5);
     background: none; color: var(--text, #0a0a0a); font-size: 0.82rem; font-weight: 600;
@@ -14587,6 +16297,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer; padding: 4px 0; text-decoration: underline; text-underline-offset: 2px;
   }
   .wt-skip:hover { color: var(--text); }
+  .wt-chapters { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+  .wt-chapter {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 11px 14px; min-height: 44px; border-radius: 10px; text-align: left;
+    background: var(--bg, #fff); border: 1px solid var(--border, #ddd);
+    color: var(--text, #111); font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  }
+  .wt-chapter:hover { border-color: var(--accent, #0a0a0a); }
+  .wt-chapter.done { opacity: 0.75; }
+  /* Guided-build steps open REAL dialogs; lift them above the tour backdrop so
+     the spotlighted form is actually visible + interactive during the tour. */
+  #wt-overlay.open ~ #create-overlay.active, body:has(#wt-overlay.open) #create-overlay.active,
+  body:has(#wt-overlay.open) #sched-overlay.active,
+  body:has(#wt-overlay.open) #event-modal.active { z-index: 8002; }
+  .wt-ch-check { color: var(--green, #2da44e); font-weight: 700; }
   @media (max-width: 600px) {
     #wt-tooltip { max-width: calc(100vw - 32px); padding: 16px; }
   }
@@ -14909,6 +16634,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-tab-count.has-count { display: inline-block; }
   /* Schedules badge: green when the session has ≥1 active schedule, grey when all inactive. */
   .peek-tab-count.sched-on { background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.34); }
+  .peek-tab-count.has-pending { background: rgba(210,153,34,0.16); color: #d29922; border-color: rgba(210,153,34,0.34); }
   .peek-tab-count.sched-off { background: rgba(139,148,158,0.14); color: var(--dim); border-color: rgba(139,148,158,0.28); }
   /* Saved-messages modal: scope tabs (this session / all) + per-session badge. */
   .sm-scope-tab { flex: 1; padding: 6px 10px; font-size: 0.8rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--dim); cursor: pointer; font-family: inherit; min-height: 36px; }
@@ -14920,15 +16646,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-size: 0.75rem; color: var(--dim); border-bottom: 1px solid var(--border);
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
+  /* Git branch for the working directory — pushed to the right of the path. */
+  .peek-dir-branch { margin-left: auto; flex-shrink: 0; cursor: pointer; overflow: visible; }
+  .peek-dir-branch.on-main { color: var(--yellow); }
+  .peek-dir-branch.on-branch { color: var(--green); }
+  .peek-dir-branch.conflict { color: var(--red); }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  /* Mobile: reclaim peek chrome for the terminal logs. The task label and the
-     directory path are already on the session card, and the header carries the
-     name/status; dropping the two redundant rows + tightening the header gives
-     the log area ~70px more height on a phone. */
+  /* Mobile: reclaim peek chrome for the terminal logs. The task label is already
+     on the session card and the header carries the name/status, so the task row
+     is dropped; the directory row is KEPT (Ethan, 2026-07-18 — wanted it visible
+     on the phone) but compacted so it costs minimal height. Focus mode and the
+     keyboard-open (vv-compact) state still hide it — those are deliberate
+     space-saving modes. */
   @media (max-width: 600px) {
     #peek-overlay .overlay-header { padding-bottom: 2px !important; gap: 2px !important; }
     #peek-overlay #peek-task-row { display: none !important; }
-    #peek-overlay .peek-dir-bar { display: none !important; }
+    #peek-overlay .peek-dir-bar { padding: 2px 10px; font-size: 0.68rem; }
     #peek-overlay .peek-tabs { padding: 0 8px; }
     /* Reclaim the "Updated … · vX" status line on mobile — its ~20px is
        better spent on the terminal. (The version/updated info is still
@@ -15138,6 +16871,65 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-color: var(--accent);
   }
 
+  /* ── Filters button + modal + preview chips ── */
+  .filters-btn { position: relative; }
+  .filters-btn.active { color: var(--accent); border-color: var(--accent); }
+  .filters-count {
+    position: absolute; top: -5px; right: -5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 14px; height: 14px; padding: 0 3px;
+    border-radius: 7px; background: var(--accent); color: #0d1117;
+    font-size: 0.58rem; font-weight: 700; line-height: 1;
+    box-shadow: 0 0 0 1.5px var(--bg);
+  }
+  .active-filters {
+    display: none; gap: 6px; flex-wrap: wrap; align-items: center;
+    margin: 6px 12px 2px;
+  }
+  .active-filter-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.72rem; padding: 4px 9px; border-radius: 12px;
+    background: rgba(88,166,255,0.2); color: var(--accent);
+    border: 1px solid var(--accent); cursor: pointer;
+    -webkit-tap-highlight-color: transparent; white-space: nowrap;
+  }
+  .active-filter-chip .afx { font-size: 0.66rem; opacity: 0.75; }
+  .active-filter-chip:active { background: rgba(88,166,255,0.32); }
+  .active-filter-clear {
+    font-size: 0.7rem; color: var(--dim); cursor: pointer; padding: 4px 6px;
+    text-decoration: underline; -webkit-tap-highlight-color: transparent;
+  }
+  .filter-section { padding: 12px 2px; border-bottom: 1px solid var(--border); }
+  .filter-section-title {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--dim); margin-bottom: 9px;
+  }
+  .filter-chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 34px; padding: 6px 12px; border-radius: 16px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); cursor: pointer;
+    font-size: 0.82rem; -webkit-tap-highlight-color: transparent; transition: all 0.15s;
+  }
+  .filter-chip:active { background: var(--border); }
+  .filter-chip.on { background: rgba(88,166,255,0.18); color: var(--accent); border-color: var(--accent); }
+  .filter-chip-n {
+    font-size: 0.66rem; opacity: 0.6; background: rgba(128,128,128,0.18);
+    border-radius: 8px; padding: 1px 6px; min-width: 14px; text-align: center;
+  }
+  .filter-chip.on .filter-chip-n { background: rgba(88,166,255,0.25); opacity: 0.9; }
+  .filter-toggle-row {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    font-size: 0.9rem; min-height: 44px;
+  }
+  .filter-toggle-row input[type=checkbox] { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--accent); }
+  .filter-hint { font-size: 0.72rem; color: var(--dim); line-height: 1.45; margin-top: 4px; }
+  .filter-modal-actions {
+    display: flex; gap: 8px; padding-top: 12px; margin-top: 4px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+
   /* Card description */
   .card-desc {
     color: var(--text); font-size: 0.82rem; margin-top: 4px; margin-left: 20px;
@@ -15176,6 +16968,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     pointer-events: none;
   }
   @keyframes send-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  /* "Loading latest…" cue on peek open — same top-pill spot as the send cue */
+  .peek-loading-pill {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 600;
+    padding: 3px 12px 3px 9px; border-radius: 12px; z-index: 11;
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .peek-spin {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+    animation: peek-spin 0.7s linear infinite;
+  }
+  @keyframes peek-spin { to { transform: rotate(360deg); } }
+  /* Centered loader shown in the empty peek body before the first frame paints */
+  .peek-loading {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 44px 20px; color: var(--dim); font-size: 0.85rem;
+  }
+  .peek-loading .peek-spin-lg {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 2.5px solid var(--border); border-top-color: var(--accent);
+    animation: peek-spin 0.7s linear infinite;
+  }
 
   /* Habits */
   .habit-card {
@@ -15747,6 +17563,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.board-dragging .board-card { transition: none !important; }
   .board-card:active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.2); }
   .board-card-pinned { border-color: rgba(88,166,255,0.35); box-shadow: 0 0 0 1px rgba(88,166,255,0.12); }
+  /* Card the owning session is working on RIGHT NOW (doing + session active) */
+  .board-card-live {
+    border-color: rgba(63,185,80,0.55);
+    box-shadow: 0 0 0 1px rgba(63,185,80,0.25), 0 0 14px rgba(63,185,80,0.12);
+  }
+  .board-live-dot {
+    display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--green,#3fb950); margin-right:5px; vertical-align:1px;
+    animation: boardLivePulse 1.6s ease-in-out infinite;
+  }
+  @keyframes boardLivePulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+  .board-card-live .board-card-session { color: var(--green,#3fb950); border-color: rgba(63,185,80,0.4); }
   .board-pin-btn {
     position: absolute; top: 6px; right: 30px;
     width: 22px; height: 22px; padding: 0; border: none; background: none;
@@ -16914,6 +18742,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #map-view.sidebar-collapsed .map-geocoder-wrap { display: none; }
   }
 
+  /* ── Cost / observability view ─────────────────────────────────────────────── */
+  .cost-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .cost-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .cost-card-v { font-size: 1.4rem; font-weight: 700; color: var(--text); line-height: 1.1; }
+  .cost-card-l { font-size: 0.68rem; color: var(--dim); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .cost-section { margin-bottom: 20px; }
+  .cost-section-h { font-size: 0.82rem; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+  .cost-row { padding: 6px 0; }
+  .cost-row[onclick]:hover .cost-row-label { color: var(--accent); }
+  .cost-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .cost-row-label { font-size: 0.83rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cost-row-cost { font-size: 0.83rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .cost-bar-track { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+  .cost-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 3px; }
+  .cost-row-sub { font-size: 0.68rem; color: var(--dim); }
+  .cost-days-chart { display: flex; align-items: flex-end; gap: 2px; height: 70px; }
+  .cost-day { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+  .cost-day-fill { width: 100%; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; opacity: 0.8; }
+  .cost-day-labels { display: flex; justify-content: space-between; font-size: 0.62rem; color: var(--dim); margin-top: 3px; }
+
   /* ── Metrics view ──────────────────────────────────────────────────────────── */
   #metrics-view { height: calc(100dvh - 110px); display: flex; flex-direction: row; overflow: hidden; position: relative; }
   .metrics-sidebar { width: 220px; min-width: 180px; border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; background: var(--card); transition: transform 0.2s ease, opacity 0.2s ease; }
@@ -17292,6 +19140,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </label>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 50%</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="auto-resume-checkbox" onchange="toggleAutoResume(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Pick &quot;Resume from summary&quot; automatically when the old-session dialog appears</div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
@@ -17474,6 +19330,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-sql" onclick="switchView('sql')">Database</button>
   <button id="tab-map" onclick="switchView('map')">Map</button>
   <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
+  <button id="tab-cost" onclick="switchView('cost')">Cost</button>
   <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
   <button id="tab-terminal" onclick="switchView('terminal')">Terminal</button>
   <button id="tab-browser" onclick="switchView('browser')">Browser</button>
@@ -17490,9 +19347,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);onSearchInput()">
     <button class="search-clear" onclick="event.stopPropagation();clearSearch()">&#x2715;</button>
   </div>
-  <button id="log-search-btn" class="tile-btn log-search-btn" onclick="toggleLogSearch()" title="Search inside session logs">
-    <svg class="log-search-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="8" y1="8" x2="14" y2="8"/><line x1="8" y1="14" x2="11" y2="14"/></svg>
-    <span class="log-search-label">Logs</span>
+  <button id="filters-btn" class="tile-btn filters-btn" onclick="openFiltersModal()" title="Filters — logs search, provider, model" aria-label="Filters">
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+    <span id="filters-count" class="filters-count" style="display:none;">0</span>
   </button>
   <div class="tile-controls">
     <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
@@ -17500,6 +19357,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="tile-btn" id="tile-expand-btn" onclick="toggleExpand()" title="Expand active sessions — click again to collapse all">&#x26A1;</button>
   </div>
 </div>
+<div id="active-filters" class="active-filters"></div>
 <div id="tag-filters" class="tag-filters"></div>
 <div id="offline-banner" class="offline-banner">
   <div class="offline-banner-header">
@@ -17563,9 +19421,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="fe-toolbar">
     <button class="fe-tb-btn" id="files-back-session-btn" onclick="closeExplore()" title="Return to session" style="display:none;background:var(--purple,#8957e5);color:#fff;border-color:var(--purple,#8957e5);font-size:0.72rem;white-space:nowrap;gap:4px;font-weight:600;">
       &#x2190; <span id="files-back-session-label">Back</span>
-    </button>
-    <button class="fe-tb-btn" id="files-up-btn" onclick="loadFiles(_filesLastData?.data?.parent||'/')" title="Go up">
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 10V2M2 6l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <div id="files-breadcrumb" class="fe-breadcrumb"></div>
     <!-- Desktop action buttons (hidden on mobile) -->
@@ -17657,9 +19512,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- Quick-access bookmarks -->
   <div id="files-bookmarks" style="padding:4px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;align-items:center;">
-    <span style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
+    <span id="files-bm-label" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
     <div id="files-bookmarks-list" style="display:flex;gap:5px;flex-wrap:nowrap;"></div>
-    <button onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:4px;color:var(--dim);font-size:0.7rem;padding:2px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
+    <button id="files-bm-add" onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:4px;color:var(--dim);font-size:0.7rem;padding:2px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
+    <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:#000;border:none;border-radius:4px;font-size:0.7rem;font-weight:600;padding:3px 9px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>
   </div>
   <!-- Search -->
   <div style="padding:5px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);">
@@ -17667,15 +19523,39 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:0.8rem;color:var(--text);outline:none;"
       oninput="_filesSearchFilter(this.value)">
   </div>
-  <!-- Column headers -->
-  <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
-    <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
-    <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
-    <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
-    <div class="fe-col-hdr-actions"></div>
+  <!-- Header + rows share ONE horizontal-scroll container so on a narrow
+       (mobile) screen you scroll sideways to reveal Size/Modified with the
+       header staying aligned, instead of those columns being hidden. -->
+  <div id="fe-scroll" class="fe-scroll">
+    <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
+      <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
+      <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
+      <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr-actions"></div>
+    </div>
+    <div id="files-body"></div>
   </div>
-  <div id="files-body" style="flex:1;overflow-y:auto;"></div>
   <div id="fe-status" class="fe-status"></div>
+  <!-- Library view: flat, searchable, faceted cover grid (ebook folders) -->
+  <div id="files-library" style="display:none;flex-direction:column;flex:1;min-height:0;">
+    <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--card);">
+      <button onclick="_libClose()" title="Back to file list" style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.72rem;padding:4px 9px;cursor:pointer;white-space:nowrap;">&#9776; Files</button>
+      <input id="lib-search" type="search" placeholder="Search title, author, tag&hellip;" autocomplete="off" oninput="_libRender()"
+        style="flex:1;min-width:120px;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:0.8rem;color:var(--text);outline:none;">
+      <select id="lib-author" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-format" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-tag" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-sort" onchange="_libRender()" class="lib-facet">
+        <option value="title">Sort: Title</option>
+        <option value="author">Sort: Author</option>
+        <option value="date">Sort: Newest</option>
+        <option value="rating">Sort: Rating</option>
+        <option value="size">Sort: Size</option>
+      </select>
+      <span id="lib-count" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;"></span>
+    </div>
+    <div id="lib-grid" style="flex:1;overflow-y:auto;padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;align-content:start;"></div>
+  </div>
 </div>
 
 <div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
@@ -17986,6 +19866,21 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn primary" onclick="_crmSubmitLog()">Save</button>
     </div>
   </div>
+</div>
+
+<!-- Cost / observability view -->
+<div id="cost-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:14px 16px 60px;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    <span style="font-size:1.05rem;font-weight:700;">Cost &amp; tokens</span>
+    <select id="cost-days" onchange="_costLoad()" class="lib-facet">
+      <option value="1">Today</option>
+      <option value="7" selected>7 days</option>
+      <option value="30">30 days</option>
+      <option value="90">90 days</option>
+    </select>
+    <span id="cost-updated" style="font-size:0.7rem;color:var(--dim);"></span>
+  </div>
+  <div id="cost-body"><div style="color:var(--dim);padding:24px;">Loading…</div></div>
 </div>
 
 <!-- Metrics view -->
@@ -18856,6 +20751,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
+    <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
+    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task">Cost</button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Board<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
     <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
@@ -18866,6 +20763,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="peek-dir-bar">
     <span style="flex-shrink:0;opacity:0.6;">&#x1F4C1;</span>
     <span id="peek-dir-text" onclick="peekSessionDir&&openExplore(peekSessionDir,peekSession)" title="Browse directory" style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--dim);text-underline-offset:2px;"></span>
+    <span id="peek-dir-branch" class="peek-dir-branch" style="display:none;"></span>
     <span class="card-dir-edit" onclick="peekSessionDir&&_copyFileDeeplink(peekSessionDir)" title="Copy link to this directory" style="opacity:0.6;font-size:0.85rem;">&#x1F517;</span>
     <span class="card-dir-edit" id="peek-dir-edit" onclick="editField(peekSession,'dir',peekSessionDir)" title="Change directory">&#x270E;</span>
   </div>
@@ -18895,6 +20793,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-status" class="overlay-status" onclick="_peekGeoDebug()" title="Tap for layout debug"></div>
     <div class="peek-cmd-bar">
       <button class="peek-cmd-toggle" id="peek-cmd-toggle" onclick="togglePeekCmd()">&#x25BC; Send command</button>
+      <button id="peek-pending-pill" onclick="setPeekTab('messages')" style="display:none;margin:0 auto 4px;background:rgba(210,153,34,0.14);border:1px solid rgba(210,153,34,0.4);color:#d29922;font-size:0.72rem;font-weight:600;padding:3px 12px;border-radius:12px;cursor:pointer;" title="Messages queued locally — will send when the server is reachable. Tap to view.">&#x23F3; queued</button>
       <div class="peek-cmd-row open" id="peek-cmd-row" style="flex-wrap:wrap;">
         <div class="voice-status" id="voice-status"><span id="voice-status-text"></span></div>
         <div class="chips" style="width:100%;margin:0;" id="peek-chips"></div>
@@ -18980,11 +20879,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-steering-scroll" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
       <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;flex:none;"></div>
       <div id="peek-steering-history-wrap" style="margin-top:14px;display:none;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <div onclick="_steerHistToggle()" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;user-select:none;" title="Show/hide sent history">
+          <span id="peek-steering-history-caret" style="font-size:0.7rem;color:var(--dim);display:inline-block;width:10px;">&#9656;</span>
           <span style="font-size:0.8rem;font-weight:600;">Sent history</span>
           <span id="peek-steering-history-count" style="font-size:0.72rem;color:var(--dim);flex:1;"></span>
         </div>
-        <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;flex:none;"></div>
+        <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;flex:none;display:none;"></div>
       </div>
     </div>
   </div>
@@ -19000,6 +20900,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn primary" style="font-size:0.8rem;padding:5px 12px;" onclick="openBoardAdd('backlog')">+ New issue</button>
     </div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
+  </div>
+
+  <div id="peek-messages-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
+      <input type="search" id="peek-messages-search" placeholder="Search messages sent to this session&hellip;" oninput="_peekMessagesRender()"
+        style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
+      <span id="peek-messages-count" style="font-size:0.72rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
+    </div>
+    <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
+  </div>
+  <div id="peek-cost-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
+      <select id="peek-cost-days" onchange="_peekCostLoad()" class="lib-facet">
+        <option value="1">Today</option>
+        <option value="7" selected>7 days</option>
+        <option value="30">30 days</option>
+        <option value="90">90 days</option>
+      </select>
+      <span style="font-size:0.72rem;color:var(--dim);align-self:center;">this session's token cost, by task</span>
+    </div>
+    <div id="peek-cost-body" style="flex:1;overflow-y:auto;padding:12px;"></div>
   </div>
   <!-- Memory editor panel -->
   <div id="peek-memory-panel" class="peek-memory-editor">
@@ -19322,6 +21243,42 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<!-- Filters modal (session list) -->
+<div id="filters-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)closeFiltersModal()">
+  <div style="display:flex;flex-direction:column;height:100%;max-width:520px;margin:0 auto;width:100%;">
+    <div class="overlay-header">
+      <h2>&#x2263; Filters</h2>
+      <button class="btn" onclick="closeFiltersModal()">&#x2715;</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+      <div class="filter-section">
+        <div class="filter-section-title">Search</div>
+        <label class="filter-toggle-row">
+          <input type="checkbox" id="filter-logsearch" onchange="setLogSearchMode(this.checked)">
+          <span>Search inside session logs</span>
+        </label>
+        <div class="filter-hint">When on, the search box on the sessions page matches text inside each session's output, not just its name.</div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Status</div>
+        <div id="filter-statuses" class="filter-chip-row"></div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Provider</div>
+        <div id="filter-providers" class="filter-chip-row"></div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Model type</div>
+        <div id="filter-models" class="filter-chip-row"></div>
+      </div>
+    </div>
+    <div class="filter-modal-actions">
+      <button class="btn" onclick="clearAllFilters()">Clear all</button>
+      <button class="btn primary" style="flex:1;" onclick="closeFiltersModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Saved messages modal (same overlay style as message history) -->
 <div id="saved-messages-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)_closeSavedMessages()">
   <div style="display:flex;flex-direction:column;height:100%;max-width:680px;margin:0 auto;width:100%;">
@@ -19508,6 +21465,20 @@ async function toggleAutoCompact(checked) {
     body: JSON.stringify({ key: 'auto_compact_enabled', value: checked ? '1' : '0' })
   });
 }
+async function toggleAutoResume(checked) {
+  await fetch('/api/prefs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'auto_resume_summary', value: checked ? '1' : '0' })
+  });
+}
+(async function initAutoResume() {
+  try {
+    const r = await fetch('/api/prefs?key=auto_resume_summary');
+    const d = await r.json();
+    const cb = document.getElementById('auto-resume-checkbox');
+    if (cb) cb.checked = d.value !== '0';   // default ON
+  } catch(e) {}
+})();
 (async function initAutoCompact() {
   try {
     const r = await fetch('/api/prefs?key=auto_compact_enabled');
@@ -19534,31 +21505,97 @@ let logSearchMode = false;
 let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
+// Filters modal facets (session list). Multi-select within a facet.
+let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterStatuses = new Set();    // 'working' | 'waiting' | 'idle' | 'stopped'
+// Stable status key for filtering: card WORKING = 'active' internally.
+function _sessStatusKey(s) {
+  if (!s.running) return 'stopped';
+  if (s.status === 'active') return 'working';
+  if (s.status === 'waiting') return 'waiting';
+  return 'idle';
+}
+let filterModels = new Set();      // coarse model class: opus/sonnet/haiku/gpt/gemini/...
+// Coarse model class for a model string, so "claude-opus-4-8" and a future
+// "claude-opus-5" both filter as "opus".
+function _modelClass(m) {
+  m = (m || '').toLowerCase();
+  if (!m) return 'other';
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  if (m.includes('fable')) return 'fable';
+  if (m.includes('gpt')) return 'gpt';
+  if (m.includes('gemini')) return 'gemini';
+  if (/^o[0-9]/.test(m)) return 'o-series';
+  return m.split(/[-\s]/)[0] || 'other';
+}
 let peekSession = null;
+// Last session whose peek was opened — remembered across closePeek so the
+// Messages view can pre-scope its filter to "the session you came from".
+let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
-let _lastPeekRaw = '';   // raw output from last peek — skip re-render if unchanged
-let _peekEtag = null;    // ETag of last peek response — enables conditional 304 fetches
+let _lastPeekRaw = '';   // raw LIVE frame from last peek — skip re-render if unchanged
+// Transcript history is fetched once per open (the full payload) and kept here, so
+// each poll re-fetches/re-renders only the ~7KB live frame instead of ~138KB.
+let _peekHistoryRaw = '';
+let _peekHistoryHTML = '';
+let _peekEtag = null;    // ETag of last FULL peek response — enables conditional 304 fetches
+let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a cheap 304
 // Adaptive peek polling: fast while the session generates, back off when idle
 // (each idle poll is a cheap 304 anyway), and pause entirely when the tab is hidden.
+let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
   const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
   const st = s && s.status;
-  if (st === 'active') return 1800;
-  if (st === 'waiting') return 2500;
-  return 7000;
+  // CHANGE-DRIVEN cadence. A live=1 poll is ~650B (trimmed frame) / ~33ms server
+  // / a 304 when unchanged, so polling fast is cheap. While the terminal is
+  // actively producing output we poll near-instant; as it goes quiet we relax.
+  // This is deliberately independent of the SSE-fed status — that status lags
+  // ~2s behind a turn starting, so keying the cadence off *observed output
+  // change* makes streaming feel real-time without waiting for the status flip.
+  const sinceChange = performance.now() - _peekLastChangeMs;
+  if (sinceChange < 2500) return 350;    // actively streaming → near-instant updates
+  if (sinceChange < 6000) return 650;    // just settled → still brisk
+  if (st === 'active') return 900;       // model working, no visible output yet
+  if (st === 'waiting') return 1500;
+  return 3000;   // idle ticks are 304s — near-free
+}
+// After a send/keystroke, treat the session as "just changed" and re-arm the poll
+// loop immediately so the streaming RESPONSE is picked up at the fast cadence —
+// without waiting for the ~2s-stale SSE status to flip to 'active'.
+function _peekKickFast() {
+  _peekLastChangeMs = performance.now();
+  if (peekSession && !document.hidden) _schedulePeekPoll();
 }
 function _stopPeekPoll() { if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
+let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
+let _peekPrevStatus = '';   // peeked session's status on the previous poll tick
+const _PEEK_HISTORY_REFRESH_MS = 30000;  // fallback full-refresh cadence while open
 function _schedulePeekPoll() {
   _stopPeekPoll();
   if (!peekSession || document.hidden) return;
   peekTimer = setTimeout(async () => {
     peekTimer = null;
-    try { await refreshPeek(); } catch(e) {}
+    try {
+      // History is fetched once on open and would otherwise go stale: on a
+      // long-open peek, output scrolling out of the live frame fell into a gap
+      // between frozen history and the live view. Refresh the FULL payload when
+      // the turn just ended (active→idle: the transcript grew) or every 30s as
+      // a fallback; every other tick is the ~650B/304 live poll.
+      const _s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
+      const _st = (_s && _s.status) || '';
+      const turnEnded = _peekPrevStatus === 'active' && _st !== 'active';
+      _peekPrevStatus = _st;
+      const needFull = turnEnded || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS);
+      await refreshPeek(!needFull);
+      _peekUpdateBranch();   // keep the dir-bar branch fresh (also catches cold-load gitInfo)
+    } catch(e) {}
     _schedulePeekPoll();
   }, _peekPollInterval());
 }
@@ -19620,6 +21657,9 @@ let offlineQueue = JSON.parse(localStorage.getItem('amux_offline_queue') || '[]'
 function saveQueue() {
   localStorage.setItem('amux_offline_queue', JSON.stringify(offlineQueue));
   if (typeof _idb !== 'undefined') _idb.set('offline_queue', offlineQueue);
+  // Keep pending-message visibility live (Messages tab badge + composer pill)
+  try { if (typeof _peekMessagesBadge === 'function') _peekMessagesBadge(); } catch(e) {}
+  try { if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); } catch(e) {}
 }
 
 // ═══════ CONNECTION HISTORY ═══════
@@ -20512,6 +22552,10 @@ async function runSyncBanner() {
   updateConnectionStatus();
   fetchSessions();
   fetchBoard();
+  // Pending messages just flushed — clear the amber pending UI and re-pull the
+  // server-side history so the Messages tab flips ⏳pending → delivered.
+  try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
+  if (doneCount) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
   // Auto-dismiss after 4s if all succeeded
   if (!failCount) setTimeout(() => banner.classList.remove('active'), 4000);
 }
@@ -21007,6 +23051,15 @@ async function fetchSessions() {
       try { localStorage.setItem('amux_sessions_cache', j); }
       catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
       render();
+      // Board live-emphasis tracks session activity: re-render the board when the
+      // ACTIVE set changes (signature-guarded so this is rare; never mid-drag).
+      try {
+        const _liveSig = data.filter(s => s.status === 'active').map(s => s.name).sort().join(',');
+        if (window._boardLiveSig !== _liveSig) {
+          window._boardLiveSig = _liveSig;
+          if (activeView === 'board' && !document.body.classList.contains('board-dragging')) renderBoard();
+        }
+      } catch(e) {}
       if (!window._peekEmbed) _fetchGitBranches(sessions);
     }
   } catch(e) {
@@ -21139,6 +23192,8 @@ function render() {
   const focusedId = _active && _active.id ? _active.id : null;
   updateActiveCount();
   updateRateLimitPill();
+  // Active-filter preview chips (provider/model/log-search) + Filters button badge
+  renderActiveFilters();
   // Build tag filter bar
   const tagEl = document.getElementById('tag-filters');
   const allTags = [...new Set(sessions.filter(s => !s.archived).flatMap(s => s.tags || []))].sort();
@@ -21184,14 +23239,18 @@ function render() {
   let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.archived);
   // Filter by search query
   const q = searchQuery.toLowerCase().trim();
-  const filtered = q ? list.filter(s =>
+  let filtered = q ? list.filter(s =>
     s.name.toLowerCase().includes(q) ||
     (s.dir || '').toLowerCase().includes(q) ||
     (s.desc || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q)) ||
     (logSearchMode && s.name in _logMatches)
   ) : list;
-  if ((q || activeTag) && !filtered.length) {
+  // Filters modal: provider + model-type facets (multi-select, AND across facets)
+  if (filterProviders.size) filtered = filtered.filter(s => filterProviders.has(sessionProvider(s)));
+  if (filterModels.size) filtered = filtered.filter(s => filterModels.has(_modelClass(sessionConfiguredModel(s))));
+  if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
+  if ((q || activeTag || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching sessions.</div>';
     _renderArchivedSection();
     _restoreCardFocus(focusedId);
@@ -21240,10 +23299,8 @@ function render() {
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();clearScrollback('${s.name}')"><span class="mi">&#x239A;</span> Clear scrollback</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();duplicateSession('${s.name}')"><span class="mi">&#x2398;</span> Duplicate</div>
-          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();cloneSession('${s.name}')"><span class="mi">&#x1F504;</span> Clone &amp; continue</div>` : ''}
           ${!s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}')"><span class="mi">&#x1F195;</span> New conversation</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();shareSession('${s.name}')"><span class="mi">&#x1F517;</span> Share link</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();copyMoshCmd('${s.name}')"><span class="mi">&#x1F4CB;</span> Copy mosh command</div>
           <div class="card-menu-item" onclick="event.stopPropagation();archiveSession('${s.name}')"><span class="mi">&#x1F4E6;</span> Archive</div>
           <div class="card-menu-sep"></div>
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
@@ -21442,9 +23499,29 @@ function esc(s) {
 function escJs(s) {
   return esc(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
+// How many viewport px one style px maps to under the root CSS zoom — MEASURED
+// with a probe, not derived from getComputedStyle(zoom). Engines disagree on
+// whether getBoundingClientRect returns zoom-scaled coordinates (Chromium
+// standardized zoom does; other engines/versions don't), so trusting the
+// computed value misplaced every _cssRect consumer at zoom≠100%: the walkthrough
+// spotlight floated over empty space and the card ⋯ menu detached (2026-07-16).
+// The probe is self-consistent in BOTH engine families by construction.
+let _zProbe = { z: 1, t: 0 };
+function _uiZoomFactor() {
+  if (performance.now() - _zProbe.t < 2000) return _zProbe.z;
+  try {
+    const p = document.createElement('div');
+    p.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:1px;visibility:hidden;pointer-events:none;';
+    document.body.appendChild(p);
+    const w = p.getBoundingClientRect().width || 100;
+    p.remove();
+    _zProbe = { z: w / 100 || 1, t: performance.now() };
+  } catch (e) { _zProbe = { z: 1, t: performance.now() }; }
+  return _zProbe.z;
+}
 function _cssRect(el) {
   const r = el.getBoundingClientRect();
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();
   return { top: r.top / z, right: r.right / z, bottom: r.bottom / z, left: r.left / z, width: r.width / z, height: r.height / z };
 }
 
@@ -21535,7 +23612,26 @@ async function _fetchGitBranches(sess) {
   if (JSON.stringify(newInfo) !== JSON.stringify(gitInfo)) {
     gitInfo = newInfo;
     render();
+    if (peekSession) _peekUpdateBranch();   // keep the peek dir-bar branch fresh
   }
+}
+
+// Show the working directory's git branch to the right of the peek dir bar —
+// the most relevant thing to a repo path. Colored/clickable like the card badge.
+function _peekUpdateBranch() {
+  const el = document.getElementById('peek-dir-branch');
+  if (!el) return;
+  const gi = (typeof gitInfo !== 'undefined') ? gitInfo[peekSession] : null;
+  const sess = (typeof sessions !== 'undefined') ? sessions.find(x => x.name === peekSession) : null;
+  let b = (sess && sess.branch && sess.branch !== 'none') ? sess.branch : (gi && gi.branch) || '';
+  if (!peekSessionDir || !b) { el.style.display = 'none'; el.textContent = ''; return; }
+  const isMain = _isBranchMain(b), conflict = gi && gi._conflict;
+  el.className = 'peek-dir-branch ' + (conflict ? 'conflict' : isMain ? 'on-main' : 'on-branch');
+  el.textContent = '\u2387 ' + b + (conflict ? ' \u26A0' : '');
+  el.title = conflict ? 'Another session shares this branch — conflict risk'
+           : isMain ? ('On ' + b + ' — tap to make a session branch') : 'Session branch';
+  el.onclick = (e) => { e.stopPropagation(); showBranchPopover(peekSession, e); };
+  el.style.display = '';
 }
 
 function showBranchPopover(name, e) {
@@ -21668,7 +23764,7 @@ function toggleMenu(name) {
   if (!btn) { el.classList.add('open'); openMenu = name; return; }
   const r = _cssRect(btn);
   const vw = document.documentElement.clientWidth || window.innerWidth;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vh = window.innerHeight / z;
   // Portal to body — escapes overflow:hidden on .card (iOS Safari clips fixed children)
   if (el.parentElement !== document.body) {
@@ -21744,6 +23840,7 @@ const ALL_TABS = [
   { id: 'sql',           label: 'Database' },
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
+  { id: 'cost',          label: 'Cost' },
   { id: 'torrents',      label: 'Torrents' },
   { id: 'terminal',      label: 'Terminal' },
 ];
@@ -21993,7 +24090,7 @@ function _embedFitZoom() {
 const _EMBED_VIEW_EL = {
   sessions:'session-view', board:'board-view', calendar:'calendar-view',
   scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
-  notes:'notes-view', crm:'crm-view', map:'map-view', metrics:'metrics-view',
+  notes:'notes-view', crm:'crm-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view',
   graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view'
 };
@@ -22728,7 +24825,8 @@ function showSendingIndicator() {
       peekWrap.appendChild(ind);
     }
     ind.style.display = '';
-    // Rapid refresh burst to detect output change quickly
+    // Rapid refresh burst to detect output change quickly (early paint at 150ms)
+    setTimeout(refreshPeek, 150);
     setTimeout(refreshPeek, 500);
     setTimeout(refreshPeek, 1500);
   }
@@ -22741,6 +24839,28 @@ function clearSendingIndicator() {
   _sendingSnapshot = null;
   clearTimeout(_sendingTimer);
   const ind = document.getElementById('sending-ind');
+  if (ind) ind.style.display = 'none';
+}
+
+// "Loading latest…" cue while a freshly-opened peek is fetching the current
+// terminal — so a delay (esp. on cellular) reads as "working", not "stuck".
+// Shown on open; hidden the moment refreshPeek gets a response (200 painted, or
+// 304 = already latest). Lives in the same top-pill spot as the send cue.
+function showPeekLoading(text) {
+  const peekWrap = document.querySelector('#peek-body')?.parentElement;
+  if (!peekWrap || !document.getElementById('peek-overlay')?.classList.contains('active')) return;
+  let ind = document.getElementById('peek-loading-ind');
+  if (!ind) {
+    ind = document.createElement('div');
+    ind.id = 'peek-loading-ind';
+    ind.className = 'peek-loading-pill';
+    peekWrap.appendChild(ind);
+  }
+  ind.innerHTML = '<span class="peek-spin"></span>' + (text || 'Loading latest…');
+  ind.style.display = '';
+}
+function hidePeekLoading() {
+  const ind = document.getElementById('peek-loading-ind');
   if (ind) ind.style.display = 'none';
 }
 
@@ -22759,7 +24879,7 @@ async function doSend(name, text) {
   // One msg_id per logical send, reused verbatim by the offline-queue replay:
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
-  const sendBody = JSON.stringify({text: payload, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
+  const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
   // Use direct fetch (not apiCall) so we can handle 409 specifically
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -22894,6 +25014,8 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-terminal').classList.toggle('active', tab === 'terminal');
   document.getElementById('peek-tab-transcript').classList.toggle('active', tab === 'transcript');
   document.getElementById('peek-tab-steering').classList.toggle('active', tab === 'steering');
+  document.getElementById('peek-tab-messages').classList.toggle('active', tab === 'messages');
+  document.getElementById('peek-tab-cost').classList.toggle('active', tab === 'cost');
   document.getElementById('peek-tab-issues').classList.toggle('active', tab === 'issues');
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
@@ -22910,6 +25032,12 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  const messages = document.getElementById('peek-messages-panel');
+  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
+  else { messages.classList.remove('active'); }
+  const costPanel = document.getElementById('peek-cost-panel');
+  if (tab === 'cost') { costPanel.classList.add('active'); _peekCostLoad(); }
+  else { costPanel.classList.remove('active'); }
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
   else { issues.classList.remove('active'); }
@@ -23013,7 +25141,17 @@ async function _steeringLoadHistory() {
         <div style="font-size:0.72rem;color:var(--dim);margin-top:4px;">Sent ${timeAgo(m.delivered_at)}</div>
       </div>
     </div>`).join('');
+    _steerHistApply();   // keep the accordion state (collapsed by default)
   } catch(e) { /* keep whatever was shown */ }
+}
+// Sent-history accordion — collapsed by default; state persists while the tab is open.
+let _steerHistOpen = false;
+function _steerHistToggle() { _steerHistOpen = !_steerHistOpen; _steerHistApply(); }
+function _steerHistApply() {
+  const list = document.getElementById('peek-steering-history-list');
+  const caret = document.getElementById('peek-steering-history-caret');
+  if (list) list.style.display = _steerHistOpen ? '' : 'none';
+  if (caret) caret.innerHTML = _steerHistOpen ? '▾' : '▸';   // ▾ / ▸
 }
 
 function _steeringUpdateBadge() {
@@ -23031,13 +25169,22 @@ async function _steeringSendNow(msgId) {
   const msg = ((sess && sess.steering) || []).find(m => m.id === msgId);
   if (!msg) return;
   try {
+    // Deliver FIRST with deliver_now (forces a direct send instead of the
+    // defer-at-a-selector path that used to silently re-queue it), and only
+    // remove it from the queue once it actually lands — so a failed send never
+    // loses the message.
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: msg.text, deliver_now: true})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok || String(d.message || '').startsWith('queued')) {
+      showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
+      return;
+    }
     await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
-    });
-    await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: msg.text})
     });
     await fetchSessions();
     _steeringRender();
@@ -24211,8 +26358,23 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.114';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.169';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
+// Paint a cached peek entry (offline / instant-open). Returns false when the
+// cache has no real content — the caller then keeps 'Loading…'/reconnecting
+// instead of painting a silent EMPTY terminal.
+function _paintCachedPeek(cached) {
+  if (!cached || (!cached.output && !cached.history)) return false;
+  _peekHistoryRaw = cached.history || '';
+  _peekHistoryHTML = cached.history ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.history)))) : '';
+  _lastLiveHTML = cached.output ? _markAgentRows(wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.output))))) : '';
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch();
+  const ago = Math.floor((Date.now() - (cached.time || Date.now())) / 60000);
+  const st = document.getElementById('peek-status');
+  if (st) st.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
+  return true;
+}
 function openPeek(name, opts) {
   _stopPeekPoll();
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
@@ -24220,6 +26382,7 @@ function openPeek(name, opts) {
   if (_tb) { _tb.innerHTML = ''; _tb._lastHTML = null; }
   clearPeekFiles();  // clear any stale attachments from previous peek
   peekSession = name;
+  _lastPeekedSession = name;   // remembered for the Messages view's default filter
   _peekScrollLocked = false;
   // Reset the Plan strip so it reloads for the new session (no stale flash).
   _peekPlanLast = 0;
@@ -24237,8 +26400,15 @@ function openPeek(name, opts) {
   document.getElementById('peek-git-panel').classList.remove('active');
   document.getElementById('peek-commits-panel').classList.remove('active');
   document.getElementById('peek-schedules-panel').classList.remove('active');
+  document.getElementById('peek-messages-panel').classList.remove('active');
+  document.getElementById('peek-cost-panel').classList.remove('active');
+  _peekMessagesBadge();
   // Update dir bar
   document.getElementById('peek-dir-text').textContent = peekSessionDir || '(unknown)';
+  _peekUpdateBranch();
+  // If we don't yet know this session's branch (cold load / new session), fetch
+  // it now so the badge appears promptly instead of after the next 20s cycle.
+  if (peekSessionDir && !(gitInfo[peekSession] || {}).branch) { _gitBranchesLast = 0; _fetchGitBranches(sessions); }
   const prefillQuery = opts && opts.query ? opts.query : '';
   peekSearchQuery = prefillQuery;
   peekSearchIndex = 0;
@@ -24246,7 +26416,13 @@ function openPeek(name, opts) {
   _peekMsgIndex = -1;
   lastPeekHTML = '';
   _lastPeekRaw = '';
-  _peekEtag = null;   // new session → drop the old session's ETag
+  _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
+  _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
+  _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
+  // CRITICAL: also drop the previous session's rendered live frame — the region
+  // painter renders _lastLiveHTML directly, so a stale value briefly showed the
+  // PREVIOUS session's terminal when opening a different one (2026-07-16).
+  _lastLiveHTML = '';
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
@@ -24268,7 +26444,7 @@ function openPeek(name, opts) {
   peekTaskRow.style.display = _peekTask ? 'flex' : 'none';
   if (_peekTask) document.getElementById('peek-task-label').textContent = _peekTask;
   updatePeekStatus();
-  document.getElementById('peek-body').innerHTML = '<span style="color:var(--dim)">Loading...</span>';
+  document.getElementById('peek-body').innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading latest…</span></div>';
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
   ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count'].forEach(id => {
     const el = document.getElementById(id);
@@ -24279,6 +26455,7 @@ function openPeek(name, opts) {
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
   peekOv.classList.add('active');
+  showPeekLoading('Loading latest…');   // now the overlay is active — the "loading latest" cue can attach
   // Freeze the page behind the overlay: otherwise iOS scrolls the session list
   // to reveal the focused input, sliding content around under the fixed overlay
   // and feeding bogus offsets into the viewport math.
@@ -24297,19 +26474,34 @@ function openPeek(name, opts) {
   _syncPeekOverlayToVisualViewport();
   _vvKick();   // keyboard may already be up or mid-animation when peek opens
   setTimeout(_peekGeoBeacon, 1500);   // mobile geometry self-report (once per load)
-  // Load cached peek instantly while fetching fresh data
+  // The cached frame is a FALLBACK for slow/offline opens — NOT something to
+  // flash before the live frame. IndexedDB resolves (~10-30ms) before the live
+  // fetch (~33ms wifi, more on cellular), so painting it eagerly showed a stale
+  // "Cached Xm ago" view for a beat on every open. Give the live fetch a short
+  // head start: only paint cached if the live frame hasn't landed within ~150ms
+  // (slow network / offline). On a normal connection live wins and you open
+  // straight onto the LATEST. (lastPeekHTML is '' until a real frame paints.)
   _idb.get('peek_' + name).then(cached => {
-    if (peekSession !== name) return;  // session changed before cache resolved
-    if (cached && (!lastPeekHTML || lastPeekHTML.includes('Loading...'))) {
-      lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
-      applyPeekSearch();
-      const ago = Math.floor((Date.now() - cached.time) / 60000);
-      document.getElementById('peek-status').textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
-      const body = document.getElementById('peek-body');
-      body.scrollTop = body.scrollHeight;
-    }
+    if (peekSession !== name || !cached) return;
+    setTimeout(() => {
+      if (peekSession !== name) return;
+      if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {   // live still hasn't painted
+        if (_paintCachedPeek(cached)) {
+          const body = document.getElementById('peek-body');
+          body.scrollTop = body.scrollHeight;
+        }
+      }
+    }, 150);
   });
-  refreshPeek();
+  // Paint the CURRENT terminal instantly from the few-KB live frame, THEN pull the
+  // full payload (~138KB, mostly transcript history) to fill in scrollback. Clicking
+  // a session now shows the latest immediately instead of waiting on ~120KB of
+  // history — and 4 ansiToHtml passes over it — before anything appears.
+  _peekLastChangeMs = performance.now();   // snappy first couple seconds after opening a peek
+  // First fetch: live frame with notrim → paints the current terminal (the
+  // LATEST) instantly, without waiting on the ~120KB full-history render. The
+  // full payload follows and fills in scrollback above.
+  refreshPeek(true, true).finally(() => refreshPeek());
   _schedulePeekPoll();
   setTimeout(_peekFitPane, 350);   // fit the pane to this viewer's width
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
@@ -24357,7 +26549,7 @@ async function agentNav(dir, index) {
     const d = await r.json();
     if (d.ok) {
       showToast('Viewing: ' + (d.viewing || 'switched'));
-      _peekEtag = null; _lastPeekRaw = null;   // force a fresh render
+      _peekEtag = null; _peekLiveEtag = null; _lastPeekRaw = null; _peekHistoryRaw = '';   // force a fresh render (history too)
       setTimeout(refreshPeek, 200);
     } else {
       showToast(d.message || 'Could not switch agent view');
@@ -24400,6 +26592,7 @@ function closePeek() {
   peekSession = null;
   peekSearchQuery = '';
   lastPeekHTML = '';
+  hidePeekLoading();   // don't leak the "Loading latest…" cue into the next open
   clearPeekFiles();
   // Close split pane if open
   const splitWrap = document.getElementById('peek-split-wrap');
@@ -24742,8 +26935,11 @@ function _geoRuler() {
     const t = e.changedTouches && e.changedTouches[0];
     if (!t || t.clientY > 120) return;   // only the top strip
     const now = performance.now();
-    taps = taps.filter(function(x) { return now - x < 1400; });
-    taps.push(now);
+    // Require each tap to land near the SAME spot, not just anywhere in the top
+    // strip — otherwise ordinary taps on the title/badges/task line within 1.4s
+    // of each other accidentally rack up "4 taps" and pop this debug overlay.
+    taps = taps.filter(function(x) { return now - x.time < 1400 && Math.abs(x.x - t.clientX) < 40 && Math.abs(x.y - t.clientY) < 40; });
+    taps.push({ time: now, x: t.clientX, y: t.clientY });
     if (taps.length >= 4) { taps = []; _geoRuler(); }
   }, { passive: true });
 })();
@@ -24866,7 +27062,9 @@ function _vvTick() {
   }
 })();
 
-// Swipe right to close peek (but never when touching the terminal body — preserve text selection)
+// Swipe right to close peek (but never when touching the terminal body — preserve text selection —
+// or either horizontally-scrolling row: the tab bar and the quick-command chip row. Without this,
+// dragging right to reveal earlier tabs/chips also drags the whole overlay closed underneath it.)
 (function() {
   const el = document.getElementById('peek-overlay');
   const body = document.getElementById('peek-body');
@@ -25259,7 +27457,7 @@ async function _peekFitPane() {
     });
     const d = await r.json();
     if (d.resized && !/already/.test(d.message || '')) {
-      _peekEtag = null; _lastPeekRaw = null;   // repaint at the new width
+      _peekEtag = null; _peekLiveEtag = null; _lastPeekRaw = null; _peekHistoryRaw = '';   // repaint at the new width (history too)
       setTimeout(refreshPeek, 450);            // give Claude a beat to reflow
     }
   } catch (e) {}
@@ -25316,7 +27514,7 @@ async function _peekLoadEarlier() {
     // Paint immediately (refreshPeek skips DOM writes while scrolled up) and
     // anchor at the bottom of the just-loaded chunk so reading continues
     // where the user was.
-    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
+    lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
     applyPeekSearch(true, false);
     const body = document.getElementById('peek-body');
     const first = body && body.querySelector('.pe-chunk');
@@ -25342,7 +27540,7 @@ function _fitRules(html) {
   }).join('\n');
 }
 
-async function refreshPeek() {
+async function refreshPeek(liveOnly, bypassTrim) {
   const name = peekSession;
   if (!name) return;
   // Refresh the Plan strip (throttled — task files change slowly).
@@ -25353,25 +27551,44 @@ async function refreshPeek() {
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
   try {
-    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300',
-      _peekEtag ? { headers: { 'If-None-Match': _peekEtag } } : undefined);
+    // liveOnly (open path): a few-KB live frame — the CURRENT terminal — so the
+    // peek paints the latest instantly on click. The full payload (~138KB, mostly
+    // transcript history) follows and fills in scrollback. Only the full response
+    // carries the ETag the poll conditions on.
+    const _et = liveOnly ? _peekLiveEtag : _peekEtag;
+    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : '') + (bypassTrim ? '&notrim=1' : ''),
+      _et ? { headers: { 'If-None-Match': _et } } : undefined);
     if (peekSession !== name) return;
+    hidePeekLoading();   // a response arrived (200 painted below, or 304 = already latest) → drop the "Loading latest…" cue
+    if (!liveOnly) _peekLastFullMs = performance.now();   // history is fresh (200 or 304)
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
-    _peekEtag = r.headers.get('ETag') || _peekEtag;
+    if (liveOnly) _peekLiveEtag = r.headers.get('ETag') || _peekLiveEtag;
+    else _peekEtag = r.headers.get('ETag') || _peekEtag;
     const data = await r.json();
-    const output = data.output || '(no output)';
-    // Skip re-render when output is identical — saves ansiToHtml work on every poll tick.
-    // This also applies with an active search: the highlights are already in the DOM,
-    // so re-running applyPeekSearch would needlessly scroll the view back to the current
-    // match every tick (the "force-scroll back to result" bug on idle sessions).
-    if (output === _lastPeekRaw && lastPeekHTML) {
+    // Alt-screen peeks return history + live SEPARATELY so a poll can re-render just
+    // the live frame. A live=1 poll carries no history (keep what we already have);
+    // non-alt/legacy shapes send one `output` blob — treat that as the live part.
+    const output = (data.live != null) ? data.live : (data.output || '(no output)');
+    const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
+    // Skip re-render when nothing we'd paint changed — saves ansiToHtml work on every
+    // poll tick. This also applies with an active search: the highlights are already in
+    // the DOM, so re-running applyPeekSearch would needlessly scroll the view back to
+    // the current match every tick (the "force-scroll back to result" bug on idle sessions).
+    if (output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     _lastPeekRaw = output;
+    _peekLastChangeMs = performance.now();   // real content change → drives fast adaptive polling
+    let histChanged = false;
+    if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
+      _peekHistoryRaw = histRaw;
+      _peekHistoryHTML = histRaw ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(histRaw)))) : '';
+      histChanged = true;
+    }
     // Subagent switcher visibility: the agents panel always includes a
     // "⏺ main"/"◯ main" row in the bottom lines of the pane. Checking for
     // that exact row (tail only, ANSI-stripped) avoids false positives from
@@ -25399,7 +27616,7 @@ async function refreshPeek() {
     // "load earlier output" bar (or the loaded log tail) above the live view
     // so scrollback exists in peek the way it does in a real terminal.
     _lastLiveHTML = _markAgentRows(newHTML);
-    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
+    lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
@@ -25412,7 +27629,9 @@ async function refreshPeek() {
       applyPeekSearch(true, false);
       body.scrollTop = savedTop;
     } else if (!_peekScrollLocked) {
-      applyPeekSearch(false);
+      const _liveEl = document.getElementById('pk-live');
+      if (!histChanged && _liveEl) _liveEl.innerHTML = _lastLiveHTML;   // live tick → swap the small region only
+      else applyPeekSearch(false);
     }
     if (!_peekScrollLocked && atBottom && !hasSearch) {
       body.scrollTop = body.scrollHeight;
@@ -25427,32 +27646,43 @@ async function refreshPeek() {
     }
     if (performance.now() > _peekGeoHold) statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     // Cache peek output for offline browsing
-    _idb.set('peek_' + peekSession, { output, time: Date.now() });
+    // Cache BOTH slices — since the live-split, `output` alone is just the tiny
+    // live frame (sometimes ''), which painted an EMPTY black peek from cache
+    // (social, 2026-07-16). Never write an entry with no content.
+    if (_peekHistoryRaw || _lastPeekRaw) _idb.set('peek_' + peekSession, { output: _lastPeekRaw, history: _peekHistoryRaw, time: Date.now() });
   } catch(e) {
     console.error('peek:', e);
+    hidePeekLoading();   // fetch failed — stop the "Loading latest…" cue (we fall back to cache / retry below)
     // Offline: load cached peek
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
       const cached = await _idb.get('peek_' + peekSession);
-      if (cached) {
-        lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
-        applyPeekSearch();
-        const ago = Math.floor((Date.now() - cached.time) / 60000);
-        statusEl.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
-      } else {
-        body.innerHTML = '<span style="color:var(--dim)">No cached output available</span>';
-        statusEl.textContent = 'Offline — no cache';
+      if (!_paintCachedPeek(cached)) {
+        // No usable cache and the fetch failed (typically the server mid-restart,
+        // ~11s). Say so — the poll keeps retrying and heals within seconds; a
+        // silent EMPTY terminal here read as a broken peek.
+        body.innerHTML = '<span style="color:var(--dim)">amux server unreachable — retrying…</span>';
+        statusEl.textContent = 'Reconnecting…';
       }
     }
   }
 }
 
+// Split DOM: history lives in a stable container and the live frame in its own,
+// so a live tick swaps ONLY #pk-live (a few hundred bytes) instead of
+// re-innerHTML'ing the whole ~100K-char scrollback every 900ms — that wholesale
+// reflow was the visible "janky" churn when watching an active session.
+function _paintPeekRegions(body) {
+  const hist = _peekEarlierHTML() + _peekHistoryHTML;
+  if (!hist && !_lastLiveHTML && lastPeekHTML) { body.innerHTML = lastPeekHTML; return; }  // IDB cached open paint
+  body.innerHTML = '<div id="pk-hist">' + hist + '</div><div id="pk-live">' + _lastLiveHTML + '</div>';
+}
 function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
   const countEl = document.getElementById('peek-search-count');
   if (!body) return;
   const q = peekSearchQuery.trim();
   if (!q) {
-    body.innerHTML = lastPeekHTML;
+    _paintPeekRegions(body);
     _peekMatches = [];
     peekSearchIndex = 0;
     if (countEl) countEl.textContent = '';
@@ -25725,6 +27955,7 @@ function _fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   if (['png','jpg','jpeg','gif','webp','bmp'].includes(ext)) return '🖼';
   if (ext === 'pdf') return '📄';
+  if (['epub','fb2','cbz','cbr','mobi','azw','azw3','azw4','kfx','djvu','lit','pdb'].includes(ext)) return '📚';
   if (['txt','md','log'].includes(ext)) return '📝';
   if (['csv','json'].includes(ext)) return '📊';
   return '📎';
@@ -25883,7 +28114,17 @@ function handlePeekPaste(e) {
   });
 })();
 
-let _sendMode = localStorage.getItem('amux_send_mode') || 'queue'; // 'queue' or 'send'
+let _sendMode = localStorage.getItem('amux_send_mode') || 'send'; // 'send' or 'queue'
+// Default flipped to SEND (2026-07-17): pressing Send should send — it types
+// straight into the terminal, and Claude Code itself queues mid-turn input and
+// submits at the turn end, so it's both immediate and safe. The steering Queue
+// (delivers only at a fully idle boundary) stays one tap away on the split
+// button. One-time migration: devices holding the old stored default get
+// flipped; an explicit choice made after this persists normally.
+if (!localStorage.getItem('amux_send_mode_v2')) {
+  _sendMode = 'send';
+  try { localStorage.setItem('amux_send_mode', 'send'); localStorage.setItem('amux_send_mode_v2', '1'); } catch(e) {}
+}
 function _toggleSendMode(e) {
   e?.stopPropagation();
   _sendMode = _sendMode === 'send' ? 'queue' : 'send';
@@ -25909,13 +28150,19 @@ async function sendPeekCmd() {
     _submitSuggestion(peekSession, true);
     return;
   }
-  // Queue mode: ALWAYS enqueue to the steering queue — no status check. The
-  // client's status is a snapshot, and racing it was exactly how queued
-  // messages fell through to direct sends. The server delivers at the next
-  // turn boundary; an idle session picks it up within seconds via the fast
-  // steering tick. (File attachments still send directly — steering carries
-  // text only.)
-  if (_sendMode === 'queue' && files.length === 0) {
+  // Queue mode: enqueue to the steering queue — no status check. The client's
+  // status is a snapshot, and racing it was exactly how queued messages fell
+  // through to direct sends. The server delivers at the next turn boundary; an
+  // idle session picks it up within seconds via the fast steering tick. (File
+  // attachments still send directly — steering carries text only.)
+  //
+  // EXCEPTION: when the session is at a selector (status 'waiting' = NEEDS
+  // INPUT), it is explicitly parked ON your answer. The steering queue only
+  // delivers at an IDLE boundary, never at a picker — so a queued reply would
+  // sit undelivered forever (you "keep sending commands and they don't go
+  // through"). Send those DIRECT so they land immediately.
+  const _atSelector = (sessions.find(s => s.name === peekSession) || {}).status === 'waiting';
+  if (_sendMode === 'queue' && files.length === 0 && !_atSelector) {
     cmdHistoryAdd(text, {type:'steering'});
     inp.value = '';
     inp.style.height = 'auto';
@@ -25958,17 +28205,29 @@ async function sendPeekCmd() {
   await doSend(peekSession, message);
   inp.style.borderColor = 'var(--green)';
   setTimeout(() => { inp.style.borderColor = ''; }, 400);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
+}
+// Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
+// Claude repaints a picker/selection in <50ms and the peek endpoint serves in
+// ~8ms, so a 90ms refresh + one catch-up feels instant. Coalesced so holding an
+// arrow key (or rapid selection) doesn't storm the endpoint.
+let _peekSoonA = null, _peekSoonB = null;
+function _refreshPeekSoon() {
+  if (!peekSession) return;
+  clearTimeout(_peekSoonA); clearTimeout(_peekSoonB);
+  _peekSoonA = setTimeout(() => refreshPeek(), 90);
+  _peekSoonB = setTimeout(() => refreshPeek(), 320);
+  _peekKickFast();   // run the poll loop fast so the streaming response is picked up promptly
 }
 async function peekQuickSend(text) {
   if (!peekSession) return;
   await doSend(peekSession, text);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
 }
 async function peekQuickKeys(keys) {
   if (!peekSession) return;
   await doKeys(peekSession, keys);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
 }
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
   showSendingIndicator();
@@ -25985,7 +28244,7 @@ async function _submitSuggestion(name, isPeek, fallbackKeys) {
       showToast('Sent suggestion');
     }
   } catch(e) {}
-  if (isPeek) setTimeout(refreshPeek, 500);
+  if (isPeek) _refreshPeekSoon();
   else if (_gridPanes && _gridPanes[name]) setTimeout(() => _updateGridPane(name), 500);
 }
 
@@ -26017,7 +28276,7 @@ async function steerSession(name, text) {
   const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     // msg_id makes retries idempotent — see doSend
-    body: JSON.stringify({ text, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()) })
+    body: JSON.stringify({ text, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()) })
   });
   if (r) {
     showToast('Steering queued — will deliver at next turn boundary');
@@ -26293,18 +28552,53 @@ function _atQuery(inp) {
   return { q: fragment.toLowerCase(), idx: atIdx };
 }
 
-// Populate dropdown with @session matches; returns true if @ mode active
+// Fuzzy subsequence match + score: chars of the query must appear in order in
+// the name. Rewards contiguous runs, start-of-name / word-boundary hits, and a
+// shorter name — so "mg"→mixpeek-general, "gen"→…-general beats …-orchestrator.
+// Returns {score, hits:Set of matched indices} or null if not a subsequence.
+function _fuzzyScore(q, name) {
+  if (!q) return { score: 0, hits: null };
+  const n = name.toLowerCase();
+  let qi = 0, score = 0, run = 0, hits = [];
+  for (let i = 0; i < n.length && qi < q.length; i++) {
+    if (n[i] === q[qi]) {
+      hits.push(i);
+      run += 1;
+      let pt = 1 + run;                         // contiguity bonus
+      if (i === 0) pt += 6;                      // start of name
+      else if (/[^a-z0-9]/.test(n[i - 1])) pt += 4; // after -/_/. (word start)
+      score += pt;
+      qi += 1;
+    } else { run = 0; }
+  }
+  if (qi < q.length) return null;               // not all query chars matched
+  if (n.startsWith(q)) score += 10;             // exact prefix is best
+  score -= name.length * 0.05;                  // gently prefer shorter names
+  return { score, hits: new Set(hits) };
+}
+
+// Populate dropdown with @session matches; returns true if @ mode active.
+// Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
   const at = _atQuery(inp);
   if (at === null) return false;
-  const matches = (sessions || []).filter(s => s.name.toLowerCase().startsWith(at.q)).slice(0, 8);
-  if (!matches.length) { el.classList.remove('open'); return true; }
-  el.innerHTML = matches.map((s, i) =>
-    `<div class="ac-item at-item" onmousedown="${pickCall}(${i})">` +
-    `<span class="at-at">@</span>${esc(s.name)}` +
-    `<span class="ac-desc">${s.running ? '● ' : '○ '}open channel &rarr;</span></div>`
-  ).join('');
-  el._atItems = matches;
+  let ranked = (sessions || []).map(s => {
+    const f = _fuzzyScore(at.q, s.name);
+    return f ? { s, score: f.score, hits: f.hits } : null;
+  }).filter(Boolean);
+  ranked.sort((a, b) =>
+    (b.s.running - a.s.running) || (b.score - a.score) || a.s.name.localeCompare(b.s.name));
+  ranked = ranked.slice(0, 20);
+  if (!ranked.length) { el.classList.remove('open'); return true; }
+  el.innerHTML = ranked.map((r, i) => {
+    const name = r.hits
+      ? [...r.s.name].map((ch, ci) => r.hits.has(ci) ? `<b>${esc(ch)}</b>` : esc(ch)).join('')
+      : esc(r.s.name);
+    return `<div class="ac-item at-item" onmousedown="${pickCall}(${i})">` +
+      `<span class="at-at">@</span>${name}` +
+      `<span class="ac-desc">${r.s.running ? '● ' : '○ '}open channel &rarr;</span></div>`;
+  }).join('');
+  el._atItems = ranked.map(r => r.s);
   el.classList.add('open');
   return true;
 }
@@ -26326,10 +28620,15 @@ function _atInsert(inp, el) {
 
 // ── Slash command autocomplete ──
 let SLASH_COMMANDS = [];
+let SKILLS_LIST = [];   // amux skills (DB) — get their own section in the chip picker
 (async function _loadSlashCommands() {
   try {
     const r = await fetch(API + '/api/slash-commands');
     if (r.ok) SLASH_COMMANDS = await r.json();
+  } catch(e) {}
+  try {
+    const r2 = await fetch(API + '/api/skills');
+    if (r2.ok) SKILLS_LIST = await r2.json();
   } catch(e) {}
 })();
 
@@ -26344,10 +28643,19 @@ const DEFAULT_CHIPS = [
   { id: 'space', label: 'Space', action: 'keys', value: 'Space' },
   { id: 'ctrlc', label: 'Ctrl C', action: 'keys', value: 'C-c', danger: true },
   { id: 'esc', label: 'Esc', action: 'keys', value: 'Escape' },
+  // Skills shipped with every amux install \u2014 the row scrolls horizontally, and a
+  // slash chip just prefills "/name " so the user types args and sends.
+  { id: 'sk-amux', label: '/amux', action: 'slash', value: '/amux' },
+  { id: 'sk-standup', label: '/standup', action: 'slash', value: '/standup' },
+  { id: 'sk-handoff', label: '/handoff', action: 'slash', value: '/handoff' },
+  { id: 'sk-adhd', label: '/adhd', action: 'slash', value: '/adhd' },
 ];
-// Ids of the previous built-in default set \u2014 used to migrate users who never
-// customized their chips to the streamlined set above (see _getChips).
-const _OLD_DEFAULT_CHIP_IDS = 'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc';
+// Prior built-in default sets \u2014 users still on one of these (never customized)
+// are migrated to the current DEFAULT_CHIPS; genuine customizations are untouched.
+const _OLD_DEFAULT_CHIP_SETS = [
+  'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc',
+  'continue,enter,up,down,space,ctrlc,esc',
+];
 
 // All possible chips the user can add
 const _ACTION_CHIPS = [
@@ -26368,9 +28676,16 @@ const _ACTION_CHIPS = [
     { id: 'transcripts', label: '\uD83D\uDCBE Transcripts', action: 'special', value: 'showTranscripts', desc: 'Conversation transcripts' },
 ];
 function _getAllChips() {
+  // Skills get their own section (they're the amux-native commands users add
+  // most); de-dupe them out of Slash Commands so each appears exactly once.
+  const skillNames = new Set((SKILLS_LIST || []).map(s => s.name));
   return [
     { section: 'Actions', items: _ACTION_CHIPS },
-    { section: 'Slash Commands', items: SLASH_COMMANDS.map(c => ({
+    { section: 'Skills', items: (SKILLS_LIST || []).map(s => ({
+      id: 'sk-' + s.name, label: '/' + s.name, action: 'slash', value: '/' + s.name,
+      desc: (s.description || '').slice(0, 90)
+    })) },
+    { section: 'Slash Commands', items: SLASH_COMMANDS.filter(c => !skillNames.has(c.cmd.slice(1))).map(c => ({
       id: c.cmd.slice(1), label: c.cmd, action: 'slash', value: c.cmd, desc: c.desc
     })) },
   ];
@@ -26392,9 +28707,9 @@ function _saveChips(chips) {
 function _getChips() {
   const saved = _loadChips();
   if (saved) {
-    // One-time migration: users still on the previous built-in default get the
-    // new streamlined set; genuine customizations are left untouched.
-    if (saved.map(c => c.id).join(',') === _OLD_DEFAULT_CHIP_IDS) {
+    // One-time migration: users still on a previous built-in default get the
+    // current set; genuine customizations are left untouched.
+    if (_OLD_DEFAULT_CHIP_SETS.includes(saved.map(c => c.id).join(','))) {
       const nd = DEFAULT_CHIPS.map(c => ({...c}));
       _saveChips(nd);
       return nd;
@@ -27332,12 +29647,15 @@ function cmdHistoryAdd(text, opts) {
       try { localStorage.removeItem('amux_cmd_history'); } catch (e3) {}
     }
   }
-  // Persist to server
-  fetch(API + '/api/history', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ text: entry.text, type: entry.type, session: entry.session, ts: entry.time })
-  }).catch(() => {});
+  // Server-side recording now happens ATOMICALLY inside the /send and /steer
+  // handlers (record_history flag), so a message reaches the shared history for
+  // every client even if this device is offline/suspended right after sending.
+  // No fragile fire-and-forget POST here that a backgrounded phone PWA would drop
+  // (the "sent from phone, missing on desktop" bug, 2026-07-16). The push above
+  // is just this device's optimistic local copy; the server pull reconciles it.
   _cmdHistoryIdx = -1;
+  // Keep the peek Messages tab + its count badge live as you send.
+  try { _peekMessagesBadge(); if (_peekTab === 'messages') _peekMessagesRender(); } catch(e) {}
 }
 
 function cmdHistoryReset() { _cmdHistoryIdx = -1; }
@@ -27348,27 +29666,32 @@ function openCmdHistoryModal() {
   m.classList.add('active');
   const s = document.getElementById('cmd-history-search');
   if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
-  _populateCmdHistorySessions();
+  // Opened from a session's peek (the "Message history" button lives in the peek
+  // more-menu, so peekSession is set) → pre-scope the filter to that session.
+  const _ctx = (typeof peekSession !== 'undefined' && peekSession) ? peekSession : '';
+  _populateCmdHistorySessions(_ctx);
   _renderCmdHistoryList();
   // History is server-side, but this page only pulled it once at load — a
   // long-lived tab/PWA would miss everything sent from other devices since.
   // Re-pull on every open so phone and desktop always see the same history.
   _loadCmdHistoryFromServer().then(() => {
-    _populateCmdHistorySessions();
+    _populateCmdHistorySessions(_ctx);
     _renderCmdHistoryList();
   });
 }
-function _populateCmdHistorySessions() {
+function _populateCmdHistorySessions(presetSession) {
   const sel = document.getElementById('cmd-history-session-filter');
   if (!sel) return;
-  const prev = sel.value;
+  // Opening from a session (presetSession) scopes the filter to it; a plain
+  // re-populate (no arg, e.g. the async reload) keeps the current choice.
+  const desired = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
   const names = [...new Set(_cmdHistory.map(e => typeof e === 'string' ? '' : (e.session || '')).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
   sel.innerHTML = '<option value="">All sessions</option>' + names.map(n => {
     const safe = n.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     return '<option value="' + safe + '">' + safe + '</option>';
   }).join('');
-  sel.value = names.includes(prev) ? prev : '';
+  sel.value = names.includes(desired) ? desired : '';
 }
 function closeCmdHistoryModal() {
   const m = document.getElementById('cmd-history-modal');
@@ -27418,6 +29741,140 @@ function _renderCmdHistoryList() {
       + safe + '</div>' + locate + '</div>';
   }).join('');
 }
+// ── Peek Messages tab: the message history, scoped to the open session ──
+// One entry → its card HTML (same look as the Message-history modal). Kept as a
+// standalone renderer so the tab stays independent of the modal.
+function _cmdHistItemHTML(e) {
+  const text = typeof e === 'string' ? e : e.text;
+  const type = typeof e === 'string' ? '' : (e.type || '');
+  const session = typeof e === 'string' ? '' : (e.session || '');
+  const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
+  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const enc = encodeURIComponent(text);
+  const isSteer = type === 'steering';
+  const tag = type ? `<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:${isSteer?'rgba(137,87,229,0.15)':'rgba(128,128,128,0.1)'};color:${isSteer?'var(--purple,#8957e5)':'var(--dim)'};margin-right:6px;">${isSteer?'queued':'direct'}</span>` : '';
+  const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+  const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
+  const meta = tag + sessTag + tsTag;
+  const locSess = (session || peekSession || '').replace(/'/g,'');
+  const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
+  return `<div onclick="_msgCopy(this,'${enc}')" title="Click to copy" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
+}
+// Click a message → copy its text + flash a "Copied" badge on the card.
+function _msgCopy(el, enc) {
+  const text = decodeURIComponent(enc);
+  const flash = () => {
+    showToast('Copied');
+    if (el && !el.querySelector('.msg-copied-badge')) {
+      const badge = document.createElement('div');
+      badge.className = 'msg-copied-badge';
+      badge.textContent = '✓ Copied';
+      badge.style.cssText = 'position:absolute;top:6px;right:8px;background:var(--green);color:#fff;font-size:0.66rem;font-weight:600;padding:1px 7px;border-radius:4px;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.2);';
+      el.appendChild(badge);
+      setTimeout(() => badge.remove(), 1100);
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(flash, () => { _copyExplorePathFallback(text); flash(); });
+  } else { _copyExplorePathFallback(text); flash(); }
+}
+function _peekMessagesFor() {
+  if (!peekSession) return [];
+  return _cmdHistory.slice().reverse().filter(e => (typeof e === 'string' ? '' : (e.session || '')) === peekSession);
+}
+// Offline-queued sends/steers for a session that have NOT reached the server yet.
+// Parsed straight from offlineQueue so the Messages tab can show them as pending
+// instead of silently pretending they were delivered.
+function _pendingSendsFor(session) {
+  if (!session) return [];
+  const out = [];
+  (offlineQueue || []).forEach((op, idx) => {
+    const m = (op.url || '').match(/\/api\/sessions\/([^/]+)\/(send|steer)$/);
+    if (!m || decodeURIComponent(m[1]) !== session) return;
+    let text = '';
+    try { text = (JSON.parse(op.options?.body || '{}').text) || ''; } catch(e) {}
+    if (text) out.push({ text, ts: op.timestamp, kind: m[2], idx });
+  });
+  return out;
+}
+function _pendingCancel(idx) {
+  if (idx < 0 || idx >= offlineQueue.length) return;
+  offlineQueue.splice(idx, 1);
+  saveQueue();
+  updateConnectionStatus();
+  _peekMessagesRender();
+  showToast('Removed from queue');
+}
+// Amber "⏳ N queued" pill above the composer — visible whenever this session has
+// unsent messages, so pending work is obvious without opening the Messages tab.
+function _updatePendingPill() {
+  const pill = document.getElementById('peek-pending-pill');
+  if (!pill) return;
+  const n = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  pill.style.display = n ? '' : 'none';
+  if (n) pill.innerHTML = '&#x23F3; ' + n + ' queued ' + (online ? '(sending soon)' : '&middot; offline') + ' &mdash; tap to view';
+}
+function _peekMessagesBadge() {
+  const badge = document.getElementById('peek-tab-messages-count');
+  if (!badge) return;
+  const n = _peekMessagesFor().length;
+  const p = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  badge.textContent = p ? (n + '+' + p) : (n ? n : '');
+  badge.classList.toggle('has-count', (n + p) > 0);
+  badge.classList.toggle('has-pending', p > 0);
+  _updatePendingPill();
+}
+function _peekMessagesRender() {
+  const list = document.getElementById('peek-messages-list');
+  if (!list) return;
+  const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
+  let items = _peekMessagesFor();
+  if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
+  // Pending (offline-queued, NOT yet on the server) shown FIRST — clearly marked,
+  // cancellable, so the local client never hides unsent messages.
+  let pending = _pendingSendsFor(peekSession);
+  if (q) pending = pending.filter(p => p.text.toLowerCase().includes(q));
+  const pendingHTML = pending.map(p => {
+    const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+    const safe = p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);display:flex;gap:10px;align-items:flex-start;">
+      <div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">
+        <div style="margin-bottom:4px;"><span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">&#x23F3; pending${p.kind==='steer'?' &middot; queue':''}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &mdash; not yet delivered${online?', sending soon':', waiting for connection'}</span></div>
+        ${safe}</div>
+      <button onclick="event.stopPropagation();_pendingCancel(${p.idx})" title="Remove from the offline queue (will NOT be sent)" style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;padding:2px 6px;min-width:24px;min-height:24px;">&#215;</button>
+    </div>`;
+  }).join('');
+  const cnt = document.getElementById('peek-messages-count');
+  if (cnt) cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages');
+  const histHTML = items.length ? items.map(_cmdHistItemHTML).join('') : '';
+  list.innerHTML = (pendingHTML + histHTML)
+    || `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${q ? 'No matches.' : 'No messages sent to this session yet.'}</div>`;
+  _peekMessagesBadge();
+}
+async function _peekMessagesLoad() {
+  _peekMessagesRender();                       // paint from local cache instantly
+  try { await _loadCmdHistoryFromServer(); } catch(e) {}   // refresh (cross-device)
+  _peekMessagesRender();
+}
+
+// Peek Cost tab: this session's token/cost breakdown by task (reuses _costRender)
+function _peekCostLoad() {
+  if (!peekSession) return;
+  const body = document.getElementById('peek-cost-body');
+  const days = document.getElementById('peek-cost-days')?.value || '7';
+  body.innerHTML = '<div style="color:var(--dim);padding:16px;">Loading…</div>';
+  const sess = peekSession;
+  fetch(API + '/api/observability?days=' + encodeURIComponent(days) + '&session=' + encodeURIComponent(sess))
+    .then(r => r.json())
+    .then(d => {
+      if (peekSession !== sess) return;   // switched away
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:16px;">' + esc(d.error) + '</div>'; return; }
+      if (!d.total_turns) { body.innerHTML = '<div style="color:var(--dim);padding:16px;">No token usage recorded for this session in this window.</div>'; return; }
+      body.innerHTML = _costRender(d, { perSession: true });
+    })
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:16px;">Failed to load.</div>'; });
+}
+
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
@@ -27599,18 +30056,111 @@ function onSearchInput() {
   }
 }
 
-function toggleLogSearch() {
-  logSearchMode = !logSearchMode;
-  const btn = document.getElementById('log-search-btn');
-  btn.classList.toggle('active', logSearchMode);
-  document.getElementById('search-input').placeholder = logSearchMode
-    ? 'Search session logs...' : 'Search sessions...';
+function setLogSearchMode(on) {
+  logSearchMode = !!on;
+  const btn = document.getElementById('log-search-btn');   // legacy toolbar button (may be absent)
+  if (btn) btn.classList.toggle('active', logSearchMode);
+  const si = document.getElementById('search-input');
+  if (si) si.placeholder = logSearchMode ? 'Search session logs...' : 'Search sessions...';
   _logMatches = {};
   if (logSearchMode && searchQuery) {
     clearTimeout(_logSearchTimer);
     _logSearchTimer = setTimeout(_runLogSearch, 100);
   }
   render();
+  renderActiveFilters();
+}
+function toggleLogSearch() { setLogSearchMode(!logSearchMode); }
+
+// ── Filters modal (session list) ─────────────────────────────────────────────
+function _activeFilterCount() {
+  return filterProviders.size + filterModels.size + filterStatuses.size + (logSearchMode ? 1 : 0);
+}
+function openFiltersModal() {
+  const cb = document.getElementById('filter-logsearch');
+  if (cb) cb.checked = logSearchMode;
+  renderFilterOptions();
+  const m = document.getElementById('filters-modal');
+  if (m) m.classList.add('active');
+}
+function closeFiltersModal() {
+  const m = document.getElementById('filters-modal');
+  if (m) m.classList.remove('active');
+  renderActiveFilters();
+}
+const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
+const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
+function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
+const _STATUS_LABELS = { working: 'Working', waiting: 'Needs input', idle: 'Idle', stopped: 'Stopped' };
+function renderFilterOptions() {
+  const live = sessions.filter(s => !s.archived);
+  // Status chips — fixed order, only states that exist (or are selected)
+  const sEl = document.getElementById('filter-statuses');
+  if (sEl) {
+    const opts = ['working', 'waiting', 'idle', 'stopped']
+      .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
+    sEl.innerHTML = opts.length ? opts.map(k => {
+      const on = filterStatuses.has(k);
+      const n = live.filter(x => _sessStatusKey(x) === k).length;
+      return `<button class="filter-chip${on?' on':''}" onclick="toggleStatusFilter('${k}')">${_STATUS_LABELS[k]}<span class="filter-chip-n">${n}</span></button>`;
+    }).join('') : '<span class="filter-hint">No sessions.</span>';
+  }
+  // Provider chips — options are the providers actually present, plus any selected.
+  const provs = [...new Set(live.map(sessionProvider))].filter(Boolean);
+  filterProviders.forEach(p => { if (!provs.includes(p)) provs.push(p); });
+  provs.sort();
+  const pEl = document.getElementById('filter-providers');
+  if (pEl) pEl.innerHTML = provs.length ? provs.map(p => {
+    const on = filterProviders.has(p);
+    const n = live.filter(s => sessionProvider(s) === p).length;
+    return `<button class="filter-chip${on?' on':''}" onclick="toggleProviderFilter('${escJs(p)}')">${esc(_PROVIDER_LABELS[p]||p)}<span class="filter-chip-n">${n}</span></button>`;
+  }).join('') : '<span class="filter-hint">No sessions.</span>';
+  // Model-type chips
+  const mods = [...new Set(live.map(s => _modelClass(sessionConfiguredModel(s))))].filter(Boolean);
+  filterModels.forEach(m => { if (!mods.includes(m)) mods.push(m); });
+  mods.sort();
+  const mEl = document.getElementById('filter-models');
+  if (mEl) mEl.innerHTML = mods.length ? mods.map(m => {
+    const on = filterModels.has(m);
+    const n = live.filter(s => _modelClass(sessionConfiguredModel(s)) === m).length;
+    return `<button class="filter-chip${on?' on':''}" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="filter-chip-n">${n}</span></button>`;
+  }).join('') : '<span class="filter-hint">No sessions.</span>';
+}
+function toggleProviderFilter(p) {
+  if (filterProviders.has(p)) filterProviders.delete(p); else filterProviders.add(p);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
+function toggleStatusFilter(k) {
+  if (filterStatuses.has(k)) filterStatuses.delete(k); else filterStatuses.add(k);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
+function toggleModelFilter(m) {
+  if (filterModels.has(m)) filterModels.delete(m); else filterModels.add(m);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
+function clearAllFilters() {
+  filterProviders.clear(); filterModels.clear(); filterStatuses.clear();
+  if (logSearchMode) setLogSearchMode(false); else { render(); }
+  const cb = document.getElementById('filter-logsearch'); if (cb) cb.checked = false;
+  renderFilterOptions(); renderActiveFilters();
+}
+// Preview chips on the sessions page + the Filters-button count badge.
+function renderActiveFilters() {
+  const cnt = _activeFilterCount();
+  const badge = document.getElementById('filters-count');
+  if (badge) { badge.textContent = cnt; badge.style.display = cnt ? '' : 'none'; }
+  const btn = document.getElementById('filters-btn');
+  if (btn) btn.classList.toggle('active', cnt > 0);
+  const el = document.getElementById('active-filters');
+  if (!el) return;
+  const chips = [];
+  if (logSearchMode) chips.push(`<span class="active-filter-chip" onclick="setLogSearchMode(false)">Logs search<span class="afx">&#x2715;</span></span>`);
+  filterProviders.forEach(p => chips.push(`<span class="active-filter-chip" onclick="toggleProviderFilter('${escJs(p)}')">${esc(_PROVIDER_LABELS[p]||p)}<span class="afx">&#x2715;</span></span>`));
+  filterModels.forEach(m => chips.push(`<span class="active-filter-chip" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="afx">&#x2715;</span></span>`));
+  filterStatuses.forEach(k => chips.push(`<span class="active-filter-chip" onclick="toggleStatusFilter('${k}')">${_STATUS_LABELS[k]||k}<span class="afx">&#x2715;</span></span>`));
+  if (chips.length) chips.push(`<span class="active-filter-clear" onclick="clearAllFilters()">Clear all</span>`);
+  el.innerHTML = chips.join('');
+  el.style.display = chips.length ? 'flex' : 'none';
 }
 
 async function _runLogSearch() {
@@ -27794,7 +30344,7 @@ function _csvInitCellTap() {
     pop.className = 'csv-cell-pop';
     pop.textContent = text;
     const rect = _cssRect(td);
-    const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
     pop.style.left = Math.min(rect.left, window.innerWidth / z - 320) + 'px';
     pop.style.top = (rect.bottom + 4) + 'px';
     document.body.appendChild(pop);
@@ -27892,7 +30442,84 @@ function _fileMenuOutside(e) {
   }
 }
 
+// ── Reading position (resume where you left off) ─────────────────────────────
+// Mirrors the video/audio resume: remember how far through a document you are so
+// reopening it restores the scroll. Stored as a FRACTION (0..1) keyed by path in
+// localStorage, so it survives across differently-sized screens. Applies to
+// ebooks, HTML, markdown, CSV and plain text; native <embed> PDFs can't be
+// tracked (no access to the built-in viewer's scroll).
+function _readPosGet(path) {
+  try {
+    const e = (JSON.parse(localStorage.getItem('amux_read_pos') || '{}'))[path];
+    return e ? (typeof e === 'number' ? e : (e.f || 0)) : 0;
+  } catch(e) { return 0; }
+}
+function _readPosSave(path, frac) {
+  if (!path || !isFinite(frac)) return;
+  try {
+    const s = JSON.parse(localStorage.getItem('amux_read_pos') || '{}');
+    if (frac <= 0.01 || frac >= 0.985) delete s[path];   // at the very start or basically finished → forget
+    else s[path] = { f: frac, ts: Date.now() };
+    const keys = Object.keys(s);
+    if (keys.length > 320) {   // cap growth: evict the oldest, keep ~300 most-recent
+      keys.map(k => [k, (s[k] && s[k].ts) || 0]).sort((a, b) => a[1] - b[1])
+          .slice(0, keys.length - 300).forEach(([k]) => delete s[k]);
+    }
+    localStorage.setItem('amux_read_pos', JSON.stringify(s));
+  } catch(e) {}
+}
+let _readPosCleanup = null;   // detaches the current scroll listener
+let _readPosFlush = null;     // saves the current position immediately
+function _readPosDetach() {
+  if (_readPosFlush) { try { _readPosFlush(); } catch(e) {} }
+  if (_readPosCleanup) { try { _readPosCleanup(); } catch(e) {} }
+  _readPosFlush = null; _readPosCleanup = null;
+}
+// Bind resume to a scrollable element (#file-body for md/csv/text).
+function _bindReadPosDiv(el, path) {
+  if (!el || !path) return;
+  const frac = _readPosGet(path);
+  const maxOf = () => el.scrollHeight - el.clientHeight;
+  if (frac > 0) requestAnimationFrame(() => requestAnimationFrame(() => {
+    const max = maxOf(); if (max > 40) el.scrollTop = frac * max;
+  }));
+  let t = null;
+  const onScroll = () => { clearTimeout(t); t = setTimeout(() => {
+    const max = maxOf(); if (max > 40) _readPosSave(path, el.scrollTop / max);
+  }, 400); };
+  el.addEventListener('scroll', onScroll, { passive: true });
+  _readPosFlush = () => { const max = maxOf(); if (max > 40) _readPosSave(path, el.scrollTop / max); };
+  _readPosCleanup = () => { clearTimeout(t); el.removeEventListener('scroll', onScroll); };
+}
+// Bind resume to a same-origin iframe (ebook / HTML reader). Registered BEFORE
+// srcdoc is set so it catches the load.
+function _bindReadPosFrame(iframe, path) {
+  if (!iframe || !path) return;
+  const frac = _readPosGet(path);
+  iframe.addEventListener('load', () => {
+    let win, doc;
+    try { win = iframe.contentWindow; doc = iframe.contentDocument; } catch(e) { return; }
+    if (!win || !doc) return;
+    const de = doc.scrollingElement || doc.documentElement || doc.body;
+    const maxOf = () => de.scrollHeight - win.innerHeight;
+    if (frac > 0) requestAnimationFrame(() => requestAnimationFrame(() => {
+      const max = maxOf(); if (max > 40) win.scrollTo(0, frac * max);
+    }));
+    let t = null;
+    const onScroll = () => { clearTimeout(t); t = setTimeout(() => {
+      const max = maxOf(); if (max > 40) _readPosSave(path, (win.scrollY || de.scrollTop || 0) / max);
+    }, 400); };
+    win.addEventListener('scroll', onScroll, { passive: true });
+    _readPosFlush = () => { const max = maxOf(); if (max > 40) _readPosSave(path, (win.scrollY || de.scrollTop || 0) / max); };
+    _readPosCleanup = () => { clearTimeout(t); try { win.removeEventListener('scroll', onScroll); } catch(e) {} };
+  }, { once: true });
+}
+// Save reading position when the tab/PWA is backgrounded or closed mid-read.
+document.addEventListener('visibilitychange', () => { if (document.hidden && _readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
+window.addEventListener('pagehide', () => { if (_readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
+
 function _renderFileBody(data, mode) {
+  _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
   if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
   const body = document.getElementById('file-body');
@@ -27914,6 +30541,20 @@ function _renderFileBody(data, mode) {
   if (data.is_pdf) {
     body.className = 'file-overlay-body file-pdf';
     body.innerHTML = `<embed src="${data.data_url}" type="application/pdf" style="width:100%;height:100%;min-height:520px;border-radius:4px;">`;
+    return;
+  }
+  // Renderable ebook (EPUB/FB2/CBZ): server already inlined everything into a
+  // self-contained HTML doc — render it in a sandboxed (no-script) iframe.
+  if (data.is_ebook && data.content && !data.is_binary) {
+    body.className = 'file-overlay-body file-html-preview file-ebook';
+    const iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-same-origin';
+    iframe.setAttribute('scrolling', 'yes');
+    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#f7f6f3;';
+    body.innerHTML = '';
+    body.appendChild(iframe);
+    _bindReadPosFrame(iframe, data.path);   // resume reading position
+    iframe.srcdoc = data.content;
     return;
   }
   if (data.is_video) {
@@ -27945,7 +30586,11 @@ function _renderFileBody(data, mode) {
     const fname = data.path.split('/').pop();
     const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
     const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
-    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">📦</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div><a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
+    // Ebook formats we can't render in-browser (MOBI/AZW/CBR/DJVU…) get a
+    // reader-styled card rather than the generic binary blob.
+    const icon = data.is_ebook ? '📚' : '📦';
+    const note = data.is_ebook ? `<div style="font-size:0.78rem;color:var(--dim);text-align:center;max-width:22em;">This ebook format (${data.ebook_kind || data.ext}) can’t be previewed in the browser — download to open in your reader.</div>` : '';
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">${icon}</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div>${note}<a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
     return;
   }
   // Text files — Raw / Edit / Preview
@@ -27964,28 +30609,42 @@ function _renderFileBody(data, mode) {
   if (mode === 'raw') {
     body.className = 'file-overlay-body file-raw';
     body.textContent = data.content;
+    _bindReadPosDiv(body, data.path);   // resume reading position
     return;
   }
   // Preview
   if (data.is_csv) {
     body.className = 'file-overlay-body file-csv';
     body.innerHTML = renderCsvTable(data.content);
+    _bindReadPosDiv(body, data.path);
   } else if (data.is_markdown) {
     body.className = 'file-overlay-body markdown md-content';
     body.innerHTML = renderMarkdown(data.content);
     _fileBindAnchors(body);
+    _bindReadPosDiv(body, data.path);
   } else if (data.is_html) {
     body.className = 'file-overlay-body file-html-preview';
     const iframe = document.createElement('iframe');
-    iframe.sandbox = 'allow-same-origin';
+    // allow-scripts (NOT allow-same-origin) → the page's own JS runs so it's
+    // interactive (arrow/keydown nav, carousels, buttons), but the frame stays a
+    // unique opaque origin and CANNOT reach the amux dashboard (can't read the
+    // auth token or touch parent DOM). allow-popups/allow-forms so "open link" /
+    // form buttons work. Deliberately NOT allow-same-origin: pairing it with
+    // allow-scripts would let a previewed page escape the sandbox. Consequence:
+    // the parent can't read iframe.contentDocument, so the anchor-scroll binding
+    // below no-ops — native in-page #anchors still work inside the frame.
+    iframe.sandbox = 'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
     // Fill the preview box and let the iframe scroll its own content (see CSS note).
     iframe.setAttribute('scrolling', 'yes');
     iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
     body.innerHTML = '';
     body.appendChild(iframe);
+    _bindReadPosFrame(iframe, data.path);   // resume reading position
     iframe.srcdoc = data.content;
     iframe.onload = function() {
-      // Bind anchor links inside iframe to scroll within it
+      // Bind anchor links to scroll within the iframe. Cross-origin under the
+      // sandbox above → contentDocument access throws; the try/catch makes this a
+      // graceful no-op (the page's own scripts handle its interactivity).
       try {
         iframe.contentDocument.addEventListener('click', function(e) {
           const a = e.target.closest('a');
@@ -28004,6 +30663,7 @@ function _renderFileBody(data, mode) {
     // plain text — preview = same as raw
     body.className = 'file-overlay-body file-raw';
     body.textContent = data.content;
+    _bindReadPosDiv(body, data.path);
   }
 }
 
@@ -28160,7 +30820,7 @@ async function openFilePreview(path) {
     }
     _fileData = data;
     // Show tabs only for text files
-    const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary;
+    const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary && !data.is_ebook;
     if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = '';
       // Show Edit tab only for markdown
@@ -28176,23 +30836,23 @@ async function openFilePreview(path) {
     dlBtn.dataset.filename = data.path.split('/').pop();
     dlBtn.style.display = '';
     _renderFileBody(data, _fileViewMode);
-    // Cache for offline viewing — but only SMALL text (e.g. .md) + small images.
-    // Never large binaries / video / audio / pdf: their data_url (base64) would
-    // bloat IndexedDB, and the user explicitly asked not to store large binaries.
-    const _dot = path.lastIndexOf('.'); const _ext = _dot >= 0 ? path.slice(_dot).toLowerCase() : '';
-    const _sz = data.size || (data.data_url ? data.data_url.length : (data.content ? data.content.length : 0));
-    const _cacheable = isTextFile ? (_sz <= 1024 * 1024)
-                                  : (_CACHEABLE_IMG_EXTS.has(_ext) && _sz <= 256 * 1024);
-    if (_cacheable) _idb.setFile(path, { type: 'file', data });
+    // Save EVERY opened previewable file for offline viewing (text, images, PDF,
+    // ebooks, HTML, CSV) up to a per-file cap. setFile stamps ts=now, so ts is
+    // the last-opened time — the 30-day pruner (_idb.pruneFiles, run at startup)
+    // evicts anything not opened in 30 days. Streaming media (video/audio) has
+    // no data_url/content so it's naturally skipped — it can't live in IDB.
+    const _payload = (data.data_url ? data.data_url.length : 0) + (data.content ? data.content.length : 0);
+    if (_payload > 0 && _payload <= _FILE_CACHE_MAX) _idb.setFile(path, { type: 'file', data });
   } catch(e) {
     // Offline: try IDB cache
     const cached = await _idb.getFile(path);
     if (cached && cached.type === 'file') {
+      _idb.touchFile(path);   // opening refreshes the 30-day clock, even offline
       _fileData = cached.data;
       const age = Math.round((Date.now() - cached.ts) / 60000);
       const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
       document.getElementById('file-title').textContent = path.split('/').pop() + ' \u2022 cached ' + ageStr;
-      const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary;
+      const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary && !cached.data.is_ebook;
       if (cachedIsText) {
         document.getElementById('file-view-tabs').style.display = '';
       }
@@ -28204,6 +30864,7 @@ async function openFilePreview(path) {
 }
 
 function closeFilePreview() {
+  _readPosDetach();   // flush the reading position before tearing down
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
   _mdSearchClose();
@@ -28392,39 +31053,191 @@ const _FILES_DEFAULT_BOOKMARKS = [
   { label: 'Downloads', path: _FILES_HOME + '/Downloads' },
 ];
 
+// Scope shortcuts by context: global (Files tab) vs a specific session's file
+// view (_exploreSession, set by openExplore → "Browse files"). Both persist to
+// /api/prefs so they sync across devices; session scope is namespaced by name.
+function _filesBmScope() { return _exploreSession ? ('::' + _exploreSession) : ''; }
+function _filesBmLocalKey() { return 'amux_files_bookmarks' + _filesBmScope(); }
+function _filesBmServerKey() { return 'files_bookmarks' + _filesBmScope(); }
+
 function _filesGetBookmarks() {
   try {
-    const raw = localStorage.getItem('amux_files_bookmarks');
+    const raw = localStorage.getItem(_filesBmLocalKey());
     if (raw) return JSON.parse(raw);
   } catch(e) {}
-  return _FILES_DEFAULT_BOOKMARKS.map(b => ({...b}));
+  // Session scope starts empty; the global bar seeds a few useful defaults.
+  return _exploreSession ? [] : _FILES_DEFAULT_BOOKMARKS.map(b => ({...b}));
 }
 
 function _filesSaveBookmarks(bm) {
-  localStorage.setItem('amux_files_bookmarks', JSON.stringify(bm));
+  const json = JSON.stringify(bm);
+  try { localStorage.setItem(_filesBmLocalKey(), json); } catch(e) {}   // fast local mirror (also offline)
+  // Persist server-side too so shortcuts follow you across every device (like files_cwd).
+  fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key: _filesBmServerKey(), value: json})}).catch(()=>{});
+}
+
+// Pull the current scope's shortcuts from the server (cross-device), then render.
+async function _filesLoadBookmarks() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=' + encodeURIComponent(_filesBmServerKey()));
+    const d = await r.json();
+    if (d && d.value) { try { localStorage.setItem(_filesBmLocalKey(), d.value); } catch(e) {} }
+  } catch(e) {}
+  _filesRenderBookmarks();
+}
+
+// Open a shortcut: folders navigate, files open in the previewer.
+function _filesBookmarkOpen(path, type) {
+  if (type === 'file') openFilePreview(path);
+  else loadFiles(path);
 }
 
 function _filesRenderBookmarks() {
+  const lbl = document.getElementById('files-bm-label');
+  if (lbl) lbl.textContent = _exploreSession ? (_exploreSession + ':') : 'Quick:';
+  const addBtn = document.getElementById('files-bm-add');
+  if (addBtn) addBtn.title = _exploreSession ? ('Add current folder to ' + _exploreSession + ' shortcuts') : 'Bookmark current folder';
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
   const bm = _filesGetBookmarks();
-  container.innerHTML = bm.map((b, i) =>
-    '<button onclick="loadFiles(\'' + esc(b.path) + '\')" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-    + 'style="background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font-size:0.73rem;color:var(--text);cursor:pointer;white-space:nowrap;flex-shrink:0;" '
-    + 'title="' + esc(b.path) + ' (right-click to remove)">'
-    + esc(b.label) + '</button>'
-  ).join('');
+  // Chip = tappable label (navigate / open) + a × button (remove). The × works
+  // on touch too — right-click can't (mobile-first). Right-click still removes.
+  container.innerHTML = bm.map((b, i) => {
+    const t = b.type === 'file' ? 'file' : 'dir';
+    const ic = t === 'file' ? '\u{1F4C4} ' : '';
+    return '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
+      + 'style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+      + 'title="' + esc(b.path) + '">'
+      + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
+      + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
+      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+      + '</span>';
+  }).join('');
 }
 
-function _filesAddBookmark() {
-  const path = _filesPath || '/';
-  const label = path.split('/').filter(Boolean).pop() || '/';
+// Add a specific file/folder (from the ⋯ menu) as a shortcut in the CURRENT scope.
+function _filesAddBookmarkPath(path, type) {
+  const label = path.split('/').filter(Boolean).pop() || path;
   const bm = _filesGetBookmarks();
-  if (bm.find(b => b.path === path)) { showToast('Already bookmarked'); return; }
-  bm.push({ label, path });
+  if (bm.find(b => b.path === path)) { showToast('Already a shortcut'); return; }
+  bm.push({ label, path, type: (type === 'dir' || type === 'directory') ? 'dir' : 'file' });
   _filesSaveBookmarks(bm);
   _filesRenderBookmarks();
-  showToast('Bookmarked ' + label);
+  showToast(_exploreSession ? ('Shortcut added to ' + _exploreSession) : ('Shortcut added: ' + label));
+}
+
+function _filesAddBookmark() { _filesAddBookmarkPath(_filesPath || '/', 'dir'); }
+
+// ── Library view: a folder of ebooks → flat, searchable, faceted cover grid ──
+let _libData = null;         // last /api/library payload
+let _libOpenedPath = null;   // path the grid was opened for (auto-close on nav away)
+const _LIB_EB = ['.epub','.mobi','.azw','.azw3','.azw4','.fb2','.cbz','.cbr','.pdf','.djvu'];
+function _libLooksLikeLibrary(entries) {
+  if (!Array.isArray(entries)) return false;
+  let ebooks = 0;
+  for (const e of entries) {
+    const n = (e.name || '').toLowerCase();
+    if (n === 'metadata.db') return true;               // Calibre library
+    if (e.type !== 'dir' && _LIB_EB.some(x => n.endsWith(x))) ebooks++;
+  }
+  return ebooks >= 3;
+}
+// Called from the file-list render: show the button for library-like folders,
+// and auto-close the grid if the user navigated to a different folder.
+function _libUpdateBtn(entries) {
+  const btn = document.getElementById('files-lib-btn');
+  if (btn) btn.style.display = _libLooksLikeLibrary(entries) ? '' : 'none';
+  const lib = document.getElementById('files-library');
+  if (lib && lib.style.display !== 'none' && _filesPath !== _libOpenedPath) _libClose();
+}
+async function _libOpen() {
+  const btn = document.getElementById('files-lib-btn');
+  const label = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '⏳';
+  try {
+    const r = await fetch(API + '/api/library?path=' + encodeURIComponent(_filesPath));
+    const d = await r.json();
+    if (d.error || !d.is_library) { showToast(d.error || 'No ebooks found here'); return; }
+    _libData = d; _libOpenedPath = _filesPath;
+    _libBuildFacet('lib-author', d.facets.authors, 'All authors');
+    _libBuildFacet('lib-format', d.facets.formats, 'All formats');
+    _libBuildFacet('lib-tag', d.facets.tags, 'All tags');
+    document.getElementById('files-library').style.display = 'flex';
+    document.getElementById('fe-scroll').style.display = 'none';
+    document.getElementById('fe-status').style.display = 'none';
+    const searchWrap = document.getElementById('files-search').parentElement;
+    if (searchWrap) searchWrap.style.display = 'none';
+    _libRender();
+  } catch(e) { showToast('Library load failed'); }
+  finally { if (btn) btn.innerHTML = label || '📚 Library'; }
+}
+function _libClose() {
+  document.getElementById('files-library').style.display = 'none';
+  document.getElementById('fe-scroll').style.display = '';
+  document.getElementById('fe-status').style.display = '';
+  const searchWrap = document.getElementById('files-search').parentElement;
+  if (searchWrap) searchWrap.style.display = '';
+}
+function _libBuildFacet(id, items, allLabel) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">' + allLabel + '</option>' +
+    (items || []).map(it => '<option value="' + esc(it.name) + '">' + esc(it.name) + ' (' + it.count + ')</option>').join('');
+  sel.value = cur;   // preserve selection across re-open if still present
+}
+function _libRender() {
+  if (!_libData) return;
+  const q = (document.getElementById('lib-search').value || '').toLowerCase().trim();
+  const fa = document.getElementById('lib-author').value;
+  const ff = document.getElementById('lib-format').value;
+  const ft = document.getElementById('lib-tag').value;
+  const sort = document.getElementById('lib-sort').value;
+  let books = _libData.books.filter(b => {
+    if (fa && !b.authors.includes(fa)) return false;
+    if (ff && !b.formats.some(f => f.fmt === ff)) return false;
+    if (ft && !b.tags.includes(ft)) return false;
+    if (q) {
+      const hay = (b.title + ' ' + b.authors.join(' ') + ' ' + b.tags.join(' ') + ' ' + (b.series || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const cmp = {
+    title: (a, b) => (a.title || '').localeCompare(b.title || ''),
+    author: (a, b) => (a.authors[0] || '').localeCompare(b.authors[0] || ''),
+    date: (a, b) => (b.pubdate || '').localeCompare(a.pubdate || ''),
+    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
+    size: (a, b) => ((b.formats[0] || {}).size || 0) - ((a.formats[0] || {}).size || 0),
+  }[sort];
+  if (cmp) books = books.slice().sort(cmp);
+  document.getElementById('lib-count').textContent = books.length + ' book' + (books.length !== 1 ? 's' : '');
+  const grid = document.getElementById('lib-grid');
+  grid.innerHTML = books.length
+    ? books.map(b => _libCard(b, _libData.books.indexOf(b))).join('')
+    : '<div style="color:var(--dim);padding:20px;grid-column:1/-1;">No matches.</div>';
+}
+function _libCard(b, idx) {
+  const coverUrl = b.cover ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(b.cover)) : '';
+  const ph = '<div class="lib-ph" style="width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:1.8rem;">📚</div>';
+  const cover = coverUrl
+    ? '<img loading="lazy" src="' + coverUrl + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" style="width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;background:var(--bg);display:block;">' +
+      '<div class="lib-ph" style="display:none;width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);align-items:center;justify-content:center;font-size:1.8rem;">📚</div>'
+    : ph;
+  const badges = b.formats.map(f => '<span style="font-size:0.58rem;background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:0 3px;color:var(--dim);">' + esc(f.fmt) + '</span>').join(' ');
+  const stars = b.rating ? '<span style="color:#f5a623;font-size:0.62rem;" title="' + b.rating + '">' + '★'.repeat(Math.round(b.rating)) + '</span>' : '';
+  return '<div class="lib-card" onclick="_libOpenBook(' + idx + ')" style="cursor:pointer;display:flex;flex-direction:column;gap:4px;" title="' + esc(b.title) + '\\n' + esc(b.authors.join(', ')) + '">' +
+    '<div style="position:relative;box-shadow:0 1px 5px rgba(0,0,0,0.18);border-radius:4px;">' + cover + '</div>' +
+    '<div style="font-size:0.73rem;font-weight:600;color:var(--text);line-height:1.2;max-height:2.4em;overflow:hidden;">' + esc(b.title) + '</div>' +
+    '<div style="font-size:0.65rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(b.authors.join(', ')) + '</div>' +
+    '<div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;">' + badges + (stars ? ' ' + stars : '') + '</div>' +
+  '</div>';
+}
+function _libOpenBook(idx) {
+  const b = _libData && _libData.books[idx];
+  if (!b || !b.formats.length) return;
+  openFilePreview(b.formats[0].path);   // formats are rank-sorted — most readable first
 }
 
 function _filesRemoveBookmark(idx) {
@@ -28442,14 +31255,21 @@ let _exploreSession = null;  // set when explore overlay is opened from a sessio
 // Load saved working dir + hidden files pref from server prefs
 (async () => {
   try {
-    const [r1, r2] = await Promise.all([
+    const [r1, r2, r3] = await Promise.all([
       fetch(API + '/api/prefs?key=files_cwd'),
       fetch(API + '/api/prefs?key=files_show_hidden'),
+      fetch(API + '/api/prefs?key=files_bookmarks'),
     ]);
     const d1 = await r1.json();
     if (d1.value) { _filesPath = d1.value; _filesCwd = d1.value; }
     const d2 = await r2.json();
     if (d2.value !== undefined && d2.value !== null) _filesShowHidden = d2.value === '1';
+    // Server-synced shortcuts win over the local mirror, so they follow you across devices.
+    const d3 = await r3.json();
+    if (d3 && d3.value) {
+      try { localStorage.setItem('amux_files_bookmarks', d3.value); } catch(e) {}
+      _filesRenderBookmarks();
+    }
   } catch(e) {}
 })();
 function setFilesCwd() {
@@ -28621,6 +31441,7 @@ async function _feToggleExpand(btn) {
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
   _filesLastData = { path, data, cacheTs };
+  _libUpdateBtn(data.entries);   // show the Library button for ebook folders (+ auto-close on nav)
   body.innerHTML = '';
 
   // Show/hide column headers and update sort indicators
@@ -28769,6 +31590,8 @@ const _CACHEABLE_TEXT_EXTS = new Set([
   '.ini','.cfg','.conf','.lock','.mod','.sum','.dockerfile','.makefile',
 ]);
 const _CACHEABLE_IMG_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg','.bmp','.ico']);
+const _FILE_CACHE_MAX = 25 * 1024 * 1024;   // per-file offline-cache cap (protects IndexedDB)
+const _FILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // evict files not opened in 30 days
 const _SKIP_CACHE_DIRS = new Set(['.git','node_modules','__pycache__','.next','.nuxt','dist','build','.venv','venv','.tox','.mypy_cache','target','vendor']);
 
 async function cacheFilesDir(rootPath, maxDepth = 2) {
@@ -28827,6 +31650,7 @@ function openExplore(startPath, session) {
   closePeek();
   switchView('files');
   _updateFilesSessionBtn();
+  _filesLoadBookmarks();   // load THIS session's shortcuts (or global if none)
 }
 function _updateFilesSessionBtn() {
   const btn = document.getElementById('files-set-session-btn');
@@ -28955,7 +31779,7 @@ function _showExploreMenu(path, btn, type) {
   const r = _cssRect(btn);
   const pw = popup.offsetWidth || 140;
   const ph = popup.offsetHeight || 80;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   // Open beside the ⋯ button: align the menu's right edge to the button's
   // right edge (drops down from the button). If that would clip off the left,
@@ -28990,6 +31814,13 @@ function _showFilesMenu(path, btn, type) {
   linkItem.textContent = 'Copy link';
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
+  // Add shortcut — scoped to the session (if browsing a session's files) or the
+  // Files-tab quick bar otherwise. Works for both files and folders.
+  const bmItem = document.createElement('button');
+  bmItem.className = 'explore-menu-item';
+  bmItem.textContent = _exploreSession ? ('Add shortcut · ' + _exploreSession) : 'Add shortcut';
+  bmItem.onclick = () => { popup.remove(); _filesAddBookmarkPath(path, type); };
+  popup.appendChild(bmItem);
   // Rename
   const renItem = document.createElement('button');
   renItem.className = 'explore-menu-item';
@@ -29033,7 +31864,7 @@ function _showFilesMenu(path, btn, type) {
   const r = _cssRect(btn);
   const pw = popup.offsetWidth || 160;
   const ph = popup.offsetHeight || 140;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   // Open beside the ⋯ button: align the menu's right edge to the button's
   // right edge (drops down from the button). If that would clip off the left,
@@ -30786,8 +33617,8 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
   const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
@@ -30802,13 +33633,14 @@ function switchView(view) {
   if (view === 'crm') { _crmDirty = false; _crmLoad(); _crmApplySidebarState(); } // always refresh on tab switch
   if (view === 'map') { _mapLoad(); _mapInit(); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
+  if (view === 'cost') _costLoad();
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
   if (view === 'sql') _sqlInit();
-  if (view === 'messages') _messagesLoad(true);
-  if (view === 'files') loadFiles(_filesPath);
+  if (view === 'messages') _messagesLoad(true, (typeof peekSession !== 'undefined' && peekSession) || _lastPeekedSession);
+  if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -31978,7 +34810,8 @@ function renderScheduler(opts) {
         ? `<span class="sched-sess-dot ${sessStatus}" title="${s.session}: ${sessStatus}"></span><span style="color:var(--accent);cursor:pointer;" onclick="switchView('sessions');openPeek('${esc(s.session)}')">${esc(s.session)}</span>`
         : `<span style="color:var(--dim);">(shell)</span>`;
       const nextRel = s.next_run ? `▶ <strong style="color:var(--text);" title="${s.next_run}">${relTime(s.next_run)}</strong>` : '';
-      const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${s.last_run}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
+      const _lrTitle = s.last_run ? (/^\d+$/.test(String(s.last_run)) ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString() : new Date(s.last_run).toLocaleString()) : '';
+      const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${esc(_lrTitle)}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
       const trigLabel = s.trigger_on ? `&nbsp;&middot;&nbsp;<span style="color:var(--accent);font-size:0.65rem;">&#x26A1; ${esc((s.trigger_on||'').split(',').map(t=>t==='session_idle'?'idle':t==='board'?'board':t).join('+')).trim()}</span>` : '';
       const watchLabel = s.watch ? `&nbsp;&middot;&nbsp;<span style="color:var(--dim);font-size:0.65rem;">&#x1F441; watch</span>` : '';
       const doneLabel = s.done_pattern ? `&nbsp;&middot;&nbsp;<span style="color:var(--dim);font-size:0.65rem;">stop: <code style="font-size:0.6rem;">${esc(s.done_pattern.length > 20 ? s.done_pattern.slice(0,20)+'…' : s.done_pattern)}</code></span>` : '';
@@ -32162,7 +34995,9 @@ async function skipSchedule(id) {
 async function toggleSchedEnabled(id, enabled) {
   await apiCall(API + '/api/schedules/' + id, {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ enabled: enabled ? 1 : 0 })
+    // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
+    // (the recurring-disabler mystery, AMUX-1765 — it was this control).
+    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' })
   });
   await fetchSchedules();
   renderScheduler();
@@ -32440,7 +35275,11 @@ function _renderBoardCard(item) {
   const tags = item.tags || [];
   const firstLine = (item.desc || '').split('\n')[0].slice(0, 80);
   const pinned = item.pinned ? 1 : 0;
-  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + '" data-id="' + item.id + '" onclick="openBoardDetail(\'' + item.id + '\')">';
+  // LIVE emphasis: this card is what its owning session is working on right now
+  // (item in doing + that session's terminal is actively generating).
+  const _liveNow = item.status === 'doing' && item.session &&
+    (typeof sessions !== 'undefined') && (sessions || []).some(s => s.name === item.session && s.status === 'active');
+  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + (_liveNow ? ' board-card-live' : '') + '" data-id="' + item.id + '"' + (_liveNow ? ' title="' + esc(item.session) + ' is working on this right now"' : '') + ' onclick="openBoardDetail(\'' + item.id + '\')">';
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   h += '<div class="board-card-key">' + esc(item.id) + '</div>';
@@ -32451,7 +35290,7 @@ function _renderBoardCard(item) {
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
-  if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + esc(item.session) + '</span>';
+  if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + (_liveNow ? '<span class="board-live-dot"></span>' : '') + esc(item.session) + '</span>';
   if (item.shepherd) h += '<span class="board-card-shepherd" data-session="' + esc(item.shepherd) + '" title="Shepherd: watching this for the owner. NOT accountable for executing it.">&#x1F441; watched by ' + esc(item.shepherd) + '</span>';
   tags.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
@@ -33722,6 +36561,7 @@ function _fcInit() {
     selectable: true,
     selectMirror: true,
     dayMaxEvents: true,
+    eventMaxStack: 3,   // timeGrid: >3 concurrent events collapse to "+N more" instead of unreadable slivers
     weekNumbers: false,
     firstDay: 0,
     slotMinTime: '06:00:00',
@@ -33795,6 +36635,7 @@ function openEventModal(editId, startStr, endStr, allDay) {
   const s = _evSplit(ev ? ev.start : (startStr || ''));
   const e = _evSplit(ev ? ev.end : (endStr || ''));
   const isAllDay = ev ? !!ev.all_day : (allDay === true || (startStr && !String(startStr).includes('T')));
+  closeEventModal();   // never stack a second editor (duplicate-id removal only caught the first)
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay active';
   overlay.id = 'event-modal';
@@ -35046,9 +37887,35 @@ const _idb = (() => {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
+    // Bump a cached file's ts to now (last-opened) without rewriting its blob.
+    touchFile: (path) => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readwrite');
+      const os = tx.objectStore('files');
+      const g = os.get(path);
+      g.onsuccess = () => { const r = g.result; if (r) { r.ts = Date.now(); os.put(r); } resolve(); };
+      g.onerror = () => resolve();
+    })).catch(() => {}),
+    // Evict cached files whose last-opened ts is older than maxAgeMs. Returns count.
+    pruneFiles: (maxAgeMs) => open().then(d => new Promise((resolve) => {
+      const cutoff = Date.now() - maxAgeMs;
+      const tx = d.transaction('files', 'readwrite');
+      const cur = tx.objectStore('files').openCursor();
+      let removed = 0;
+      cur.onsuccess = (e) => {
+        const c = e.target.result;
+        if (c) { if ((c.value.ts || 0) < cutoff) { c.delete(); removed++; } c.continue(); }
+        else resolve(removed);
+      };
+      cur.onerror = () => resolve(removed);
+    })).catch(() => 0),
     clearFiles: () => _txw('files', os => os.clear()),
   };
 })();
+
+// Expire offline-cached files not opened in the last 30 days (LRU by last-open ts).
+_idb.pruneFiles(_FILE_CACHE_TTL_MS).then(n => {
+  if (n) console.log('[files] evicted ' + n + ' offline file(s) not opened in 30 days');
+});
 
 // IDB fallback: restore statuses from IndexedDB (preserves column order across reloads)
 _idb.getAll('statuses').then(items => {
@@ -36938,52 +39805,137 @@ async function pullFromRemote(btn) {
 // ═══════ Walkthrough ═══════
 (function() {
   var WT_KEY = 'amux_walkthrough_done';
+  var WT_CH_KEY = 'amux_wt_chapters';
   var _wtStep = 0;
-  var _wtSteps = [
-    {
-      target: '#add-btn',
-      title: 'Create a session',
-      body: 'Start here. Each session is a Claude Code agent running in tmux. Pick a project directory, optionally enable YOLO mode, and hit Start.',
-      pos: 'bottom'
-    },
-    {
-      target: '.tab-bar-outer',
-      title: 'Navigate with tabs',
-      body: 'Switch between views — Sessions, Board, Files, Workspace, Notes, and more. Tap the \u229E button on the right to show or hide tabs.',
-      pos: 'bottom',
-      padX: 0, padY: 0
-    },
-    {
-      target: '.cards',
-      title: 'Your agent fleet',
-      body: 'Sessions appear here as live cards. Each shows status (working, needs input, idle), token usage, last activity, and the current task.',
-      pos: 'top',
-      padX: 20, padY: 10
-    },
-    {
-      target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.card-menu-btn'); },
-      targetFallback: '.cards',
-      title: 'Command & peek',
-      body: 'Send messages and use quick-action chips right on the card. Tap a session name or the \u22EF menu \u2192 Peek for a full terminal view with search, git status, and memory.',
-      pos: 'top'
-    },
-    {
-      target: '#tab-board',
-      title: 'Coordinate with the board',
-      body: 'Plan work across your fleet. Create tasks, assign to sessions, and agents claim them atomically \u2014 no duplicate work.',
-      pos: 'bottom'
-    },
-    {
-      target: '#tab-grid',
-      title: 'Workspace view',
-      body: 'Watch your whole fleet at once. Drag and resize panes, save layouts, and monitor multiple agents side-by-side.',
-      pos: 'bottom'
-    }
+
+  // ── Progressive disclosure: a 4-step core intro, then an opt-in chapter menu.
+  // Chapters go deep on what actually makes amux powerful; nobody is forced
+  // through 15 steps, and the menu tracks which chapters you've seen.
+  var _WT_CORE = [
+    // A single linear, hands-on tour across the eight core surfaces. Each step
+    // un-hides its tab (revealTab) and opens the REAL create flow so empty tabs
+    // get bootstrapped as the user goes — this is a setup wizard, not a slideshow.
+    { action: function() { try { _wtCloseAll(); } catch(e) {} switchView('sessions'); }, wait: 220,
+      target: '.cards', pos: 'top', padX: 20, padY: 10,
+      title: 'Your AI workforce',
+      body: 'Every card is a Claude Code agent in its own terminal — live status, current task, token spend. amux is the operations layer around a whole fleet. Let’s set yours up in under a minute.' },
+    { action: function() { try { _wtCloseAll(); } catch(e) {} switchView('sessions'); openCreate(); }, wait: 380,
+      target: '#create-dir', targetFallback: '#create-overlay', pos: 'bottom',
+      title: '1 — Spin up an agent',
+      body: 'The real create dialog — point an agent at a repo or folder, pick a model, optionally YOLO. Fill it in to launch one now, or hit Next to keep touring.' },
+    { action: function() { try { closeCreate(); } catch(e) {} switchView('sessions'); }, wait: 320,
+      target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); },
+      targetFallback: '.cards', pos: 'top',
+      title: '2 — Steer any agent',
+      body: 'Type to any agent right from its card. Messages QUEUE and deliver at a safe stopping point — you never interrupt work in flight, and delivery is verified so nothing silently vanishes.' },
+    { revealTab: 'scheduler', action: function() { try { _wtCloseAll(); } catch(e) {} switchView('scheduler'); setTimeout(function() { if (!(typeof schedules !== 'undefined' && schedules && schedules.length)) { try { openSchedModal(null); } catch(e) {} } }, 240); }, wait: 560,
+      target: '#sched-title', targetFallback: '#tab-scheduler', pos: 'bottom',
+      title: '3 — Schedule a routine',
+      body: 'An automation is just a prompt on a timer — “every weekday 8am: triage my inbox and email me a digest.” No schedules yet? This form starts your first.' },
+    { revealTab: 'board', action: function() { try { closeSchedModal(); } catch(e) {} switchView('board'); setTimeout(function() { if (!(typeof boardItems !== 'undefined' && boardItems && boardItems.length)) { try { openBoardAdd('backlog'); } catch(e) {} } }, 240); }, wait: 560,
+      target: '#be-title', targetFallback: '#tab-board', pos: 'bottom',
+      title: '4 — The board is your command center',
+      body: 'Tasks live on a shared kanban and agents CLAIM work atomically. Empty board? Add your first task here — it’s the backlog your whole fleet pulls from.' },
+    { revealTab: 'calendar', action: function() { try { closeBoardEdit(); } catch(e) {} switchView('calendar'); setTimeout(function() { if (!(typeof calEvents !== 'undefined' && calEvents && calEvents.length)) { try { openEventModal(null); } catch(e) {} } }, 260); }, wait: 640,
+      target: '#ev-title', targetFallback: '#fc-container', pos: 'bottom',
+      title: '5 — A real calendar',
+      body: 'Agents create events that sync to a private ICS feed you subscribe to from Google or Apple Calendar. No events yet? Create your first right here.' },
+    { revealTab: 'messages', action: function() { try { closeEventModal(); } catch(e) {} switchView('messages'); }, wait: 460,
+      target: '#messages-view', targetFallback: '#tab-messages', pos: 'bottom',
+      title: '6 — Every message, recorded',
+      body: 'Every message to every agent is saved server-side — browse and search the full history from any device, so nothing you told an agent is ever lost.' },
+    { revealTab: 'browser', action: function() { switchView('browser'); }, wait: 460,
+      target: '#browser-view', targetFallback: '#tab-browser', pos: 'bottom',
+      title: '7 — A browser with your logins',
+      body: 'Agents drive a real browser using SAVED auth profiles — log into a site once and they reuse it: pull invoices, publish posts, work dashboards that have no API.' },
+    { revealTab: 'skills', action: function() { switchView('skills'); }, wait: 460,
+      target: '#skills-view', targetFallback: '#tab-skills', pos: 'bottom',
+      title: '8 — Skills: reusable workflows',
+      body: 'Package a workflow once and any agent can run it — deploy steps, review checklists, research harnesses. That’s your command center, set up.' },
+    { menu: true,
+      title: 'That’s the core. Go deeper?',
+      body: 'Four short chapters — pick what matters to you. Each is under a minute.' }
   ];
+  var _WT_CHAPTERS = {
+    fleet: { label: '\u26A1 Run a fleet, not a chatbot', steps: [
+      { target: '#tab-board', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'The board is the source of truth',
+        body: 'Tasks live on a shared kanban. Agents claim work atomically (no duplicates), and status gates keep them honest — “done” requires evidence, “verified” requires proof it works in production.' },
+      { target: '#tab-grid', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Watch everything at once',
+        body: 'The Workspace grid shows every terminal side-by-side — drag, resize, save layouts. Mission control for a dozen agents.' },
+      { target: '#filters-btn', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Slice the fleet',
+        body: 'Filter sessions by model or provider, and flip on log search to grep INSIDE every agent\u2019s terminal output at once — “which agent touched the billing code?” is one search.' }
+    ]},
+    phone: { label: '\u{1F4F1} Your business, from your phone', steps: [
+      { target: '.cards', pos: 'top', padX: 20, padY: 10,
+        title: 'The whole thing is a PWA',
+        body: 'Add amux to your home screen and this exact dashboard — every terminal, every control — runs from your phone. Peeks open instantly and update about every second.' },
+      { target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); }, pos: 'top',
+        title: 'Approve and steer from anywhere',
+        body: 'An agent hit a permission prompt while you\u2019re at lunch? Push alert → open the peek → answer. Sends queue safely, survive offline, and land in the shared history so every device sees them.' },
+      { target: '#tab-messages', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Nothing gets lost',
+        body: 'Every message to every agent is recorded server-side — browse and search the full history from any device, filtered to the session you came from.' }
+    ]},
+    auto: { label: '\u{1F916} Automate the business itself', steps: [
+      { target: '#tab-scheduler', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Schedules: agents on a clock',
+        body: 'Recurring prompts to any agent — daily digests, inbox triage, deploy watchdogs, closed-loop “keep pushing until done” drivers. Every schedule mutation is audit-logged.' },
+      { target: '#tab-calendar', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'A real calendar',
+        body: 'Agents create actual events that sync to a private ICS feed — subscribe from Google or Apple Calendar and your agents\u2019 scheduling shows up next to your real life.' },
+      { target: '#tab-crm', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Email & CRM built in',
+        body: 'Agents send and reply IN-THREAD from your real email accounts (with your signature), read attachments, and log contacts, interactions, and follow-ups in the CRM.' },
+      { target: '#tab-browser', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'A real browser with your logins',
+        body: 'Agents drive a browser with saved auth profiles — pull invoices, publish content, work dashboards that have no API. End-to-end business workflows, unattended.' }
+    ]},
+    build: { label: '\u{1F6E0} Set up your command center (guided)', cleanup: function() {
+        try { closeEventModal(); } catch(e) {}
+        try { closeSchedModal(); } catch(e) {}
+        try { closeBoardEdit(); } catch(e) {}
+        try { closeCreate(); } catch(e) {}
+        try { switchView('sessions'); } catch(e) {}
+      }, steps: [
+      { action: function() { switchView('sessions'); openCreate(); }, wait: 350,
+        target: '#create-dir', targetFallback: '#create-overlay', pos: 'bottom',
+        title: 'Spin up your first agent',
+        body: 'This is the real create dialog. Point an agent at your code \u2014 drop a repo or folder path here; each agent gets its own terminal in that directory.' },
+      { target: '#create-prompt', targetFallback: '#create-overlay', pos: 'bottom',
+        title: 'Give it its first task',
+        body: 'Whatever you type here is the agent\u2019s opening prompt \u2014 \u201Cfix the failing tests\u201D, \u201Ctriage my inbox and draft replies\u201D. Hit Start to create it for REAL, or Next to keep touring.' },
+      { action: function() { try { closeCreate(); } catch(e) {} switchView('board'); setTimeout(function(){ openBoardAdd('backlog'); }, 220); }, wait: 500, revealTab: 'board',
+        target: '#be-title', targetFallback: '#board-edit-overlay', pos: 'bottom',
+        title: 'Add your first task to the board',
+        body: 'The board is your shared command center \u2014 every agent reads and CLAIMS from it (atomically, no duplicates). Add a task here; it\u2019s the backlog your fleet works from. Save it or Next to move on.' },
+      { action: function() { try { closeBoardEdit(); } catch(e) {} switchView('scheduler'); openSchedModal(null); }, wait: 500, revealTab: 'scheduler',
+        target: '#sched-title', targetFallback: '#sched-overlay', pos: 'bottom',
+        title: 'Automate a routine',
+        body: 'An automation is just a prompt on a timer. The command is a message to an agent \u2014 \u201Cevery morning: triage my inbox and email me a digest\u201D. Save it and you\u2019ve automated your first business process.' },
+      { action: function() { try { closeSchedModal(); } catch(e) {} switchView('calendar'); setTimeout(function(){ openEventModal(null); }, 250); }, wait: 650, revealTab: 'calendar',
+        target: '#event-modal .modal', targetFallback: '#fc-container', pos: 'bottom',
+        title: 'Put it on a real calendar',
+        body: 'A real event \u2014 it syncs to the private ICS feed your Google/Apple calendar subscribes to. Agents create these by API, alongside in-thread email and CRM. Save one or Cancel.' },
+      { action: function() { try { closeEventModal(); } catch(e) {} switchView('crm'); }, wait: 450, revealTab: 'crm',
+        target: '#crm-view', targetFallback: '.tab-bar-outer', pos: 'top',
+        title: 'Your people live here',
+        body: 'CRM is now on your tab bar. Agents log contacts, interactions, and follow-ups here as they run outreach and support \u2014 tap \u201C+ contact\u201D to add your first. Finish to return to Sessions with your command center set up.' }
+    ]}
+  };
+  var _wtSteps = _WT_CORE;
+  var _wtChapterKey = null;   // non-null while inside a chapter
+
+  function _wtChDone() { try { return JSON.parse(localStorage.getItem(WT_CH_KEY) || '{}'); } catch(e) { return {}; } }
+  function _wtChMark(k) { try { var d = _wtChDone(); d[k] = 1; localStorage.setItem(WT_CH_KEY, JSON.stringify(d)); } catch(e) {} }
 
   function _wtGetTarget(step) {
     var s = _wtSteps[step];
+    if (!s || s.menu) return null;
     var el = typeof s.target === 'function' ? s.target() : document.querySelector(s.target);
+    if (el && !el.offsetParent) el = null;   // hidden (customizer-removed tab) → fallback
     if (!el && s.targetFallback) el = document.querySelector(s.targetFallback);
     return el;
   }
@@ -36993,59 +39945,77 @@ async function pullFromRemote(btn) {
     var el = _wtGetTarget(_wtStep);
     var spotlight = document.getElementById('wt-spotlight');
     var tooltip = document.getElementById('wt-tooltip');
-    if (!el) { spotlight.style.display = 'none'; return; }
+    if (!s) return;
 
-    var r = _cssRect(el);
-    var pad = 8;
-    var padX = s.padX || pad;
-    var padY = s.padY || pad;
-    spotlight.style.display = 'block';
-    spotlight.style.top = (r.top - padY) + 'px';
-    spotlight.style.left = (r.left - padX) + 'px';
-    spotlight.style.width = (r.width + padX * 2) + 'px';
-    spotlight.style.height = (r.height + padY * 2) + 'px';
-
-    // Build tooltip content
-    var dots = '';
-    for (var i = 0; i < _wtSteps.length; i++) {
-      var cls = 'wt-dot';
-      if (i < _wtStep) cls += ' done';
-      if (i === _wtStep) cls += ' active';
-      dots += '<div class="' + cls + '"></div>';
+    if (s.menu || !el) { spotlight.style.display = 'none'; }
+    else {
+      var r = _cssRect(el);
+      var padX = s.padX || 8, padY = s.padY || 8;
+      spotlight.style.display = 'block';
+      spotlight.style.top = (r.top - padY) + 'px';
+      spotlight.style.left = (r.left - padX) + 'px';
+      spotlight.style.width = (r.width + padX * 2) + 'px';
+      spotlight.style.height = (r.height + padY * 2) + 'px';
     }
-    var isFirst = _wtStep === 0;
-    var isLast = _wtStep === _wtSteps.length - 1;
-    tooltip.innerHTML =
-      '<div><span class="wt-step-num">' + (_wtStep + 1) + '</span><span class="wt-title">' + s.title + '</span></div>' +
-      '<div class="wt-body">' + s.body + '</div>' +
-      '<div class="wt-footer">' +
-        '<div class="wt-dots">' + dots + '</div>' +
-        '<div class="wt-btns">' +
-          '<button class="wt-skip" onclick="_wtDismiss()">Skip</button>' +
-          (isFirst ? '' : '<button class="wt-btn" onclick="_wtPrev()">Back</button>') +
-          (isLast
-            ? '<button class="wt-btn wt-btn-primary" onclick="_wtDismiss()">Done</button>'
-            : '<button class="wt-btn wt-btn-primary" onclick="_wtNext()">Next</button>') +
-        '</div>' +
-      '</div>';
 
-    // Position tooltip
-    var tw = tooltip.offsetWidth;
-    var th = tooltip.offsetHeight;
-    var gap = 14;
-    var top, left;
-    if (s.pos === 'bottom') {
-      top = r.bottom + padY + gap;
-      left = r.left + r.width / 2 - tw / 2;
+    var html = '<div>' + (s.menu ? '' : '<span class="wt-step-num">' + (_wtStep + 1) + '</span>') +
+               '<span class="wt-title">' + s.title + '</span></div>' +
+               '<div class="wt-body">' + s.body + '</div>';
+    if (s.menu) {
+      var done = _wtChDone();
+      html += '<div class="wt-chapters">';
+      Object.keys(_WT_CHAPTERS).forEach(function(k) {
+        html += '<button class="wt-chapter' + (done[k] ? ' done' : '') + '" onclick="_wtChapter(\'' + k + '\')">' +
+                _WT_CHAPTERS[k].label + (done[k] ? ' <span class="wt-ch-check">\u2713</span>' : '') + '</button>';
+      });
+      html += '</div><div class="wt-footer"><div></div><div class="wt-btns">' +
+              '<button class="wt-btn wt-btn-primary" onclick="_wtDismiss()">Finish</button></div></div>';
     } else {
-      top = r.top - padY - gap - th;
-      left = r.left + r.width / 2 - tw / 2;
+      var dots = '';
+      for (var i = 0; i < _wtSteps.length; i++) {
+        var cls = 'wt-dot';
+        if (i < _wtStep) cls += ' done';
+        if (i === _wtStep) cls += ' active';
+        dots += '<div class="' + cls + '"></div>';
+      }
+      var isFirst = _wtStep === 0;
+      var isLast = _wtStep === _wtSteps.length - 1;
+      var nextLabel = isLast ? (_wtChapterKey ? 'Chapters' : 'Done') : 'Next';
+      html += '<div class="wt-footer"><div class="wt-dots">' + dots + '</div><div class="wt-btns">' +
+              '<button class="wt-skip" onclick="_wtDismiss()">Skip</button>' +
+              (isFirst ? '' : '<button class="wt-btn" onclick="_wtPrev()">Back</button>') +
+              '<button class="wt-btn wt-btn-primary" onclick="_wtNext()">' + nextLabel + '</button>' +
+              '</div></div>';
     }
-    // Clamp to viewport
-    if (left < 12) left = 12;
-    if (left + tw > window.innerWidth - 12) left = window.innerWidth - 12 - tw;
-    if (top < 12) { top = r.bottom + padY + gap; }
-    if (top + th > window.innerHeight - 12) { top = r.top - padY - gap - th; }
+    tooltip.innerHTML = html;
+
+    // Fit + position within the VISIBLE (visual) viewport so the tooltip is
+    // never clipped — pinch-zoom / small screens pushed the Next button off the
+    // right/bottom (2026-07-18). visualViewport gives the true visible box (and
+    // pan offset under zoom); cap width/height to it so all text + buttons show.
+    var vv = window.visualViewport;
+    var vw = vv ? vv.width : window.innerWidth;
+    var vh = vv ? vv.height : window.innerHeight;
+    var ox = vv ? vv.offsetLeft : 0;
+    var oy = vv ? vv.offsetTop : 0;
+    tooltip.style.maxWidth = Math.min(340, vw - 24) + 'px';
+    tooltip.style.maxHeight = (vh - 24) + 'px';
+    tooltip.style.overflowY = 'auto';
+    var tw = tooltip.offsetWidth, th = tooltip.offsetHeight, gap = 14, top, left;
+    if (s.menu || !el) {
+      top = oy + vh / 2 - th / 2;
+      left = ox + vw / 2 - tw / 2;
+    } else {
+      var r2 = _cssRect(el);
+      var padY2 = s.padY || 8;
+      if (s.pos === 'bottom') { top = r2.bottom + padY2 + gap; left = r2.left + r2.width / 2 - tw / 2; }
+      else { top = r2.top - padY2 - gap - th; left = r2.left + r2.width / 2 - tw / 2; }
+    }
+    var minX = ox + 12, maxX = ox + vw - 12, minY = oy + 12, maxY = oy + vh - 12;
+    if (left + tw > maxX) left = maxX - tw;
+    if (left < minX) left = minX;
+    if (top + th > maxY) top = maxY - th;
+    if (top < minY) top = minY;
     tooltip.style.top = top + 'px';
     tooltip.style.left = left + 'px';
   }
@@ -37055,18 +40025,80 @@ async function pullFromRemote(btn) {
     _wtPosition();
   }
 
+  // Close every create/edit modal the tour may have opened, so advancing to
+  // the next surface (or dismissing) never leaves a stacked dialog behind.
+  function _wtCloseAll() {
+    try { closeCreate(); } catch(e) {}
+    try { closeSchedModal(); } catch(e) {}
+    try { closeBoardEdit(); } catch(e) {}
+    try { closeEventModal(); } catch(e) {}
+  }
+  function _wtCleanup() {
+    _wtCloseAll();
+    var ch = _wtChapterKey && _WT_CHAPTERS[_wtChapterKey];
+    if (ch && ch.cleanup) { try { ch.cleanup(); } catch(e) {} }
+  }
+  // Enter a step: run its live action (open the real dialog/tab) first, then
+  // position once the UI has settled — this is what makes the guided-build
+  // chapter walk REAL forms instead of pointing at closed doors.
+  // Make the tab a step highlights actually VISIBLE — a user may have hidden it
+  // via the customizer, and the tour should reveal it (not fall back to the tab
+  // bar) so the spotlight lands on the real control and the tab stays on their
+  // bar afterward (bootstrapping the command center). Reveal fires for a
+  // `#tab-<id>` target or an explicit step.revealTab.
+  function _wtRevealTabFor(st) {
+    if (!st || typeof hiddenTabs === 'undefined') return;
+    var id = st.revealTab;
+    if (!id && typeof st.target === 'string') {
+      var m = /^#tab-([a-z-]+)$/.exec(st.target);
+      if (m) id = m[1];
+    }
+    if (id && hiddenTabs.has(id)) {
+      hiddenTabs.delete(id);
+      try { _saveHiddenTabs(); } catch(e) {}
+      try { _applyTabVisibility(); } catch(e) {}
+    }
+  }
+  function _wtGo() {
+    var st = _wtSteps[_wtStep];
+    _wtRevealTabFor(st);   // un-hide the target tab BEFORE acting/positioning
+    if (st && st.action) {
+      try { st.action(); } catch(e) {}
+      setTimeout(_wtPosition, st.wait || 300);
+    } else {
+      _wtPosition();
+    }
+  }
+  window._wtChapter = function(key) {
+    _wtChapterKey = key;
+    _wtSteps = _WT_CHAPTERS[key].steps;
+    _wtStep = 0;
+    _wtGo();
+  };
   window._wtNext = function() {
-    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtPosition(); }
+    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtGo(); return; }
+    if (_wtChapterKey) {           // chapter finished → back to the menu, marked done
+      _wtChMark(_wtChapterKey);
+      _wtCleanup();
+      _wtChapterKey = null;
+      _wtSteps = _WT_CORE;
+      _wtStep = _WT_CORE.length - 1;   // the menu step
+      _wtPosition();
+      return;
+    }
+    _wtDismiss();
   };
   window._wtPrev = function() {
-    if (_wtStep > 0) { _wtStep--; _wtPosition(); }
+    if (_wtStep > 0) { _wtStep--; _wtGo(); }
   };
   window._wtDismiss = function() {
     document.getElementById('wt-overlay').classList.remove('open');
+    _wtCleanup();
+    _wtChapterKey = null; _wtSteps = _WT_CORE;
     try { localStorage.setItem(WT_KEY, '1'); } catch(e) {}
   };
   window._wtRestart = function() {
-    _wtStep = 0;
+    _wtChapterKey = null; _wtSteps = _WT_CORE; _wtStep = 0;
     try { localStorage.removeItem(WT_KEY); } catch(e) {}
     _wtShow();
   };
@@ -37080,11 +40112,16 @@ async function pullFromRemote(btn) {
   }, 1500);
 
   // Reposition on resize/scroll
+  // Null-guarded: the capture-phase scroll listener fires for EVERY element's
+  // scroll (incl. peek-body); if the overlay is ever absent it must not throw
+  // an exception per scroll frame.
   window.addEventListener('resize', function() {
-    if (document.getElementById('wt-overlay').classList.contains('open')) _wtPosition();
+    const el = document.getElementById('wt-overlay');
+    if (el && el.classList.contains('open')) _wtPosition();
   });
   window.addEventListener('scroll', function() {
-    if (document.getElementById('wt-overlay').classList.contains('open')) _wtPosition();
+    const el = document.getElementById('wt-overlay');
+    if (el && el.classList.contains('open')) _wtPosition();
   }, true);
 })();
 </script>
@@ -37107,6 +40144,78 @@ function _metricsApplySidebarState() {
   if (!view || !sidebar) return;
   sidebar.classList.toggle('collapsed', !_metricsSidebarOpen);
   view.classList.toggle('sidebar-collapsed', !_metricsSidebarOpen);
+}
+
+// \u2500\u2500 Cost / observability \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function _fmtUsd(v) {
+  v = +v || 0;
+  if (v >= 1000) return '$' + (v/1000).toFixed(1) + 'k';
+  if (v >= 1) return '$' + v.toFixed(2);
+  return '$' + v.toFixed(3);
+}
+function _fmtTok(n) {
+  n = +n || 0;
+  if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return String(n);
+}
+function _costBars(rows, labelKey, opts) {
+  opts = opts || {};
+  if (!rows || !rows.length) return '<div style="color:var(--dim);font-size:0.82rem;padding:8px 0;">No data.</div>';
+  const max = Math.max(...rows.map(r => r.cost || 0), 0.0001);
+  return rows.slice(0, opts.limit || 30).map(r => {
+    const label = esc(String(r[labelKey] != null && r[labelKey] !== '' ? r[labelKey] : (opts.emptyLabel || '\u2014')));
+    const pct = Math.max(2, Math.round(100 * (r.cost || 0) / max));
+    const sub = (r.tokens != null ? _fmtTok(r.tokens) + ' tok' : '') + (r.turns != null ? ' \u00B7 ' + r.turns + ' turns' : '');
+    const click = opts.onSession ? ` onclick="_costOpenSession('${escJs(r[labelKey]||'')}')" style="cursor:pointer;"` : '';
+    return `<div class="cost-row"${click}>
+      <div class="cost-row-top"><span class="cost-row-label">${label}</span><span class="cost-row-cost">${_fmtUsd(r.cost)}</span></div>
+      <div class="cost-bar-track"><div class="cost-bar-fill" style="width:${pct}%;"></div></div>
+      <div class="cost-row-sub">${sub}</div>
+    </div>`;
+  }).join('');
+}
+function _costRender(d, opts) {
+  opts = opts || {};
+  const cards = `<div class="cost-cards">
+    <div class="cost-card"><div class="cost-card-v">${_fmtUsd(d.total_cost)}</div><div class="cost-card-l">est. cost${opts.perSession?'':' \u00B7 on Max'}</div></div>
+    <div class="cost-card"><div class="cost-card-v">${_fmtTok(d.total_tokens)}</div><div class="cost-card-l">tokens</div></div>
+    <div class="cost-card"><div class="cost-card-v">${(d.total_turns||0).toLocaleString()}</div><div class="cost-card-l">turns</div></div>
+    <div class="cost-card"><div class="cost-card-v">${d.cache_hit_pct||0}%</div><div class="cost-card-l">cache hit</div></div>
+  </div>`;
+  const sec = (title, body) => `<div class="cost-section"><div class="cost-section-h">${title}</div>${body}</div>`;
+  let html = cards;
+  html += sec('By task', _costBars(d.by_task, 'title', { limit: 20, emptyLabel: 'Ambient (untasked)' }));
+  if (!opts.perSession) html += sec('By session', _costBars(d.by_session, 'session', { limit: 20, onSession: true, emptyLabel: '(ad-hoc)' }));
+  html += sec('By model', _costBars(d.by_model, 'model', { limit: 8 }));
+  // by-day sparkline bars
+  const days = d.by_day || [];
+  const dmax = Math.max(...days.map(x => x.cost || 0), 0.0001);
+  const dayBars = days.length ? '<div class="cost-days-chart">' + days.map(x =>
+    `<div class="cost-day" title="${x.day}: ${_fmtUsd(x.cost)}"><div class="cost-day-fill" style="height:${Math.max(3,Math.round(100*(x.cost||0)/dmax))}%;"></div></div>`
+  ).join('') + '</div>' + `<div class="cost-day-labels"><span>${days[0]?.day||''}</span><span>${days[days.length-1]?.day||''}</span></div>` : '<div style="color:var(--dim);font-size:0.82rem;">No data.</div>';
+  html += sec('By day', dayBars);
+  html += `<div style="font-size:0.68rem;color:var(--dim);margin-top:14px;line-height:1.5;">Cost is the equivalent per-token API price (from ~/.amux/prices.json) applied to every turn amux read from the transcripts \u2014 mostly cache reads of large contexts. Attributed to a task while its board card was <b>In&nbsp;Progress</b> for that session; the rest is \u201CAmbient\u201D. No model was asked anything to compute this.</div>`;
+  return html;
+}
+function _costLoad() {
+  const days = document.getElementById('cost-days')?.value || '7';
+  const body = document.getElementById('cost-body');
+  fetch(API + '/api/observability?days=' + encodeURIComponent(days))
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:20px;">' + esc(d.error) + '</div>'; return; }
+      body.innerHTML = _costRender(d, {});
+      const up = document.getElementById('cost-updated');
+      if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    })
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:20px;">Failed to load cost data.</div>'; });
+}
+function _costOpenSession(name) {
+  if (!name) return;
+  switchView('sessions');
+  setTimeout(() => { try { openPeek(name); setTimeout(() => setPeekTab('cost'), 400); } catch(e) {} }, 100);
 }
 
 function _metricsLoad() {
@@ -38098,7 +41207,7 @@ let _msgsOffset = 0;
 const _MSGS_PAGE = 200;
 let _msgsDone = false;
 
-async function _messagesLoad(reset) {
+async function _messagesLoad(reset, presetSession) {
   if (reset !== false) { _msgsData = []; _msgsOffset = 0; _msgsDone = false; }
   try {
     const r = await fetch(API + '/api/history?limit=' + _MSGS_PAGE + '&offset=' + _msgsOffset);
@@ -38110,10 +41219,14 @@ async function _messagesLoad(reset) {
     // Session filter options (from loaded data)
     const sel = document.getElementById('msgs-session-filter');
     if (sel) {
-      const cur = sel.value;
+      // Opening from a session (presetSession) scopes the filter to that session;
+      // plain refresh/paginate calls (no presetSession) keep the current choice.
+      const cur = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
       const names = [...new Set(_msgsData.map(m => m.session).filter(Boolean))].sort();
       sel.innerHTML = '<option value="">All sessions</option>' +
         names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+      // A preset session with no messages in the loaded page has no <option>;
+      // the select then falls back to "All sessions" on its own.
     }
     _messagesRender();
   } catch (e) {
@@ -41690,8 +44803,11 @@ window.addEventListener('load', _pinnedNotesRefresh);
 <div id="wt-overlay">
   <div id="wt-backdrop"></div>
   <div id="wt-spotlight"></div>
-  <div id="wt-tooltip"></div>
 </div>
+<!-- Sibling, NOT a child: inside the overlay's stacking context the tooltip sat
+     at the overlay's z (8000) and the guided-build dialogs lifted to 8002 hid
+     the guidance text entirely. As a sibling it stacks above them. -->
+<div id="wt-tooltip"></div>
 
 <!-- DevTools Panel -->
 <div id="devtools-panel">
@@ -41750,7 +44866,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.114';
+const CACHE = 'amux-v0.9.169';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42137,6 +45253,15 @@ class CCHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_raw(self, json_str, status=200):
+        body = json_str.encode() if isinstance(json_str, str) else json_str
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _json_etag(self, data):
         """_json + a content-hash ETag with If-None-Match → 304 support, so a
         client can skip re-transferring an unchanged peek. For an idle session the
@@ -42147,12 +45272,18 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_response(304)
             self._cors()
             self.send_header("ETag", etag)
+            # no-store: the client manages If-None-Match explicitly, so the browser
+            # must NEVER serve this live payload from its own HTTP cache — opening a
+            # peek fetches with no If-None-Match, and a cached copy showed stale
+            # terminal until a full page refresh ("have to refresh to get latest").
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         try:
@@ -42359,7 +45490,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     session  = tl.get("session", session)
                     detail   = tl.get("detail",  "")
                     _req_tl.event = None
-                _emit_event(etype, action, target, session, detail, self._resp_status, ip)
+                _emit_http_event(etype, action, target, session, detail, self._resp_status, ip)
 
     def _check_auth(self, method: str, path: str) -> bool:
         """Return True if request is authorized. Sends 401 and returns False if not."""
@@ -42502,8 +45633,46 @@ class CCHandler(BaseHTTPRequestHandler):
         # ── Urgent owner alert (use sparingly) + its config ──
         if path == "/api/alert/owner" and method == "POST":
             body = self._read_body()
+            # origin = the SERVER-VERIFIED sender (tmux identity via X-Amux-Session);
+            # body 'session' is only the CLAIMED origin. The ledger records both so a
+            # safety-critical alert's provenance is first-hand verifiable (AMUX-1795).
+            _origin = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
             return self._json(_send_urgent_alert(
-                body.get("message", ""), body.get("session", ""), body.get("reason", "")))
+                body.get("message", ""), body.get("session", ""), body.get("reason", ""),
+                origin=_origin))
+        # GET /api/alert/owner — the FIRST-HAND ledger of owner alerts. Query this to
+        # verify a safety-critical action actually happened and by WHOM (server-
+        # verified origin), instead of trusting entangled conversation memory
+        # (AMUX-1795 / AMUX-1730). Optional ?q=<substring> filters message/reason;
+        # ?limit=N (default 50). Rows flag origin≠claimed provenance mismatches.
+        if path == "/api/alert/owner" and method == "GET":
+            q = (qs.get("q", [""])[0] or "").strip().lower()
+            try:
+                limit = max(1, min(500, int(qs.get("limit", ["50"])[0])))
+            except Exception:
+                limit = 50
+            db = get_db()
+            rows = db.execute(
+                "SELECT id, ts, origin, claimed, message, reason, channels, deduped "
+                "FROM owner_alerts ORDER BY ts DESC LIMIT ?", (limit * 4 if q else limit,)
+            ).fetchall()
+            out = []
+            for r in rows:
+                if q and q not in (r["message"] or "").lower() and q not in (r["reason"] or "").lower():
+                    continue
+                try:
+                    ch = json.loads(r["channels"] or "{}")
+                except Exception:
+                    ch = {}
+                out.append({
+                    "id": r["id"], "ts": r["ts"], "origin": r["origin"], "claimed": r["claimed"],
+                    "message": r["message"], "reason": r["reason"], "channels": ch,
+                    "deduped": bool(r["deduped"]),
+                    "provenance_mismatch": bool(r["origin"] and r["claimed"] and r["origin"] != r["claimed"]),
+                })
+                if len(out) >= limit:
+                    break
+            return self._json({"alerts": out, "count": len(out), "query": q or None})
         if path == "/api/alert/config":
             if method == "GET":
                 return self._json({
@@ -42724,7 +45893,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 cached = _peek_cache.get(session_name)
                 if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
-                output = tmux_capture(session_name, lines)
+                output = _strip_scroll_pill(tmux_capture(session_name, lines))
                 tmux_lines = len(output.splitlines()) if output else 0
                 if not output or (tmux_lines < 30 and tmux_lines < lines // 4):
                     log_out = load_session_log(session_name, tail_bytes=65_536)
@@ -42951,7 +46120,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                         _sse_cache_lock.release()
                                 threading.Thread(target=_bg_refresh, daemon=True).start()
                                 released_to_bg = True
-                                return self._json(sc["data"])
+                                return self._json_raw(sc["json"])
                             # Cold cache — must block.
                             data = list_sessions()
                             sc["data"] = data
@@ -42963,13 +46132,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 else:
                     # Another thread is refreshing. Return stale data immediately
                     # if we have any, otherwise wait briefly for the refresher.
-                    if sc["data"] is not None:
-                        return self._json(sc["data"])
+                    if sc["json"]:
+                        return self._json_raw(sc["json"])
                     for _ in range(100):  # up to 10s for cold start
                         time.sleep(0.1)
-                        if sc["data"] is not None:
+                        if sc["json"]:
                             break
-            return self._json(sc["data"] if sc["data"] is not None else [])
+            return self._json_raw(sc["json"]) if sc["json"] else self._json([])
 
         # GET /api/sessions-git — bulk git info for all sessions (avoids 80+ individual requests)
         if method == "GET" and path == "/api/sessions-git":
@@ -43772,6 +46941,33 @@ class CCHandler(BaseHTTPRequestHandler):
                 pass
             return self._json({"ok": True})
 
+        if method == "GET" and path == "/api/events/log":
+            # Append-only execution log (issue #48). ?session= &type= filter;
+            # (path is /api/events/log because /api/events is the SSE stream)
+            # ?since_id=N tails ascending from that id (pollers); default =
+            # latest N descending.
+            db = get_db()
+            _sess = (qs.get("session", [""])[0] or "").strip()
+            _typ = (qs.get("type", [""])[0] or "").strip()
+            _since = int(qs.get("since_id", ["0"])[0] or 0)
+            _lim = min(int(qs.get("limit", ["100"])[0] or 100), 1000)
+            _where, _args = [], []
+            if _sess: _where.append("session=?"); _args.append(_sess)
+            if _typ: _where.append("type LIKE ?"); _args.append(_typ + "%")
+            if _since: _where.append("id > ?"); _args.append(_since)
+            _w = (" WHERE " + " AND ".join(_where)) if _where else ""
+            _order = "ASC" if _since else "DESC"
+            rows = db.execute(
+                f"SELECT id, ts, session, type, data, idem, source FROM session_events{_w} "
+                f"ORDER BY id {_order} LIMIT ?", (*_args, _lim)).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                try: d["data"] = json.loads(d["data"]) if d["data"] else None
+                except Exception: pass
+                out.append(d)
+            return self._json(out)
+
         if path == "/api/history" or path.startswith("/api/history/"):
             if method == "GET" and path == "/api/history":
                 limit = int(qs.get("limit", ["500"])[0])
@@ -44056,13 +47252,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     break
                 _candidate = _candidate.parent
             try:
-                r = subprocess.run(
-                    ["git", "pull", "--ff-only"],
-                    cwd=str(repo_dir), capture_output=True, text=True, timeout=30,
-                )
-                output = (r.stdout + r.stderr).strip()
-                slog(f"[pull] rc={r.returncode} {output[:200]}")
-                if r.returncode == 0:
+                ok, output = _git_pull_with_fallback(str(repo_dir))
+                slog(f"[pull] ok={ok} {output[:200]}")
+                if ok:
                     return self._json({"ok": True, "output": output})
                 if "not a git repository" in output:
                     return self._json({"ok": False, "output": "No git repo here — updates deploy automatically."})
@@ -44073,6 +47265,20 @@ class CCHandler(BaseHTTPRequestHandler):
         # GET /api/metrics — system + per-session resource metrics
         if method == "GET" and path == "/api/metrics":
             return self._json(get_system_metrics())
+
+        # GET /api/observability?days=7&session=X — cost/token rollup by task,
+        # session, model, and day (dollar cost from the pricing table). The whole
+        # thing is derived from JSONL + board — no model calls.
+        if method == "GET" and path == "/api/observability":
+            try:
+                days = max(1, min(365, int(qs.get("days", ["7"])[0])))
+            except Exception:
+                days = 7
+            sess = (qs.get("session", [""])[0] or "").strip()
+            try:
+                return self._json(observability_rollup(days=days, session=sess))
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
 
         # GET /api/speedtest/download?bytes=N — stream N bytes for download speed test
         if method == "GET" and path == "/api/speedtest/download":
@@ -44242,6 +47448,24 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 500)
 
         # GET /api/file?path=...&cwd=...
+        # GET /api/library?path=<dir> — flat metadata index of an ebook folder
+        # (Calibre metadata.db or generic .opf scan) for the library grid view.
+        if method == "GET" and path == "/api/library":
+            dpath = qs.get("path", [""])[0]
+            if not dpath:
+                return self._json({"error": "missing path"}, 400)
+            d = Path(dpath).expanduser()
+            if not d.is_absolute():
+                return self._json({"error": "absolute path required"}, 400)
+            if not _is_path_allowed(d):
+                return self._json({"error": "access denied"}, 403)
+            if not d.is_dir():
+                return self._json({"error": "not a directory"}, 404)
+            try:
+                return self._json(_lib_index(d))
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
         if method == "GET" and path == "/api/file":
             fpath = qs.get("path", [""])[0]
             cwd = qs.get("cwd", [""])[0]
@@ -44298,6 +47522,22 @@ class CCHandler(BaseHTTPRequestHandler):
                                        "profile": meta.get("profile"), "task": meta.get("task")})
                 if ext in AUDIO_MIMES:
                     return self._json({"path": str(p), "is_audio": True, "mime": AUDIO_MIMES[ext], "size": p.stat().st_size})
+                # Ebooks: EPUB/FB2/CBZ convert to inline HTML (renders + caches
+                # offline); proprietary formats become an ebook download card.
+                if ext in EBOOK_EXTS:
+                    fsize = p.stat().st_size
+                    kind = ext.lstrip(".")
+                    cap = 60_000_000 if ext == ".cbz" else 25_000_000
+                    if ext in EBOOK_RENDERABLE and fsize <= cap:
+                        try:
+                            html, title = ebook_to_html(p.read_bytes(), ext)
+                            return self._json({"path": str(p), "is_ebook": True, "ebook_kind": kind,
+                                               "content": html, "title": title, "size": fsize})
+                        except Exception as _ee:
+                            slog(f"[ebook] convert failed for {p.name}: {_ee}")
+                    # too big or unsupported/proprietary → download card
+                    return self._json({"path": str(p), "is_binary": True, "is_ebook": True,
+                                       "ebook_kind": kind, "size": fsize, "ext": ext})
                 # Detect other binary files (non-printable bytes in first 8KB)
                 try:
                     sample = p.read_bytes()[:8192]
@@ -44873,7 +48113,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                             _sse_cache_lock.release()
                                     threading.Thread(target=_bg_board, daemon=True).start()
                                     released_to_bg = True
-                                    return self._json(bc["data"])
+                                    return self._json_raw(bc["json"])
                                 data = _load_board()
                                 bc["data"] = data
                                 bc["json"] = json.dumps(data, sort_keys=True)
@@ -44882,13 +48122,13 @@ class CCHandler(BaseHTTPRequestHandler):
                             if not released_to_bg:
                                 _sse_cache_lock.release()
                     else:
-                        if bc["data"] is not None:
-                            return self._json(bc["data"])
+                        if bc["json"]:
+                            return self._json_raw(bc["json"])
                         for _ in range(100):
                             time.sleep(0.1)
-                            if bc["data"] is not None:
+                            if bc["json"]:
                                 break
-                return self._json(bc["data"] if bc["data"] is not None else [])
+                return self._json_raw(bc["json"]) if bc["json"] else self._json([])
 
             # POST /api/board — create issue
             if method == "POST" and path == "/api/board":
@@ -45102,6 +48342,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 if cur.rowcount == 0:
                     return self._json({"error": "claim failed — taken by another session"}, 409)
                 _board_changed()
+                _emit_event(session_name, "task.claimed", {"issue": bid}, source="api-claim")
                 return self._json(_item_by_id(bid))
 
             # PATCH/DELETE /api/board/<id>
@@ -45294,20 +48535,49 @@ class CCHandler(BaseHTTPRequestHandler):
                                     (bid, tag),
                                 )
                     db.commit()
-                    _board_changed()
-                    updated_item = _item_by_id(bid)
-                    _gcal_sync_bg(bid, title=updated_item.get("title", ""),
-                                  due=updated_item.get("due", "") or "",
-                                  due_time=updated_item.get("due_time", "") or "",
-                                  desc=updated_item.get("desc", ""),
-                                  status=updated_item.get("status", ""))
-                    # Auto-notify the (possibly new) assignee if the card is now an
-                    # agent task waiting for pickup. Idempotent via the notified flag.
-                    new_session = updated_item.get("session") or ""
-                    if (new_session
-                            and updated_item.get("owner_type") == "agent"
-                            and updated_item.get("status") in ("todo", "backlog")):
-                        _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
+                    # ── POST-COMMIT: best-effort side effects only ──────────────
+                    # The write has LANDED. Nothing below may turn a committed PATCH
+                    # into a 500: that's a FALSE FAILURE (write succeeded, response
+                    # threw), and a blind retry could double-apply a non-idempotent
+                    # PATCH. (orch, 2026-07-20: an observability hook that indexed a
+                    # raw sqlite3.Row between commit and response caused exactly this.)
+                    # Every side effect is isolated; the item is always returned.
+                    try:
+                        _board_changed()
+                    except Exception:
+                        pass
+                    try:
+                        updated_item = _item_by_id(bid)
+                    except Exception:
+                        updated_item = None
+                    if not updated_item:
+                        updated_item = {"id": bid, "status": body.get("status", "")}
+                    try:
+                        if body.get("status") and prior:
+                            # Observability: track when this task was actively 'doing'
+                            # by its session, so ledger turns in that window bill to it.
+                            _record_task_window(bid, updated_item.get("title", ""),
+                                                updated_item.get("session") or "",
+                                                updated_item.get("status", ""), prior["status"])
+                        if body.get("status"):
+                            _emit_event(updated_item.get("session") or "",
+                                        "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
+                                        {"issue": bid, "status": body["status"]}, source="api-board")
+                        _gcal_sync_bg(bid, title=updated_item.get("title", ""),
+                                      due=updated_item.get("due", "") or "",
+                                      due_time=updated_item.get("due_time", "") or "",
+                                      desc=updated_item.get("desc", ""),
+                                      status=updated_item.get("status", ""))
+                        # Auto-notify the (possibly new) assignee if the card is now an
+                        # agent task waiting for pickup. Idempotent via the notified flag.
+                        new_session = updated_item.get("session") or ""
+                        if (new_session
+                                and updated_item.get("owner_type") == "agent"
+                                and updated_item.get("status") in ("todo", "backlog")):
+                            _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
+                    except Exception as _e:
+                        slog(f"[board-patch] post-commit side effect failed for {bid} "
+                             f"(write already committed): {_e}")
                     return self._json(updated_item)
 
                 if method == "DELETE":
@@ -45365,6 +48635,23 @@ class CCHandler(BaseHTTPRequestHandler):
                     "FROM schedule_runs sr LEFT JOIN schedules s ON s.id = sr.schedule_id "
                     "ORDER BY sr.ran_at DESC LIMIT 50"
                 ).fetchall()
+                self._json([dict(r) for r in rows])
+                return
+
+            # GET /api/schedules/audit[?id=SCHED-N] — enabled/field mutation trail
+            # (attribution forensics, AMUX-1735). ts is UTC unix, same clock as runs.
+            if method == "GET" and path == "/api/schedules/audit":
+                db = get_db()
+                sid = (qs.get("id", [""])[0] or "").strip()
+                lim = min(int(qs.get("limit", ["100"])[0] or 100), 500)
+                if sid:
+                    rows = db.execute(
+                        "SELECT a.*, s.title FROM schedule_audit a LEFT JOIN schedules s ON s.id=a.schedule_id "
+                        "WHERE a.schedule_id=? ORDER BY a.ts DESC LIMIT ?", (sid, lim)).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT a.*, s.title FROM schedule_audit a LEFT JOIN schedules s ON s.id=a.schedule_id "
+                        "ORDER BY a.ts DESC LIMIT ?", (lim,)).fetchall()
                 self._json([dict(r) for r in rows])
                 return
 
@@ -45447,9 +48734,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
                 _run_schedule(sched)
-                now_str = _dt.now().strftime("%Y-%m-%dT%H:%M")
+                _run_ts = int(_time.time())
                 db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
-                           (now_str, int(_time.time()), sid_for_run))
+                           (_run_ts, _run_ts, sid_for_run))   # last_run = UTC unix (AMUX-1736)
                 db.commit()
                 self._json({"ok": True, "ran": sched["title"]})
                 return
@@ -45492,6 +48779,18 @@ class CCHandler(BaseHTTPRequestHandler):
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
                 body = self._read_body()
+                _AUDIT_FIELDS = ("enabled","session","command","schedule_expr","done_action","trigger_on","kind")
+                _old_vals = {k: sched.get(k) for k in _AUDIT_FIELDS}
+                # Attribution can never be truly anonymous (AMUX-1765): explicit
+                # `by` wins, else the cloud user-email header, else the client IP.
+                # The "recurring UNATTRIBUTED disabler" was the DASHBOARD toggle —
+                # it sent no `by`, so human UI flips looked like a rogue script to
+                # the guardian. Now every flip carries at least its origin.
+                _by = str(body.get("by") or body.get("source_session") or "").strip()
+                if not _by:
+                    _by = (self.headers.get("X-Amux-User-Email", "").strip()
+                           or ("ip:" + (self.client_address[0] if self.client_address else "?")))
+                _by = _by[:64]
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
@@ -45520,6 +48819,12 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["updated"], sched_id)
                 )
                 db.commit()
+                # Attribution/audit — log every changed tracked field (esp. enabled)
+                # so a schedule mutation is never unattributed again (AMUX-1735).
+                # Callers should pass {"by":"<session>"}; else it records UNATTRIBUTED.
+                for _k in _AUDIT_FIELDS:
+                    if str(_old_vals.get(_k)) != str(sched.get(_k)):
+                        _sched_audit(sched_id, _k, _old_vals.get(_k), sched.get(_k), "api-patch", _by)
                 _push_ical_bg()   # schedule changed → refresh calendar feed
                 self._json(sched)
                 return
@@ -46358,6 +49663,44 @@ class CCHandler(BaseHTTPRequestHandler):
                     if res.get("error"):
                         return self._json(res, 502)
                     return self._json(res.get("messages", []))
+                # No account filter: serve the Gmail-connected accounts via the
+                # API, in PARALLEL. The AppleScript below drives Mail.app serially
+                # across every configured account and measured ~28s here — a Gmail
+                # account that merely lacks a token (so it falls to AppleScript)
+                # cost 13.5s by itself — which blew the 60s gateway timeout and
+                # returned 504. Gmail-API accounts need none of that: each is
+                # ~1.3s, and run concurrently the fan-out costs max(), not sum().
+                # An account Mail.app owns but Gmail has no token for is still
+                # reachable via ?account=<addr> (that takes the AppleScript path
+                # below); connect it (GET /api/gmail/auth?account=<addr>) to put
+                # it on this fast path too.
+                _connected = _gmail_connected_accounts()
+                if not account_filter and _connected:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from email.utils import parsedate_to_datetime
+
+                    def _recv_key(m):
+                        """Newest first; an unparseable date sinks, never raises."""
+                        try:
+                            return parsedate_to_datetime(m.get("date", "")).timestamp()
+                        except Exception:
+                            return 0.0
+
+                    _msgs: list = []
+                    with ThreadPoolExecutor(max_workers=min(8, len(_connected))) as _ex:
+                        _futs = [_ex.submit(_gmail_inbox_messages, _a, count)
+                                 for _a in _connected]
+                        for _f in _futs:
+                            try:
+                                # Bound each account: one wedged token must not
+                                # hang the unified inbox into a gateway timeout.
+                                _r = _f.result(timeout=20)
+                            except Exception:
+                                continue
+                            if not _r.get("error"):
+                                _msgs.extend(_r.get("messages", []))
+                    _msgs.sort(key=_recv_key, reverse=True)
+                    return self._json(_msgs[:count])
                 # No-account script: iterate every account's INBOX. The
                 # per-account filter case has its own dedicated script below.
                 # (Earlier this branch interpolated a stray `end if` with no
@@ -46515,6 +49858,44 @@ return output
                 bad_cc = [a.strip() for a in cc.split(",") if a.strip() and not re.match(_addr_re, a.strip())]
                 if bad_cc:
                     return self._json({"error": f"invalid cc address: {', '.join(bad_cc)}"}, 400)
+                # NEW-THREAD GUARD (AMUX-1739): a /send to an EXTERNAL recipient who
+                # has an active thread in the last N days fragments a customer
+                # conversation (a fresh send to mhoward@lucihub.com opened a new
+                # thread at a prospect CEO instead of continuing his). Block with the
+                # candidate thread so replying stays the DEFAULT; opening a new
+                # thread requires an explicit force_new_thread. Internal/own-domain
+                # recipients are exempt (digests to ourselves always have recent
+                # threads). Fails open on Gmail API errors.
+                if not body.get("force_new_thread"):
+                    _own_domains = ("mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com")
+                    _conn_accts = {a.lower() for a in _gmail_connected_accounts()}
+                    _ext_rcpts = [a.strip() for a in to.split(",") if a.strip()
+                                  and a.strip().lower() not in _conn_accts
+                                  and not any(a.strip().lower().endswith("@" + d) for d in _own_domains)]
+                    try:
+                        _win = max(1, min(int(body.get("thread_window_days") or 14), 90))
+                    except (TypeError, ValueError):
+                        _win = 14
+                    for _r in _ext_rcpts:
+                        _cand = None
+                        for _acct in _gmail_connected_accounts():
+                            _cand = _gmail_latest_matching(_acct, with_addr=_r, newer_days=_win)
+                            if _cand:
+                                break
+                        if _cand:
+                            slog(f"[email] new-thread guard: blocked /send to {_r} "
+                                 f"(active thread {_cand.get('subject','')!r} in last {_win}d)")
+                            return self._json({
+                                "error": f"{_r} has an active thread in the last {_win} days — "
+                                         "replying in-thread is the default; opening a new thread "
+                                         "must be explicit",
+                                "blocked": True, "recipient": _r, "candidate_thread": _cand,
+                                "reply_instead": {"endpoint": "POST /api/email/reply",
+                                                  "body": {"message_id": _cand.get("message_id", ""),
+                                                           "body": "...", "from": from_acct or "ethan@mixpeek.com"}},
+                                "or_force": {"force_new_thread": True,
+                                             "note": "resend with this flag to deliberately start a new thread"},
+                            }, 409)
                 # Prefer the Gmail API when sending from a connected Gmail account:
                 # robust delivery, no AppleScript, and the real Gmail signature.
                 # Falls through to Mail.app/AppleScript for non-Gmail accounts.
@@ -46606,8 +49987,35 @@ end tell
                 reply_body = body.get("body", "").strip()
                 reply_all = body.get("reply_all", False)
                 from_acct = body.get("from", "").strip()
-                if not message_id or not reply_body:
-                    return self._json({"error": "message_id and body are required"}, 400)
+                # REPLY-BY-SELECTOR (AMUX-1739): "reply to the latest message from X"
+                # resolves server-side, so callers don't round-trip /search → /message
+                # (which could time out) just to obtain a message_id. Optional
+                # subject_contains narrows to a thread; dry_run returns the resolved
+                # target WITHOUT sending (safe to test against live customer threads).
+                _resolved = None
+                if not message_id:
+                    _sel_from = (body.get("reply_to_latest_from") or "").strip()
+                    if _sel_from:
+                        _subj_c = (body.get("subject_contains") or "").strip()
+                        _pref = (body.get("from") or "").strip()
+                        _accts = ([_pref] if _pref in _gmail_connected_accounts() else []) + \
+                                 [a for a in _gmail_connected_accounts() if a != _pref]
+                        for _a in _accts:
+                            _resolved = _gmail_latest_matching(_a, from_addr=_sel_from,
+                                                               subject_contains=_subj_c)
+                            if _resolved:
+                                break
+                        if not _resolved:
+                            return self._json({"error": f"no message from {_sel_from}"
+                                               + (f" with subject containing {_subj_c!r}" if _subj_c else "")
+                                               + " found in any connected account"}, 404)
+                        message_id = _resolved["message_id"]
+                if not message_id or (not reply_body and not body.get("dry_run")):
+                    return self._json({"error": "message_id (or reply_to_latest_from) and body are required"}, 400)
+                if body.get("dry_run"):
+                    return self._json({"ok": True, "dry_run": True, "would_reply_to": message_id,
+                                       "resolved": _resolved,
+                                       "note": "no email sent — repeat without dry_run to send"})
                 # Prefer Gmail API when replying from a connected Gmail account:
                 # correct In-Reply-To/References/threadId, a clean (non-quoted)
                 # body, and the real Gmail signature. Mail.app fallback otherwise.
@@ -46616,7 +50024,8 @@ end tell
                 if gmail_from and gmail_from in _gmail_connected_accounts():
                     res = _gmail_reply_send(gmail_from, message_id, reply_body,
                                             include_signature=include_sig,
-                                            reply_all=bool(reply_all))
+                                            reply_all=bool(reply_all),
+                                            allow_self=bool(body.get("allow_self")))
                     if res.get("error"):
                         return self._json(res, 502)
                     _email_log({"endpoint": "reply", "via": "gmail", "from": gmail_from,
@@ -46628,6 +50037,8 @@ end tell
                                        "reply_all": bool(reply_all), "from": gmail_from,
                                        "via": "gmail", "id": res.get("id"),
                                        "thread_id": res.get("thread_id"),
+                                       "orig_thread_id": res.get("orig_thread_id"),
+                                       "threaded": res.get("threaded"),
                                        "signature_included": res.get("signature_included")})
                 msg_id_safe = message_id.replace('"', '\\"')
                 body_expr = _ascript_str(reply_body)
@@ -46845,11 +50256,79 @@ return output
                     return self._json({"error": str(e)}, 500)
 
             # GET /api/email/message/<rfc822_message_id>
+            if method == "GET" and path == "/api/email/attachment":
+                # Download one attachment (listed by /api/email/message) to a local
+                # file the caller can Read. Gmail-API accounts only (AMUX-1739).
+                _acct = qs.get("account", [""])[0].strip()
+                _gmid = qs.get("gmail_message_id", [""])[0].strip()
+                _attid = qs.get("attachment_id", [""])[0].strip()
+                _fname = qs.get("filename", ["attachment.bin"])[0].strip() or "attachment.bin"
+                if not (_acct and _gmid and _attid):
+                    return self._json({"error": "account, gmail_message_id and attachment_id are required "
+                                                "(all returned by GET /api/email/message/<id>)"}, 400)
+                try:
+                    _svc = _gmail_service(_acct)
+                    if not _svc:
+                        return self._json({"error": f"'{_acct}' is not a Gmail-connected account"}, 400)
+                    import base64 as _b64
+                    _att = _svc.users().messages().attachments().get(
+                        userId="me", messageId=_gmid, id=_attid).execute()
+                    _data = _b64.urlsafe_b64decode(_att.get("data", "") + "==")
+                    _safe = re.sub(r"[^A-Za-z0-9._-]", "_", _fname)[-120:] or "attachment.bin"
+                    _outdir = Path.home() / ".amux" / "email-attachments"
+                    _outdir.mkdir(parents=True, exist_ok=True)
+                    # ms granularity + bump-on-collision: a message can carry SEVERAL
+                    # same-named inline images (two image.png on one mhoward reply) —
+                    # second-granularity paths made back-to-back downloads overwrite.
+                    _base = int(time.time() * 1000)
+                    _outp = _outdir / f"{_base}-{_safe}"
+                    _n = 0
+                    while _outp.exists():
+                        _n += 1
+                        _outp = _outdir / f"{_base}-{_n}-{_safe}"
+                    _outp.write_bytes(_data)
+                    return self._json({"ok": True, "path": str(_outp), "size": len(_data),
+                                       "filename": _fname})
+                except Exception as e:
+                    return self._json({"error": str(e)}, 502)
+
             if method == "GET" and path.startswith("/api/email/message/"):
                 raw_mid = path[len("/api/email/message/"):]
                 mid = unquote(raw_mid).strip()
                 if not mid:
                     return self._json({"error": "message_id is required"}, 400)
+                # FAST PATH (AMUX-1739): the indexed Gmail rfc822msgid: lookup, tried
+                # across every connected account. The AppleScript sweep below scans
+                # every mailbox of every Mail.app account and timed out >45s on an
+                # Outlook-origin id — it is now only the non-Gmail fallback.
+                import email.utils as _eu2
+                for _acct in _gmail_connected_accounts():
+                    _full = _gmail_get_message_full(_acct, mid)
+                    if not _full:
+                        continue
+                    _h = {x["name"].lower(): x["value"]
+                          for x in _full.get("payload", {}).get("headers", [])}
+                    _html, _text = _gmail_decode_body(_full.get("payload", {}))
+                    _atts = _gmail_walk_attachments(_full.get("payload", {}))
+                    for _a in _atts:
+                        _a["gmail_message_id"] = _full.get("id", "")
+                        _a["account"] = _acct
+                        _a["download"] = ("/api/email/attachment?account=" + quote(_acct)
+                                          + "&gmail_message_id=" + quote(_full.get("id", ""))
+                                          + "&attachment_id=" + quote(_a.get("attachment_id", ""))
+                                          + "&filename=" + quote(_a.get("filename", "")))
+                    return self._json({
+                        "subject": _h.get("subject", ""), "from": _h.get("from", ""),
+                        "to": [a for _n, a in _eu2.getaddresses([_h.get("to", "") or ""]) if a],
+                        "cc": [a for _n, a in _eu2.getaddresses([_h.get("cc", "") or ""]) if a],
+                        "date": _h.get("date", ""), "account": _acct, "via": "gmail",
+                        "in_reply_to": _h.get("in-reply-to", ""),
+                        "references": _h.get("references", ""),
+                        "thread_id": _full.get("threadId", ""),
+                        "gmail_message_id": _full.get("id", ""),
+                        "body": _text or _html,
+                        "attachments": _atts,
+                    })
                 mid_safe = mid.replace('"', '\\"')
                 script = f"""
 set output to ""
@@ -47939,6 +51418,23 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 session = body.get("session", "amux")
                 profile = (body.get("profile") or "").strip()
                 fresh = bool(body.get("fresh"))
+                if (body.get("backend") or "").strip().lower() == "live":
+                    # LIVE backend: a NEW tab in the user's real Chrome — never
+                    # hijacks an existing tab. Session stays bound to this tab
+                    # for every subsequent verb until /stop.
+                    old = _live_targets.pop(session, None)
+                    if old:
+                        _cdp_call(["eval", old, "window.close()"], 8)
+                    r = _cdp_call(["open", url], 20)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    m = re.search(r"Opened new tab:\s+([0-9A-Fa-f]+)", r.get("output", ""))
+                    if not m:
+                        return self._json({"error": "could not parse new tab id", "output": r.get("output", "")[:200]}, 502)
+                    _live_targets[session] = m.group(1)
+                    return self._json({"ok": True, "backend": "live", "target": m.group(1), "url": url,
+                                       "note": "driving YOUR Chrome — first use of a tab needs the 'Allow debugging?' click"})
+                _live_targets.pop(session, None)   # explicit profile start unbinds live
                 return self._json(_bu_open(url, session=session,
                                            explicit_profile=profile, fresh=fresh,
                                            timeout_s=30))
@@ -47952,6 +51448,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"error": "url required"}, 400)
                 session = body.get("session", "amux")
                 profile = (body.get("profile") or "").strip()
+                if session in _live_targets:
+                    r = _cdp_call(["nav", _live_targets[session], url], 30)
+                    return self._json({**r, "backend": "live"} if r.get("ok") else r)
                 return self._json(_bu_open(url, session=session,
                                            explicit_profile=profile, timeout_s=30))
 
@@ -47961,6 +51460,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                            else qs.get("session", "amux"))
                 url_param = (qs.get("url", [""])[0] if isinstance(qs.get("url"), list)
                              else qs.get("url", ""))
+                if session in _live_targets:
+                    tid = _live_targets[session]
+                    if url_param:
+                        _cdp_call(["nav", tid, url_param], 30)
+                    _sp = Path.home() / ".amux" / "browser-screenshots"
+                    _sp.mkdir(parents=True, exist_ok=True)
+                    _f = str(_sp / f"live-{session}.png")
+                    r = _cdp_call(["shot", tid, _f], 30)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    return self._json({"ok": True, "backend": "live", "path": _f, "url": _live_url(session)})
                 if url_param:
                     _bu_call(["open", url_param], session=session, timeout_s=20)
                     import time as _t; _t.sleep(2)
@@ -47973,6 +51483,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if method == "GET" and path == "/api/browser/state":
                 session = (qs.get("session", ["amux"])[0] if isinstance(qs.get("session"), list)
                            else qs.get("session", "amux"))
+                if session in _live_targets:
+                    r = _cdp_call(["snap", _live_targets[session]], 30)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    return self._json({"ok": True, "backend": "live", "url": _live_url(session),
+                                       "a11y": _obs_cap(r.get("output", ""), _OBS_STATE_CAP)})
                 res = _bu_call(["state"], session=session)
                 try:
                     raw = (res.get("data") or {}).get("_raw_text", "") if isinstance(res, dict) else ""
@@ -47981,6 +51497,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         res = dict(res)
                         res["elements"] = parsed["elements"]
                         res["viewport"] = parsed["viewport"]
+                        res["url"] = (res.get("data") or {}).get("url", "")
+                        res["data"] = dict(res["data"])
+                        res["data"]["_raw_text"] = _obs_cap(raw, _OBS_STATE_CAP)
                 except Exception:
                     pass
                 return self._json(res)
@@ -48016,6 +51535,40 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 body = self._read_body()
                 action = body.get("action", "")
                 session = body.get("session", "amux")
+                if session in _live_targets:
+                    tid = _live_targets[session]
+                    if action == "click":
+                        sel = body.get("selector")
+                        x, y = body.get("x"), body.get("y")
+                        if sel:
+                            return self._json(_cdp_call(["click", tid, sel], 20))
+                        if x is not None and y is not None:
+                            return self._json(_cdp_call(["clickxy", tid, str(x), str(y)], 20))
+                        return self._json({"error": "live click needs selector or x,y"}, 400)
+                    if action == "type":
+                        return self._json(_cdp_call(["type", tid, body.get("text", "")], 20))
+                    if action == "key":
+                        return self._json(_live_key(session, body.get("key", "")))
+                    if action == "scroll":
+                        dy = body.get("dy", 500)
+                        return self._json(_cdp_call(["eval", tid, f"window.scrollBy(0,{int(dy)})"], 10))
+                    if action == "eval":
+                        script = body.get("script", "")
+                        if not script:
+                            return self._json({"error": "script required"}, 400)
+                        r = _cdp_call(["eval", tid, script], 30)
+                        if r.get("ok"):
+                            r["output"] = _obs_cap(r.get("output", ""), _OBS_EVAL_CAP)
+                        return self._json(r)
+                    if action == "back":
+                        return self._json(_cdp_call(["eval", tid, "history.back()"], 10))
+                    if action == "extract":
+                        r = _cdp_call(["snap", tid], 30)
+                        if r.get("ok"):
+                            r["output"] = _obs_cap(r.get("output", ""), _OBS_STATE_CAP)
+                        return self._json(r)
+                    return self._json({"error": f"action {action!r} not supported on the live backend "
+                                                "(supported: click, type, key, scroll, eval, back, extract)"}, 400)
                 if action == "click":
                     x, y = body.get("x"), body.get("y")
                     index = body.get("index")
@@ -48044,7 +51597,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     script = body.get("script", "")
                     if not script:
                         return self._json({"error": "script required"}, 400)
-                    return self._json(_bu_call(["eval", script], session=session))
+                    _res = _bu_call(["eval", script], session=session)
+                    try:
+                        if isinstance(_res, dict) and isinstance((_res.get("data") or {}).get("result"), str):
+                            _res = dict(_res); _res["data"] = dict(_res["data"])
+                            _res["data"]["result"] = _obs_cap(_res["data"]["result"], _OBS_EVAL_CAP)
+                    except Exception:
+                        pass
+                    return self._json(_res)
                 elif action == "wait":
                     selector = body.get("selector", "")
                     text = body.get("text", "")
@@ -48084,6 +51644,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if method == "POST" and path == "/api/browser/stop":
                 body = self._read_body()
                 session = body.get("session", "amux")
+                tid = _live_targets.pop(session, None)
+                if tid:
+                    _cdp_call(["close", tid], 10)   # browser-level closeTarget — window.close() can't close our tab
+                    _cdp_call(["stop", tid], 8)
+                    return self._json({"ok": True, "backend": "live", "closed": tid})
                 return self._json(_bu_call(["close"], session=session, timeout_s=10))
 
             # GET /api/browser/sessions
@@ -48225,11 +51790,38 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(_session_cc_tasks(name))
             if action == "peek":
                 lines = int(qs.get("lines", ["80"])[0])
+                # live=1 → return ONLY the live tmux frame and skip the ~120KB JSONL
+                # transcript render. That frame IS the current terminal, so opening a
+                # peek can paint the latest instantly; the client fetches the full
+                # payload (transcript history + live) right after. The full response
+                # is ~138KB, ~120KB of which is history you don't need to see "now".
+                live_only = (qs.get("live", ["0"])[0] or "") in ("1", "true", "yes")
+                # notrim=1: the FIRST live fetch right after opening a peek, when no
+                # history is shown yet. Trimming the live frame against the (possibly
+                # STALE) server-side transcript cache could shrink it to empty — so the
+                # instant paint was lost and the client had to wait for the heavy full
+                # render. With no history on screen there's nothing to duplicate, so
+                # return the full current frame → open paints the LATEST immediately.
+                no_trim = (qs.get("notrim", ["0"])[0] or "") in ("1", "true", "yes")
                 now = time.monotonic()
                 cached = _peek_cache.get(name)
-                if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
+                if not live_only and cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
-                output = tmux_capture(name, lines)
+                if live_only:
+                    lc = _peek_live_cache.get(name)
+                    if lc and (now - lc[0]) < _PEEK_LIVE_CACHE_TTL:
+                        return self._json_etag(lc[1])
+                    output = _strip_scroll_pill(tmux_capture(name, lines))
+                    _live = _strip_launch_noise(output.strip()) if output else ""
+                    _tr = _peek_transcript_cache.get(name, "")
+                    if _tr and _live and not no_trim:
+                        _live = _trim_live_overlap(_tr, _live)
+                    _lv = _collapse_blank_runs(_live) if _live else "(no output)"
+                    # `output` mirrored for API consumers (see AMUX-1807 note below).
+                    resp_live = {"name": name, "live_only": True, "live": _lv, "output": _lv}
+                    _peek_live_cache[name] = (now, resp_live)
+                    return self._json_etag(resp_live)
+                output = _strip_scroll_pill(tmux_capture(name, lines))
                 tmux_lines = len(output.splitlines()) if output else 0
                 is_alt = _tmux_alt_screen(name)
                 # Alt-screen (Claude Code TUI): transcript for history,
@@ -48246,14 +51838,30 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         # transcript ends with — trim that overlap so they don't
                         # render twice (raw-markdown transcript + rendered frame).
                         live = _trim_live_overlap(transcript, live)
-                        joined = (transcript.rstrip() + "\n\n" + live) if transcript else live
-                        resp = {"name": name, "output": _collapse_blank_runs(joined)}
-                    elif live:
-                        resp = {"name": name, "output": _collapse_blank_runs(live)}
-                    elif transcript:
-                        resp = {"name": name, "output": transcript}
-                    else:
-                        resp = {"name": name, "output": "(no output)"}
+                    # Cache the transcript this response's history is built from, so a
+                    # subsequent live=1 poll can trim its frame against the SAME history
+                    # the client is displaying (no seam duplication, no re-render).
+                    _peek_transcript_cache[name] = transcript or ""
+                    # history + live returned SEPARATELY: the poll re-fetches only the
+                    # ~7KB live frame and swaps that DOM region, instead of re-sending
+                    # and re-parsing the whole ~138KB payload every tick.
+                    _live_out = (_collapse_blank_runs(live) if live else
+                                 ("" if transcript else "(no output)"))
+                    # API COMPAT (AMUX-1807): the live-split dropped `output` from the
+                    # alt-screen response, silently blinding every NON-dashboard
+                    # consumer of the documented `peek → output` contract (the
+                    # autopilot's stall sensor greps it; the session-memory docs teach
+                    # it). Mirror the CURRENT terminal frame into `output` — the right
+                    # signal for "is this session moving" sensors, at ~1-7KB. When the
+                    # live frame trimmed to empty against history, fall back to the
+                    # raw capture so `output` is never empty for a running session.
+                    _out_compat = _live_out
+                    if not _out_compat and output:
+                        _out_compat = _collapse_blank_runs(_strip_launch_noise(output.strip()))
+                    resp = {"name": name,
+                            "history": _collapse_blank_runs(transcript) if transcript else "",
+                            "live": _live_out,
+                            "output": _out_compat}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json_etag(resp)
                 # Normal screen: show capture directly, save log in background.
@@ -48548,7 +52156,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # and compaction rotations.
                 conv_id = (body.get("conversation_id") or "").strip()
                 if conv_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", conv_id):
-                    meta["cc_conversation_id"] = conv_id
+                    _owner = _conversation_owned_by_other(conv_id, name)
+                    if _owner:
+                        # Another session already owns this conversation. Adopting
+                        # it would cross-link two sessions onto one Claude brain
+                        # (commands to one mirror into the other). Refuse and leave
+                        # this session's own id intact so a restart separates them.
+                        slog(f"[conv-guard] '{name}' reported conversation "
+                             f"{conv_id[:12]} already owned by '{_owner}' — not "
+                             f"adopting (would cross-link sessions)")
+                    else:
+                        meta["cc_conversation_id"] = conv_id
                 cwd = (body.get("cwd") or "").strip()
                 if cwd and cwd.startswith("/"):
                     meta["cc_cwd"] = cwd
@@ -48603,6 +52221,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"ok": True, "deduped": True,
                                        "message": "duplicate retry ignored (already queued)"})
                 msg_id = _steer_enqueue(name, text)
+                # Server-side history record (atomic, device-independent) — see the
+                # /send handler. Gated on record_history; dedup above prevents doubles.
+                if body.get("record_history"):
+                    try:
+                        _dbh = get_db()
+                        _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
+                                     (text, "steering", name, int(time.time() * 1000)))
+                        _dbh.commit()
+                    except Exception:
+                        pass
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
@@ -48631,11 +52259,57 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # Backup JSONL transcript before /compact so we can revert
                 if text.strip().startswith("/compact"):
                     threading.Thread(target=backup_session_jsonl, args=(name, "pre_compact"), daemon=True).start()
-                ok, msg = send_text(name, text)
+                # Inter-session / programmatic sends (a bare {"text":...} from another
+                # session, no browser marker) must NEVER interrupt the recipient: deliver
+                # like a normal prompt typed into an in-flight turn, and defer PAST a
+                # tool-approval / selector instead of Escape-cancelling it (the
+                # backend->gtm-engine AskUserQuestion kill, 2026-07-15). Human browser
+                # sends carry record_history and keep their existing behavior.
+                # deliver_now: the "Send now" button on a queued steer message — a
+                # deliberate human action that must land DIRECTLY (not defer/re-queue
+                # at a selector), yet without re-recording to history (the message is
+                # already there from when it was queued).
+                _defer_busy = not (bool(body.get("record_history")) or bool(body.get("deliver_now")))
+                # ORIGIN STAMP (AMUX-1768/1769): an inter-session send gets its
+                # TRUE origin stamped SERVER-SIDE from the sender's tmux identity
+                # (X-Amux-Session header, set per-tmux at launch — immune to
+                # conversation-name collisions, unlike a body-text signature the
+                # model writes). So a message can never be misattributed: the
+                # server's provenance line is authoritative over any in-body
+                # "from X" signature (the mixpeek-general-signed-as-frustrations
+                # relay, 2026-07-18). Human browser sends (record_history) exempt;
+                # a self-send (origin == recipient) needs no stamp.
+                _orig_text = text
+                if _defer_busy:
+                    _origin = (self.headers.get("X-Amux-Session", "")
+                               or str(body.get("source_session") or "")).strip()[:64]
+                    if _origin and _origin != name:
+                        text = (f"[amux-origin: {_origin} — server-verified from the sender's session "
+                                f"identity; authoritative over any signature in the message below]\n\n" + text)
+                ok, msg = send_text(name, text, defer_if_busy=_defer_busy)
                 if ok:
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
-                    _summarize_task_bg(name, text)
+                    _summarize_task_bg(name, _orig_text)  # summarize the message, not the origin prefix
+                    if not str(msg).startswith("queued"):   # steering enqueue emits message.queued itself
+                        _emit_event(name, "message.sent",
+                                    {"chars": len(text), "preview": text[:120],
+                                     "human": bool(body.get("record_history"))},
+                                    idem=("send:" + msg_id) if msg_id else None, source="api-send")
+                    # Record to the shared history SERVER-SIDE, atomic with the send,
+                    # so the message is in history for EVERY client even if the sending
+                    # device's own history POST never lands (flaky phone / suspended
+                    # PWA). Gated on record_history so agent-to-agent sends on this same
+                    # endpoint don't flood the human history. The msg_id dedup above
+                    # means a retried/offline-replayed send never double-records.
+                    if body.get("record_history"):
+                        try:
+                            _dbh = get_db()
+                            _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
+                                         (text, "direct", name, int(time.time() * 1000)))
+                            _dbh.commit()
+                        except Exception:
+                            pass
                 elif msg_id:
                     _send_dedup_forget(name, msg_id)
                 # 409 = session exists but is not running (user-caused, not a server error)
@@ -48668,7 +52342,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 ok, msg = send_keys(name, keys)
                 if ok:
                     _update_meta(name, last_send=int(time.time()))
-                code = 200 if ok else (409 if msg == "not running" else 500)
+                    code = 200
+                elif msg == "not running":
+                    code = 409
+                elif "not in allowed set" in msg:
+                    # A disallowed key can NEVER succeed → CLIENT error, not 500.
+                    # The offline queue re-queues only on >=500, so a 500 here made
+                    # a bad keystroke retry forever ("0 synced, 1 failed" every
+                    # reconnect). 400 lets the queue drop it (2026-07-18).
+                    code = 400
+                else:
+                    code = 500
                 return self._json({"ok": ok, "message": msg}, code)
             if action == "resize":
                 # Fit the pane to the peek viewer so Claude reflows to the
@@ -48800,6 +52484,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     try:
                         ok, msg = stop_session(sname)
                         if ok:
+                            _emit_event(sname, "session.stopped", source="api-stop")
                             _complete_session_board_issue(sname)
                     except Exception as e:
                         print(f"[stop] {sname}: background stop error: {e}")
@@ -49879,10 +53564,19 @@ _restart_pending = threading.Event()
 def _watch_self(server):
     """Watch amux-server.py for changes and restart on modification.
 
-    Uses a 3-second debounce so rapid successive edits (e.g. multiple
-    sessions committing) only trigger a single restart.
+    Debounced so rapid successive edits (e.g. multiple sessions committing)
+    collapse into a single restart. Each restart costs ~11s of real downtime
+    (shutdown drain + execv + re-executing this 50k-line module), during which
+    every session on the box gets connection refused / 502 / 504. At a 3s
+    debounce an edit burst became a restart burst: 13 restarts in 10 minutes,
+    the server up only 16-70s between them. 30s collapses a burst into one
+    restart. Lower it via AMUX_RELOAD_DEBOUNCE (e.g. 3) when actively
+    iterating on the server and you want a save to land immediately.
     """
-    _DEBOUNCE = 3  # seconds to wait for edits to settle
+    try:
+        _DEBOUNCE = max(1, int(os.environ.get("AMUX_RELOAD_DEBOUNCE", "30")))
+    except ValueError:
+        _DEBOUNCE = 30  # seconds to wait for edits to settle
     script = Path(__file__).resolve()
     mtime = script.stat().st_mtime
     while True:
@@ -50057,12 +53751,19 @@ def _kill_stale_port(port: int):
         r = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
             my_pid = os.getpid()
+            killed = False
             for line in r.stdout.strip().splitlines():
                 pid = int(line.strip())
                 if pid != my_pid:
                     slog(f"[startup] killing stale process {pid} on port {port}")
                     os.kill(pid, 9)
-            time.sleep(1)
+                    killed = True
+            # Only pause when we actually killed something — the wait is for the
+            # OS to release that pid's socket. On an execv auto-reload the pid is
+            # unchanged, so nothing is killed and this slept 1s for nothing on
+            # every single restart.
+            if killed:
+                time.sleep(1)
     except Exception:
         pass
 
@@ -50391,7 +54092,8 @@ def main():
     # Pre-configure ~/.claude.json to skip interactive setup wizard
     _init_claude_config()
     _ensure_no_native_artifacts()   # block the Artifact tool for every session (all auth types)
-    _sync_skills_and_cli()
+    _seed_builtin_skills()          # ship /adhd (etc.) by default, once per install
+    _sync_skills_and_cli()          # then sync ALL skills (incl. built-ins) to provider command dirs
 
     # Bind one HTTPS server per host in bind_hosts. Retry on TIME_WAIT after restart.
     servers = []
@@ -50521,7 +54223,8 @@ def main():
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
     schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
-    schedule_job(_steering_fast_tick,    interval=4,                    name="steering_fast", initial_delay=8)
+    schedule_job(_steering_fast_tick,    interval=2,                    name="steering_fast", initial_delay=8)
+    schedule_job(_index_token_ledger,    interval=60,                   name="token_ledger",  initial_delay=12)
     schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
