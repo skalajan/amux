@@ -1640,7 +1640,8 @@ def _validate_cc_session_name(name: str) -> bool:
     return bool(name and len(name) <= 64 and _VALID_CC_SESSION_NAME.match(name))
 
 
-# ── Per-session Claude account routing (CLAUDE_CONFIG_DIR) ──────────────────
+# AMUX-LOCAL:account-routing
+# Per-session Claude account routing (CLAUDE_CONFIG_DIR)
 # Sessions whose working dir is under a "work" path launch with the work
 # Claude.ai account; everything else uses the personal account. An explicit
 # CC_CONFIG_DIR in the session env overrides auto-detection. Configure via
@@ -1771,6 +1772,8 @@ def _cc_session_id_for_name(session_name: str, work_dir: str, claude_home: Path 
     except Exception:
         pass
     return matches[0] if len(matches) == 1 else ""
+
+# /AMUX-LOCAL:account-routing
 
 
 # Per-session token cache — refreshed every 30s, keyed by resolved dir
