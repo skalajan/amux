@@ -2200,6 +2200,12 @@ def _classify_request(method: str, path: str) -> tuple:
         return ("file", "uploaded", "", "")
     if path == "/api/fs/delete" and method == "DELETE":
         return ("file", "deleted", "", "")
+    # AMUX-LOCAL:session-chat — chat core endpoints (Scope B1):
+    #   POST /api/chat  -> owner input (write-gated by deny-by-default)
+    #   GET  /api/chat  -> merged thread read (read-loose, peek parity)
+    if path == "/api/chat" and method == "POST":
+        return ("chat", "message-sent", "", "")
+    # /AMUX-LOCAL:session-chat
     # System
     if path == "/api/pull" and method == "POST":
         return ("system", "pull", "repo", "")
@@ -4426,6 +4432,7 @@ def _rate_limit_auto_respond():
                     existing.pop("rate_limit_banner", None)
                     existing.pop("rate_limit_credits", None)
                     existing.pop("rate_limit_model_name", None)
+                    _chat_limit_notified.discard(name)   # AMUX-LOCAL:session-chat — re-arm AC4 notify
                     slog(f"[rate-limit] session={name} active — cleared stale rate-limit flag")
                 continue
             # The interactive /rate-limit-options menu is always rendered LIVE at
@@ -4476,12 +4483,23 @@ def _rate_limit_auto_respond():
                     existing.pop("rate_limit_banner", None)
                     existing.pop("rate_limit_credits", None)
                     existing.pop("rate_limit_model_name", None)
+                    _chat_limit_notified.discard(name)   # AMUX-LOCAL:session-chat — re-arm AC4 notify
                     slog(f"[rate-limit] session={name} limit banner not on live "
                          f"screen — cleared stale flag")
                 continue
             if is_banner or is_credit:
                 _rate_limit_last_responded[name] = now  # cooldown; nothing to press
             actions = _session_auto_actions.setdefault(name, {})
+            # AMUX-LOCAL:session-chat — surface a usage-limit park as a system chat
+            # row, once per limit episode (AC4; no silent stall).
+            if name not in _chat_limit_notified:
+                _chat_limit_notified.add(name)
+                try:
+                    _chat_insert_system(name, "⏸ Usage limit reached — session parked; "
+                                              "will auto-resume when the limit resets.")
+                except Exception:
+                    pass
+            # /AMUX-LOCAL:session-chat
             actions["rate_limit_weekly"] = is_weekly
             actions["rate_limit_banner"] = is_banner
             actions["rate_limit_credits"] = is_credit
@@ -4559,6 +4577,12 @@ def _rate_limit_auto_resume():
                   and actions["rate_limit_reset_at"] <= now]
     if not candidates:
         return
+
+    # AMUX-LOCAL:session-chat — reset time reached: re-arm the AC4 system-row notify
+    # so a genuine re-park after resume surfaces a fresh row.
+    for _n in candidates:
+        _chat_limit_notified.discard(_n)
+    # /AMUX-LOCAL:session-chat
 
     if _RATE_LIMIT_MODE == "off":
         # Clear stale reset-at so the badge doesn't linger past reset time.
@@ -6565,6 +6589,39 @@ CREATE TABLE IF NOT EXISTS steering_history (
     delivered_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_steering_hist_session ON steering_history(session, delivered_at DESC);
+-- AMUX-LOCAL:session-chat
+-- Durable per-session chat: OWNER/SYSTEM inputs only (no session-reply rows, no
+-- 'delivered' column). Delivery status is DERIVED via a join on steering state
+-- (steering_queue pending vs steering_history delivered) keyed by steer_id.
+-- Session assistant replies are NOT stored here — they live in the transcript
+-- and are materialized into chat_replies below. One owner-chat event -> exactly
+-- one row here; it NEVER writes cmd_history (that stays upstream's audit log).
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         TEXT PRIMARY KEY,           -- idempotent; client-supplied or server uuid
+    session    TEXT NOT NULL,
+    role       TEXT NOT NULL,              -- 'owner' | 'system'  (never 'session')
+    origin     TEXT NOT NULL DEFAULT '',   -- 'dashboard' | 'telegram' | 'system'
+    text       TEXT NOT NULL,
+    steer_id   TEXT DEFAULT '',            -- links owner rows to the steering entry they became
+    created_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_session_ts ON chat_messages(session, created_ts);
+-- MATERIALIZED INDEX / rebuildable cache — NOT authoritative state; the session
+-- JSONL transcript is the source of truth; safe to clear + replay at any time.
+-- Populated by _chat_extract_turns; idempotent on the stable id so replay never
+-- duplicates. rowid_seq is a monotonic fetch cursor; on rebuild use
+-- DELETE FROM chat_replies (NEVER DROP TABLE) so the AUTOINCREMENT high-water-mark
+-- survives and persisted consumer cursors never go stale (C-crit-2).
+CREATE TABLE IF NOT EXISTS chat_replies (
+    rowid_seq  INTEGER PRIMARY KEY AUTOINCREMENT,  -- monotonic read cursor
+    id         TEXT UNIQUE NOT NULL,               -- stable: conversation_id + ':' + turn_index
+    session    TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    turn_ts    INTEGER NOT NULL,
+    created_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_replies_session_seq ON chat_replies(session, rowid_seq);
+-- /AMUX-LOCAL:session-chat
 -- Durable, provenance-stamped ledger of owner URGENT alerts (a safety-critical
 -- action). AMUX-1795 (an AMUX-1730 cost case): a "rotate a LIVE secret" alert was
 -- BELIEVED sent because it was ATTRIBUTED to a session that had no first-hand
@@ -6638,6 +6695,303 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=5000")
         _db_local.conn = conn
     return _db_local.conn
+
+
+# AMUX-LOCAL:session-chat
+# ── Chat core (Scope B1) ─────────────────────────────────────────────────────
+# A per-session, bidirectional, durable message thread. `chat_messages` is the
+# durable log of OWNER/SYSTEM inputs only; session assistant replies are a
+# rebuildable projection over the JSONL transcript, materialized into
+# `chat_replies`. Owner input is delivered EXCLUSIVELY via the existing steering
+# path (_steer_enqueue), never cmd_history. Delivery status is derived by joining
+# steer_id against steering state. See .omc/plans/chat-layer-auth.md §4 + MODIFICATIONS.md.
+
+def _chat_iso_to_epoch(ts) -> int:
+    """Best-effort ISO-8601 (Claude JSONL 'timestamp') -> unix seconds; 0 on failure."""
+    if not ts:
+        return 0
+    if isinstance(ts, (int, float)):
+        return int(ts)
+    try:
+        import datetime as _dt
+        s = str(ts).strip().replace("Z", "+00:00")
+        return int(_dt.datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return 0
+
+
+def _chat_extract_turns(rows, conversation_id: str = "", since_index: int = 0) -> list:
+    """PURE projection helper (AST-loadable / harness-driven like _steer_try_deliver —
+    no I/O): a conversation's JSONL rows in file order -> the list of top-level
+    assistant reply turns to surface, as {id, turn_index, text, turn_ts} dicts.
+
+    A 'turn' is ONE completed, user-visible assistant reply: an assistant message
+    with stop_reason == 'end_turn' carrying >=1 non-empty text block. Intermediate
+    tool_use / thinking-only steps are not turns. Sub-agent turns are filtered by
+    JSONL `isSidechain` (defense-in-depth: in the current Claude Code schema they
+    route to sibling <conv>/subagents/*.jsonl files and never enter the main
+    transcript, but this guarantees none can ever leak into the top-level thread).
+
+    turn_index is the 1-based ordinal of qualifying turns from the START of the
+    conversation (JSONL is append-only => stable). Only turns with ordinal >
+    since_index are returned, strictly ascending — so the single-writer populate
+    assigns rowid_seq in transcript order (C-new-1) and an INSERT OR IGNORE replay
+    over an already-materialized span is a no-op (idempotent on the stable id)."""
+    turns = []
+    idx = 0
+    for e in rows:
+        if not isinstance(e, dict):
+            continue
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") != "assistant":
+            continue
+        msg = e.get("message") or {}
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        if msg.get("stop_reason") != "end_turn":
+            continue
+        content = msg.get("content")
+        parts = []
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    t = b.get("text") or ""
+                    if t.strip():
+                        parts.append(t)
+        elif isinstance(content, str):
+            if content.strip():
+                parts.append(content)
+        text = "\n".join(parts).strip()
+        if not text:
+            continue
+        idx += 1
+        if idx <= since_index:
+            continue
+        turns.append({
+            "id": (conversation_id + ":" + str(idx)) if conversation_id else str(idx),
+            "turn_index": idx,
+            "text": text,
+            "turn_ts": _chat_iso_to_epoch(e.get("timestamp")),
+        })
+    return turns
+
+
+# ── chat SSE ring (new `chat` event type; landed in B1 per §4.3e) ────────────
+_chat_sse: list = []
+_chat_sse_lock = threading.Lock()
+_CHAT_SSE_KEEP = 200
+
+def _chat_notify(session: str, kind: str) -> None:
+    """Push a lightweight chat-changed notice onto the SSE ring (new owner/system
+    row, or new reply turn). Clients refetch GET /api/chat for the session. Emitted
+    on BOTH new chat_messages rows and new chat_replies rows (AC-B1-sse)."""
+    try:
+        with _chat_sse_lock:
+            _chat_sse.append({"session": session, "kind": kind, "ts": int(time.time())})
+            if len(_chat_sse) > _CHAT_SSE_KEEP:
+                del _chat_sse[:-_CHAT_SSE_KEEP]
+    except Exception:
+        pass
+
+
+# ── chat_replies single-writer population (C-new-1) ──────────────────────────
+_chat_replies_lock = threading.Lock()
+_CHAT_JSONL_MAX_BYTES = 64_000_000   # full-read cap for stable global turn indexing
+
+def _chat_populate_replies(name: str) -> list:
+    """SINGLE-WRITER (C-new-1): materialize new transcript reply turns for a
+    session into chat_replies, under _chat_replies_lock, inserting strictly in
+    ascending turn_index so rowid_seq tracks transcript order. Idempotent
+    (INSERT OR IGNORE on the stable id). BOTH the monitor idle-hook and the SSE
+    reconciliation path funnel through here (never insert independently). Returns
+    the newly-inserted turn dicts."""
+    try:
+        path = _session_jsonl_path(name)
+    except Exception:
+        path = None
+    if not path or not path.exists():
+        return []
+    conv = path.stem
+    new = []
+    with _chat_replies_lock:
+        try:
+            db = get_db()
+            last = db.execute(
+                "SELECT id FROM chat_replies WHERE session=? AND id LIKE ? "
+                "ORDER BY rowid_seq DESC LIMIT 1", (name, conv + ":%")
+            ).fetchone()
+            since = 0
+            if last and last["id"]:
+                try:
+                    since = int(str(last["id"]).rsplit(":", 1)[1])
+                except Exception:
+                    since = 0
+            rows = list(_iter_jsonl_tail(path, max_bytes=_CHAT_JSONL_MAX_BYTES))
+            turns = _chat_extract_turns(rows, conv, since)
+            now = int(time.time())
+            for t in turns:   # already ascending turn_index
+                cur = db.execute(
+                    "INSERT OR IGNORE INTO chat_replies(id, session, text, turn_ts, created_ts) "
+                    "VALUES(?,?,?,?,?)",
+                    (t["id"], name, t["text"], t["turn_ts"], now),
+                )
+                if cur.rowcount:
+                    new.append(t)
+            db.commit()
+        except Exception:
+            return []
+    if new:
+        _chat_notify(name, "reply")
+    return new
+
+
+_chat_reconcile_lock = threading.Lock()
+_chat_reconcile_last = [0.0]
+_CHAT_RECONCILE_THROTTLE = 8.0
+_chat_limit_notified: set = set()   # sessions with an open usage-limit system row (dedup per episode)
+
+def _chat_reconcile_all() -> None:
+    """Reconciliation trigger (SSE client connect / resume): re-project the
+    transcript tails of running sessions through the SAME single-writer populate,
+    catching turns the monitor poll missed. Throttled + single-flight so frequent
+    reconnects (multi-client) don't storm the disk."""
+    if not _chat_reconcile_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if now - _chat_reconcile_last[0] < _CHAT_RECONCILE_THROTTLE:
+            return
+        _chat_reconcile_last[0] = now
+        try:
+            names = [s.get("name") for s in list_sessions()
+                     if s.get("name") and s.get("status") in ("active", "waiting", "idle")]
+        except Exception:
+            names = []
+        for n in names:
+            try:
+                _chat_populate_replies(n)
+            except Exception:
+                pass
+    finally:
+        _chat_reconcile_lock.release()
+
+
+def _chat_delivery_status(steer_id: str) -> str:
+    """Derive an owner message's delivery status from steering state (NO stored
+    column): 'delivered' if in steering_history, 'pending' if still queued, and
+    'delivered' when a steer_id exists but the history row was pruned; '' otherwise."""
+    if not steer_id:
+        return ""
+    try:
+        db = get_db()
+        if db.execute("SELECT 1 FROM steering_history WHERE id=?", (steer_id,)).fetchone():
+            return "delivered"
+        if db.execute("SELECT 1 FROM steering_queue WHERE id=?", (steer_id,)).fetchone():
+            return "pending"
+    except Exception:
+        return ""
+    return "delivered"
+
+
+def _chat_insert_owner(session: str, text: str, msg_id: str = "", origin: str = "dashboard") -> dict:
+    """Owner input path — the ONE authoritative path (§4.2): insert exactly one
+    owner chat_messages row (idempotent on the stable id) and enqueue it into
+    steering IN-PROCESS via _steer_enqueue. NEVER writes cmd_history. Only the
+    INSERT winner enqueues, so a retry/mirror with the same id neither re-inserts
+    nor re-delivers (echo-loop immunity, AC7). Returns the row dict."""
+    cid = (str(msg_id or "").strip()[:64]) or ("chat-" + uuid.uuid4().hex)
+    now = int(time.time())
+    db = get_db()
+    cur = db.execute(
+        "INSERT OR IGNORE INTO chat_messages(id, session, role, origin, text, steer_id, created_ts) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (cid, session, "owner", origin, text, "", now),
+    )
+    if not cur.rowcount:
+        db.commit()
+        row = db.execute("SELECT * FROM chat_messages WHERE id=?", (cid,)).fetchone()
+        base = dict(row) if row else {"id": cid, "session": session, "role": "owner",
+                                      "origin": origin, "text": text, "steer_id": "",
+                                      "created_ts": now}
+        base["deduped"] = True
+        return base
+    steer_id = ""
+    try:
+        steer_id = _steer_enqueue(session, text)
+    except Exception:
+        steer_id = ""
+    db.execute("UPDATE chat_messages SET steer_id=? WHERE id=?", (steer_id, cid))
+    db.commit()
+    _chat_notify(session, "owner")
+    return {"id": cid, "session": session, "role": "owner", "origin": origin,
+            "text": text, "steer_id": steer_id, "created_ts": now, "deduped": False}
+
+
+def _chat_insert_system(session: str, text: str, msg_id: str = "") -> None:
+    """Surface a system event (usage-limit / restart / error) as a role='system'
+    chat row (§4.5). Informational only — never enters the steering path."""
+    cid = (str(msg_id or "").strip()[:64]) or ("sys-" + uuid.uuid4().hex)
+    now = int(time.time())
+    try:
+        db = get_db()
+        cur = db.execute(
+            "INSERT OR IGNORE INTO chat_messages(id, session, role, origin, text, steer_id, created_ts) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (cid, session, "system", "system", text, "", now),
+        )
+        db.commit()
+        if cur.rowcount:
+            _chat_notify(session, "system")
+    except Exception:
+        pass
+
+
+def _chat_build_thread(session: str, since_seq: int = 0, limit: int = 500) -> dict:
+    """Merged read (§4.3f): owner/system rows from chat_messages + reply turns from
+    the chat_replies materialized index, delivery status joined from steering,
+    ordered for display. `since_seq` is the chat_replies.rowid_seq cursor — replies
+    with rowid_seq > since are returned; when a cursor is given, owner/system rows
+    are also incremental (created after the cursor's turn timestamp). `cursor` is
+    the session's max rowid_seq (rebuild-safe high-water mark) for the next poll."""
+    db = get_db()
+    since_seq = int(since_seq or 0)
+    since_ts = 0
+    if since_seq > 0:
+        r = db.execute("SELECT turn_ts FROM chat_replies WHERE session=? AND rowid_seq=?",
+                       (session, since_seq)).fetchone()
+        if r:
+            since_ts = int(r["turn_ts"] or 0)
+    reps = db.execute(
+        "SELECT rowid_seq, id, text, turn_ts FROM chat_replies WHERE session=? AND rowid_seq>? "
+        "ORDER BY rowid_seq ASC LIMIT ?", (session, since_seq, limit)).fetchall()
+    if since_seq > 0:
+        msgs = db.execute(
+            "SELECT id, role, origin, text, steer_id, created_ts FROM chat_messages "
+            "WHERE session=? AND created_ts>? ORDER BY created_ts ASC LIMIT ?",
+            (session, since_ts, limit)).fetchall()
+    else:
+        msgs = db.execute(
+            "SELECT id, role, origin, text, steer_id, created_ts FROM chat_messages "
+            "WHERE session=? ORDER BY created_ts ASC LIMIT ?", (session, limit)).fetchall()
+    items = []
+    for m in msgs:
+        items.append({
+            "id": m["id"], "role": m["role"], "origin": m["origin"], "text": m["text"],
+            "ts": int(m["created_ts"] or 0), "seq": None,
+            "delivery": _chat_delivery_status(m["steer_id"]) if m["role"] == "owner" else "",
+        })
+    for r in reps:
+        items.append({
+            "id": r["id"], "role": "session", "origin": "session", "text": r["text"],
+            "ts": int(r["turn_ts"] or 0), "seq": r["rowid_seq"], "delivery": "",
+        })
+    items.sort(key=lambda x: (x["ts"], x["seq"] if x["seq"] is not None else -1))
+    cur = db.execute("SELECT MAX(rowid_seq) AS m FROM chat_replies WHERE session=?",
+                     (session,)).fetchone()
+    cursor = int(cur["m"]) if cur and cur["m"] is not None else since_seq
+    return {"session": session, "thread": items, "cursor": cursor}
+# /AMUX-LOCAL:session-chat
 
 
 # ── SQL workbench ────────────────────────────────────────────────────────────
@@ -10799,6 +11153,13 @@ def list_sessions() -> list:
                 # orchestrator schedule subscribed to 'session_idle' can wake.
                 _fire_schedule_event("session_idle", source_session=name)
                 def _on_idle(sname=name):
+                    # AMUX-LOCAL:session-chat — capture completed reply turns on the
+                    # active/waiting -> idle boundary (single-writer populate).
+                    try:
+                        _chat_populate_replies(sname)
+                    except Exception:
+                        pass
+                    # /AMUX-LOCAL:session-chat
                     nudged = _commit_guard(sname)        # remind to commit dirty work
                     task_nudged = _task_guard(sname)     # remind to log untracked work on the board
                     _complete_session_board_issue(sname)
@@ -38157,7 +38518,13 @@ function connectSSE() {
                          : setTimeout(() => location.reload(), 2500);
           }
         }
+      // AMUX-LOCAL:session-chat — new `chat` SSE type (B1). The dashboard chat UI
+      // is B2; here we only surface the event so B2 can consume it. Dispatch a DOM
+      // event any future chat view listens on; refetch when it's the active session.
+      } else if (msg.type === 'chat') {
+        _chatOnSSE(msg.payload || []);
       }
+      // /AMUX-LOCAL:session-chat
     } catch(err) { console.error('SSE parse:', err); }
   };
 
@@ -38177,12 +38544,42 @@ function connectSSE() {
   };
 }
 
+// AMUX-LOCAL:session-chat — chat live-update plumbing (B1). The chat tab UI lands
+// in B2 and only consumes these: `_chatActiveSession` is the session whose thread
+// is open, `_chatCursor` its last-seen chat_replies.rowid_seq. Both SSE and the
+// polling fallback must cover chat data (per .claude/rules/sse-realtime.md) — so
+// `_chatPoll` is wired into enablePollingFallback below alongside sessions+board.
+var _chatActiveSession = window._chatActiveSession || '';
+var _chatCursor = 0;
+function _chatOnSSE(payload) {
+  // A `chat` event names which sessions changed; refetch the open thread if hit.
+  try { window.dispatchEvent(new CustomEvent('amux:chat', { detail: payload })); } catch (e) {}
+  if (!_chatActiveSession) return;
+  if (!payload.length || payload.some(p => p && p.session === _chatActiveSession)) _chatPoll();
+}
+function _chatPoll() {
+  // Polling-fallback + refetch path: pull the open thread incrementally by cursor.
+  if (!_chatActiveSession) return Promise.resolve();
+  return fetch(_authUrl(API + '/api/chat?session=' + encodeURIComponent(_chatActiveSession) +
+                        '&since=' + _chatCursor))
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d) return;
+      if (typeof d.cursor === 'number') _chatCursor = d.cursor;
+      try { window.dispatchEvent(new CustomEvent('amux:chat-thread', { detail: d })); } catch (e) {}
+    })
+    .catch(() => {});
+}
+// /AMUX-LOCAL:session-chat
+
 function enablePollingFallback() {
   _sseFallback = true;
   if (_sse) { _sse.close(); _sse = null; }
   fetchSessions(); fetchBoard(); _runDeltaSync();
+  _chatPoll();   // AMUX-LOCAL:session-chat — fallback must cover chat data too
   if (!_pollTimer) _pollTimer = setInterval(() => {
     fetchSessions(); fetchBoard();
+    _chatPoll();   // AMUX-LOCAL:session-chat
   }, 5000);
 }
 
@@ -45408,6 +45805,11 @@ class CCHandler(BaseHTTPRequestHandler):
         last_notes_version = _notes_version
         last_crm_version   = _crm_version
         last_journal_version = _journal_version
+        # AMUX-LOCAL:session-chat — chat SSE cursor + reconciliation on connect
+        with _chat_sse_lock:
+            chat_cursor = len(_chat_sse)
+        threading.Thread(target=_chat_reconcile_all, daemon=True).start()
+        # /AMUX-LOCAL:session-chat
 
         try:
             while True:
@@ -45471,6 +45873,18 @@ class CCHandler(BaseHTTPRequestHandler):
                 if new_alerts:
                     self.wfile.write(f"data: {json.dumps({'type': 'alerts', 'payload': new_alerts})}\n\n".encode())
                     self.wfile.flush()
+
+                # AMUX-LOCAL:session-chat — new `chat` SSE type: fires on new
+                # chat_messages (owner/system) AND new chat_replies (session turns).
+                # Clients refetch GET /api/chat for the session (see the polling
+                # fallback + connectSSE branch). Introduced in B1 per plan §4.3e.
+                with _chat_sse_lock:
+                    new_chat = list(_chat_sse)[chat_cursor:]
+                    chat_cursor = len(_chat_sse)
+                if new_chat:
+                    self.wfile.write(f"data: {json.dumps({'type': 'chat', 'payload': new_chat})}\n\n".encode())
+                    self.wfile.flush()
+                # /AMUX-LOCAL:session-chat
 
                 # Invalidation signals for notes and CRM — lightweight, no payload
                 invalidated = []
@@ -45652,6 +46066,36 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json(_tunnel_start(token=body.get("token"), target_port=body.get("port")))
         if path == "/api/tunnel/stop" and method == "POST":
             return self._json(_tunnel_stop())
+
+        # AMUX-LOCAL:session-chat — chat core (Scope B1).
+        # POST /api/chat  (write-gated by deny-by-default: inserts one owner
+        #   chat_messages row + enqueues steering in-process; never cmd_history).
+        # GET  /api/chat?session=<name>&since=<rowid_seq>  (read-loose, peek parity):
+        #   merged owner/system + reply-turn thread with delivery status + cursor.
+        if path == "/api/chat":
+            if method == "POST":
+                body = self._read_body()
+                session = (str(body.get("session") or "")).strip()
+                text = body.get("text", "")
+                if not session:
+                    return self._json({"error": "missing 'session'"}, 400)
+                if not text or not str(text).strip():
+                    return self._json({"error": "missing 'text'"}, 400)
+                origin = (str(body.get("origin") or "dashboard")).strip()[:32] or "dashboard"
+                msg_id = str(body.get("id") or body.get("msg_id") or "").strip()[:64]
+                row = _chat_insert_owner(session, str(text), msg_id=msg_id, origin=origin)
+                return self._json({"ok": True, **row})
+            if method == "GET":
+                session = (qs.get("session", [""])[0] or "").strip()
+                if not session:
+                    return self._json({"error": "missing 'session'"}, 400)
+                try:
+                    since = int(qs.get("since", ["0"])[0] or 0)
+                except Exception:
+                    since = 0
+                return self._json(_chat_build_thread(session, since))
+            return self._json({"error": "method not allowed"}, 405)
+        # /AMUX-LOCAL:session-chat
 
         # ── Proxies (public tunnel targets) ──────────────────────────────
         if path == "/api/proxies" and method == "GET":
