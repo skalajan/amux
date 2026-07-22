@@ -21,6 +21,10 @@ fi
 CC_HOME="${CC_HOME:-$HOME/.amux}"
 CC_SESSIONS="$CC_HOME/sessions"
 CC_DEFAULTS="$CC_HOME/defaults.env"
+# AMUX-LOCAL:write-auth — localhost write token, sent on state-changing /api/ writes
+# (the server requires it even on loopback; see MODIFICATIONS.md write-auth row).
+CC_WRITE_TOKEN="$(cat "$CC_HOME/write_token" 2>/dev/null || true)"
+# /AMUX-LOCAL:write-auth
 
 # ── Colors (disabled when not a tty or TERM is dumb) ────────────────────────
 if [[ -t 1 ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
@@ -805,7 +809,7 @@ cmd_board() {
       local status="$subcmd"
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board $status <ISSUE-ID>"
       local result
-      result=$(curl -sk -X PATCH \
+      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
         -H 'Content-Type: application/json' \
         -d "{\"status\":\"$status\"}" \
         "$AMUX_API/api/board/$id")
@@ -819,7 +823,7 @@ cmd_board() {
       local id="${1:-}"; local new_status="${2:-}";
       [[ -n "$id" && -n "$new_status" ]] || die "Usage: amux board status <ISSUE-ID> <status>"
       local result
-      result=$(curl -sk -X PATCH \
+      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
         -H 'Content-Type: application/json' \
         -d "{\"status\":\"$new_status\"}" \
         "$AMUX_API/api/board/$id")
@@ -828,7 +832,7 @@ cmd_board() {
     add|create)
       local title="$*"; [[ -n "$title" ]] || die "Usage: amux board add <title>"
       local result
-      result=$(curl -sk -X POST \
+      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST \
         -H 'Content-Type: application/json' \
         -d "{\"title\":\"$title\",\"status\":\"todo\"}" \
         "$AMUX_API/api/board")
@@ -1006,7 +1010,7 @@ print(f'Imported {created} task(s) from {repo}#{issue_num}')
       local msg="$*"
       [[ -n "$id" && -n "$msg" ]] || die "Usage: amux board progress <ISSUE-ID> <message>"
       # Update board task description
-      curl -sk -X PATCH \
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
         -H 'Content-Type: application/json' \
         -d "{\"desc\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$msg")}" \
         "$AMUX_API/api/board/$id" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'],'— progress noted')" 2>/dev/null
@@ -1213,7 +1217,7 @@ for a in args:
     else: name_parts.append(a)
 if name_parts: fields['name']=' '.join(name_parts)
 print(json.dumps(fields))" "$@")
-      curl -sk -X POST -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c "
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print(d.get('id','error'),'-',d.get('error','created'))" ;;
     update)
@@ -1224,7 +1228,7 @@ import sys,json; fields={}
 for a in sys.argv[1:]:
     if '=' in a: k,v=a.split('=',1); fields[k]=v
 print(json.dumps(fields))" "$@")
-      curl -sk -X PATCH -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print('updated' if d.get('ok') else d.get('error','failed'))" ;;
     get)
@@ -1243,7 +1247,7 @@ ixs=c.get('interactions',[])
 if ixs: print('  last interaction:',ixs[0].get('date'),'-',ixs[0].get('notes','')[:60])" ;;
     log)
       local cid="${1:-}"; shift 2>/dev/null || true; local notes="$*"
-      curl -sk -X POST -H 'Content-Type: application/json' \
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
         -d "{\"notes\":\"$notes\",\"date\":\"$(date +%Y-%m-%d)\",\"type\":\"other\"}" \
         "$AMUX_API/api/crm/contacts/$cid/interactions" ;;
     followups|fu)
@@ -1267,10 +1271,10 @@ cmd_restart() {
   local session="${1:-}"
   [[ -n "$session" ]] || die "Usage: amux restart <session>"
   echo "Stopping $session..."
-  curl -sk -X POST "$AMUX_API/api/sessions/$session/stop" >/dev/null
+  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/sessions/$session/stop" >/dev/null
   sleep 1
   echo "Starting $session..."
-  curl -sk -X POST "$AMUX_API/api/sessions/$session/start" >/dev/null
+  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/sessions/$session/start" >/dev/null
   echo "Restarted $session"
 }
 
@@ -1286,7 +1290,7 @@ cmd_share() {
   local session="${1:-}"; shift 2>/dev/null || true
   local perms="${1:-output}"
   [[ -n "$session" ]] || die "Usage: amux share <session> [perms]"
-  curl -sk -X POST -H 'Content-Type: application/json' \
+  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
     -d "{\"perms\":\"$perms\"}" "$AMUX_API/api/sessions/$session/share" | \
     python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('url','error: '+d.get('error','unknown')))"
 }
@@ -1296,7 +1300,7 @@ cmd_unshare() {
   local session="${1:-}"; shift 2>/dev/null || true
   local token="${1:-}"
   [[ -n "$session" ]] || die "Usage: amux unshare <session> [token]"
-  curl -sk -X DELETE -H 'Content-Type: application/json' \
+  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X DELETE -H 'Content-Type: application/json' \
     -d "{\"token\":\"$token\"}" "$AMUX_API/api/sessions/$session/share" >/dev/null
   echo "revoked"
 }
@@ -1310,7 +1314,7 @@ cmd_tunnel() {
       local port="${1:-}"
       local payload='{}'
       [[ -n "$port" ]] && payload="{\"port\":$port}"
-      curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' -d "$payload" \
         "$AMUX_API/api/tunnel/start" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
@@ -1325,7 +1329,7 @@ print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.ge
 "
       ;;
     stop)
-      curl -sk -X POST "$AMUX_API/api/tunnel/stop" >/dev/null && echo "tunnel stopped"
+      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/tunnel/stop" >/dev/null && echo "tunnel stopped"
       ;;
     status|"")
       curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
@@ -1387,7 +1391,7 @@ This is a FIRE ALARM — only for things that need the owner immediately
   # Pass X-Amux-Session so the server stamps the TRUE origin (from the tmux
   # identity) into the owner_alerts ledger — the body 'session' is only a CLAIM.
   # This is what makes a safety-critical alert first-hand verifiable (AMUX-1795).
-  curl -sk -X POST -H 'Content-Type: application/json' \
+  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
     -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
     "$AMUX_API/api/alert/owner" | python3 -c "
