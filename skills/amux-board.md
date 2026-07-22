@@ -12,7 +12,7 @@ You are adding an item to the **amux local kanban board** at `https://localhost:
 
 ```bash
 # Add item
-curl -sk -X POST -H 'Content-Type: application/json' \
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"title":"...","desc":"...","status":"todo","session":"..."}' \
   https://localhost:8822/api/board
 
@@ -20,11 +20,11 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 curl -sk https://localhost:8822/api/board
 
 # Update item
-curl -sk -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"doing"}' https://localhost:8822/api/board/ITEM_ID
 
 # Delete item
-curl -sk -X DELETE https://localhost:8822/api/board/ITEM_ID
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE https://localhost:8822/api/board/ITEM_ID
 ```
 
 ## Fields

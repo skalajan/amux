@@ -225,10 +225,18 @@ def evaluate_health(cfg, snap):
 
 
 def _amux_post(base, path, payload):
+    # amux requires a localhost write token (X-Amux-Write-Token) on state-changing
+    # /api/ writes even from loopback — read it from the 0600 file the server owns.
+    try:
+        with open(os.path.expanduser("~/.amux/write_token")) as _wf:
+            wtok = _wf.read().strip()
+    except Exception:
+        wtok = ""
     try:
         r = subprocess.run(
             ["curl", "-sk", "-m", "10", "-X", "POST",
              "-H", "Content-Type: application/json",
+             "-H", f"X-Amux-Write-Token: {wtok}",
              "-d", json.dumps(payload), f"{base}{path}"],
             capture_output=True, text=True, timeout=15)
         return r.returncode == 0

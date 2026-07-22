@@ -34,7 +34,7 @@ amux board doing <ITEM-ID>
 Or via REST:
 
 ```bash
-curl -sk -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"doing"}' \
   https://localhost:8822/api/board/<ITEM-ID>
 ```
@@ -58,7 +58,7 @@ amux board done <ITEM-ID>
 Or via REST:
 
 ```bash
-curl -sk -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"done"}' \
   https://localhost:8822/api/board/<ITEM-ID>
 ```
