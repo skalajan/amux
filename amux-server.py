@@ -21494,6 +21494,7 @@ function _authUrl(url) {
 }
 // AMUX-LOCAL:write-auth — install the fetch wrapper when EITHER token is present
 // (write token must ride along even under AMUX_AUTH_TOKEN=none, where _authToken=="").
+// /AMUX-LOCAL:write-auth
 if (_authToken || _writeToken) {
   const _origFetchForAuth = window.fetch;
   window.fetch = function(input, init) {
