@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  amux-telegram sidecar LaunchAgent (Scope B3). NOT auto-installed — copy it into
+  place and load it yourself (see docs/telegram-chat.md):
+
+    cp sidecars/com.amux.telegram.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.telegram.plist
+    launchctl enable  gui/$(id -u)/com.amux.telegram
+
+  Mirrors com.amux.serve: KeepAlive so the sidecar survives crashes and amux's own
+  os.execv self-restarts (connection drops are normal — the sidecar reconnects).
+  Edit the two absolute paths below if your checkout is not at
+  /Users/janskala/Desktop/Projects/amux.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amux.telegram</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <string>/Users/janskala/Desktop/Projects/amux/amux-telegram.py</string>
+    </array>
+
+    <!-- Run from the repo so amux-telegram.py resolves relative paths / the venv. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/janskala/Desktop/Projects/amux</string>
+
+    <!-- launchd starts with a minimal PATH; put /usr/local/bin first for python3. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/janskala</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep the sidecar up across crashes, logout, and amux self-restarts. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/janskala/.amux/logs/telegram.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/janskala/.amux/logs/telegram.err.log</string>
+</dict>
+</plist>
