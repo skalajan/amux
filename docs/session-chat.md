@@ -1,6 +1,24 @@
 # Session chat tab — phone-first dev/research bridge
 
-**Status:** design, pending implementation approval. No code written yet.
+**Status:** IMPLEMENTED (B1 chat core + B2 dashboard tab), 2026-07-22. Shipped per
+the consensus plan [`.omc/plans/chat-layer-auth.md`](../.omc/plans/chat-layer-auth.md)
+(§4 B1, §5 B2-β) on top of Scope A localhost write-auth. Feature code lives in the
+referenced files `chat.js` / `chat.css` (loaded by the dashboard) plus the Python
+chat core in `amux-server.py`; the in-file footprint is a tiny sentinel-fenced set of
+hooks (link/script tags, a `Chat` peek-overlay tab + `#peek-chat-panel`, a
+`/chat.js`+`/chat.css` static route, `setPeekTab`/`closePeek` dispatch lines,
+`_PUBLIC_PATHS` entries). B3 (Telegram sidecar) is not yet built.
+
+> **Fence-style supersession (binding):** the `# ── session-chat ──` fence style
+> shown throughout this doc is **superseded** by the fork-governance rules
+> ([`single-file.md`](../.claude/rules/single-file.md),
+> [`extend-via-sidecar.md`](../.claude/rules/extend-via-sidecar.md)) — the shipped
+> code uses the `# AMUX-LOCAL:session-chat` … `# /AMUX-LOCAL:session-chat` sentinel
+> (Python `#`, JS `//`, SQL `--`, HTML `<!-- -->`), tracked by a Local Delta Registry
+> row in [`MODIFICATIONS.md`](../MODIFICATIONS.md). The DI-seam / `amux_chat.py`
+> module described below was **not** used: the B1 chat core landed inline in
+> `amux-server.py` (sentinel-fenced), and B2 added only `chat.js`/`chat.css`. The rest
+> of this document is retained as the original design record.
 **Goal:** develop/research from the phone without losing terminal power — a
 chat-style view of each session with structured, short messages by default and
 the full formatted output on request, all inside the amux app.

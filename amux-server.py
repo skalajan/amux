@@ -772,7 +772,9 @@ def _posthog_emit(event: str, props: dict = None, distinct_id: str = ""):
 
 _PUBLIC_PATHS = frozenset({"/", "/manifest.json", "/sw.js", "/icon.svg", "/icon.png",
                            "/icon-192.png", "/icon-512.png", "/ca", "/release-notes",
-                           "/api/release-notes", "/api/calendar.ics"})
+                           "/api/release-notes", "/api/calendar.ics",
+                           # AMUX-LOCAL:session-chat — static UI assets (no secrets); load token-free like sw.js/manifest
+                           "/chat.js", "/chat.css"})  # /AMUX-LOCAL:session-chat
 _PUBLIC_PREFIXES = ("/s/", "/api/share/", "/invite/", "/proxy/", "/api/branding/")
 
 # AMUX-LOCAL:write-auth
@@ -15460,6 +15462,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown-common-style.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<!-- AMUX-LOCAL:session-chat --><link rel="stylesheet" href="/chat.css"><!-- /AMUX-LOCAL:session-chat -->
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -21171,6 +21174,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Tab bar -->
   <div class="peek-tabs">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
+    <!-- AMUX-LOCAL:session-chat --><button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Turn-level chat with this session (owner/session turns; raw terminal stays in Terminal)">Chat</button><!-- /AMUX-LOCAL:session-chat -->
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
@@ -21332,6 +21336,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
   </div>
+  <!-- AMUX-LOCAL:session-chat — chat tab panel (Scope B2); chat.js builds the thread + composer into it --><div id="peek-chat-panel" class="peek-tasks-panel"></div><!-- /AMUX-LOCAL:session-chat -->
   <div id="peek-cost-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
       <select id="peek-cost-days" onchange="_peekCostLoad()" class="lib-facet">
@@ -25484,6 +25489,12 @@ function setPeekTab(tab) {
   const notes = document.getElementById('peek-notes-panel');
   if (tab === 'notes') { notes.classList.add('active'); _peekNotesLoad(); }
   else { notes.classList.remove('active'); }
+  // AMUX-LOCAL:session-chat — chat tab dispatch (Scope B2)
+  document.getElementById('peek-tab-chat').classList.toggle('active', tab === 'chat');
+  const chatPanel = document.getElementById('peek-chat-panel');
+  if (tab === 'chat') { chatPanel.classList.add('active'); if (window._chatTabOpen) _chatTabOpen(peekSession); }
+  else { chatPanel.classList.remove('active'); if (window._chatTabClose) _chatTabClose(); }
+  // /AMUX-LOCAL:session-chat
 }
 
 // ── Standing instructions (autonomy config) ──
@@ -27021,6 +27032,7 @@ function closePeek() {
     else delete _peekDrafts[peekSession];
   }
   peekSession = null;
+  if (window._chatTabClose) _chatTabClose();   // AMUX-LOCAL:session-chat — stop chat refetch when peek closes
   peekSearchQuery = '';
   lastPeekHTML = '';
   hidePeekLoading();   // don't leak the "Loading latest…" cue into the next open
@@ -45229,6 +45241,7 @@ window.addEventListener('load', _pinnedNotesRefresh);
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<!-- AMUX-LOCAL:session-chat — chat tab UI (Scope B2); defer so it runs after the inline script defines apiCall/esc/renderMarkdown/_chatPoll --><script src="/chat.js" defer></script><!-- /AMUX-LOCAL:session-chat -->
 <div id="grid-view">
   <div class="grid-toolbar">
     <span class="grid-toolbar-title">Workspace</span>
@@ -46583,6 +46596,13 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._raw(json.dumps(manifest).encode(), "application/manifest+json", cache=True)
         if method == "GET" and path == "/sw.js":
             return self._raw(SERVICE_WORKER.encode(), "application/javascript")
+        # AMUX-LOCAL:session-chat — serve the chat tab's referenced files from the repo dir (Scope B2)
+        if method == "GET" and path in ("/chat.js", "/chat.css"):
+            _asset = Path(__file__).resolve().parent / path.lstrip("/")
+            if _asset.exists():
+                _ct = "application/javascript" if path.endswith(".js") else "text/css"
+                return self._raw(_asset.read_bytes(), _ct, cache=False)
+        # /AMUX-LOCAL:session-chat
         if method == "GET" and path in ("/icon.svg", "/icon.png", "/icon-192.png", "/icon-512.png"):
             # Serve custom branding icon if available
             for ext in (".png", ".jpg", ".svg", ".webp"):
