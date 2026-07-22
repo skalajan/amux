@@ -775,6 +775,56 @@ _PUBLIC_PATHS = frozenset({"/", "/manifest.json", "/sw.js", "/icon.svg", "/icon.
                            "/api/release-notes", "/api/calendar.ics"})
 _PUBLIC_PREFIXES = ("/s/", "/api/share/", "/invite/", "/proxy/", "/api/branding/")
 
+# AMUX-LOCAL:write-auth
+# Localhost write-auth token. Even loopback (127.0.0.1/::1) callers must present a
+# credential to reach a state-changing /api/ endpoint, closing the local-RCE hole
+# where any process could POST /api/sessions/<n>/send and inject into a tool-enabled
+# session. The token is an INDEPENDENT 0600 file secret (NOT derived from AUTH_TOKEN),
+# so write enforcement survives AMUX_AUTH_TOKEN=none (where AUTH_TOKEN=="") and never
+# collapses to a computable constant. See MODIFICATIONS.md (Local Delta Registry).
+import hmac as _hmac
+_WRITE_TOKEN_FILE = _amux_home / "write_token"
+def _load_or_create_write_token() -> str:
+    if _WRITE_TOKEN_FILE.exists():
+        tok = _WRITE_TOKEN_FILE.read_text().strip()
+        if tok:
+            return tok
+    import secrets as _secrets
+    tok = _secrets.token_urlsafe(32)
+    _amux_home.mkdir(parents=True, exist_ok=True)
+    _WRITE_TOKEN_FILE.write_text(tok + "\n")
+    os.chmod(str(_WRITE_TOKEN_FILE), 0o600)
+    return tok
+
+_WRITE_TOKEN = _load_or_create_write_token()
+
+def _is_write_path(method: str, path: str) -> bool:
+    """DENY-BY-DEFAULT write classifier. A request is a WRITE (token required) iff
+    its method is not in {GET, HEAD, OPTIONS} AND its path starts with /api/ AND it
+    is not a public relay/share path. So any unknown/future POST|PATCH|PUT|DELETE
+    /api/... is auto-protected on arrival — a genuine non-GET *read* must be added to
+    an explicit allowlist here (a visible, reviewed action), never fail open."""
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if not path.startswith("/api/"):
+        return False
+    if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return False
+    return True
+
+def _write_auth_ok(headers) -> bool:
+    """A write is authorized iff it carries X-Amux-Write-Token == the 0600 file secret,
+    OR (AUTH_TOKEN != "" AND Authorization: Bearer AUTH_TOKEN). No _UI_TOKEN and no
+    sha256(...+AUTH_TOKEN) derivation — both collapse to public constants under
+    AMUX_AUTH_TOKEN=none. Constant-time compare on the real random secret only."""
+    tok = headers.get("X-Amux-Write-Token", "")
+    if _WRITE_TOKEN and _hmac.compare_digest(tok, _WRITE_TOKEN):
+        return True
+    if AUTH_TOKEN and headers.get("Authorization", "") == f"Bearer {AUTH_TOKEN}":
+        return True
+    return False
+# /AMUX-LOCAL:write-auth
+
 CC_LOGS.mkdir(parents=True, exist_ok=True)
 CC_MEMORY.mkdir(parents=True, exist_ok=True)
 CC_BOARD_DIR.mkdir(parents=True, exist_ok=True)
@@ -7035,6 +7085,9 @@ def _sync_skills_and_cli():
     _amux_stub = r"""#!/bin/sh
 # amux CLI stub — proxies board/session commands to the amux server API
 AMUX_URL="${AMUX_URL:-https://localhost:8822}"
+# AMUX-LOCAL:write-auth — localhost write token, required on state-changing /api/ writes
+AMUX_WRITE_TOKEN="$(cat ~/.amux/write_token 2>/dev/null || true)"
+# /AMUX-LOCAL:write-auth
 cmd="$1"; shift 2>/dev/null || true
 
 case "$cmd" in
@@ -7052,6 +7105,7 @@ case "$cmd" in
     body=$(MSG="$msg" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
     curl -sk -X POST -H 'Content-Type: application/json' \
       -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
       -d "$body" "$AMUX_URL/api/sessions/$target/send" | TGT="$target" python3 -c "
 import json,sys,os
 try: d=json.load(sys.stdin)
@@ -7072,6 +7126,7 @@ print('sent to '+os.environ['TGT']+' (origin-stamped): '+str(d.get('message','ok
         done
         for id in $ids; do
           curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
             -d "{\"status\":\"$sub\"$force}" "$AMUX_URL/api/board/$id" | python3 -c "
 import json,sys
 iid=sys.argv[1]
@@ -7089,6 +7144,7 @@ print(iid+' -> '+str(d.get('status','?')))
       add)
         title="$*"
         curl -sk -X POST -H 'Content-Type: application/json' \
+          -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
           -d "{\"title\":\"$title\",\"status\":\"todo\",\"session\":\"${AMUX_SESSION:-}\"}" "$AMUX_URL/api/board" ;;
       list|ls|"")
         curl -sk "$AMUX_URL/api/board" | python3 -c "
@@ -7110,7 +7166,7 @@ for a in args:
     else: name_parts.append(a)
 if name_parts: fields['name']=' '.join(name_parts)
 print(json.dumps(fields))" "$@")
-        curl -sk -X POST -H 'Content-Type: application/json' -d "$json" "$AMUX_URL/api/crm/contacts" | python3 -c "
+        curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" -d "$json" "$AMUX_URL/api/crm/contacts" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print(d.get('id','error'),'-',d.get('error','created'))" ;;
       update)
@@ -7121,7 +7177,7 @@ import sys,json; fields={}
 for a in sys.argv[1:]:
     if '=' in a: k,v=a.split('=',1); fields[k]=v
 print(json.dumps(fields))" "$@")
-        curl -sk -X PATCH -H 'Content-Type: application/json' -d "$json" "$AMUX_URL/api/crm/contacts/$cid" | python3 -c "
+        curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" -d "$json" "$AMUX_URL/api/crm/contacts/$cid" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print('updated' if d.get('ok') else d.get('error','failed'))" ;;
       get)
@@ -7141,6 +7197,7 @@ if ixs: print('  last interaction:',ixs[0].get('date'),'-',ixs[0].get('notes',''
       log)
         cid="$1"; shift 2>/dev/null || true; notes="$*"
         curl -sk -X POST -H 'Content-Type: application/json' \
+          -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
           -d "{\"notes\":\"$notes\",\"date\":\"$(date +%Y-%m-%d)\",\"type\":\"other\"}" \
           "$AMUX_URL/api/crm/contacts/$cid/interactions" ;;
       followups|fu)
@@ -7161,10 +7218,10 @@ for c in cs: print(c.get('id',''),c.get('name',''),c.get('company',''))" ;;
     session="$1"
     if [ -z "$session" ]; then echo "Usage: amux restart <session>" >&2; exit 1; fi
     echo "Stopping $session..."
-    curl -sk -X POST "$AMUX_URL/api/sessions/$session/stop" >/dev/null
+    curl -sk -X POST -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" "$AMUX_URL/api/sessions/$session/stop" >/dev/null
     sleep 1
     echo "Starting $session..."
-    curl -sk -X POST "$AMUX_URL/api/sessions/$session/start" >/dev/null
+    curl -sk -X POST -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" "$AMUX_URL/api/sessions/$session/start" >/dev/null
     echo "Restarted $session" ;;
   session|sessions)
     curl -sk "$AMUX_URL/api/sessions" | python3 -c "
@@ -7174,12 +7231,14 @@ for s in json.load(sys.stdin): print(s['name'], '(running)' if s.get('running') 
     session="$1"; shift 2>/dev/null || true
     perms="${1:-output}"
     result=$(curl -sk -X POST -H 'Content-Type: application/json' \
+      -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
       -d "{\"perms\":\"$perms\"}" "$AMUX_URL/api/sessions/$session/share")
     echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('url','error: '+d.get('error','unknown')))" ;;
   unshare)
     session="$1"; shift 2>/dev/null || true
     token="$1"
     curl -sk -X DELETE -H 'Content-Type: application/json' \
+      -H "X-Amux-Write-Token: $AMUX_WRITE_TOKEN" \
       -d "{\"token\":\"$token\"}" "$AMUX_URL/api/sessions/$session/share" >/dev/null
     echo "revoked" ;;
   help|--help|-h|"")
@@ -13422,7 +13481,9 @@ def _channel_deliver(sender: str, recipient: str, text: str) -> tuple[bool, str]
         f"This is from another amux session, not from the user. "
         f"To reply, run this bash command (do not paraphrase to the user):\n"
         f"  curl -sk -X POST $AMUX_URL/api/channels/$AMUX_SESSION/{safe_sender}/messages "
-        f"-H 'Content-Type: application/json' -d '{{\"text\":\"YOUR REPLY HERE\"}}'"
+        f"-H 'Content-Type: application/json' "
+        f'-H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" '
+        f"-d '{{\"text\":\"YOUR REPLY HERE\"}}'"
     )
     # Boundary-aware: an inter-session message must never reject the recipient's
     # pending tool-approval (the backend->gtm-engine AskUserQuestion kill, 2026-07-15).
@@ -21415,9 +21476,15 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <script>
 // ── Auth token injection (must be first — before any fetch calls) ──
 const _authToken = window._AMUX_AUTH_TOKEN || '';
+// AMUX-LOCAL:write-auth — localhost write token (required on state-changing /api/ writes)
+const _writeToken = window._AMUX_WRITE_TOKEN || '';
+// /AMUX-LOCAL:write-auth
 function _authHeaders(headers) {
   const h = headers ? { ...headers } : {};
   if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
+  // AMUX-LOCAL:write-auth
+  if (_writeToken) h['X-Amux-Write-Token'] = _writeToken;
+  // /AMUX-LOCAL:write-auth
   return h;
 }
 function _authUrl(url) {
@@ -21425,7 +21492,9 @@ function _authUrl(url) {
   const sep = url.includes('?') ? '&' : '?';
   return url + sep + '_token=' + encodeURIComponent(_authToken);
 }
-if (_authToken) {
+// AMUX-LOCAL:write-auth — install the fetch wrapper when EITHER token is present
+// (write token must ride along even under AMUX_AUTH_TOKEN=none, where _authToken=="").
+if (_authToken || _writeToken) {
   const _origFetchForAuth = window.fetch;
   window.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
@@ -45494,6 +45563,18 @@ class CCHandler(BaseHTTPRequestHandler):
 
     def _check_auth(self, method: str, path: str) -> bool:
         """Return True if request is authorized. Sends 401 and returns False if not."""
+        # AMUX-LOCAL:write-auth
+        # Write enforcement runs FIRST — above both early-returns below — so it is
+        # independent of AUTH_TOKEN (holds under AMUX_AUTH_TOKEN=none) and of the
+        # localhost bypass. Deny-by-default: a write with a valid credential passes;
+        # a write without one is rejected. Reads keep the existing loose behavior.
+        if _is_write_path(method, path):
+            if _write_auth_ok(self.headers):
+                return True
+            # ROLLOUT: accept-but-not-require — enforcement is flipped on in a later
+            # edit once every HTTP consumer carries the token (enforce-last, plan 3.4).
+            pass
+        # /AMUX-LOCAL:write-auth
         if not AUTH_TOKEN:
             return True
         # Localhost always bypasses auth (local sessions, CLI tools)
@@ -45724,6 +45805,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 f'window._AMUX_USER_EMAIL={_json.dumps(_user_email)};'
                 f'window._AMUX_USER_ID={_json.dumps(_user_id)};'
                 f'window._AMUX_UI_TOKEN={_json.dumps(_UI_TOKEN)};'
+                # AMUX-LOCAL:write-auth
+                f'window._AMUX_WRITE_TOKEN={_json.dumps(_WRITE_TOKEN)};'
+                # /AMUX-LOCAL:write-auth
                 f'window._AMUX_DEFAULT_MODEL={_json.dumps(_get_default_model())};</script></head>',
                 1,
             )
@@ -54094,6 +54178,21 @@ def main():
     _ensure_no_native_artifacts()   # block the Artifact tool for every session (all auth types)
     _seed_builtin_skills()          # ship /adhd (etc.) by default, once per install
     _sync_skills_and_cli()          # then sync ALL skills (incl. built-ins) to provider command dirs
+
+    # AMUX-LOCAL:write-auth — startup enforce-on self-check (plan S4 detection).
+    # Assert the write gate is wired: token file exists 0600 and a known write path
+    # classifies as a write. A silently-open gate is thus detectable at boot.
+    try:
+        _wt_mode = oct(_WRITE_TOKEN_FILE.stat().st_mode & 0o777) if _WRITE_TOKEN_FILE.exists() else "missing"
+        _wt_ok = bool(_WRITE_TOKEN) and _is_write_path("POST", "/api/sessions/x/send") \
+                 and not _is_write_path("GET", "/api/sessions")
+        if _wt_ok and _wt_mode == "0o600":
+            slog("[startup] write-auth ENFORCED (deny-by-default writes; ~/.amux/write_token 0600)")
+        else:
+            slog(f"[startup] WARNING: write-auth gate check failed (token_file={_wt_mode}, classifier_ok={_wt_ok}) — writes may be under-protected")
+    except Exception as _e:
+        slog(f"[startup] WARNING: write-auth self-check errored: {_e}")
+    # /AMUX-LOCAL:write-auth
 
     # Bind one HTTPS server per host in bind_hosts. Retry on TIME_WAIT after restart.
     servers = []
