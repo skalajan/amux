@@ -45571,9 +45571,11 @@ class CCHandler(BaseHTTPRequestHandler):
         if _is_write_path(method, path):
             if _write_auth_ok(self.headers):
                 return True
-            # ROLLOUT: accept-but-not-require — enforcement is flipped on in a later
-            # edit once every HTTP consumer carries the token (enforce-last, plan 3.4).
-            pass
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "write token required"}).encode())
+            return False
         # /AMUX-LOCAL:write-auth
         if not AUTH_TOKEN:
             return True
