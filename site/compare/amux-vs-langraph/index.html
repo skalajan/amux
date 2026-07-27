@@ -4,26 +4,103 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs LangGraph — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with LangGraph for building and orchestrating AI agent workflows.">
-  <meta name="keywords" content="amux vs langgraph, langgraph alternative, AI agent graph, coding agent orchestration">
+  <title>amux vs LangGraph — fleet operator vs workflow framework (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux runs parallel coding agent sessions (Claude Code, Codex, Gemini CLI) from a dashboard. LangGraph builds stateful multi-agent graphs in Python/TypeScript code. Different jobs — often complementary. Honest comparison.">
+  <meta name="keywords" content="amux vs langgraph, langgraph alternative, langgraph vs amux, langgraph coding agents, multi-agent orchestration 2026, open source langgraph alternative">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-langraph/">
-  <meta property="og:title" content="amux vs LangGraph — amux">
-  <meta property="og:description" content="Compare amux with LangGraph for building and orchestrating AI agent workflows.">
+  <meta property="og:title" content="amux vs LangGraph — fleet operator vs workflow framework (2026)">
+  <meta property="og:description" content="LangGraph builds agent graphs in code. amux runs Claude Code sessions from a dashboard. Both are multi-agent tools solving entirely different problems.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-langraph/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs LangGraph — fleet operator vs workflow framework (2026)">
+  <meta name="twitter:description" content="LangGraph builds agent graphs in code. amux runs Claude Code sessions from a dashboard. Both are multi-agent tools solving entirely different problems.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs LangGraph","item":"https://amux.io/compare/amux-vs-langraph/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs LangGraph","description":"Compare amux with LangGraph for building and orchestrating AI agent workflows.","url":"https://amux.io/compare/amux-vs-langraph/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs LangGraph", "item": "https://amux.io/compare/amux-vs-langraph/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs LangGraph — fleet operator vs workflow framework (2026)",
+    "description": "LangGraph builds stateful multi-agent graphs in Python/TypeScript. amux runs Claude Code, Codex, and Gemini CLI sessions from a web dashboard with self-healing and mobile management. Honest comparison of two tools that solve different problems.",
+    "url": "https://amux.io/compare/amux-vs-langraph/",
+    "datePublished": "2026-07-24",
+    "dateModified": "2026-07-24",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is the difference between amux and LangGraph?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "LangGraph is a Python/TypeScript framework (~38k GitHub stars, MIT) for building stateful multi-agent workflows in code — you define graph nodes as functions, wire them with edges, and manage state with checkpoints. amux (310 ★, MIT+CC) is an open-source fleet operator for running Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with self-healing, a kanban board, mobile management via iOS app, CRM, email, and browser automation. LangGraph builds agent logic; amux runs coding-agent sessions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use amux and LangGraph together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — they compose naturally. LangGraph can act as a decision-making orchestrator that calls amux's REST API to spawn or send messages to coding-agent sessions. For example: LangGraph's supervisor node POSTs to /api/sessions/NAME/send to issue a task, then polls /api/sessions/NAME/peek to read the result, while amux handles the actual Claude Code session management and self-healing."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does LangGraph run Claude Code sessions?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. LangGraph is a developer framework for building custom agent logic — you implement nodes as Python/TypeScript functions that call LLM APIs directly. LangGraph does not manage tmux sessions, run Claude Code CLI, or provide a web dashboard. If you want to run actual Claude Code sessions in parallel with self-healing and monitoring, that's what amux is for."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which is better for running many coding agents in parallel overnight?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is purpose-built for this. It manages tmux sessions running Claude Code, Codex, or Gemini CLI; auto-compacts context on overflow, restarts on crash, and replays the last message. A web dashboard and native iOS app let you monitor the fleet from anywhere. LangGraph is a framework that requires you to build and operate this infrastructure yourself."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is LangGraph an alternative to amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Not directly — they target different layers. LangGraph is a developer framework for building custom agent pipelines (similar to a state machine library). amux is an operations platform for running coding-agent sessions (similar to a process manager + dashboard). You'd choose LangGraph if you need programmatic control over agent decision logic; you'd choose amux if you need to run and monitor Claude Code sessions at scale. Many teams use both."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,17 +116,262 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs LangGraph</span></div>
+
     <h1>amux vs LangGraph</h1>
-<p class="subtitle">LangGraph builds agent graphs. amux orchestrates real coding sessions.</p>
-<p><strong>LangGraph</strong> is a framework for building stateful, graph-based AI agent workflows. <strong>amux</strong> orchestrates actual Claude Code sessions that write, test, and deploy code.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>LangGraph</th></tr></thead><tbody><tr><td>Purpose</td><td>Orchestrate Claude Code sessions</td><td>Build custom agent graphs</td></tr><tr><td>Agent capability</td><td>Full dev environment (files, git, shell)</td><td>Custom tools per node</td></tr><tr><td>Setup</td><td>3 shell commands</td><td>Python code + LangChain ecosystem</td></tr><tr><td>Self-healing</td><td>Built-in watchdog</td><td>Custom error edges</td></tr><tr><td>State management</td><td>SQLite + tmux sessions</td><td>Checkpointed graph state</td></tr><tr><td>Flexibility</td><td>Claude Code specific</td><td>Any LLM/tool combination</td></tr></tbody></table>
-<h2>Choose based on your goal</h2>
-<p>Building a <strong>custom AI pipeline</strong> with specific tools? Use LangGraph. Need to <strong>run many Claude Code agents in parallel</strong> to ship code? Use amux.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <p class="subtitle">LangGraph builds the decision graph. amux runs the coding-agent fleet. <em>Updated July 2026.</em></p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
+      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>Quick answer:</strong> LangGraph (~38k ★, MIT) is a Python/TypeScript framework for building stateful multi-agent workflows in code — nodes are functions, edges are transitions, state is checkpointed. amux (310 ★, MIT+CC) is an open-source control plane that runs Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with built-in self-healing, kanban coordination, and mobile management via iOS app. <strong>LangGraph defines how agents decide; amux manages the sessions that execute.</strong> Most teams that need both eventually combine them.</p>
+    </div>
+
+    <!-- EXP-007 -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — run your AI agent fleet from a dashboard, not a framework (310★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Claude Code + Codex + Gemini CLI in parallel. Self-healing watchdog. Kanban coordination. iOS app. Zero Python code required. Open source, single file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <h2>What each tool actually is</h2>
+    <p><strong>LangGraph</strong> is a graph-based framework for building stateful, multi-actor LLM applications. You write Python (or TypeScript) code: nodes are functions that call LLMs or take actions, edges define how state flows between them, and checkpointers persist state across steps. It sits at the same layer as your application code — it <em>is</em> your agent logic.</p>
+    <p><strong>amux</strong> is a fleet operator for coding agents. Install it, register sessions (Claude Code, Codex, Gemini CLI), and amux handles the rest: launching tmux sessions, watching for crashes and context exhaustion, replaying on recovery, syncing state to a shared kanban board, and streaming output to your web dashboard or phone. You don't write code to manage the fleet — you monitor and steer it from a UI.</p>
+    <p>The framing that helps most: <strong>LangGraph is where you build the brain; amux is where you run the hands.</strong> LangGraph defines decisions; amux manages the sessions executing them.</p>
+
+    <h2>Feature comparison</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;width:30%">Feature</th>
+            <th style="padding:10px 16px;text-align:left;width:35%">amux</th>
+            <th style="padding:10px 16px;text-align:left;width:35%">LangGraph</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">What it is</td>
+            <td style="padding:10px 16px;">Fleet operator: manages running coding-agent sessions (Claude Code, Codex, Gemini CLI)</td>
+            <td style="padding:10px 16px;">Workflow framework: builds stateful agent graphs in Python/TypeScript code</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Target user</td>
+            <td style="padding:10px 16px;">Developers who want to run 10-50 coding agents unattended — no custom code</td>
+            <td style="padding:10px 16px;">AI engineers building custom agent applications with fine-grained control flow</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Primary use case</td>
+            <td style="padding:10px 16px;">Run a parallel fleet of Claude Code / Codex / Gemini sessions overnight</td>
+            <td style="padding:10px 16px;">Build ReAct agents, supervisor hierarchies, and human-in-the-loop pipelines</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Setup</td>
+            <td style="padding:10px 16px;"><code>brew install mixpeek/amux/amux && amux serve</code> — done in 3 commands</td>
+            <td style="padding:10px 16px;"><code>pip install langgraph</code>, then write Python/TypeScript code for your graph</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Runs Claude Code sessions</td>
+            <td style="padding:10px 16px;">✅ Yes — via tmux; YOLO mode, context auto-compact, full CLI integration</td>
+            <td style="padding:10px 16px;">❌ No — LangGraph calls LLM APIs directly; does not manage Claude Code CLI</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Self-healing</td>
+            <td style="padding:10px 16px;">✅ Built-in watchdog — auto-compacts, restarts on crash, replays last message</td>
+            <td style="padding:10px 16px;">Partial — state checkpointing helps resume; no automatic crash recovery</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Web dashboard</td>
+            <td style="padding:10px 16px;">✅ Live session cards, peek panel, SSE streaming, subagent transcript switcher</td>
+            <td style="padding:10px 16px;">LangGraph Studio (graph visualizer, local) — not a session fleet dashboard</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Mobile management</td>
+            <td style="padding:10px 16px;">✅ Native iOS app (App Store) + installable PWA; full fleet control from phone</td>
+            <td style="padding:10px 16px;">❌ No mobile interface</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Multi-runtime agents</td>
+            <td style="padding:10px 16px;">✅ Claude Code, OpenAI Codex CLI, Antigravity CLI (Gemini) — all three simultaneously</td>
+            <td style="padding:10px 16px;">✅ Yes — LangGraph nodes can call any LLM provider (Anthropic, OpenAI, Google, etc.)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Task coordination</td>
+            <td style="padding:10px 16px;">SQLite kanban board with atomic CAS claiming — prevents duplicated work</td>
+            <td style="padding:10px 16px;">Programmatic — you build the task routing and coordination into your graph nodes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Human-in-the-loop</td>
+            <td style="padding:10px 16px;">Phone approval via iOS app; steering queue for mid-session instructions</td>
+            <td style="padding:10px 16px;">✅ Built-in <code>interrupt()</code> / <code>Command(resume=...)</code> for graph-level human approval</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">State persistence</td>
+            <td style="padding:10px 16px;">SQLite (sessions, board, notes, CRM, schedules); tmux session survives reboots</td>
+            <td style="padding:10px 16px;">✅ Checkpointers: SQLite, PostgreSQL, Redis, MongoDB — graph-level state</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">CRM / email / browser</td>
+            <td style="padding:10px 16px;">✅ Built-in CRM, Gmail API email, Playwright browser automation</td>
+            <td style="padding:10px 16px;">❌ Not built-in — you integrate these via custom tools/nodes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">Open source</td>
+            <td style="padding:10px 16px;">✅ MIT + Commons Clause — free to self-host</td>
+            <td style="padding:10px 16px;">✅ MIT — fully open source</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600">GitHub stars</td>
+            <td style="padding:10px 16px;">310 ★ (growing rapidly, July 2026)</td>
+            <td style="padding:10px 16px;">38,000+ ★ (langchain-ai/langgraph)</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;font-weight:600">Best for</td>
+            <td style="padding:10px 16px;">Running a fleet of coding agents from a dashboard with zero Python orchestration code</td>
+            <td style="padding:10px 16px;">Building custom, programmatic multi-agent pipelines where you control every decision</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>When to choose amux</h2>
+    <ul>
+      <li>You want to run 10-50 Claude Code, Codex, or Gemini CLI sessions in parallel — without writing Python orchestration code</li>
+      <li>You need unattended overnight operation with automatic crash recovery and context compaction handling</li>
+      <li>You want a web dashboard and iOS app to monitor your fleet from anywhere</li>
+      <li>Your agents are general-purpose coding sessions pulling tasks from a shared kanban board</li>
+      <li>You want built-in CRM, email, browser automation, and scheduler as part of the same system</li>
+      <li>You want to self-host on your own machine with zero cloud dependencies (single Python file)</li>
+    </ul>
+
+    <h2>When to choose LangGraph</h2>
+    <ul>
+      <li>You're building a custom agent application that needs fine-grained programmatic control — specific nodes, conditional edges, complex branching</li>
+      <li>You need graph-level state checkpointing and deterministic replay for your agent workflow</li>
+      <li>Your agents call LLM APIs directly (not Claude Code CLI) and you're integrating them into a larger application</li>
+      <li>You need human-in-the-loop at the graph level — interrupting mid-graph and resuming based on user input</li>
+      <li>You're building a ReAct agent, supervisor hierarchy, or parallel subgraph workflow that requires framework-level control</li>
+      <li>Your team is comfortable writing Python/TypeScript and wants code-first agent orchestration</li>
+    </ul>
+
+    <h2>Why not both?</h2>
+    <p>amux and LangGraph solve different problems and compose naturally. Here are three patterns for using them together:</p>
+
+    <h3>Pattern 1: LangGraph supervisor → amux coding fleet</h3>
+    <p>A LangGraph supervisor graph handles the decision logic: which tasks to create, in what order, whether a result needs revision. When it decides a coding task should run, it posts to amux's REST API to spawn or steer a Claude Code session.</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># LangGraph node that delegates to amux
+import requests, os
+
+def coding_node(state):
+    amux_url = os.getenv("AMUX_URL", "https://localhost:8822")
+    task = state["current_task"]
+    # issue task to amux session
+    requests.post(
+        f"{amux_url}/api/sessions/{state['agent_name']}/send",
+        json={"text": task["prompt"]},
+        verify=False
+    )
+    # poll for completion
+    while True:
+        peek = requests.get(
+            f"{amux_url}/api/sessions/{state['agent_name']}/peek",
+            verify=False
+        ).json()
+        if "TASK COMPLETE" in peek.get("output", ""):
+            return {**state, "result": peek["output"]}
+</code></pre>
+
+    <h3>Pattern 2: amux board as LangGraph shared memory</h3>
+    <p>Multiple LangGraph agent instances running in parallel all read from and write to the amux kanban board via REST API. Each agent claims tasks atomically (POST /api/board/TASK-ID/claim), preventing duplicated work without needing a shared LangGraph state. amux's SQLite compare-and-swap is the synchronization primitive.</p>
+
+    <h3>Pattern 3: LangGraph decision agent + amux coding sessions side-by-side</h3>
+    <p>One Claude Code session in amux is dedicated to running a lightweight LangGraph supervisor — it receives the backlog, decomposes it into tasks, and posts them to the amux board. Other sessions pull tasks from the board and execute them with full Claude Code tooling (files, git, shell, browser). LangGraph provides the decomposition intelligence; amux provides the execution infrastructure and monitoring.</p>
+
+    <h2>Decision guide</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Your situation</th>
+            <th style="padding:10px 16px;text-align:left;">Recommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I want 20 Claude Code agents running tonight with a shared task queue"</td>
+            <td style="padding:10px 16px;"><strong>amux</strong> — 3 commands to get started, self-healing handles overnight runs</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I'm building a ReAct agent application with conditional tool selection"</td>
+            <td style="padding:10px 16px;"><strong>LangGraph</strong> — fine-grained node/edge control is what it's designed for</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I need human approval before my agent takes irreversible actions"</td>
+            <td style="padding:10px 16px;"><strong>LangGraph</strong> for in-graph interrupts; <strong>amux</strong> for phone-based steering queue approval</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I want to monitor 30 agents from my phone while traveling"</td>
+            <td style="padding:10px 16px;"><strong>amux</strong> — iOS app is the only purpose-built mobile fleet UI for coding agents</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I'm building an AI application that needs graph-level state and replay"</td>
+            <td style="padding:10px 16px;"><strong>LangGraph</strong> — its checkpointing system is purpose-built for this</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">"I want to run Claude Code, Codex, and Gemini CLI together in one view"</td>
+            <td style="padding:10px 16px;"><strong>amux</strong> — multi-runtime support is a core feature, all three in the same dashboard</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">"I need programmatic coordination across agent sessions with fine-grained control"</td>
+            <td style="padding:10px 16px;"><strong>Both</strong> — LangGraph for the coordination logic; amux REST API for the session fleet</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is LangGraph and how does it work?</summary>
+      <p style="margin:0.8rem 0 0;">LangGraph is an open-source Python/TypeScript library (~38k ★, MIT) from the LangChain team for building stateful, multi-actor LLM applications as graphs. You define a <code>StateGraph</code> where nodes are functions (typically LLM calls or tool invocations) and edges are conditional transitions between them. State is carried through the graph and can be checkpointed to databases like SQLite, PostgreSQL, or Redis. LangGraph is used to build ReAct agents, supervisor agent hierarchies, and human-in-the-loop workflows.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux replace LangGraph?</summary>
+      <p style="margin:0.8rem 0 0;">No — they operate at different layers. amux is an operations platform for running Claude Code / Codex / Gemini CLI sessions with a dashboard and self-healing. LangGraph is a framework for building custom agent decision logic in code. You'd reach for amux when you want to run many coding agent sessions from a UI without writing orchestration code. You'd reach for LangGraph when you're building a custom agent application that needs fine-grained programmatic control over how agents make decisions. They're often used together.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can LangGraph run Claude Code CLI sessions?</summary>
+      <p style="margin:0.8rem 0 0;">Not directly — LangGraph calls LLM APIs (via ChatAnthropic, ChatOpenAI, etc.) rather than managing terminal sessions running the Claude Code CLI. If you want to run actual <code>claude</code> CLI processes in tmux with self-healing, board coordination, and a monitoring dashboard, that's amux's job. However, you can build a LangGraph node that calls amux's REST API to spawn or interact with Claude Code sessions.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Is amux self-hosted? What about LangGraph Platform?</summary>
+      <p style="margin:0.8rem 0 0;">amux is fully self-hosted by default — single Python file on your own machine, zero cloud dependency (MIT + Commons Clause). amux Cloud ($20/month) adds only a tunnel relay for public URL access; everything else runs locally. LangGraph itself (the library) is open source and self-hostable. LangGraph Platform is Anthropic's managed hosted deployment service for LangGraph applications — a separate paid product for teams who don't want to operate their own infrastructure.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How does amux coordinate agents without LangGraph?</summary>
+      <p style="margin:0.8rem 0 0;">amux uses a SQLite-backed kanban board with atomic compare-and-swap claiming (POST /api/board/TASK-ID/claim — 200 if won, 409 if already claimed). Any session — Claude Code, Codex, or Gemini CLI — can claim a task and the SQLite CAS prevents duplicated work without coordination code. Sessions also communicate via the Messages API (<code>amux send SESSION "message"</code>) and can read each other's output with GET /api/sessions/NAME/peek. It's a minimal coordination layer that doesn't require writing Python orchestration code.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run your AI agent fleet from one dashboard</h3>
+      <p>amux is the open-source control plane for Claude Code, Codex, and Gemini CLI sessions — self-healing watchdog, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Python file, MIT licensed.</p>
+      <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
+      <a class="btn" href="/guides/agent-to-agent-communication/" style="margin-left:0.75rem;">Agent coordination guide →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related comparisons:</strong>
+      <a href="/compare/amux-vs-crewai/">amux vs CrewAI</a> ·
+      <a href="/compare/amux-vs-autogen/">amux vs AutoGen</a> ·
+      <a href="/compare/amux-vs-codex/">amux vs OpenAI Codex</a> ·
+      <a href="/compare/amux-vs-claude-code-agent-teams/">amux vs Claude Code Agent Teams</a> ·
+      <a href="/compare/amux-vs-n8n/">amux vs n8n</a>
+    </p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -72,8 +394,8 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
           <div class="footer-col-label">Compare</div>
           <ul>
             <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/amux-vs-crewai/">vs CrewAI</a></li>
+            <li><a href="/compare/amux-vs-codex/">vs Codex</a></li>
             <li><a href="/compare/">All comparisons</a></li>
           </ul>
         </div>
@@ -81,9 +403,9 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
           <div class="footer-col-label">More</div>
           <ul>
             <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
             <li><a href="/for/">For your stack</a></li>
             <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/cloud/">amux Cloud</a></li>
           </ul>
         </div>
       </div>
@@ -97,6 +419,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

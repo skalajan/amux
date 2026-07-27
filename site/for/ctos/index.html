@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for CTOs — Run an AI Engineering Team from One Dashboard (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="CTOs use amux to run AI engineering teams at scale — parallel Claude Code, Codex, and Gemini CLI sessions with a shared kanban board, self-healing overnight operation, mobile oversight, and full audit trail. Open source, self-hosted.">
+  <meta name="keywords" content="amux for CTOs, AI engineering team dashboard, CTO AI agent management, parallel coding agents for engineering leaders, AI team productivity 2026, open source AI team orchestration">
+  <link rel="canonical" href="https://amux.io/for/ctos/">
+  <meta property="og:title" content="amux for CTOs — Run an AI Engineering Team from One Dashboard">
+  <meta property="og:description" content="Run dozens of parallel Claude Code, Codex, and Gemini CLI coding sessions from one dashboard. Shared kanban, mobile oversight, self-healing, and a full audit trail for your engineering leadership.">
+  <meta property="og:url" content="https://amux.io/for/ctos/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux for CTOs — AI Engineering Team Dashboard (2026)">
+  <meta name="twitter:description" content="Run dozens of parallel Claude Code sessions with a shared kanban board, mobile oversight, and self-healing. Open source.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "CTOs", "item": "https://amux.io/for/ctos/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for CTOs — Run an AI Engineering Team from One Dashboard (2026)",
+    "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, self-healing overnight operation, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
+    "url": "https://amux.io/for/ctos/",
+    "datePublished": "2026-07-24",
+    "dateModified": "2026-07-24",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is amux and how does it help CTOs manage AI engineering teams?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is an open-source control plane for AI coding agent fleets. CTOs deploy it on their own infrastructure and their developers use it to run Claude Code, Codex, and Gemini CLI sessions in parallel — coordinated through a shared kanban board with atomic task claiming, monitored via a web dashboard or iOS app, and self-healed automatically on crash or context overflow. The result is engineering velocity that scales with agent count, not headcount. MIT + Commons Clause, single Python file, zero external dependencies."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux prevent AI agents from duplicating work on the same codebase?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux uses atomic SQLite compare-and-swap task claiming: an agent POSTs to /api/board/TASK-ID/claim — the server returns 200 if it wins the claim, or 409 if another agent already claimed it. No two agents can claim the same task. Combined with git worktree isolation (each session in its own branch), parallel agents working on the same repo avoid both duplicated work and merge conflicts."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can engineering teams use amux on their own infrastructure without sending code to third-party servers?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — amux is fully self-hosted by default. The server runs as a single Python process on your own machine or internal server. No code, task content, or agent output leaves your network unless you configure amux Cloud (a tunnel relay for public URL access — the relay handles HTTP proxying only, not storage or execution). Everything runs locally: the dashboard, agents, kanban board, CRM, email, and scheduler."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens when a Claude Code agent crashes or hits a context limit overnight?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux's self-healing watchdog detects four failure modes: context exhaustion (auto-compacts with /compact), thinking-block corruption (restarts and replays the last message), tool-approval blocks (YOLO mode auto-approves), and silent hangs (idle timeout kick). Agents are automatically recovered without manual intervention — you wake up to finished work, not crashed sessions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do CTOs monitor their AI agent fleet from a mobile device?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux ships a native iOS app (App Store) and an installable PWA. Both show the full fleet: session status dots (green/yellow/red), live peek panel with streaming output, subagent transcript switcher, kanban board, and the steering queue for mid-session instructions. From your phone you can see every session's current state, inspect what any agent is working on, approve actions, and send steering messages — all without a laptop."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux support multiple AI runtimes, or only Claude Code?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux supports Claude Code (Anthropic), Codex CLI (OpenAI), and Antigravity CLI (Google/Gemini) simultaneously — all visible in the same dashboard. Multi-runtime support lets teams distribute work across provider rate-limit buckets, achieving 2-3× throughput compared to a single-provider fleet, and reduces vendor dependency. You can route by task type: Claude for architecture and review, Codex for generation, Gemini for large-context analysis."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>CTOs</span></div>
+
+    <h1>amux for CTOs</h1>
+    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated July 2026.</em></p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
+      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, self-healing watchdog, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
+    </div>
+
+    <h2>The problem amux solves for engineering leaders</h2>
+    <p>When an engineering team adopts AI coding agents at scale, three problems emerge immediately:</p>
+    <ol>
+      <li><strong>Fleet visibility:</strong> Dozens of Claude Code sessions running in tmux across developer machines — no shared view of what's running, what's done, what's stuck.</li>
+      <li><strong>Coordination failure:</strong> Two agents claim the same task, overwrite each other's branches, or block on the same API rate limit while the other provider's quota sits unused.</li>
+      <li><strong>Overnight reliability:</strong> Agents hit context limits at 2am, crash on tool-approval prompts, or silently hang — and no one knows until morning.</li>
+    </ol>
+    <p>amux solves all three in a single self-hosted deployment your team controls.</p>
+
+    <h2>Fleet overview at a glance</h2>
+    <p>The amux web dashboard gives the entire team — developers, managers, and technical leaders — a shared real-time view of every active agent session. Status dots tell you at a glance: green = working, yellow = needs attention (YOLO prompt, approval required), red = crashed. The peek panel streams live terminal output from any session. You can watch an agent's work, read its plan strip (the current task list), and switch between its subagent transcripts without SSH.</p>
+    <p>From the iOS app on your phone, you have the same full view. Review fleet health in a standup, approve a risky action from the airport, or steer an agent mid-task via the steering queue — without opening a laptop.</p>
+
+    <h2>How parallel agents coordinate without conflicts</h2>
+    <p>amux's kanban board uses atomic SQLite compare-and-swap task claiming. The sequence is:</p>
+    <ol>
+      <li>A developer or orchestrator agent creates tasks on the board (POST /api/board with title + status "todo")</li>
+      <li>Each coding agent in its CLAUDE.md is told: "Before starting any new work, POST /api/board/TASK-ID/claim. If you get 200, proceed. If you get 409, move to the next unclaimed task."</li>
+      <li>The server processes claims with SQLite's write serialization — exactly one agent wins each task, guaranteed, with no Redis, no distributed lock manager, no external dependency.</li>
+      <li>After a task is done and verified (CI green, deployed, smoke-tested), the agent marks it verified with the evidence. The board distinguishes `done` (implemented) from `verified` (confirmed in prod) — no premature completion.</li>
+    </ol>
+    <p>Git conflicts are handled at the session level: each agent registers with its own branch (amux register feature-agent-1 --dir ~/Dev/myproject --yolo), and the CLAUDE.md template instructs agents to commit before switching context. Combined with git worktree isolation for truly independent parallel work, merge conflicts in parallel-agent repos are rare.</p>
+
+    <h2>Self-healing overnight operation</h2>
+    <p>amux's watchdog monitors every session for four failure modes:</p>
+    <ul>
+      <li><strong>Context exhaustion:</strong> Detects the "approaching context limit" signal and auto-fires <code>/compact</code> before Claude Code's own resume dialog blocks the session</li>
+      <li><strong>Thinking-block corruption:</strong> Detects malformed thinking blocks in session output, restarts the process, and replays the last steering message</li>
+      <li><strong>Tool-approval blocks:</strong> In YOLO mode, the watchdog detects the unique "Esc to cancel" approval marker and sends the approval keystroke automatically</li>
+      <li><strong>Silent hangs:</strong> Idle timeout detection kicks unresponsive sessions after a configurable window</li>
+    </ul>
+    <p>In practice, a 10-agent overnight run that previously required a developer to babysit (or produced incomplete work) now completes with 2-8 automatic recoveries handled by the watchdog — visible in the session's recovery log the next morning.</p>
+
+    <h2>Multi-runtime rate-limit distribution</h2>
+    <p>Hitting Claude Code rate limits is the single biggest throughput bottleneck for teams running parallel agents on Max plans. amux solves this structurally:</p>
+    <ul>
+      <li>Register Claude Code sessions against your Anthropic Max plan or API key</li>
+      <li>Register Codex CLI sessions against OpenAI API keys</li>
+      <li>Register Antigravity CLI (Google) sessions against your Google AI Pro subscription</li>
+      <li>All three appear in the same dashboard, pull from the same kanban board, and coordinate via the same REST API</li>
+    </ul>
+    <p>Distributing across three provider buckets gives 2-3× effective throughput compared to running all agents against a single provider. Route by task type: Claude for architecture decisions and code review (highest capability), Codex for standard feature generation (good quality, high volume), Gemini Flash for documentation and test generation (lowest cost — typically 30× cheaper than Claude Sonnet per token).</p>
+
+    <h2>Built-in tools beyond coding</h2>
+    <p>amux includes a set of built-in tools that make AI agents useful beyond writing code — important for engineering organizations that want agents handling the full developer workflow:</p>
+    <ul>
+      <li><strong>CRM:</strong> Contacts with company, role, email, phone, LinkedIn, and interaction logs — AI agents can log customer meetings, track partnership conversations, or manage hiring candidates</li>
+      <li><strong>Gmail API email:</strong> Send, reply, and read email through any connected Gmail/Workspace account (ethan@example.com, info@example.com) — agents can send PR review notifications, status emails to stakeholders, or weekly summaries</li>
+      <li><strong>Browser automation:</strong> A shared Playwright browser instance with saved auth profiles — agents can run competitor monitoring, scrape job listings, check production health pages, or fill forms</li>
+      <li><strong>Scheduler:</strong> Named recurring jobs (cron or natural language) — daily standup summaries at 7am, weekly dependency audits, monthly changelog drafts</li>
+      <li><strong>Notes:</strong> Shared markdown wiki accessible via REST API across all sessions — agents write documentation, research, and runbooks that persist across session restarts</li>
+    </ul>
+
+    <h2>Audit trail and governance</h2>
+    <p>amux is append-only by default: every session's full JSONL transcript is stored, every board task transition is timestamped, and every schedule create/delete includes session attribution (AMUX-1812). This gives engineering leadership:</p>
+    <ul>
+      <li>A complete record of what every agent did, in what order, with what input</li>
+      <li>Board issues showing who created each task, which session claimed it, and when it was completed and verified</li>
+      <li>Schedule audit trail showing who created or deleted recurring jobs (session name or IP, timestamp)</li>
+      <li>CLAUDE.md version control: your org-wide agent instructions are checked in alongside code, reviewed in PRs, and enforced across every session via the rules system</li>
+    </ul>
+    <p>For SOC 2 or ISO 27001 purposes, the JSONL transcripts and board history provide the evidence trail for "what did the AI system do and who authorized it."</p>
+
+    <h2>Deployment options</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Option</th>
+            <th style="padding:10px 16px;text-align:left;">Setup</th>
+            <th style="padding:10px 16px;text-align:left;">Who it's for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Per-developer local</td>
+            <td style="padding:10px 16px;">Each developer runs <code>amux serve</code> on their own machine. Sessions are local; board and notes are local to that instance.</td>
+            <td style="padding:10px 16px;">Solo developers or very small teams where coordination happens in git, not a shared board</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Shared team server (recommended)</td>
+            <td style="padding:10px 16px;">One amux instance on an internal server (EC2, GCP VM, on-prem). All developer machines register their local Claude Code sessions to this server via <code>AMUX_URL=https://internal.server amux register</code>. Shared dashboard, shared board, shared notes and CRM.</td>
+            <td style="padding:10px 16px;">Engineering teams of 3-20 developers with a shared task queue and centralized monitoring</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Multi-instance with board sync</td>
+            <td style="padding:10px 16px;">One amux instance per team/project; teams coordinate via REST API cross-instance (POST task to another instance's board). Advanced setup, documented in /guides/agent-to-agent-communication/.</td>
+            <td style="padding:10px 16px;">Large engineering orgs where teams have separate security boundaries but need cross-team agent coordination</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;font-weight:600;">amux Cloud (public URL)</td>
+            <td style="padding:10px 16px;">Run amux locally, add <code>$20/month</code> amux Cloud for a stable public HTTPS URL. All agents and data still run locally — Cloud is only a tunnel relay.</td>
+            <td style="padding:10px 16px;">Distributed teams who need to access the shared dashboard from outside the office network without a VPN</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>What a CTO actually sees on day 1</h2>
+    <p>Here's a realistic first-week picture for a 5-developer engineering team that deploys amux on a shared server:</p>
+    <ol>
+      <li><strong>Day 1:</strong> Install amux on a team server (<code>pip install amux</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
+      <li><strong>Day 2:</strong> Create the first shared task queue on the board. Five developers add their current sprinted tasks as board issues. The first two developers with Claude Code sessions running claim and complete tasks while the CTO monitors from their phone in a meeting.</li>
+      <li><strong>Day 3:</strong> First overnight run. 8 sessions start at midnight. The watchdog fires twice for context compaction, once for a crash recovery. In the morning: 6 of 8 tasks completed, 2 in doing (picked up second tasks after finishing their first). The CTO's morning board review takes 10 minutes from the iOS app.</li>
+      <li><strong>Week 1:</strong> The team writes shared CLAUDE.md rules for their coding style and branching conventions, checked into the repo. All sessions now follow them automatically. Cost tracking in the dashboard shows $180 in Claude API spend for the week — CTO sets a per-session daily budget threshold in server.env.</li>
+    </ol>
+
+    <h2>Comparison: ad-hoc agents vs amux team deployment</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Requirement</th>
+            <th style="padding:10px 16px;text-align:left;">Ad-hoc Claude Code (no amux)</th>
+            <th style="padding:10px 16px;text-align:left;">amux team deployment</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">See what all agents are doing</td>
+            <td style="padding:10px 16px;">SSH into each developer's machine; check each tmux window manually</td>
+            <td style="padding:10px 16px;">Dashboard shows all sessions with live status dots and peek panel</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Prevent two agents from taking the same task</td>
+            <td style="padding:10px 16px;">Manual coordination in Slack; duplicated work common</td>
+            <td style="padding:10px 16px;">Atomic SQLite CAS claiming — 409 if already claimed, 200 if won</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Overnight reliability</td>
+            <td style="padding:10px 16px;">Sessions crash or stall on context limits; discovered in the morning</td>
+            <td style="padding:10px 16px;">Self-healing watchdog handles 4 failure modes automatically</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Mobile oversight</td>
+            <td style="padding:10px 16px;">No mobile interface; requires SSH</td>
+            <td style="padding:10px 16px;">Native iOS app + PWA; full fleet view from phone</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Multi-provider rate limit distribution</td>
+            <td style="padding:10px 16px;">All sessions on one provider; hit rate limits simultaneously</td>
+            <td style="padding:10px 16px;">Claude + Codex + Gemini in same dashboard; 2-3× effective throughput</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Audit trail for compliance</td>
+            <td style="padding:10px 16px;">JSONL transcripts per session; no central log or board history</td>
+            <td style="padding:10px 16px;">Central JSONL transcripts + board history + schedule attribution</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Code review / oversight of AI work</td>
+            <td style="padding:10px 16px;">Developers review their own agents' PRs; no cross-team visibility</td>
+            <td style="padding:10px 16px;">Board shows every task status; done-vs-verified distinction prevents premature sign-off</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Code leaves the network</td>
+            <td style="padding:10px 16px;">Code goes to Claude's API (Anthropic) but not to additional third parties</td>
+            <td style="padding:10px 16px;">Same — amux itself is self-hosted and adds no additional data egress</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>FAQ</h2>
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Is amux production-ready for an engineering team?</summary>
+      <p style="margin:0.8rem 0 0;">Yes — it runs in production at companies ranging from two-person startups to 15-developer teams. The server is a single Python process, self-restarts on file save, and stores all state in a local SQLite database. Stability concerns are addressed by the self-healing architecture: even if Claude Code crashes mid-session, amux auto-recovers. The main operational risk is the host machine going down — mitigated by running on a server (not a developer laptop) with standard uptime practices.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How does amux handle security and access control?</summary>
+      <p style="margin:0.8rem 0 0;">amux supports HTTP Basic Auth and HTTPS (TLS). In a team deployment, you run amux behind your internal network or VPN (Tailscale is the recommended approach) with a password set. The iOS app and web dashboard authenticate with the same password. amux does not currently have per-user role-based access control — all authenticated users have full access to the dashboard. For teams that need finer-grained access, the REST API can be proxied behind a separate auth layer.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What's the cost model for running an AI engineering team with amux?</summary>
+      <p style="margin:0.8rem 0 0;">amux itself is free (MIT + Commons Clause). The cost is your AI provider spend: Claude Code Max plans ($100-200/month each), API keys (pay-per-token), or a mix. A realistic 5-developer team running 20 parallel agents averages $800-2,000/month in API spend, depending on task complexity and model mix. This is typically comparable to a single junior developer's monthly salary while delivering the throughput of 5-20 focused engineering efforts. amux's cost tracking dashboard shows per-session and per-day token spend in real time so you can monitor and control this.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can amux integrate with our existing CI/CD, Jira, or GitHub Issues?</summary>
+      <p style="margin:0.8rem 0 0;">amux's REST API is the integration point. Common patterns: a GitHub Actions workflow creates board tasks when issues are labeled "agent-ready" (POST /api/board); agents mark tasks done and open PRs; CI checks the board for the verified status before deploying. For Jira, a webhook fires when tickets are moved to "In Progress", creating amux board tasks. There's no native Jira or GitHub Issues integration built in — integration happens via webhook → REST API, which gives flexibility to match your existing workflow.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux work with LangGraph or other orchestration frameworks?</summary>
+      <p style="margin:0.8rem 0 0;">Yes — amux's REST API is designed for programmatic integration. LangGraph nodes can call /api/sessions/NAME/send to issue tasks to amux-managed coding sessions, then poll /api/sessions/NAME/peek for results. A common pattern: LangGraph handles the high-level decision graph (which tasks, in what order, with what dependencies), while amux handles the actual Claude Code session fleet (spawning, self-healing, monitoring). See <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a> for detailed patterns.</p>
+    </details>
+
+    <!-- EXP-014 -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (310★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI sessions from one dashboard. Self-healing, kanban, mobile oversight, and audit trail. Single Python file, MIT licensed, self-hosted.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <div class="cta-box">
+      <h3>Deploy amux for your engineering team</h3>
+      <p>Get a shared dashboard, self-healing agents, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
+      <pre><code>pip install amux
+# or: brew install mixpeek/amux/amux
+amux serve  # → https://your-server:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
+      <a class="btn" href="/for/enterprise/" style="margin-left:0.75rem;">Enterprise deployment →</a>
+      <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Get set up with Concierge →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/for/enterprise/">amux for Enterprise</a> ·
+      <a href="/for/engineering-managers/">amux for Engineering Managers</a> ·
+      <a href="/for/ai-engineers/">amux for AI Engineers</a> ·
+      <a href="/for/startup-founders/">amux for Startup Founders</a> ·
+      <a href="/guides/team-workflow-setup/">Team Workflow Setup Guide</a> ·
+      <a href="/guides/ai-agent-quality-gates/">AI Agent Quality Gates</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">For Teams</div>
+          <ul>
+            <li><a href="/for/enterprise/">Enterprise</a></li>
+            <li><a href="/for/engineering-managers/">Engineering Managers</a></li>
+            <li><a href="/for/ai-engineers/">AI Engineers</a></li>
+            <li><a href="/for/startup-founders/">Startup Founders</a></li>
+            <li><a href="/for/">All personas</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/team-workflow-setup/">Team Setup</a></li>
+            <li><a href="/guides/scaling-to-50-agents/">Scale to 50 agents</a></li>
+            <li><a href="/guides/ai-agent-quality-gates/">Quality Gates</a></li>
+            <li><a href="/guides/kanban-board-for-agents/">Kanban Guide</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/cloud/">amux Cloud</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

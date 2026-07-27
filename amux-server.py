@@ -2123,6 +2123,20 @@ _sse_cache = {
 _sse_cache_lock = threading.Lock()  # prevents thundering herd on cache refresh
 _SSE_CACHE_TTL = 2  # seconds
 
+
+def _cache_etag(c: dict) -> str:
+    """Content-hash ETag for a shared cache entry, memoized per generation —
+    a polling client whose view is current gets a bodyless 304 instead of the
+    full 2.4MB board / 104KB sessions payload every few seconds (AMUX-1859)."""
+    j = c.get("json") or ""
+    if not j:
+        return ""
+    if c.get("_etag_src") is not j:
+        import hashlib as _hl
+        c["_etag"] = '"' + _hl.md5(j.encode()).hexdigest()[:16] + '"'
+        c["_etag_src"] = j
+    return c["_etag"]
+
 # ── Structured event log (in-memory ring buffer, 2 000 events) ─────────────────
 import collections
 _event_log: "collections.deque[dict]" = collections.deque(maxlen=2000)
@@ -4760,8 +4774,15 @@ _ALERT_TYPE_LABELS = {
     "scheduler": "schedule", "auto_restart": "auto-restart", "auto_continue": "auto-continue",
     "auto_compact": "compact", "rate_limit_manual": "rate limit", "task_pickup": "task",
     "steering_delivered": "steering", "uncommitted": "uncommitted", "thinking_reset": "thinking reset",
-    "urgent": "URGENT",
+    "urgent": "URGENT", "git_orphan": "git rebase orphaned",
+    "stale_cli": "stale amux CLI on PATH",
+    "selector_block": "selector blocking coordination",
 }
+# A session parked at a human-gated selector can't receive inter-session
+# messages — they queue until it resolves. Past this many seconds, surface the
+# block to the owner so the held coordination isn't silently stuck (AMUX-1882:
+# an Ethan-gated selector froze mvs-infra's READY GO to backend for ~2.5h).
+_SELECTOR_BLOCK_ALERT_SECS = 600
 
 
 def _env_set(key: str, value: str):
@@ -4824,6 +4845,45 @@ def _send_sms(phone: str, text: str):
         return False, "imessage timed out — grant Automation permission for Messages, or set TWILIO_* creds"
     except Exception as e:
         return False, f"imessage error: {str(e)[:100]}"
+
+
+# ── Internal SMS bridge (AMUX-186x, smart-business-card) ─────────────────────
+# Programmatic outbound SMS for the card funnel. This is the ONE outward-effect
+# amux uniquely owns; everything else lives in the public sidecar. Hard rules:
+#  • NOT in _PUBLIC_PREFIXES — the cloud gateway 401s it for the internet.
+#  • Caller must be loopback OR present the shared AMUX_INTERNAL_TOKEN (so the
+#    cloud-VM sidecar on the private net can reach it, nothing else can).
+#  • Inert until TWILIO_* is configured — refuses to fall back to the owner's
+#    personal iMessage for stranger-facing sends.
+#  • Daily total cap + per-number cap + short dedupe window — a form-spam loop
+#    can't run up the Twilio bill or text a victim repeatedly.
+_sms_bridge_lock = threading.Lock()
+_sms_bridge_log: dict = {"day": "", "total": 0, "per_num": {}, "recent": {}}
+
+
+def _sms_bridge_gate(to: str, text: str) -> tuple[bool, str]:
+    """Rate/dedupe gate for /api/sms. Returns (ok, reason)."""
+    import datetime as _dt
+    day = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    daily_cap = int(os.environ.get("AMUX_SMS_DAILY_CAP", "50") or "50")
+    per_num_cap = int(os.environ.get("AMUX_SMS_PER_NUMBER_CAP", "5") or "5")
+    now = time.time()
+    with _sms_bridge_lock:
+        if _sms_bridge_log["day"] != day:
+            _sms_bridge_log.update({"day": day, "total": 0, "per_num": {}, "recent": {}})
+        # dedupe: identical (to,text) within 10 min
+        key = to + "|" + text
+        if now - _sms_bridge_log["recent"].get(key, 0) < 600:
+            return False, "duplicate (same message to same number within 10 min)"
+        if _sms_bridge_log["total"] >= daily_cap:
+            return False, f"daily SMS cap reached ({daily_cap})"
+        if _sms_bridge_log["per_num"].get(to, 0) >= per_num_cap:
+            return False, f"per-number cap reached ({per_num_cap}/day for {to})"
+        # reserve
+        _sms_bridge_log["total"] += 1
+        _sms_bridge_log["per_num"][to] = _sms_bridge_log["per_num"].get(to, 0) + 1
+        _sms_bridge_log["recent"][key] = now
+    return True, ""
 
 
 _urgent_alert_last = {}  # message-hash → ts, for a light flood guard
@@ -5361,6 +5421,31 @@ def _steer_record_history(name: str, text: str, queued_at=None, msg_id: str = ""
         pass
 
 
+_CMD_HIST_KEEP = 400  # per-session cap on the Messages history
+
+
+def _cmd_hist_record(session: str, text: str, ctype: str = "user", origin: str = "") -> None:
+    """Record a command/message sent to a session in the Messages history, tagged
+    by ORIGIN so the peek can distinguish who sent it:
+      user     — a human typed it in the dashboard
+      session  — another amux session sent it (origin = sender name)
+      schedule — a scheduled command fired it (origin = schedule title)
+      system   — amux itself (commit-guard nudge, auto-continue) (origin = what)
+    Best-effort; pruned per-session so the table stays bounded."""
+    try:
+        if not (session and text):
+            return
+        db = get_db()
+        db.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+                   (text, ctype, session, int(time.time() * 1000), (origin or "")[:80]))
+        db.execute("DELETE FROM cmd_history WHERE session=? AND id NOT IN "
+                   "(SELECT id FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ?)",
+                   (session, session, _CMD_HIST_KEEP))
+        db.commit()
+    except Exception:
+        pass
+
+
 # A single tmux frame that momentarily reads idle is not proof a session
 # finished — captures tear. Before delivering steering we require the session to
 # read idle *continuously* for this settle window; any active/unknown frame in
@@ -5766,8 +5851,7 @@ def _snapshot_all_sessions_inner():
             if (not actions.get("restarting") and not actions.get("hibernated")
                     and (not _in_grace or _ui_stale)):
                 cfg_pl = parse_env_file(f)
-                if (cfg_pl.get("CC_AUTO_CONTINUE") in ("1", "true", "yes")
-                        and cfg_pl.get("CC_ARCHIVED") != "1"):
+                if cfg_pl.get("CC_ARCHIVED") != "1":
                     last_restart = actions.get("last_auto_restart", 0)
                     if now - last_restart > 90:
                         try:
@@ -5781,24 +5865,52 @@ def _snapshot_all_sessions_inner():
                                     ["pgrep", "-P", shell_pid],
                                     capture_output=True, text=True, timeout=5)
                                 if not r_ch.stdout.strip():
-                                    # Shell has no children — Claude is gone
-                                    slog(f"[4b] {name}: no child process under shell PID {shell_pid} — triggering OOM restart")
-                                    actions["restarting"] = True
-                                    actions["last_auto_restart"] = now
-                                    def _do_oom_restart(sname=name, _actions=actions):
-                                        time.sleep(3)
-                                        start_session(sname)
-                                        for _w in range(30):
-                                            time.sleep(1)
-                                            _o = tmux_capture(sname, 10)
-                                            if _o and _claude_ui_visible(_o):
-                                                break
-                                        _actions.pop("restarting", None)
-                                    threading.Thread(target=_do_oom_restart, daemon=True).start()
-                                    _push_alert("auto_restart", name,
-                                                f"Claude process died in '{name}' (OOM/signal) — auto-restarting")
+                                    # Shell has no children — Claude is gone. Two cases:
+                                    #  • clean shell prompt on screen = intentional /exit →
+                                    #    honor the CC_AUTO_CONTINUE opt-in (unchanged).
+                                    #  • blank/garbled pane = a CRASH (SIGKILL/OOM/silent
+                                    #    death) → self-heal REGARDLESS of the opt-in. This
+                                    #    is the hole amux-users fell through: created without
+                                    #    CC_AUTO_CONTINUE, it died and sat silently dead
+                                    #    because both restart paths required the opt-in.
+                                    _auto = cfg_pl.get("CC_AUTO_CONTINUE") in ("1", "true", "yes")
+                                    _crashed = not _at_shell_prompt(clean)
+                                    if not (_auto or _crashed):
+                                        pass  # clean /exit on a non-auto-continue session — leave it
+                                    else:
+                                        # Crash-loop cap: a session that keeps dying is a real
+                                        # problem (e.g. shared CC_DIR) — don't restart forever.
+                                        _deaths = [t for t in actions.get("crash_deaths", []) if now - t < 900]
+                                        if _crashed and not _auto and len(_deaths) >= 3:
+                                            if not actions.get("crash_gaveup"):
+                                                actions["crash_gaveup"] = now
+                                                slog(f"[4b] {name}: crashed {len(_deaths)}x/15min — NOT restarting, alerting")
+                                                _push_alert("auto_restart", name,
+                                                            f"'{name}' Claude keeps crashing ({len(_deaths)}x in 15min) — "
+                                                            f"stopped auto-restarting. Likely a shared working directory "
+                                                            f"(two sessions in one CC_DIR) — give it its own dir.")
+                                        else:
+                                            _deaths.append(now)
+                                            actions["crash_deaths"] = _deaths
+                                            actions.pop("crash_gaveup", None)
+                                            slog(f"[4b] {name}: no child under shell PID {shell_pid} "
+                                                 f"({'crash' if _crashed else 'exit'}, auto_continue={_auto}) — restarting")
+                                            actions["restarting"] = True
+                                            actions["last_auto_restart"] = now
+                                            def _do_oom_restart(sname=name, _actions=actions):
+                                                time.sleep(3)
+                                                start_session(sname)
+                                                for _w in range(30):
+                                                    time.sleep(1)
+                                                    _o = tmux_capture(sname, 10)
+                                                    if _o and _claude_ui_visible(_o):
+                                                        break
+                                                _actions.pop("restarting", None)
+                                            threading.Thread(target=_do_oom_restart, daemon=True).start()
+                                            _push_alert("auto_restart", name,
+                                                        f"Claude {'crashed' if _crashed else 'exited'} in '{name}' — auto-restarting")
                                 else:
-                                    pass  # Claude child exists — healthy
+                                    actions.pop("crash_deaths", None)  # healthy — reset crash tracker
                             else:
                                 slog(f"[4b] {name}: list-panes failed rc={r_pp.returncode}")
                         except Exception as e:
@@ -5939,11 +6051,44 @@ def _snapshot_all_sessions_inner():
                                 send_text(name, response)
                                 actions["last_auto_continue"] = now
                                 actions.pop("ac_waiting_since", None)
+                                actions.pop("selector_block_alerted", None)
                                 _push_alert("auto_continue", name,
                                             f"Auto-continued '{name}': sent {label}")
+                # ── 4b. Selector head-of-line-block escalation (AMUX-1882) ────
+                # A human-gated selector can't receive an inter-session message,
+                # so queued coordination sits until it resolves — silently, for
+                # as long as the human takes. Once that's held real coordination
+                # past the threshold, alert the owner (who can resolve it) with
+                # who's blocked. Once per waiting-episode; auto-continue sessions
+                # resolve in <1min and never reach the threshold.
+                _ws = actions.get("ac_waiting_since")
+                if (_ws and now - _ws > _SELECTOR_BLOCK_ALERT_SECS
+                        and not actions.get("selector_block_alerted")):
+                    with _steering_lock:
+                        _held = [m for m in _steering_queue.get(name, [])
+                                 if m.get("guard") != "commit"]
+                    if _held:
+                        _origins = []
+                        for _m in _held:
+                            _mo = re.search(r"\[amux-origin:\s*(\S+)", _m.get("text", ""))
+                            if _mo and _mo.group(1) not in _origins:
+                                _origins.append(_mo.group(1))
+                        _mins = int((now - _ws) / 60)
+                        _frm = (" from " + ", ".join(_origins[:4])) if _origins else ""
+                        actions["selector_block_alerted"] = now
+                        slog(f"[selector-block] {name}: at a selector {_mins}m, "
+                             f"holding {len(_held)} coordination msg(s){_frm}")
+                        _push_alert("selector_block", name,
+                                    f"'{name}' has sat at a user selector for {_mins}m and is "
+                                    f"holding {len(_held)} inter-session message(s){_frm}. Resolve "
+                                    f"the selector to unblock coordination.")
+                        _emit_event(name, "selector.blocking",
+                                    {"held": len(_held), "mins": _mins, "origins": _origins[:8]},
+                                    source="selector-block")
             else:
                 # Session no longer waiting — reset tracking
                 actions.pop("ac_waiting_since", None)
+                actions.pop("selector_block_alerted", None)
 
             # ── 5. Steering: deliver queued messages at turn boundary ────────
             _steer_try_deliver(name, status, output)
@@ -6574,6 +6719,31 @@ CREATE TABLE IF NOT EXISTS cmd_history (
     ts       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cmd_history_ts ON cmd_history(ts DESC);
+-- ── Dictation (voice → text) ────────────────────────────────────────────────
+-- Every transcription is kept so it can be re-copied, AI-edited, undone
+-- (raw_text is the untouched model output; text is what's shown/edited) or
+-- retried. `session` scopes it to the peek tab it was dictated in.
+CREATE TABLE IF NOT EXISTS dictation_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    session   TEXT NOT NULL DEFAULT '',
+    ts        INTEGER NOT NULL,
+    text      TEXT NOT NULL,
+    raw_text  TEXT NOT NULL DEFAULT '',
+    prev_text TEXT NOT NULL DEFAULT '',   -- pre-AI-edit copy, for "Undo AI edit"
+    ai_edited INTEGER NOT NULL DEFAULT 0,
+    words     INTEGER NOT NULL DEFAULT 0,
+    dur_ms    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_dictation_ts ON dictation_history(ts DESC);
+-- Personal vocabulary: either a plain term the model should spell correctly
+-- (word, correct='') or an explicit misspelling→correct mapping.
+CREATE TABLE IF NOT EXISTS dictation_dict (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    word     TEXT NOT NULL,
+    correct  TEXT NOT NULL DEFAULT '',
+    created  INTEGER NOT NULL,
+    UNIQUE(word, correct)
+);
 CREATE TABLE IF NOT EXISTS steering_queue (
     id          TEXT PRIMARY KEY,
     session     TEXT NOT NULL,
@@ -7834,6 +8004,10 @@ def _init_db():
         "ALTER TABLE schedules ADD COLUMN done_pattern TEXT",
         "ALTER TABLE schedules ADD COLUMN done_action TEXT NOT NULL DEFAULT 'disable'",
         "ALTER TABLE schedules ADD COLUMN gcal_event_id TEXT",
+        # Messages history: tag each command by WHO sent it (origin session name
+        # or schedule title), so the peek can color-code user vs inter-session vs
+        # scheduled vs system commands.
+        "ALTER TABLE cmd_history ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
         # Event triggers: wake a schedule's session when something changes (closed-loop
         # orchestration), in addition to (not instead of) the cron schedule_expr heartbeat.
         # trigger_on is a comma-separated set of event names (e.g. 'session_idle,board').
@@ -8446,6 +8620,10 @@ def _complete_session_board_issue(session_name: str):
     return
 
 
+# Cards already declined by the irreversible-action guard (log/alert once each).
+_autopickup_danger_flagged: set = set()
+
+
 def _pickup_next_board_task(session_name: str):
     """Pick up the next queued (todo) board task for this session — OPT-IN only.
     Called when a session goes idle; moves the oldest agent todo to 'doing' and
@@ -8470,21 +8648,68 @@ def _pickup_next_board_task(session_name: str):
         time.sleep(3)
         db = get_db()
         row = db.execute(
-            "SELECT id, title, desc FROM issues "
+            "SELECT id, title, desc FROM issues i "
             "WHERE session=? AND status='todo' AND owner_type='agent' AND deleted IS NULL "
+            # Freshness gate: never auto-run a card nobody has touched in 7+
+            # days — fossils get triaged/parked by a human, not silently
+            # executed at idle (2026-07-23 sweep found 337 such cards; blind
+            # oldest-first pickup would have ground through dead work).
+            "AND updated >= ? "
+            # Re-claim cooldown (AMUX-1857): a card claimed within 24h is not
+            # claimed again. Sessions legitimately return owner-blocked cards
+            # to todo after doing the workable prep (SM-198); without the
+            # cooldown auto-pickup re-claimed the same card at the very next
+            # idle — infinite claim/return churn. task.claimed events are the
+            # durable record (survive the server's constant restarts).
+            "AND NOT EXISTS (SELECT 1 FROM session_events e "
+            "                WHERE e.type='task.claimed' AND e.ts > ? "
+            "                AND e.data LIKE '%\"' || i.id || '\"%') "
             "ORDER BY created ASC LIMIT 1",
-            (session_name,)
+            (session_name, int(time.time()) - 7 * 86400, time.time() - 86400)
         ).fetchone()
         if not row:
             return
         item_id, title, desc = row["id"], row["title"], row["desc"] or ""
+        # IRREVERSIBLE-ACTION GUARD (orch, 2026-07-26): a card can carry careful
+        # "do not drop without confirmation" prose, but PROSE DOES NOT BIND AN
+        # AUTOMATED READER — an agent auto-executing the card scrolls straight
+        # past the warning and does the destructive thing the warning forbade.
+        # So the CONSUMER enforces, not the card text: anything naming an
+        # unrecoverable operation is never auto-executed. It stays in todo for a
+        # human to dispatch, and the owner is told why.
+        _blob = (title + "\n" + desc).lower()
+        _danger = re.search(r"stash\s+(drop|clear)|rm\s+-[rf]{1,2}\b|push\s+(--force|-f)\b|"
+                            r"reset\s+--hard|git\s+clean\s+-[a-z]*[fd]|drop\s+table|"
+                            r"truncate\s+table|delete\s+from\s+\w+\s*;|--no-preserve-root", _blob)
+        if _danger:
+            if item_id not in _autopickup_danger_flagged:
+                _autopickup_danger_flagged.add(item_id)
+                _append_board_log(item_id, f"Auto-pickup DECLINED — names an irreversible operation "
+                                           f"({_danger.group(0).strip()}); needs a human to dispatch.")
+                slog(f"[auto-pickup] {session_name}: declined {item_id} — irreversible op "
+                     f"'{_danger.group(0).strip()}'")
+                _push_alert("task_pickup", session_name,
+                            f"'{item_id}' was NOT auto-executed: it names an irreversible operation "
+                            f"('{_danger.group(0).strip()}'). Left in todo for you to run manually.")
+            return
         now = int(time.time())
         db.execute("UPDATE issues SET status='doing', updated=? WHERE id=?", (now, item_id))
         _emit_event(session_name, "task.claimed", {"issue": item_id}, source="auto-pickup")
         db.commit()
         _board_changed()
         _append_board_log(item_id, "Auto-picked up from queue")
-        prompt = title
+        # Provenance framing: the prompt is a BOARD REPLAY, and card descs often
+        # embed quoted messages ("[gtm-engine -> cold-outbound] ..."). Injected
+        # bare, such a quote reads as a live unstamped inter-session message —
+        # the 2026-07-23 phantom: auto-pickup replayed CO-188's desc and its
+        # embedded historical quote got attributed to gtm-engine as a fresh
+        # send. Frame it so nothing inside can masquerade as live traffic.
+        prompt = (f"[amux auto-pickup] Claimed board card {item_id} from your queue — "
+                  f"work it now. Anything quoted below is the CARD's stored text "
+                  f"(historical log), not a live message. If the card turns out to be "
+                  f"blocked on an OWNER decision, do NOT return it to todo (it would "
+                  f"re-queue for pickup after a 24h cooldown) — move it to review or "
+                  f"reassign it to the owner instead:\n{title}")
         if desc:
             prompt += f"\n\n{desc[:500]}"
         ok, _ = send_text(session_name, prompt)
@@ -9708,6 +9933,27 @@ def _sched_audit(schedule_id, field, old, new, source, by_who=""):
         slog(f"[sched-audit] failed for {schedule_id}: {e}")
 
 
+def _sched_mutation_by(headers, client_address, body) -> str:
+    """Attribution string for a schedule mutation (AMUX-1765/AMUX-1812).
+    The server-verified X-Amux-Session header (stamped by the amux CLI and the
+    session-side curl rule) is the strongest signal; an explicit body/query
+    'by' is only a CLAIM, so when both are present and disagree, record both
+    (AMUX-1768 provenance principle). Falls back to the cloud user-email
+    header, then the client IP — attribution can never be truly anonymous."""
+    try:
+        hdr = (headers.get("X-Amux-Session", "") or "").strip()[:64]
+        claimed = str(body.get("by") or body.get("source_session") or "").strip()[:64]
+        if hdr and claimed and hdr != claimed:
+            return f"{hdr} (claimed {claimed})"
+        who = hdr or claimed
+        if not who:
+            who = (headers.get("X-Amux-User-Email", "").strip()
+                   or ("ip:" + (client_address[0] if client_address else "?")))
+        return who[:64]
+    except Exception:
+        return "?"
+
+
 def _run_schedule(sched):
     """Execute a schedule entry — send message to tmux session (kind='tmux')
     or run as shell command (kind='shell'). Logs the run.
@@ -9736,6 +9982,10 @@ def _run_schedule(sched):
             if not ok:
                 status, note = "error", str(err)
                 slog(f"[sched] send failed for '{sched['title']}': {err}")
+            else:
+                # Record in the Messages history so the peek shows scheduled
+                # commands distinctly (origin = the schedule's title).
+                _cmd_hist_record(session, command, "schedule", sched.get("title") or sched.get("id") or "schedule")
     except Exception as e:
         status, note = "error", str(e)
         slog(f"[sched] exception running '{sched['title']}': {e}")
@@ -10896,6 +11146,270 @@ def _checkout_busy_cotenant(name: str, work_dir: str) -> str:
     return ""
 
 
+# ── Shared-checkout staged-state guard (AMUX-1730 family) ────────────────────
+# Two sessions sharing one checkout also share ONE git index: `git add -A` in
+# session B stages files session A is mid-edit on, and B's next commit sweeps
+# A's WIP into an unrelated change (three real collisions in ~/Dev/mixpeek on
+# 2026-07-20). Per-session GIT_INDEX_FILE does NOT fix this — the working tree
+# itself is shared, so add -A in any index still picks up everyone's edits, and
+# the user's own terminal would see divergent staged state. True isolation is a
+# worktree session; for shared checkouts the durable fix is attribution: each
+# session's OWN JSONL transcript records exactly which files it edited
+# (first-hand provenance, same principle as AMUX-1795), so a pre-commit hook
+# can ask the server "which of my staged paths belong to a co-tenant?" and
+# block the sweep before it lands.
+
+_EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_edit_paths_cache: dict[str, tuple[float, float, dict]] = {}  # name -> (cached_at, window, {abspath: ts})
+
+
+def _staged_guard_window() -> float:
+    try:
+        return max(600.0, float(os.environ.get("AMUX_STAGED_GUARD_WINDOW_SECS", "21600")))
+    except Exception:
+        return 21600.0
+
+
+def _session_recent_edit_paths(name: str, since_secs: float) -> dict:
+    """{abs realpath: epoch ts} of files this session edited (Edit/Write/
+    MultiEdit/NotebookEdit tool_use) within the window, parsed from its own
+    JSONL transcript. First-hand evidence — no reliance on git state, which is
+    exactly what's ambiguous in a shared checkout. Cached 30s per session."""
+    from datetime import datetime
+    now = time.time()
+    cached = _edit_paths_cache.get(name)
+    if cached and now - cached[0] < 30 and cached[1] == since_secs:
+        return cached[2]
+    out: dict[str, float] = {}
+    try:
+        jf = _session_jsonl_path(name)
+        if jf:
+            cutoff = now - since_secs
+            for e in _iter_jsonl_tail(jf, max_bytes=4_000_000):
+                try:
+                    ts_raw = e.get("timestamp") or ""
+                    if not ts_raw:
+                        continue
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+                    if ts < cutoff:
+                        continue
+                    content = (e.get("message") or {}).get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for blk in content:
+                        if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                            continue
+                        if blk.get("name") not in _EDIT_TOOL_NAMES:
+                            continue
+                        inp = blk.get("input") or {}
+                        fp = inp.get("file_path") or inp.get("notebook_path") or ""
+                        if isinstance(fp, str) and fp:
+                            out[os.path.realpath(fp)] = ts
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    _edit_paths_cache[name] = (now, since_secs, out)
+    return out
+
+
+def _staged_guard_check(session: str, work_dir: str, rel_paths: list) -> dict:
+    """Which of `rel_paths` (staged, repo-relative) were recently edited by a
+    DIFFERENT session sharing this checkout? A path the requesting session
+    ALSO edited is not foreign — both touched it, the committer has a
+    legitimate claim, and blocking would deadlock genuinely shared files."""
+    if os.environ.get("AMUX_STAGED_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
+        return {"ok": True, "enabled": False, "foreign": [], "cotenants": []}
+    try:
+        wd = str(Path(work_dir).expanduser().resolve())
+    except Exception:
+        return {"ok": True, "foreign": [], "cotenants": []}
+    cotenants = []
+    for f in CC_SESSIONS.glob("*.env"):
+        other = f.stem
+        if other == session:
+            continue
+        try:
+            od = parse_env_file(f).get("CC_DIR")
+            od = str(Path(od).expanduser().resolve()) if od else None
+        except Exception:
+            od = None
+        if od == wd:
+            cotenants.append(other)
+    if not cotenants or not rel_paths:
+        return {"ok": True, "foreign": [], "cotenants": cotenants}
+    window = _staged_guard_window()
+    now = time.time()
+    mine = _session_recent_edit_paths(session, window) if session else {}
+    theirs: dict[str, tuple[str, float]] = {}  # abspath -> (owner, newest ts)
+    for other in cotenants:
+        for p, ts in _session_recent_edit_paths(other, window).items():
+            cur = theirs.get(p)
+            if not cur or ts > cur[1]:
+                theirs[p] = (other, ts)
+    foreign = []
+    for rel in rel_paths[:2000]:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        ap = os.path.realpath(os.path.join(wd, rel))
+        if ap in mine:
+            continue
+        hit = theirs.get(ap)
+        if hit:
+            foreign.append({"path": rel, "owner": hit[0],
+                            "age_secs": int(max(0, now - hit[1]))})
+    return {"ok": True, "foreign": foreign, "cotenants": cotenants,
+            "window_secs": int(window)}
+
+
+_orphan_git_alerted: dict[str, float] = {}  # checkout dir -> last alert ts
+
+
+_orphan_stash_alerted: dict = {}
+
+
+def _check_orphaned_autostash(wd: str, now: float):
+    """Detect ORPHANED `autostash` stash entries — the aftermath of the rebase
+    orphan above (AMUX-1887). When a `pull --rebase --autostash` is interrupted
+    and the rebase is later quit/finished, git does NOT restore the autostash:
+    it silently stays in the stash list and the work looks lost. The rebase dir
+    is gone by then, so _check_orphaned_git_state can't see it.
+
+    Only `autostash` entries are flagged — a deliberate `git stash push` is the
+    user's own bookmark, not silent data loss. Alert-only: never drop or apply,
+    because on a SHARED checkout the stash may belong to another session (and a
+    partial apply drops paths). Deduped per (dir, entry-count) for 24h."""
+    try:
+        r = subprocess.run(["git", "-C", wd, "stash", "list", "--format=%gd|%cr|%s"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0 or not r.stdout.strip():
+            _orphan_stash_alerted.pop(wd, None)
+            return
+        lines = [l for l in r.stdout.splitlines() if l.strip()]
+        auto = [l for l in lines if "autostash" in l.split("|")[-1].lower()]
+        if not auto:
+            _orphan_stash_alerted.pop(wd, None)
+            return
+        # Don't nag on the same situation: key on (autostash count, total count).
+        sig = (len(auto), len(lines))
+        prev = _orphan_stash_alerted.get(wd)
+        if prev and prev[0] == sig and now - prev[1] < 24 * 3600:
+            return
+        _orphan_stash_alerted[wd] = (sig, now)
+        oldest = auto[-1].split("|")[1] if len(auto[-1].split("|")) > 2 else "?"
+        msg = (f"{wd}: {len(auto)} orphaned `autostash` stash entr"
+               f"{'y' if len(auto)==1 else 'ies'} (oldest {oldest}) — an interrupted "
+               f"`pull --rebase --autostash` never restored them, so that work is sitting "
+               f"in the stash list unnoticed. {len(lines)} stashes total. "
+               f"Inspect: `git -C {wd} stash list` then `git stash show -p stash@{{N}}`. "
+               f"On a shared checkout each session should clear only its OWN.")
+        slog(f"[git-stash] {msg}")
+        _push_alert("git_orphan", "", msg)
+    except Exception:
+        pass
+
+
+def _check_orphaned_git_state():
+    """Detect ORPHANED rebase state in any session checkout: .git/rebase-merge
+    (or rebase-apply) untouched for >15 min. An interrupted `pull --rebase
+    --autostash` leaves everyone's WIP trapped in the autostash while git
+    reports 'you are currently rebasing' forever (AMUX-1730 incident 2).
+    Alert-only — never auto-fix: the remedy touches other sessions' work, and
+    a partial `stash apply` silently drops paths."""
+    dirs = set()
+    for f in CC_SESSIONS.glob("*.env"):
+        try:
+            d = parse_env_file(f).get("CC_DIR")
+            if d:
+                dirs.add(str(Path(d).expanduser().resolve()))
+        except Exception:
+            continue
+    now = time.time()
+    for wd in dirs:
+        try:
+            gr = subprocess.run(["git", "-C", wd, "rev-parse", "--git-dir"],
+                                capture_output=True, text=True, timeout=5)
+            if gr.returncode != 0:
+                continue
+            git_dir = gr.stdout.strip()
+            if not os.path.isabs(git_dir):
+                git_dir = os.path.join(wd, git_dir)
+            state = None
+            for sub in ("rebase-merge", "rebase-apply"):
+                p = os.path.join(git_dir, sub)
+                if os.path.isdir(p):
+                    state = (sub, os.stat(p).st_mtime)
+                    break
+            if not state:
+                _orphan_git_alerted.pop(wd, None)
+                _check_orphaned_autostash(wd, now)
+                continue
+            sub, mtime = state
+            if now - mtime < 900:  # <15 min old — plausibly a live rebase
+                continue
+            if now - _orphan_git_alerted.get(wd, 0) < 6 * 3600:
+                continue
+            _orphan_git_alerted[wd] = now
+            mins = int((now - mtime) / 60)
+            has_autostash = os.path.exists(os.path.join(git_dir, sub, "autostash"))
+            msg = (f"{wd}: orphaned {sub} state ({mins}m old) — git thinks a rebase "
+                   "is still running. "
+                   + ("An AUTOSTASH is trapped inside (uncommitted WIP!). " if has_autostash else "")
+                   + "Recover: `git rebase --quit`, then `git stash list` and verify EVERY "
+                     "file re-applied (a partial stash apply silently drops paths — recover "
+                     "stragglers with `git checkout stash@{0} -- <path>`).")
+            slog(f"[git-orphan] {msg}")
+            _push_alert("git_orphan", "", msg)
+        except Exception:
+            continue
+
+
+def _check_stale_amux_cli():
+    """Detect an `amux` CLI on PATH whose SEND path predates the origin stamp.
+
+    AMUX-1818: the repo CLI (symlinked at ~/.local/bin/amux, ahead of the
+    server-installed /usr/local/bin stub in PATH) still sent via raw
+    `tmux send-keys` — every inter-session message arrived ANONYMOUS (no
+    [amux-origin] stamp, no message.sent audit, no busy-deferral). mvs-infra
+    guessed a sender, guessed wrong, and answered the wrong session while the
+    real flagger's workshop-critical build stayed blocked. A whole-file grep
+    for X-Amux-Session would NOT have caught it (cmd_alert/cmd_board already
+    had the header) — the check must inspect the send implementation itself.
+    Alerts once per (path, mtime): a fixed or re-staled copy re-alerts."""
+    candidates = []
+    seen: set = set()
+    for d in ("~/.local/bin", "~/bin", "/usr/local/bin", "/opt/homebrew/bin"):
+        p = os.path.expanduser(os.path.join(d, "amux"))
+        rp = os.path.realpath(p)
+        if os.path.isfile(rp) and os.access(rp, os.X_OK) and rp not in seen:
+            seen.add(rp)
+            candidates.append((p, rp))
+    for p, rp in candidates:
+        try:
+            src = open(rp, errors="replace").read()
+            # The send implementation: full-CLI bash function, or stub case arm.
+            m = (re.search(r"cmd_send\(\)\s*\{.*?\n\}", src, re.S)
+                 or re.search(r"\n\s*send\)\s*\n.*?;;", src, re.S))
+            if not m or "X-Amux-Session" in m.group(0):
+                continue
+            key = f"stale_cli_alerted:{p}:{int(os.path.getmtime(rp))}"
+            db = get_db()
+            if db.execute("SELECT 1 FROM prefs WHERE key=?", (key,)).fetchone():
+                continue
+            db.execute("INSERT INTO prefs (key, value) VALUES (?, '1') "
+                       "ON CONFLICT(key) DO NOTHING", (key,))
+            db.commit()
+            msg = (f"{p} (-> {rp}) has a pre-AMUX-1768 send path: `amux send` there "
+                   "delivers raw tmux text with NO server-verified origin stamp, no "
+                   "audit event, and no busy-deferral — messages arrive anonymous and "
+                   "misattribution follows (AMUX-1818). Update or remove that copy; "
+                   "the current CLI routes sends through /api/sessions/<name>/send.")
+            slog(f"[stale-cli] {msg}")
+            _push_alert("stale_cli", "", msg)
+        except Exception:
+            continue
+
+
 def _commit_guard_enabled() -> bool:
     """Global on/off for the idle commit-guard (configurable in the UI settings →
     persisted as AMUX_COMMIT_GUARD in ~/.amux/server.env). Default ON."""
@@ -11104,16 +11618,25 @@ def list_sessions() -> list:
     running_names = [f.stem for f in env_files if tmux_name(f.stem) in tmux_info]
     captures = _tmux_capture_batch(running_names, 30, activity=tmux_info) if running_names else {}
     # Token cache is refreshed by background job (_refresh_token_cache via scheduler)
-    # Batch-load "doing" board tasks per session for task_name display
+    # Batch-load "doing" board tasks per session for task_name display.
+    # ORDER BY updated ASC + dict overwrite → the NEWEST-touched doing card
+    # wins. The old query had no ORDER BY, so with multiple doing cards per
+    # session (the common drift state) the displayed task was whichever row
+    # SQLite happened to return last — a 6-day-stale card outranking the live
+    # one (2026-07-22 report: 3 of 3 session cards showed the wrong task).
+    # `updated` rides along so the UI can show the card's age when it's stale.
+    _doing_tasks: dict = {}
+    _doing_updated: dict = {}
     try:
-        _doing_tasks = {
-            row["session"]: row["title"]
-            for row in get_db().execute(
-                "SELECT session, title FROM issues WHERE status='doing' AND deleted IS NULL AND session IS NOT NULL"
-            ).fetchall()
-        }
+        for row in get_db().execute(
+            "SELECT session, title, updated FROM issues "
+            "WHERE status='doing' AND deleted IS NULL AND session IS NOT NULL "
+            "ORDER BY updated ASC"
+        ).fetchall():
+            _doing_tasks[row["session"]] = row["title"]
+            _doing_updated[row["session"]] = row["updated"] or 0
     except Exception:
-        _doing_tasks = {}
+        _doing_tasks, _doing_updated = {}, {}
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
@@ -11221,6 +11744,24 @@ def list_sessions() -> list:
         # doesn't show in badges/bulk-actions or trigger auto-resume.
         _arch = cfg.get("CC_ARCHIVED", "") == "1"
         _aa = {} if _arch else _session_auto_actions.get(name, {})
+        # Task label: the board is the source of truth WHILE ITS CARD IS ALIVE
+        # (touched within 24h). A doing card nobody has touched in days is a
+        # neglected ledger entry, not what the session is working on — fall
+        # back to the auto-summary (tracks actual activity) and let the client
+        # show an amber "board Nd" hint that a parked card exists. Stale board
+        # title is still the last resort when there's no summary at all.
+        _bt = _doing_tasks.get(name)
+        _bu = _doing_updated.get(name, 0) if _bt else 0
+        _summary = meta.get("task_summary", "")
+        _board_fresh = bool(_bt) and (time.time() - (_bu or 0) <= 86400)
+        if _board_fresh:
+            _tname, _tsrc = _bt, "board"
+        elif _summary:
+            _tname, _tsrc = _summary, "summary"
+        elif _bt:
+            _tname, _tsrc = _bt, "board"
+        else:
+            _tname, _tsrc = cfg.get("CC_DESC", "") or "", "desc"
         sessions.append({
             "name": name,
             "dir": resolved_dir,
@@ -11254,7 +11795,14 @@ def list_sessions() -> list:
             "active_model": active_model,
             "session_created": session_created,
             "task_time": task_time,
-            "task_name": _doing_tasks.get(name) or meta.get("task_summary", "") or cfg.get("CC_DESC", "") or "",
+            "task_name": _tname,
+            # board = from a doing card fresh within 24h (task_updated = card's
+            # last touch); summary/desc = fallbacks. task_board_age lets the
+            # client hint that a stale doing card is parked on the board even
+            # when the displayed label came from the summary.
+            "task_source": _tsrc,
+            "task_updated": _bu,
+            "task_board_age": int(time.time() - _bu) if (_bt and _bu and not _board_fresh) else 0,
             "tokens": tokens,
             "branch": "" if cfg.get("CC_BRANCH", "") == "none" else cfg.get("CC_BRANCH", ""),
             "mcp": cfg.get("CC_MCP", ""),
@@ -11554,14 +12102,14 @@ def _session_work_dir(name: str) -> str:
 
 
 _git_info_cache: dict[str, tuple[float, dict]] = {}  # work_dir -> (timestamp, result)
-_GIT_INFO_TTL = 30  # seconds — branch names don't change that fast
+_GIT_INFO_TTL = 60  # seconds — branch names change on commit cadence, not seconds
 _git_subprocess_sem = threading.Semaphore(4)  # limit concurrent git subprocesses
 _GIT_INFO_DETAIL_TTL = 10  # seconds — detail view can be slightly fresher
 _GIT_INFO_CACHE_MAX_AGE = 300  # evict entries older than 5 min to prevent unbounded growth
 
 _sessions_git_cache: dict = {"data": None, "time": 0}
 _sessions_git_cache_lock = threading.Lock()
-_SESSIONS_GIT_CACHE_TTL = 15
+_SESSIONS_GIT_CACHE_TTL = 30
 
 
 def _git_info(work_dir: str, detail: bool = False) -> dict:
@@ -12426,10 +12974,147 @@ def _commit_stamp_enabled() -> bool:
     return os.environ.get("AMUX_COMMIT_STAMP", "1").strip().lower() not in ("0", "false", "off", "no")
 
 
+_AMUX_GUARD_MARKER = "# amux-staged-guard"
+_AMUX_GUARD_BODY = '''#!/usr/bin/env python3
+# amux-staged-guard — blocks a commit whose staged set contains files that a
+# DIFFERENT amux session edited in this shared checkout (staged-state sweep,
+# AMUX-1730: two sessions share one git index, so `git add -A` in one sweeps
+# the other's in-flight WIP into an unrelated commit). Fail-open by design:
+# any error, missing server, or timeout lets the commit proceed. Outside amux
+# ($AMUX_SESSION unset) it is a no-op — the human is always allowed.
+# Intentional cross-session commit: AMUX_ALLOW_FOREIGN=1 git commit ...
+import json, os, ssl, subprocess, sys, urllib.request
+
+
+def main():
+    sess = os.environ.get("AMUX_SESSION", "")
+    if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):
+        return 0
+    try:
+        staged = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"],
+                                capture_output=True, text=True, timeout=10)
+        paths = [p for p in staged.stdout.split("\\0") if p.strip()]
+        if not paths:
+            return 0
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True,
+                             timeout=10).stdout.strip() or os.getcwd()
+        url = os.environ.get("AMUX_URL", "https://localhost:8822").rstrip("/") \\
+            + "/api/git/staged-guard"
+        body = json.dumps({"session": sess, "dir": top, "paths": paths}).encode()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "X-Amux-Session": sess})
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+            d = json.loads(r.read().decode())
+    except Exception:
+        return 0  # fail open — the guard must never brick commits
+    foreign = d.get("foreign") or []
+    if not foreign:
+        return 0
+    w = sys.stderr.write
+    w("\\namux staged-guard: COMMIT BLOCKED — staged files were edited by "
+      "OTHER amux sessions sharing this checkout:\\n\\n")
+    for f in foreign:
+        mins = int((f.get("age_secs") or 0) / 60)
+        w("  %s   (edited by session '%s' %dm ago)\\n"
+          % (f.get("path"), f.get("owner"), mins))
+    w("\\nUnstage them:   git restore --staged "
+      + " ".join(f.get("path", "") for f in foreign) + "\\n")
+    w("If this cross-session commit is intentional: "
+      "AMUX_ALLOW_FOREIGN=1 git commit ...\\n\\n")
+    return 1
+
+
+sys.exit(main())
+'''
+# Tiny sh shim wired into pre-commit; execs the guard. Status-neutral by
+# construction: the `if` form returns 0 when the guard file is absent, so a
+# deleted guard can never fail-close commits, and it is INSERTED AFTER THE
+# SHEBANG of a foreign pre-commit (not appended) — appended snippets are dead
+# code in the many hooks that end with an explicit `exit 0`.
+_AMUX_GUARD_SNIPPET = (
+    _AMUX_GUARD_MARKER + "\n"
+    'g="$(dirname -- "$0")/amux-staged-guard"\n'
+    'if [ -x "$g" ]; then "$g" || exit 1; fi\n'
+)
+# Lines any previous install may have written (old + new forms) — stripped on
+# migration so re-installs never duplicate or leave a stale appended copy.
+_AMUX_GUARD_SNIPPET_LINES = {
+    _AMUX_GUARD_MARKER,
+    'g="$(dirname -- "$0")/amux-staged-guard"',
+    'if [ -x "$g" ]; then "$g" || exit 1; fi',
+    '[ -x "$g" ] && { "$g" || exit 1; }',
+}
+
+
+def _install_amux_precommit_guard(work_dir: str) -> None:
+    """Install the shared-checkout staged-state guard: hooks/amux-staged-guard
+    (the logic, a standalone python3 script) plus a pre-commit shim that runs
+    it. Chain-safe — inserts after a foreign pre-commit's shebang instead of
+    clobbering (or trailing an `exit 0`). Idempotent; updates our guard file
+    and migrates old shim placements in place; never overwrites a foreign
+    file. Best-effort — failures are swallowed."""
+    try:
+        gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
+                            capture_output=True, text=True, timeout=5)
+        if gr.returncode != 0:
+            return
+        git_dir = gr.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(work_dir, git_dir)
+        hooks_dir = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        guard_path = os.path.join(hooks_dir, "amux-staged-guard")
+        cur = ""
+        if os.path.exists(guard_path):
+            try:
+                cur = open(guard_path).read()
+            except Exception:
+                cur = ""
+        if cur != _AMUX_GUARD_BODY:
+            if cur and _AMUX_GUARD_MARKER not in cur:
+                return  # foreign file squatting on our name — leave it alone
+            with open(guard_path, "w") as fh:
+                fh.write(_AMUX_GUARD_BODY)
+            os.chmod(guard_path, 0o755)
+        hook_path = os.path.join(hooks_dir, "pre-commit")
+        if not os.path.exists(hook_path):
+            with open(hook_path, "w") as fh:
+                fh.write("#!/bin/sh\n" + _AMUX_GUARD_SNIPPET + "exit 0\n")
+            os.chmod(hook_path, 0o755)
+            return
+        try:
+            existing = open(hook_path).read()
+        except Exception:
+            return
+        lines = existing.split("\n")
+        shebang = 1 if lines and lines[0].startswith("#!") else 0
+        want = lines[shebang:shebang + 3] == _AMUX_GUARD_SNIPPET.splitlines()
+        if want and _AMUX_GUARD_MARKER not in "\n".join(lines[shebang + 3:]):
+            return  # already wired in the current form and position
+        kept = [l for l in lines if l.strip() not in _AMUX_GUARD_SNIPPET_LINES]
+        out = kept[:shebang] + _AMUX_GUARD_SNIPPET.splitlines() + kept[shebang:]
+        with open(hook_path, "w") as fh:
+            fh.write("\n".join(out))
+        try:
+            os.chmod(hook_path, 0o755)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _install_amux_commit_hook(work_dir: str) -> None:
     """Install a non-destructive prepare-commit-msg hook that stamps commits
     with $AMUX_SESSION. Idempotent; never clobbers a foreign hook (chains onto
     it instead). Best-effort — failures are swallowed."""
+    # The staged-state guard rides along with every stamp-hook install site,
+    # so both hooks reach every session repo through the same three paths
+    # (start_session, _install_hooks_all_sessions, the git peek action).
+    _install_amux_precommit_guard(work_dir)
     try:
         gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
                             capture_output=True, text=True, timeout=5)
@@ -13880,6 +14565,9 @@ _ALLOWED_TMUX_KEYS = frozenset({
     "M-b", "M-f", "M-d",  # Alt/Meta combos
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "y", "n", "q",  # common single-char confirmations
+    "x",  # agent manager: "x to stop" the selected subagent. Without it a HUNG
+          # subagent was unkillable through the API — a wedged WebFetch pinned
+          # `random` for 1d7h and every send just queued behind it (2026-07-23).
 })
 
 def send_keys(name: str, keys: str) -> tuple[bool, str]:
@@ -15039,24 +15727,65 @@ def _gmail_latest_matching(account: str, from_addr: str = "", with_addr: str = "
     return None
 
 
-def _gmail_inbox_messages(account: str, count: int = 20, q: str = "") -> dict:
-    """Return recent messages for the unified /api/email/inbox shape, using the
-    RFC822 Message-ID header as `message_id` so it round-trips into /reply."""
+def _gmail_inbox_messages(account: str, count: int = 20, q: str = "", days: float = 0.0) -> dict:
+    """Return messages for the unified /api/email/inbox shape, using the RFC822
+    Message-ID header as `message_id` so it round-trips into /reply.
+
+    `days` is AUTHORITATIVE when set: it becomes a Gmail `after:<epoch>` filter so
+    the result covers the whole window (not just the newest `count` INBOX rows,
+    which silently truncated date-ranged scans — AMUX-1886, gtm-engine's
+    poc_radar false-zero). Paginates via pageToken up to `count` (the hard cap).
+    Returns {messages, truncated}: truncated=True means more matched the window
+    than the cap returned, so a caller can tell a real 0 from a capped slice."""
     try:
         svc = _gmail_service(account)
         if not svc:
             return {"error": "not_connected"}
-        kwargs: dict = {"userId": "me", "maxResults": min(max(count, 1), 100)}
-        if q:
-            kwargs["q"] = q
-        else:
-            kwargs["labelIds"] = ["INBOX"]
-        listed = svc.users().messages().list(**kwargs).execute().get("messages", [])
+        want = max(int(count), 1)
+        if not q:
+            # INBOX + (when a window is asked for) an authoritative date floor.
+            q = "in:inbox"
+            if days and days > 0:
+                q += f" after:{int(time.time() - days * 86400)}"
+        # Page through the full match set up to `want`; note if more remained.
+        ids: list = []
+        page_token = None
+        truncated = False
+        while len(ids) < want:
+            kwargs = {"userId": "me", "q": q, "maxResults": min(want - len(ids), 100)}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            resp = svc.users().messages().list(**kwargs).execute()
+            ids.extend(resp.get("messages", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        if page_token and len(ids) >= want:
+            truncated = True   # the window held more than the cap returned
+        listed = ids[:want]
+        # Fetch metadata in BATCHES, not one .get() per message — 500 sequential
+        # gets took minutes and timed out (AMUX-1886). Gmail's batch endpoint does
+        # up to 100 sub-requests per round-trip; chunk at 50 to stay well under
+        # limits. Results are keyed by gmail id so order is restored afterwards.
+        by_id: dict = {}
+
+        def _collect(rid, resp, exc):
+            if exc is None and resp:
+                by_id[resp.get("id")] = resp
+
+        for i in range(0, len(listed), 50):
+            chunk = listed[i:i + 50]
+            batch = svc.new_batch_http_request(callback=_collect)
+            for m in chunk:
+                batch.add(svc.users().messages().get(
+                    userId="me", id=m["id"], format="metadata",
+                    metadataHeaders=["From", "To", "Subject", "Date", "Message-ID"]))
+            batch.execute()
         out = []
         for m in listed:
-            full = svc.users().messages().get(
-                userId="me", id=m["id"], format="metadata",
-                metadataHeaders=["From", "To", "Subject", "Date", "Message-ID"]).execute()
+            full = by_id.get(m["id"])
+            if not full:
+                continue
             h = {hd["name"].lower(): hd["value"]
                  for hd in full.get("payload", {}).get("headers", [])}
             out.append({
@@ -15071,7 +15800,7 @@ def _gmail_inbox_messages(account: str, count: int = 20, q: str = "") -> dict:
                 "read": "UNREAD" not in full.get("labelIds", []),
                 "body": full.get("snippet", ""),
             })
-        return {"messages": out}
+        return {"messages": out, "truncated": truncated}
     except Exception as e:
         slog(f"[gmail] inbox_messages {account}: {e}")
         return {"error": str(e)}
@@ -15093,6 +15822,109 @@ def _gmail_list_labels(account: str) -> list:
     except Exception as e:
         slog(f"[gmail] list_labels {account}: {e}")
         return []
+
+
+# ── Dictation: voice → clean text (Gemini), server-side only ────────────────
+# SECURITY: the API key NEVER reaches a browser. Audio is uploaded to amux, amux
+# calls Gemini, only text comes back. A user may bring their own key (stored
+# write-only in prefs — readable by the server, never returned to a client);
+# otherwise the server's GOOGLE_API_KEY is used.
+_DICTATION_MODEL = os.environ.get("AMUX_DICTATION_MODEL", "gemini-2.5-flash")
+_DICTATION_MAX_BYTES = 25 * 1024 * 1024   # ~25MB of audio per clip
+
+
+def _dictation_key() -> tuple:
+    """(key, source). BYO key from prefs wins; else the server's env key."""
+    try:
+        row = get_db().execute("SELECT value FROM prefs WHERE key='dictation_gemini_key'").fetchone()
+        if row and (row["value"] or "").strip():
+            return row["value"].strip(), "byo"
+    except Exception:
+        pass
+    return os.environ.get("GOOGLE_API_KEY", "").strip(), "server"
+
+
+def _dictation_vocab() -> str:
+    """Personal vocabulary as prompt context: plain terms to spell correctly and
+    explicit misspelling→correct mappings."""
+    try:
+        rows = get_db().execute(
+            "SELECT word, correct FROM dictation_dict ORDER BY created DESC LIMIT 300").fetchall()
+    except Exception:
+        return ""
+    terms, fixes = [], []
+    for r in rows:
+        if (r["correct"] or "").strip():
+            fixes.append(f'"{r["word"]}" → "{r["correct"]}"')
+        else:
+            terms.append(r["word"])
+    out = []
+    if terms:
+        out.append("Spell these terms EXACTLY as written: " + ", ".join(terms))
+    if fixes:
+        out.append("Always apply these corrections: " + "; ".join(fixes))
+    return "\n".join(out)
+
+
+def _dictation_prompt(session: str = "") -> str:
+    """System prompt: transcribe + clean, with amux-specific context (session
+    names are the #1 thing speech-to-text mangles) and the user's vocabulary."""
+    parts = [
+        "You transcribe voice dictation for amux, a terminal session manager.",
+        "Transcribe the audio, then clean it up: remove filler words (um, uh, like),",
+        "fix punctuation and capitalization, and correct obvious speech-to-text errors.",
+        "Do NOT answer, summarize, or add commentary — output ONLY the cleaned transcription.",
+        "Preserve the speaker's wording and intent; do not paraphrase.",
+    ]
+    try:
+        names = [f.stem for f in CC_SESSIONS.glob("*.env")][:80]
+        if names:
+            # Speech-to-text mangles these constantly ("ts gke"/"TSGKE" → ts-gke,
+            # "MBS in for" → mvs-infra). Match phonetically, not literally.
+            parts.append(
+                "These are the user's session names — if a spoken phrase sounds like one "
+                "(letters spelled out, hyphens omitted, words run together, or a near-homophone), "
+                "replace it with the EXACT name from this list:\n" + ", ".join(sorted(names)))
+    except Exception:
+        pass
+    if session:
+        parts.append(f'The user is dictating into session "{session}".')
+    vocab = _dictation_vocab()
+    if vocab:
+        parts.append(vocab)
+    return "\n".join(parts)
+
+
+def _gemini_generate(key: str, parts: list, timeout: int = 90) -> tuple:
+    """POST to Gemini generateContent. Returns (text, error)."""
+    import urllib.request, urllib.error, ssl as _ssl
+    # Verified TLS via certifi when available (the framework Python here has no
+    # usable system CA bundle — same pattern as /api/map/search).
+    try:
+        import certifi as _cf
+        _ctx = _ssl.create_default_context(cafile=_cf.where())
+    except Exception:
+        _ctx = _ssl.create_default_context()
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{_DICTATION_MODEL}:generateContent?key={key}")
+    body = json.dumps({"contents": [{"parts": parts}]}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        d = json.loads(urllib.request.urlopen(req, timeout=timeout, context=_ctx).read())
+        cands = d.get("candidates") or []
+        if not cands:
+            return "", "no transcription returned (audio may be silent)"
+        segs = cands[0].get("content", {}).get("parts", [])
+        return "".join(s.get("text", "") for s in segs).strip(), ""
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.loads(e.read()).get("error", {}).get("message", "")[:200]
+        except Exception:
+            pass
+        return "", f"gemini {e.code}: {detail or 'request failed'}"
+    except Exception as e:
+        return "", f"gemini error: {str(e)[:200]}"
 
 
 _SHARE_CSS = """
@@ -15461,7 +16293,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown-common-style.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <!-- AMUX-LOCAL:session-chat --><link rel="stylesheet" href="/chat.css"><!-- /AMUX-LOCAL:session-chat -->
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -15566,6 +16401,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Session cards — list mode (default) */
   .cards { display: flex; flex-direction: column; gap: 10px; }
+  /* Wide screens: the single-column list stretches cards absurdly — flow into
+     a responsive column grid instead. The explicit tile view (.grid-mode)
+     keeps its own denser packing; mobile stays a single column. */
+  @media (min-width: 1100px) {
+    .cards:not(.grid-mode) { display: grid; grid-template-columns: repeat(auto-fill, minmax(500px, 1fr)); gap: 12px; align-items: start; }
+  }
 
   /* Layout view controls */
   .tile-controls { display: flex; gap: 4px; align-items: center; }
@@ -16114,6 +16955,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-tap-highlight-color: transparent; transition: all 0.15s; }
   .file-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .file-overlay-body.file-raw { white-space: pre-wrap; word-break: break-word; }
+  /* Syntax-highlighted code preview (highlight.js). The theme stylesheet colors
+     .hljs; we own layout + fill. */
+  .file-overlay-body.file-code { padding: 0; }
+  .file-overlay-body.file-code .hljs-pre { margin: 0; padding: 12px 14px; overflow: auto; }
+  .file-overlay-body.file-code code.hljs { display: block; background: transparent; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem;
+    line-height: 1.5; tab-size: 2; white-space: pre; }
   .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal;position:relative; }
   /* Zoomable image preview (pinch / trackpad / double-tap). */
   .img-zoom-wrap { position:absolute;inset:0;overflow:hidden;touch-action:none;display:flex;align-items:center;justify-content:center; }
@@ -16355,6 +17203,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: flex; align-items: center; gap: 4px; padding: 4px 6px;
     min-width: 0; overflow: hidden;
   }
+  /* "Downloaded on this device" badge — green ⤓ after a cached file's name. */
+  .fe-dl-badge { color: #3fb950; font-size: 0.82rem; margin-left: 5px; flex-shrink: 0; line-height: 1; }
   /* Inline folder-expand chevron (accordion). Row still navigates on click. */
   .fe-expand { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0;
     width: 18px; height: 22px; flex-shrink: 0; font-size: 1.05rem; line-height: 1;
@@ -17061,6 +17911,79 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-tab-count.sched-on { background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.34); }
   .peek-tab-count.has-pending { background: rgba(210,153,34,0.16); color: #d29922; border-color: rgba(210,153,34,0.34); }
   .peek-tab-count.sched-off { background: rgba(139,148,158,0.14); color: var(--dim); border-color: rgba(139,148,158,0.28); }
+  /* Schedules badge: two numbers — active (green) / inactive (red). */
+  .peek-tab-count .psc-on  { color: #3fb950; font-weight: 700; }
+  .peek-tab-count .psc-off { color: #f85149; font-weight: 700; }
+  .peek-tab-count .psc-sep { color: var(--dim); margin: 0 3px; opacity: 0.7; }
+  /* ── Dictation: compact recording popup (above the composer) ── */
+  .dict-popup { display: none; position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 60;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+    box-shadow: 0 10px 34px rgba(0,0,0,0.45); min-width: 250px; }
+  .dict-popup.open { display: block; }
+  .dict-popup-wave { display: flex; align-items: center; justify-content: center; gap: 3px; height: 40px; margin-bottom: 8px; }
+  .dict-popup-wave .dict-bar { width: 4px; height: 100%; border-radius: 2px; background: var(--accent);
+    transform: scaleY(0.12); transition: transform .07s linear; will-change: transform; }
+  .dict-popup-meta { display: flex; align-items: center; gap: 7px; font-size: 0.76rem; color: var(--dim); margin-bottom: 10px; }
+  .dict-popup-dot { width: 8px; height: 8px; border-radius: 50%; background: #f85149; flex-shrink: 0;
+    animation: dictblink 1.1s ease-in-out infinite; }
+  @keyframes dictblink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .dict-popup-status { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+  .dict-popup-btns { display: flex; gap: 6px; justify-content: flex-end; }
+  .dict-popup-btns .btn { font-size: 0.76rem; padding: 5px 12px; }
+  /* ── Dictation tab ── */
+  .dict-recbar { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .dict-rec { width: 52px; height: 52px; min-width: 52px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 1.35rem; cursor: pointer; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; transition: transform .12s, background .12s; }
+  .dict-rec:hover { border-color: var(--accent); }
+  .dict-rec.recording { background: #f85149; border-color: #f85149; color: #fff; animation: dictpulse 1.2s ease-in-out infinite; }
+  @keyframes dictpulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+  .dict-status { font-size: 0.85rem; color: var(--text); font-weight: 500; }
+  .dict-hint { font-size: 0.72rem; color: var(--dim); margin-top: 2px; }
+  .dict-total { font-size: 0.72rem; color: var(--dim); white-space: nowrap; align-self: flex-start; text-align: right; }
+  .dict-pending { display: block; color: #d29922; margin-top: 2px; }
+  .dict-subtabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .dict-subtab { background: none; border: none; color: var(--dim); font-size: 0.78rem; font-weight: 600;
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+  .dict-subtab.active { color: var(--text); background: var(--bg); }
+  .dict-search { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px;
+    font-size: 0.76rem; color: var(--text); outline: none; max-width: 190px; }
+  .dict-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 12px; }
+  .dict-empty { color: var(--dim); font-size: 0.85rem; text-align: center; padding: 34px 12px; line-height: 1.7; }
+  .dict-day { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; color: var(--dim); margin: 14px 0 6px; }
+  .dict-day:first-child { margin-top: 0; }
+  .dict-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 6px; background: var(--card); }
+  .dict-row:hover { border-color: var(--accent); }
+  .dict-time { font-size: 0.7rem; color: var(--dim); white-space: nowrap; padding-top: 2px; min-width: 58px; }
+  .dict-text { flex: 1; min-width: 0; font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .dict-aibadge { font-size: 0.64rem; color: #d29922; margin-left: 6px; white-space: nowrap; }
+  .dict-acts { display: flex; gap: 2px; flex-shrink: 0; }
+  .dict-acts button { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.85rem;
+    padding: 3px 5px; border-radius: 5px; min-width: 26px; min-height: 26px; }
+  .dict-acts button:hover { background: var(--bg); color: var(--text); }
+  .dict-acts button.danger:hover { color: #f85149; }
+  .dict-dictbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .dict-dicthint { flex: 1; font-size: 0.76rem; color: var(--dim); line-height: 1.5; }
+  .dict-wordrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .dict-word { flex: 1; min-width: 0; font-size: 0.85rem; word-break: break-word; }
+  .dict-arrow { color: var(--dim); margin: 0 2px; }
+  .dict-modal-input { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 8px 11px;
+    font-size: 0.86rem; color: var(--text); outline: none; font-family: inherit; }
+  .dict-modal-input:focus { border-color: var(--accent); }
+  .dict-modal-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  .dict-modal-row label { font-size: 0.85rem; color: var(--text); }
+  .dict-settings { font-size: 0.85rem; }
+  .dict-set-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .dict-set-row span { color: var(--dim); }
+  .dict-sethint { font-size: 0.76rem; color: var(--dim); line-height: 1.6; margin-top: 10px; }
+  @media (max-width: 600px) {
+    .dict-row { flex-wrap: wrap; }
+    .dict-time { min-width: 0; }
+    .dict-acts button { min-width: 34px; min-height: 34px; font-size: 0.95rem; }
+    .dict-rec { width: 58px; height: 58px; min-width: 58px; }
+    .dict-search { max-width: 130px; }
+  }
   /* Saved-messages modal: scope tabs (this session / all) + per-session badge. */
   .sm-scope-tab { flex: 1; padding: 6px 10px; font-size: 0.8rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--dim); cursor: pointer; font-family: inherit; min-height: 36px; }
   .sm-scope-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500; }
@@ -17251,6 +18174,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .card-task-name .tn-label { font-weight: 400; color: var(--dim); margin-right: 4px; }
+  .card-preview.task-stale, .card-task-name.task-stale { opacity: 0.6; }
+  .task-stale-badge { color: #f0a020; font-weight: 600; font-size: 0.72rem; white-space: nowrap; }
 
 
   /* Claude status badge */
@@ -19106,6 +20031,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .map-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-width: 0; }
   #map-container { flex: 1; z-index: 1; background: var(--bg); }
   .map-drop-hint { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: #fff; padding: 7px 18px; border-radius: 20px; font-size: 0.8rem; z-index: 1002; pointer-events: none; display: none; white-space: nowrap; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+  .map-pinbar { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .map-pinbar-spacer { flex: 1; }
+  .map-sort-select { font-size: 0.72rem; padding: 2px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--card); color: var(--text); cursor: pointer; }
+  .map-pinbar-btn { font-size: 0.85rem; line-height: 1; padding: 3px 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; }
+  .map-pinbar-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .map-pin-dist { font-size: 0.68rem; color: var(--dim); font-weight: 400; white-space: nowrap; }
   .map-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--card); border-top: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
   .map-coords { font-size: 0.71rem; color: var(--dim); font-family: monospace; margin-left: auto; }
   .map-drop-btn.dropping { background: var(--accent) !important; color: #fff !important; border-color: transparent !important; }
@@ -19602,6 +20533,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <option value="sonnet">sonnet</option>
             <option value="opus">opus</option>
             <option value="haiku">haiku</option>
+            <option value="claude-opus-5">claude-opus-5</option>
+            <option value="claude-opus-5[1m]">claude-opus-5 [1M]</option>
             <option value="claude-fable-5">claude-fable-5</option>
             <option value="claude-opus-4-8">claude-opus-4-8</option>
             <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
@@ -19919,6 +20852,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="3.5" y="1" width="5" height="3.5" rx="0.5" stroke="currentColor" stroke-width="1.2"/><rect x="2.5" y="6.5" width="8" height="4.5" rx="0.5" stroke="currentColor" stroke-width="1.2"/></svg>
           Save for offline
         </button>
+        <button class="fe-tb-oitem" onclick="_filesClearOfflineCache();_filesOverflowClose()">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 3.5h8M5 3.5V2.5a1 1 0 011-1h1a1 1 0 011 1v1M3.5 3.5l.5 7a1 1 0 001 1h3a1 1 0 001-1l.5-7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span id="files-clearcache-label">Clear downloaded files</span>
+        </button>
         <button class="fe-tb-oitem" onclick="loadFiles(_filesPath);_filesOverflowClose()">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
           Refresh
@@ -20209,6 +21146,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="map-search-section">
       <input type="search" id="map-search" placeholder="Search pins, notes, tags&#x2026;" oninput="_mapSearch(this.value)" autocomplete="off">
+    </div>
+    <div class="map-pinbar" id="map-pinbar">
+      <select id="map-sort" class="map-sort-select" onchange="_mapSetSort(this.value)" title="Sort pin list">
+        <option value="name">A&#x2013;Z</option>
+        <option value="distance">Nearest</option>
+        <option value="recent">Newest</option>
+      </select>
+      <span class="map-pinbar-spacer"></span>
+      <button class="map-pinbar-btn" onclick="_mapExportMenu(event)" title="Export / import pins">&#x21C5;</button>
+      <input type="file" id="map-import-file" accept=".geojson,.json,.csv" style="display:none" onchange="_mapImportFile(this)">
     </div>
     <div id="map-pin-list" class="map-pin-list"></div>
   </div>
@@ -21184,6 +22131,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
     <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')">Commits</button>
     <button class="peek-tab" id="peek-tab-notes" onclick="setPeekTab('notes')">Notes<span class="peek-tab-count" id="peek-tab-notes-count"></span></button>
+    <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text">Dictation</button>
   </div>
   <!-- Working directory bar -->
   <div class="peek-dir-bar">
@@ -21244,6 +22192,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
             <button type="button" onclick="_peekMoreClose();openCmdHistoryModal()">&#x1F551; Message history</button>
             <button type="button" onclick="_peekMoreClose();_openSavedMessages()">&#128190; Saved messages</button>
+            <button type="button" onclick="_peekMoreClose();_dictOpenPopup()">&#127908; Dictate</button>
+            <button type="button" onclick="_peekMoreClose();setPeekTab('dictation')">&#128220; Dictation history</button>
+          </div>
+          <!-- Compact recording popup: live volume bars + timer, right above the
+               composer. Stop → transcribe → text lands in the input. -->
+          <div class="dict-popup" id="dict-popup">
+            <div class="dict-popup-wave" id="dict-wave">
+              <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
+              <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
+              <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
+              <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
+            </div>
+            <div class="dict-popup-meta">
+              <span class="dict-popup-dot"></span>
+              <span id="dict-popup-time">0:00</span>
+              <span id="dict-popup-status" class="dict-popup-status">Listening…</span>
+            </div>
+            <div class="dict-popup-btns">
+              <button class="btn" onclick="_dictClosePopup(true)" title="Discard">Cancel</button>
+              <button class="btn primary" onclick="_dictStopRec()" title="Stop and transcribe">Done</button>
+            </div>
           </div>
         </div>
         <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, sendPeekCmd)" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
@@ -21334,9 +22303,30 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
       <span id="peek-messages-count" style="font-size:0.72rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
     </div>
+    <div id="peek-messages-filter" style="display:flex;gap:5px;padding:0 10px 8px;flex-wrap:wrap;"></div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
   </div>
   <!-- AMUX-LOCAL:session-chat — chat tab panel (Scope B2); chat.js builds the thread + composer into it --><div id="peek-chat-panel" class="peek-tasks-panel"></div><!-- /AMUX-LOCAL:session-chat -->
+  <!-- Dictation: speak → clean text. Audio goes to the amux server, which calls
+       Gemini; the API key never reaches this page. -->
+  <div id="peek-dictation-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div class="dict-recbar">
+      <button id="dict-rec-btn" class="dict-rec" onclick="_dictToggleRec()" title="Hold to dictate (or click to start/stop)">&#127908;</button>
+      <div style="flex:1;min-width:0;">
+        <div id="dict-rec-status" class="dict-status">Tap the mic to dictate</div>
+        <div id="dict-rec-hint" class="dict-hint">Cleaned text lands in the composer for review &mdash; nothing is sent automatically.</div>
+      </div>
+      <span class="dict-total"><span id="dict-total-words"></span><span id="dict-pending" class="dict-pending"></span></span>
+    </div>
+    <div class="dict-subtabs">
+      <button class="dict-subtab active" id="dict-subtab-history" onclick="_dictSetSub('history')">History</button>
+      <button class="dict-subtab" id="dict-subtab-dict" onclick="_dictSetSub('dict')">Dictionary</button>
+      <button class="dict-subtab" id="dict-subtab-settings" onclick="_dictSetSub('settings')">Settings</button>
+      <span style="flex:1;"></span>
+      <input type="search" id="dict-search" class="dict-search" placeholder="Search&hellip;" oninput="_dictRenderHistory()">
+    </div>
+    <div id="dict-body" class="dict-body"></div>
+  </div>
   <div id="peek-cost-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
       <select id="peek-cost-days" onchange="_peekCostLoad()" class="lib-facet">
@@ -21502,6 +22492,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <option value="opus">opus</option>
       <option value="sonnet">sonnet</option>
       <option value="haiku">haiku</option>
+      <option value="claude-opus-5">claude-opus-5</option>
+      <option value="claude-opus-5[1m]">claude-opus-5 [1M]</option>
       <option value="claude-fable-5">claude-fable-5</option>
       <option value="claude-opus-4-8">claude-opus-4-8</option>
       <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
@@ -21882,6 +22874,13 @@ function _applyTheme(light) {
   if (lbl) lbl.textContent = light ? 'Light mode' : 'Dark mode';
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = light ? '#ffffff' : '#0d1117';
+  _hljsApplyTheme(light);
+}
+// Swap the highlight.js theme stylesheet to match amux's light/dark mode.
+function _hljsApplyTheme(light) {
+  const l = document.getElementById('hljs-theme');
+  if (l) l.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/'
+    + (light ? 'github.min.css' : 'github-dark.min.css');
 }
 function toggleTheme(checked) {
   const isLight = checked !== undefined ? checked : !document.body.classList.contains('light');
@@ -21973,6 +22972,7 @@ let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
+let _peekPendingFindScroll = false;   // one-shot scroll-to-match after a ⌖ Locate open
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
@@ -22009,29 +23009,28 @@ function _peekKickFast() {
   _peekLastChangeMs = performance.now();
   if (peekSession && !document.hidden) _schedulePeekPoll();
 }
-function _stopPeekPoll() { if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
+let _peekPollGen = 0;
+function _stopPeekPoll() { _peekPollGen++; if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
 let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
 let _peekPrevStatus = '';   // peeked session's status on the previous poll tick
 const _PEEK_HISTORY_REFRESH_MS = 30000;  // fallback full-refresh cadence while open
 function _schedulePeekPoll() {
   _stopPeekPoll();
   if (!peekSession || document.hidden) return;
+  const gen = _peekPollGen;
   peekTimer = setTimeout(async () => {
     peekTimer = null;
+    if (gen !== _peekPollGen) return;
     try {
-      // History is fetched once on open and would otherwise go stale: on a
-      // long-open peek, output scrolling out of the live frame fell into a gap
-      // between frozen history and the live view. Refresh the FULL payload when
-      // the turn just ended (active→idle: the transcript grew) or every 30s as
-      // a fallback; every other tick is the ~650B/304 live poll.
       const _s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
       const _st = (_s && _s.status) || '';
       const turnEnded = _peekPrevStatus === 'active' && _st !== 'active';
       _peekPrevStatus = _st;
       const needFull = turnEnded || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS);
       await refreshPeek(!needFull);
-      _peekUpdateBranch();   // keep the dir-bar branch fresh (also catches cold-load gitInfo)
+      _peekUpdateBranch();
     } catch(e) {}
+    if (gen !== _peekPollGen) return;
     _schedulePeekPoll();
   }, _peekPollInterval());
 }
@@ -22628,6 +23627,27 @@ function showAlert(msg) {
     document.getElementById('modal-backdrop').classList.add('open');
   });
 }
+// Modal with arbitrary form HTML (reuses the shared modal chrome). Resolves
+// true on confirm, false on cancel — read your inputs before awaiting resolve.
+function showFormModal(title, innerHTML, confirmLabel = 'Save') {
+  return new Promise(resolve => {
+    _modalResolve = resolve;
+    document.getElementById('modal-msg').innerHTML =
+      '<div style="font-weight:700;font-size:0.95rem;margin-bottom:12px;">' + esc(title) + '</div>' + innerHTML;
+    document.getElementById('modal-btns').innerHTML =
+      `<button class="btn primary" onclick="_modalClose(true)">${esc(confirmLabel)}</button>` +
+      `<button class="btn" onclick="_modalClose(false)">Cancel</button>`;
+    document.getElementById('modal-backdrop').classList.add('open');
+  });
+}
+// Single-line prompt on the same chrome. Resolves the string, or null if cancelled.
+async function showPrompt(msg, placeholder = '') {
+  const ok = await showFormModal(msg,
+    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" style="width:100%">',
+    'OK');
+  if (!ok) return null;
+  return (document.getElementById('modal-prompt-input')?.value || '').trim();
+}
 
 // ── Bulk actions modal ──
 function _rlRow(s, accent) {
@@ -22941,18 +23961,18 @@ async function runSyncBanner() {
     try {
       const draft = item.draft;
       draft.syncing = true; saveDrafts(); render();
-      const createResp = await fetch(API + '/api/sessions', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+      const createResp = await _origFetch(API + '/api/sessions', {
+        method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
         body: JSON.stringify({ name: draft.name, dir: draft.dir })
       });
       if (!createResp.ok && createResp.status !== 409) {
         item.status = 'failed'; draft.syncing = false; saveDrafts(); renderBanner(); continue;
       }
-      const startResp = await fetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/start', { method: 'POST' });
+      const startResp = await _origFetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/start', { method: 'POST', headers: _authHeaders() });
       if (draft.prompt && startResp.ok) {
         await new Promise(r => setTimeout(r, 5000));
-        await fetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/send', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
+        await _origFetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/send', {
+          method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
           body: JSON.stringify({ text: draft.prompt })
         });
       }
@@ -22964,14 +23984,19 @@ async function runSyncBanner() {
     renderBanner();
   }
 
-  // Then replay queue items
+  // Then replay queue items — via _origFetch so the outbox interceptor can't
+  // re-capture its own replay (double-queue), with auth headers applied FRESH
+  // (they were not stamped at queue time, and a stale token would 401).
   for (const item of items.filter(i => i.type === 'queue')) {
     item.status = 'running';
     renderBanner();
     try {
-      const r = await fetch(item.item.url, item.item.options);
-      if (r.status >= 500) {
-        offlineQueue.push(item.item); item.status = 'failed';
+      const opts = { ...item.item.options, headers: _authHeaders(item.item.options.headers) };
+      const r = await _origFetch(item.item.url, opts);
+      if (r.status >= 500 || r.status === 401 || r.status === 408 || r.status === 429) {
+        offlineQueue.push(item.item); item.status = 'failed';   // transient — keep for next sync
+      } else if (!r.ok) {
+        item.status = 'failed';   // permanent 4xx — surface it, but don't retry forever
       } else {
         item.status = 'done';
       }
@@ -23067,18 +24092,80 @@ async function apiCall(url, options) {
   }
 }
 function _queueOp(url, options) {
-  offlineQueue.push({ url, options: { method: options.method, headers: options.headers, body: options.body }, timestamp: Date.now() });
-  saveQueue();
-  // Register Background Sync so SW can replay queue when connectivity returns
-  if ('serviceWorker' in navigator && 'SyncManager' in window) {
-    navigator.serviceWorker.ready.then(r => r.sync.register('replay-queue').catch(() => {}));
+  // Cap the outbox so localStorage can't overflow — oldest ops drop first
+  if (offlineQueue.length >= 200) {
+    offlineQueue.shift();
+    showToast('Offline queue full — oldest operation dropped');
   }
+  let body = options.body;
+  // Sends/steers dedup server-side on msg_id — make sure every queued one has
+  // it, so a replay after a lost response can't deliver the message twice.
+  if (typeof body === 'string' && /\/(send|steer)$/.test(url.split('?')[0])) {
+    try {
+      const b = JSON.parse(body);
+      if (!b.msg_id) {
+        b.msg_id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+        body = JSON.stringify(b);
+      }
+    } catch (e) {}
+  }
+  offlineQueue.push({ url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now() });
+  saveQueue();
   updateConnectionStatus();
   showToast('Queued (' + offlineQueue.length + ' pending)');
 }
 
+// ═══════ GLOBAL OFFLINE OUTBOX — fetch interceptor ═══════
+// Dozens of call sites issue raw fetch() mutations; offline they used to just
+// throw and the command was LOST. This wrapper implements the outbox pattern
+// at the fetch boundary so every API command flows through offline sync
+// without touching call sites. PASSIVE by design: while online it delegates
+// straight to the native fetch (zero behavioral change); only a request that
+// would otherwise fail (offline, or the network throws) gets captured into
+// the queue, and the caller receives a synthetic 202 {queued:true} so UI
+// code treats it as accepted rather than crashed.
+const _origFetch = window.fetch.bind(window);
+// Never queue interactive/ephemeral endpoints: telemetry, speed tests, live
+// terminal keystrokes, uploads (bodies too big for localStorage), login and
+// tunnel flows, and request/response helpers whose answer the UI needs NOW.
+const _OUTBOX_SKIP = /\/api\/(client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser)/;
+const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
+function _outboxQueueable(url, init) {
+  if (!url || typeof url !== 'string') return false;
+  if (url.startsWith('http') && !url.startsWith(location.origin)) return false;
+  if (!url.includes('/api/')) return false;
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (!_OUTBOX_METHODS[method]) return false;
+  if (init && init._skipOutbox) return false;
+  const body = init && init.body;
+  if (body !== undefined && typeof body !== 'string') return false;   // FormData/Blob can't persist
+  return !_OUTBOX_SKIP.test(url);
+}
+function _outboxAccepted() {
+  return new Response(JSON.stringify({ ok: true, queued: true, offline: true }),
+                      { status: 202, headers: { 'Content-Type': 'application/json' } });
+}
+window.fetch = function(input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (!_outboxQueueable(url, init)) return _origFetch(input, init);
+  if (!online) {
+    _queueOp(url, init || {});
+    return Promise.resolve(_outboxAccepted());
+  }
+  return _origFetch(input, init).catch(e => {
+    consecutiveFailures++;
+    if (consecutiveFailures >= 2) setOnline(false);
+    _queueOp(url, init || {});
+    return _outboxAccepted();
+  });
+};
+
 // Reconcile queue: remove contradictory/stale operations before replay
 function reconcileQueue(queue) {
+  // Drop ops older than 7 days — replaying a week-stale board move or message
+  // does more harm than losing it, and the user has long since moved on.
+  const cutoff = Date.now() - 7 * 86400 * 1000;
+  queue = queue.filter(q => !q.timestamp || q.timestamp >= cutoff);
   // Walk backwards and track the last action per session to skip superseded ops
   const lastAction = {};  // session -> last action seen
   const dominated = new Set();  // indices to skip
@@ -23709,6 +24796,8 @@ function render() {
     const _schedMine = schedules.filter(sc => sc.session === s.name);
     const schedOn = _schedMine.filter(sc => sc.enabled).length;
     const schedOff = _schedMine.length - schedOn;
+    const taskStale = _taskStaleAge(s);
+    const taskDim = taskStale && s.task_source === 'board';   // stale board title shown as last resort
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
@@ -23758,7 +24847,7 @@ function render() {
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
-      ${!isExp && s.task_name ? `<div class="card-preview" style="font-weight:600;color:var(--text);">${esc(s.task_name)}</div>` : ''}
+      ${!isExp && s.task_name ? `<div class="card-preview${taskDim ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
       ${!isExp && (schedOn + schedOff) ? `<div class="card-sched-count" onclick="event.stopPropagation();switchView('scheduler')" title="${schedOn} enabled, ${schedOff} disabled">&#x23F2; ${[schedOn ? `<span class="sched-on">${schedOn} on</span>` : '', schedOff ? `<span class="sched-off">${schedOff} off</span>` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
@@ -23779,10 +24868,11 @@ function render() {
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && s.task_name ? `<div class="card-task-name" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" title="Click to edit task label" style="cursor:pointer;"><span class="tn-label">Task:</span>${esc(s.task_name)}</div>` : ''}
+        ${isExp && s.task_name ? `<div class="card-task-name${taskDim ? ' task-stale' : ''}" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" title="Click to edit task label" style="cursor:pointer;"><span class="tn-label">Task:</span>${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Session</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
+          ${s.last_activity ? `<div class="timing-item"><span class="timing-label">Last interaction</span><span class="timing-value">${timeAgo(s.last_activity)}</span></div>` : ''}
         </div>` : ''}
         ${s.preview_lines && s.preview_lines.length ? `<div class="card-preview-lines" onclick="event.stopPropagation();openPeek('${s.name}')" style="cursor:pointer;">${rewriteLocalhostUrls(s.preview_lines.map(l => esc(l)).join('\n'))}</div>` : ''}
         <div class="card-stats" id="stats-${s.name}"></div>
@@ -23961,6 +25051,15 @@ function _cssRect(el) {
   return { top: r.top / z, right: r.right / z, bottom: r.bottom / z, left: r.left / z, width: r.width / z, height: r.height / z };
 }
 
+function _taskStaleAge(s) {
+  // Amber hint that a STALE doing card (>24h untouched) is parked on the
+  // board. The server no longer titles the card from such a fossil — it falls
+  // back to the live auto-summary — so this badge marks "the ledger has a
+  // neglected card", whatever label is displayed. Dimming only applies in the
+  // last-resort case where the stale board title itself is still shown.
+  if (!s.task_board_age) return '';
+  return Math.floor(s.task_board_age / 86400) + 'd';
+}
 function timeAgo(epoch) {
   if (!epoch) return '';
   const diff = Math.floor(Date.now()/1000) - epoch;
@@ -24782,6 +25881,7 @@ function editField(session, field, current, provider) {
   } else if (field === 'model') {
     const claudeModels = [
       {v:'',l:'Default'},{v:'opus',l:'opus'},{v:'sonnet',l:'sonnet'},{v:'haiku',l:'haiku'},
+      {v:'claude-opus-5',l:'claude-opus-5'},{v:'claude-opus-5[1m]',l:'claude-opus-5 [1M]'},
       {v:'claude-fable-5',l:'claude-fable-5'},
       {v:'claude-opus-4-8',l:'claude-opus-4-8'},{v:'claude-opus-4-8[1m]',l:'claude-opus-4-8 [1M]'},
       {v:'claude-opus-4-7',l:'claude-opus-4-7'},{v:'claude-opus-4-7[1m]',l:'claude-opus-4-7 [1M]'},
@@ -25457,6 +26557,10 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
   document.getElementById('peek-tab-schedules').classList.toggle('active', tab === 'schedules');
   document.getElementById('peek-tab-notes').classList.toggle('active', tab === 'notes');
+  document.getElementById('peek-tab-dictation').classList.toggle('active', tab === 'dictation');
+  const dictPanel = document.getElementById('peek-dictation-panel');
+  if (tab === 'dictation') { dictPanel.classList.add('active'); _dictLoad(); }
+  else { dictPanel.classList.remove('active'); if (_dictRecording) _dictStopRec(); }
   document.getElementById('peek-terminal-panel').style.display = tab === 'terminal' ? '' : 'none';
   document.getElementById('peek-split-wrap').style.display = tab === 'terminal' ? '' : 'none';
   const transcript = document.getElementById('peek-transcript-panel');
@@ -26282,15 +27386,22 @@ function _renderPeekIssuesKanban(items, list) {
   });
 }
 // ── Peek Schedules (scheduler tasks for this session) ────────────────────────
-// Color the Schedules tab badge: green when the session has ≥1 ACTIVE (enabled)
-// schedule, grey when it has schedules but all are inactive (paused).
+// Schedules tab badge shows TWO numbers: active (green) / inactive (red), so
+// you can see at a glance how many of this session's schedules are enabled vs
+// paused without opening the tab.
 function _peekColorSchedBadge(schedList) {
   const el = document.getElementById('peek-tab-schedules-count');
   if (!el) return;
-  const n = (schedList || []).length;
-  const anyActive = (schedList || []).some(s => s.enabled);
-  el.classList.toggle('sched-on', n > 0 && anyActive);
-  el.classList.toggle('sched-off', n > 0 && !anyActive);
+  const list = schedList || [];
+  el.classList.remove('sched-on', 'sched-off');
+  if (!list.length) { el.textContent = ''; el.classList.remove('has-count'); return; }
+  const active = list.filter(s => s.enabled).length;
+  const inactive = list.length - active;
+  el.classList.add('has-count');
+  el.innerHTML = '<span class="psc-on">' + active + '</span>'
+    + '<span class="psc-sep">/</span>'
+    + '<span class="psc-off">' + inactive + '</span>';
+  el.title = active + ' active, ' + inactive + ' inactive schedule' + (list.length === 1 ? '' : 's');
 }
 async function _peekUpdateTabCounts() {
   if (!peekSession) return;
@@ -26315,8 +27426,7 @@ async function _peekUpdateTabCounts() {
     if (peekSession !== sess) return;
     const all = await r.json();
     const sched = all.filter(s => s.session === sess && !s.deleted);
-    setCount('peek-tab-schedules-count', sched.length);
-    _peekColorSchedBadge(sched);
+    _peekColorSchedBadge(sched);   // renders active/inactive two-number badge
   } catch(e) {}
   try {
     const r = await fetch(API + '/api/notes');
@@ -26349,12 +27459,7 @@ async function _peekLoadSchedules() {
   const _paint = () => {
     _peekRenderSchedules();
     const sched = schedules.filter(s => s.session === peekSession && !s.deleted);
-    const tabCount = document.getElementById('peek-tab-schedules-count');
-    if (tabCount) {
-      if (sched.length > 0) { tabCount.textContent = sched.length; tabCount.classList.add('has-count'); }
-      else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
-    }
-    _peekColorSchedBadge(sched);
+    _peekColorSchedBadge(sched);   // active/inactive two-number badge
   };
   try {
     await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
@@ -26381,7 +27486,7 @@ async function _peekRunSchedule(id) {
 }
 async function _peekDeleteSchedule(id) {
   if (!confirm('Delete this schedule?')) return;
-  await apiCall(API + '/api/schedules/' + id, { method: 'DELETE' });
+  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
   _peekLoadSchedules();
 }
 async function _peekEditSchedule(id) {
@@ -26800,7 +27905,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.169';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.199';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -26853,6 +27958,11 @@ function openPeek(name, opts) {
   if (peekSessionDir && !(gitInfo[peekSession] || {}).branch) { _gitBranchesLast = 0; _fetchGitBranches(sessions); }
   const prefillQuery = opts && opts.query ? opts.query : '';
   peekSearchQuery = prefillQuery;
+  // Locate flow: the match usually lives in HISTORY, which arrives after the
+  // instant live-frame paint — and search-active refreshes suppress scrolling
+  // (to preserve reading position on live ticks). Arm a ONE-SHOT jump so the
+  // first render that actually finds matches scrolls to them.
+  _peekPendingFindScroll = !!prefillQuery;
   peekSearchIndex = 0;
   _peekMatches = [];
   _peekMsgIndex = -1;
@@ -27072,8 +28182,12 @@ function _savePeekState() {
       state.splitPath = _peekSplitPath || peekSessionDir || '/';
     }
     sessionStorage.setItem('peekState', JSON.stringify(state));
+    // Also persist to localStorage (with a timestamp) so an open session peek
+    // is restored after iOS evicts the backgrounded PWA, not just a soft reload.
+    try { localStorage.setItem('amux_peek_state', JSON.stringify(Object.assign({ ts: Date.now() }, state))); } catch(e) {}
   } else {
     sessionStorage.removeItem('peekState');
+    try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
   }
 }
 
@@ -28071,6 +29185,13 @@ async function refreshPeek(liveOnly, bypassTrim) {
       const savedTop = body.scrollTop;
       applyPeekSearch(true, false);
       body.scrollTop = savedTop;
+      // …EXCEPT the one-shot locate jump: a peek opened via ⌖ Locate arms this
+      // flag, and the first render whose DOM actually contains the match scrolls
+      // to it (the match is in history, which lands after the instant live paint).
+      if (_peekPendingFindScroll && _peekMatches.length) {
+        _peekPendingFindScroll = false;
+        _peekScrollTo(peekSearchIndex, true, true);
+      }
     } else if (!_peekScrollLocked) {
       const _liveEl = document.getElementById('pk-live');
       if (!histChanged && _liveEl) _liveEl.innerHTML = _lastLiveHTML;   // live tick → swap the small region only
@@ -28145,10 +29266,12 @@ function applyPeekSearch(keepIndex, doScroll) {
   _peekScrollTo(peekSearchIndex, doScroll);
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
 }
-function _peekScrollTo(i, doScroll) {
+function _peekScrollTo(i, doScroll, instant) {
   _peekMatches.forEach((m, j) => m.classList.toggle('current', j === i));
   const cur = _peekMatches[i];
-  if (cur && doScroll !== false) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // instant: the one-shot Locate jump — a smooth animation would be frozen
+  // mid-flight by the next poll tick's savedTop restore.
+  if (cur && doScroll !== false) cur.scrollIntoView({ block: 'center', behavior: instant ? 'auto' : 'smooth' });
   const countEl = document.getElementById('peek-search-count');
   if (countEl && _peekMatches.length) countEl.textContent = (i + 1) + '/' + _peekMatches.length;
 }
@@ -29648,6 +30771,14 @@ function _voiceToggle() {
 }
 
 async function _voiceStart() {
+  // The Gemini Live voice assistant is retired: it connected the BROWSER
+  // straight to Gemini, which required shipping the server's API key into the
+  // page (a real leak), and its model (gemini-2.0-flash-live-001) no longer
+  // exists. Dictation replaces it and keeps the key server-side.
+  showToast('Voice assistant retired — use the Dictation tab');
+  try { setPeekTab('dictation'); } catch(e) {}
+  return;
+  /* eslint-disable no-unreachable */
   const apiKey = window._GOOGLE_API_KEY;
   if (!apiKey) { showToast('Set GOOGLE_API_KEY in ~/.amux/server.env'); return; }
   const session = peekSession;
@@ -30060,7 +31191,7 @@ async function _loadCmdHistoryFromServer() {
       return;
     }
     // Server is authoritative — merge and deduplicate
-    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id }));
+    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '' }));
     localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
     _cmdHistoryServerLoaded = true;
   } catch(e) {}
@@ -30160,7 +31291,7 @@ function _renderCmdHistoryList() {
     const session = typeof e === 'string' ? '' : (e.session || '');
     const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
     const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    const enc = encodeURIComponent(text);
+    const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
     const tagColor = type === 'steering' ? 'var(--purple,#8957e5)' : 'var(--dim)';
     const tagBg = type === 'steering' ? 'rgba(137,87,229,0.15)' : 'rgba(128,128,128,0.1)';
     const tagLabel = type === 'steering' ? 'queued' : 'direct';
@@ -30168,6 +31299,9 @@ function _renderCmdHistoryList() {
       + (session ? '<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">' + session.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '')
       + (ts ? '<span style="color:var(--dim);font-size:0.7rem;">' + ts + '</span>' : '');
     const locSess = (session || peekSession || '').replace(/\u0027/g, '');
+    const copyBtn = '<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" '
+      + 'title="Copy message text" '
+      + 'onclick="event.stopPropagation();_msgCopyBtn(this,\u0027' + enc + '\u0027)">&#x1F4CB;</button>';
     const locate = locSess
       ? '<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" '
         + 'title="Open the peek and scroll to where this was sent" '
@@ -30181,45 +31315,47 @@ function _renderCmdHistoryList() {
       + 'onmouseleave="this.style.borderColor=\u0027var(--border)\u0027">'
       + '<div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">'
       + (meta ? '<div style="margin-bottom:4px;">' + meta + '</div>' : '')
-      + safe + '</div>' + locate + '</div>';
+      + safe + '</div>' + copyBtn + locate + '</div>';
   }).join('');
 }
 // ── Peek Messages tab: the message history, scoped to the open session ──
 // One entry → its card HTML (same look as the Message-history modal). Kept as a
 // standalone renderer so the tab stays independent of the modal.
+// Origin taxonomy for a Messages-history item: who sent this command.
+// Legacy rows (type 'direct'/'steering', pre-origin-column) map to 'user'.
+function _msgOrigin(e) {
+  const t = (typeof e === 'string' ? '' : (e.type || '')).toLowerCase();
+  if (t === 'session') return 'session';
+  if (t === 'schedule') return 'schedule';
+  if (t === 'system') return 'system';
+  return 'user';   // user / direct / steering / '' all = a human-entered command
+}
+const _MSG_KIND = {
+  user:     { label: 'You',       color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
+  session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
+  schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
+  system:   { label: 'System',    color: '#d29922', bg: 'rgba(210,153,34,0.15)' },
+};
 function _cmdHistItemHTML(e) {
   const text = typeof e === 'string' ? e : e.text;
-  const type = typeof e === 'string' ? '' : (e.type || '');
   const session = typeof e === 'string' ? '' : (e.session || '');
+  const origin = typeof e === 'string' ? '' : (e.origin || '');
   const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
   const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const enc = encodeURIComponent(text);
-  const isSteer = type === 'steering';
-  const tag = type ? `<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:${isSteer?'rgba(137,87,229,0.15)':'rgba(128,128,128,0.1)'};color:${isSteer?'var(--purple,#8957e5)':'var(--dim)'};margin-right:6px;">${isSteer?'queued':'direct'}</span>` : '';
+  const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
+  const kind = _msgOrigin(e);
+  const km = _MSG_KIND[kind] || _MSG_KIND.user;
+  // Badge label carries the specific origin: "Session · mvs-infra", "Scheduled · Nightly gate".
+  const originTxt = (kind === 'session' || kind === 'schedule' || kind === 'system') && origin
+    ? ' · ' + origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32) : '';
+  const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;border-left:3px solid ${km.color};">${km.label}${originTxt}</span>`;
   const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
   const meta = tag + sessTag + tsTag;
   const locSess = (session || peekSession || '').replace(/'/g,'');
+  const copyBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Copy message text" onclick="event.stopPropagation();_msgCopyBtn(this,'${enc}')">&#x1F4CB;</button>`;
   const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
-  return `<div onclick="_msgCopy(this,'${enc}')" title="Click to copy" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
-}
-// Click a message → copy its text + flash a "Copied" badge on the card.
-function _msgCopy(el, enc) {
-  const text = decodeURIComponent(enc);
-  const flash = () => {
-    showToast('Copied');
-    if (el && !el.querySelector('.msg-copied-badge')) {
-      const badge = document.createElement('div');
-      badge.className = 'msg-copied-badge';
-      badge.textContent = '✓ Copied';
-      badge.style.cssText = 'position:absolute;top:6px;right:8px;background:var(--green);color:#fff;font-size:0.66rem;font-weight:600;padding:1px 7px;border-radius:4px;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.2);';
-      el.appendChild(badge);
-      setTimeout(() => badge.remove(), 1100);
-    }
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(flash, () => { _copyExplorePathFallback(text); flash(); });
-  } else { _copyExplorePathFallback(text); flash(); }
+  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${copyBtn}${locate}</div>`;
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -30267,11 +31403,32 @@ function _peekMessagesBadge() {
   badge.classList.toggle('has-pending', p > 0);
   _updatePendingPill();
 }
+let _peekMsgFilter = 'all';   // all | user | session | schedule | system
+function _peekMsgSetFilter(k) { _peekMsgFilter = k; _peekMessagesRender(); }
+function _peekMsgRenderChips(items) {
+  const bar = document.getElementById('peek-messages-filter');
+  if (!bar) return;
+  // Count by kind so each chip shows how many of that type exist.
+  const counts = { all: items.length, user: 0, session: 0, schedule: 0, system: 0 };
+  items.forEach(e => { counts[_msgOrigin(e)]++; });
+  const chips = [['all','All']].concat(
+    ['user','session','schedule','system']
+      .filter(k => counts[k] > 0 || _peekMsgFilter === k)
+      .map(k => [k, (_MSG_KIND[k]||{}).label || k]));
+  bar.innerHTML = chips.map(([k,lbl]) => {
+    const on = _peekMsgFilter === k;
+    const km = _MSG_KIND[k];
+    const col = km ? km.color : 'var(--accent)';
+    return `<button onclick="_peekMsgSetFilter('${k}')" style="font-size:0.7rem;font-weight:600;padding:2px 9px;border-radius:12px;cursor:pointer;border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl}${k!=='all'?' '+counts[k]:''}</button>`;
+  }).join('');
+}
 function _peekMessagesRender() {
   const list = document.getElementById('peek-messages-list');
   if (!list) return;
   const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
   let items = _peekMessagesFor();
+  _peekMsgRenderChips(items);   // chips reflect the full (pre-filter) set's counts
+  if (_peekMsgFilter !== 'all') items = items.filter(e => _msgOrigin(e) === _peekMsgFilter);
   if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
   // Pending (offline-queued, NOT yet on the server) shown FIRST — clearly marked,
   // cancellable, so the local client never hides unsent messages.
@@ -30300,6 +31457,389 @@ async function _peekMessagesLoad() {
   _peekMessagesRender();
 }
 
+// ── Dictation tab ───────────────────────────────────────────────────────────
+// Speak → clean text. Audio is POSTed to the amux server, which calls Gemini
+// with amux context (session names + your vocabulary) — the API key never
+// reaches this page. Result lands in the composer for review, never auto-sent.
+let _dictRecording = false, _dictRecorder = null, _dictChunks = [], _dictStream = null;
+let _dictStartedAt = 0, _dictSub = 'history';
+let _dictItems = [], _dictWords = [], _dictTotalWords = 0, _dictCfg = null;
+
+async function _dictLoad() {
+  try {
+    const [h, d, c] = await Promise.all([
+      fetch(API + '/api/dictation/history?session=' + encodeURIComponent(peekSession || ''), { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
+    ]);
+    _dictItems = h.items || []; _dictTotalWords = h.total_words || 0;
+    _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
+  } catch(e) {}
+  const tw = document.getElementById('dict-total-words');
+  if (tw) tw.textContent = _dictTotalWords ? _dictTotalWords.toLocaleString() + ' words' : '';
+  _dictPendingBadge();
+  _dictRender();
+}
+function _dictSetSub(s) {
+  _dictSub = s;
+  ['history','dict','settings'].forEach(k => document.getElementById('dict-subtab-' + k)?.classList.toggle('active', k === s));
+  const srch = document.getElementById('dict-search');
+  if (srch) srch.style.display = s === 'history' ? '' : 'none';
+  _dictRender();
+}
+function _dictRender() {
+  if (_dictSub === 'history') _dictRenderHistory();
+  else if (_dictSub === 'dict') _dictRenderDict();
+  else _dictRenderSettings();
+}
+
+// ── Recording ──
+// BANDWIDTH: speech is encoded at 16kbps mono opus. The browser default is
+// ~128kbps (>1MB/min); 16kbps is ~120KB/min — ~9x less — and transcribes
+// identically (measured). Uploads are RAW BINARY, not base64 (another 33%
+// saved), so a minute of dictation is ~120KB even on a bad connection.
+const _DICT_BITRATE = 16000;
+let _dictAudioCtx = null, _dictAnalyser = null, _dictRafId = 0, _dictPopupOpen = false;
+
+function _dictToggleRec() { if (_dictRecording) _dictStopRec(); else _dictStartRec(); }
+
+// Compact recording popup with a live volume waveform — the feedback surface
+// when you start dictation from the composer's ⋯ menu.
+function _dictOpenPopup() {
+  const pop = document.getElementById('dict-popup');
+  if (!pop) return;
+  _dictPopupOpen = true;
+  pop.classList.add('open');
+  _dictStartRec();
+}
+function _dictClosePopup(cancel) {
+  const pop = document.getElementById('dict-popup');
+  if (pop) pop.classList.remove('open');
+  _dictPopupOpen = false;
+  if (cancel && _dictRecording) { _dictCancelled = true; _dictStopRec(); }
+}
+let _dictCancelled = false;
+
+async function _dictStartRec() {
+  if (_dictRecording) return;
+  if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
+  _dictCancelled = false;
+  try {
+    _dictStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
+  } catch(e) { showToast('Microphone access denied'); _dictClosePopup(false); return; }
+  // Safari/iOS produce mp4; Chrome/Firefox webm/opus. Pick what's supported and
+  // tell the server the real mime so Gemini decodes it.
+  let mime = '';
+  for (const m of ['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/webm','audio/mp4','audio/aac']) {
+    if (window.MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) { mime = m; break; }
+  }
+  const opts = { audioBitsPerSecond: _DICT_BITRATE };
+  if (mime) opts.mimeType = mime;
+  try { _dictRecorder = new MediaRecorder(_dictStream, opts); }
+  catch(e) { try { _dictRecorder = new MediaRecorder(_dictStream); } catch(e2) { showToast('Recorder unavailable'); return; } }
+  _dictChunks = [];
+  _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) _dictChunks.push(e.data); };
+  _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictStatus('Cancelled'); } else _dictUpload(); };
+  _dictRecorder.start();
+  _dictRecording = true; _dictStartedAt = Date.now();
+  document.getElementById('dict-rec-btn')?.classList.add('recording');
+  _dictStartMeter();
+  _dictTick();
+}
+
+// Live volume bars from an AnalyserNode — real feedback that the mic is hearing you.
+function _dictStartMeter() {
+  try {
+    _dictAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = _dictAudioCtx.createMediaStreamSource(_dictStream);
+    _dictAnalyser = _dictAudioCtx.createAnalyser();
+    _dictAnalyser.fftSize = 256; _dictAnalyser.smoothingTimeConstant = 0.75;
+    src.connect(_dictAnalyser);
+  } catch(e) { return; }
+  const data = new Uint8Array(_dictAnalyser.frequencyBinCount);
+  const bars = Array.from(document.querySelectorAll('#dict-wave .dict-bar'));
+  const draw = () => {
+    if (!_dictRecording || !_dictAnalyser) return;
+    _dictAnalyser.getByteFrequencyData(data);
+    const n = bars.length || 1;
+    const per = Math.floor(data.length / n) || 1;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let j = 0; j < per; j++) sum += data[i * per + j] || 0;
+      const level = Math.min(1, (sum / per) / 140);
+      bars[i].style.transform = 'scaleY(' + Math.max(0.12, level).toFixed(3) + ')';
+    }
+    _dictRafId = requestAnimationFrame(draw);
+  };
+  draw();
+}
+function _dictStopMeter() {
+  if (_dictRafId) cancelAnimationFrame(_dictRafId);
+  _dictRafId = 0; _dictAnalyser = null;
+  try { _dictAudioCtx && _dictAudioCtx.close(); } catch(e) {}
+  _dictAudioCtx = null;
+  document.querySelectorAll('#dict-wave .dict-bar').forEach(b => b.style.transform = 'scaleY(0.12)');
+}
+function _dictTick() {
+  if (!_dictRecording) return;
+  const s = Math.floor((Date.now() - _dictStartedAt) / 1000);
+  const clock = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  _dictStatus('Listening… ' + clock + ' — tap to stop');
+  const t = document.getElementById('dict-popup-time'); if (t) t.textContent = clock;
+  setTimeout(_dictTick, 500);
+}
+function _dictStopRec() {
+  if (!_dictRecording) return;
+  _dictRecording = false;
+  document.getElementById('dict-rec-btn')?.classList.remove('recording');
+  try { _dictRecorder && _dictRecorder.state !== 'inactive' && _dictRecorder.stop(); } catch(e) {}
+  try { (_dictStream?.getTracks() || []).forEach(t => t.stop()); } catch(e) {}
+}
+function _dictStatus(t) {
+  const el = document.getElementById('dict-rec-status'); if (el) el.textContent = t;
+  const p = document.getElementById('dict-popup-status'); if (p) p.textContent = t.replace(/ — tap to stop$/, '');
+}
+function _dictKB(b) { return b < 1024 ? b + ' B' : (b/1024).toFixed(b < 102400 ? 1 : 0) + ' KB'; }
+
+async function _dictUpload() {
+  const ms = Date.now() - _dictStartedAt;
+  if (!_dictChunks.length) { _dictStatus('Nothing recorded'); _dictClosePopup(false); return; }
+  const blob = new Blob(_dictChunks, { type: _dictChunks[0].type || 'audio/webm' });
+  _dictChunks = [];
+  if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
+  const mime = (blob.type || 'audio/webm').split(';')[0];
+  // Offline / no signal: keep the recording and send it when we're back, rather
+  // than losing what you just said.
+  if (typeof online !== 'undefined' && !online) {
+    await _dictQueueOffline(blob, mime, ms);
+    _dictStatus('Saved — will send when you\'re back online');
+    _dictClosePopup(false);
+    return;
+  }
+  _dictStatus('Transcribing… (' + _dictKB(blob.size) + ')');
+  const okText = await _dictSend(blob, mime, ms, true);
+  if (okText !== null) _dictClosePopup(false);
+}
+
+// One upload attempt with a timeout; on a network failure the clip is queued
+// rather than dropped. Returns the text, or null on failure.
+async function _dictSend(blob, mime, ms, interactive) {
+  const url = API + '/api/dictate?session=' + encodeURIComponent(peekSession || '')
+    + '&dur_ms=' + ms + '&mime=' + encodeURIComponent(mime);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 120000);   // slow links need room
+  try {
+    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime }),
+                                 body: blob, signal: ctl.signal });
+    clearTimeout(timer);
+    const d = await r.json();
+    if (d.error) { if (interactive) _dictStatus('Failed: ' + d.error); return null; }
+    if (interactive) { _dictStatus('Added to the composer — review, then send'); _dictInsert(d.text); }
+    if (_peekTab === 'dictation') _dictLoad();
+    return d.text;
+  } catch(e) {
+    clearTimeout(timer);
+    await _dictQueueOffline(blob, mime, ms);
+    if (interactive) _dictStatus('No connection — saved, will retry automatically');
+    return null;
+  }
+}
+
+// Pending recordings live in IndexedDB (blobs can't go in localStorage), so a
+// dictation taken with no signal survives a reload and flushes on reconnect.
+async function _dictQueueOffline(blob, mime, ms) {
+  try {
+    const q = (await _idb.get('dict_pending')) || [];
+    q.push({ blob, mime, ms, ts: Date.now(), session: peekSession || '' });
+    await _idb.set('dict_pending', q.slice(-20));
+    _dictPendingBadge();
+  } catch(e) {}
+}
+async function _dictFlushOffline() {
+  let q = [];
+  try { q = (await _idb.get('dict_pending')) || []; } catch(e) {}
+  if (!q.length || (typeof online !== 'undefined' && !online)) return;
+  const keep = [];
+  for (const item of q) {
+    const txt = await _dictSend(item.blob, item.mime, item.ms, false);
+    if (txt === null) keep.push(item);
+  }
+  try { await _idb.set('dict_pending', keep); } catch(e) {}
+  const sent = q.length - keep.length;
+  if (sent) { showToast(sent + ' queued dictation' + (sent===1?'':'s') + ' transcribed'); if (_peekTab === 'dictation') _dictLoad(); }
+  _dictPendingBadge();
+}
+async function _dictPendingBadge() {
+  let n = 0;
+  try { n = ((await _idb.get('dict_pending')) || []).length; } catch(e) {}
+  const el = document.getElementById('dict-pending'); if (el) el.textContent = n ? n + ' pending upload' + (n===1?'':'s') : '';
+}
+window.addEventListener('online', () => { setTimeout(_dictFlushOffline, 1500); });
+
+// Put text in the composer (append, don't clobber) — never auto-send.
+function _dictInsert(text) {
+  const inp = document.getElementById('peek-cmd-input');
+  if (!inp) { navigator.clipboard?.writeText(text); showToast('Copied (composer not open)'); return; }
+  inp.value = inp.value && inp.value.trim() ? (inp.value.replace(/\s+$/,'') + ' ' + text) : text;
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// ── History ──
+function _dictRenderHistory() {
+  const body = document.getElementById('dict-body');
+  if (!body) return;
+  const q = (document.getElementById('dict-search')?.value || '').trim().toLowerCase();
+  const items = q ? _dictItems.filter(i => (i.text||'').toLowerCase().includes(q)) : _dictItems;
+  if (!items.length) {
+    body.innerHTML = '<div class="dict-empty">' + (q ? 'No matches.' :
+      'No dictations yet.<br><span style="font-size:0.78rem">Tap the mic above and start talking.</span>') + '</div>';
+    return;
+  }
+  // Group by day, newest first (matches the reference UI).
+  let html = '', lastDay = '';
+  for (const it of items) {
+    const d = new Date(it.ts);
+    const day = d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase();
+    if (day !== lastDay) { html += '<div class="dict-day">' + day + '</div>'; lastDay = day; }
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    html += '<div class="dict-row" id="dict-row-' + it.id + '">'
+      + '<div class="dict-time">' + time + '</div>'
+      + '<div class="dict-text">' + esc(it.text || '')
+      + (it.ai_edited ? '<span class="dict-aibadge" title="AI-edited">&#10024; AI</span>' : '') + '</div>'
+      + '<div class="dict-acts">'
+      + '<button title="Copy" onclick="_dictCopy(' + it.id + ')">&#128203;</button>'
+      + '<button title="Insert into composer" onclick="_dictInsertId(' + it.id + ')">&#8629;</button>'
+      + '<button title="AI edit" onclick="_dictAiEdit(' + it.id + ')">&#10024;</button>'
+      + (it.ai_edited ? '<button title="Undo AI edit" onclick="_dictUndo(' + it.id + ')">&#8630;</button>' : '')
+      + '<button title="Delete" class="danger" onclick="_dictDelete(' + it.id + ')">&#128465;</button>'
+      + '</div></div>';
+  }
+  body.innerHTML = html;
+}
+function _dictById(id) { return _dictItems.find(i => i.id === id); }
+function _dictCopy(id) { const it = _dictById(id); if (it) { navigator.clipboard?.writeText(it.text); showToast('Copied'); } }
+function _dictInsertId(id) { const it = _dictById(id); if (it) { _dictInsert(it.text); showToast('Added to composer'); } }
+async function _dictAiEdit(id) {
+  const instruction = await showPrompt('How should the AI edit this?', 'e.g. make it formal / shorter / bullet points');
+  if (instruction === null) return;
+  showToast('Editing…');
+  const r = await fetch(API + '/api/dictation/history/' + id + '/edit', { method: 'POST',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ instruction }) });
+  const d = await r.json();
+  if (d.error) { showToast('Edit failed: ' + d.error); return; }
+  showToast('AI edit applied'); _dictLoad();
+}
+async function _dictUndo(id) {
+  const r = await fetch(API + '/api/dictation/history/' + id + '/edit', { method: 'POST',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ undo: true }) });
+  const d = await r.json();
+  if (d.error) { showToast('Undo failed'); return; }
+  showToast('Reverted to the original'); _dictLoad();
+}
+async function _dictDelete(id) {
+  if (!(await showConfirm('Delete this transcription?', 'Delete', true))) return;
+  await fetch(API + '/api/dictation/history/' + id, { method: 'DELETE', headers: _authHeaders() });
+  _dictLoad();
+}
+
+// ── Dictionary ──
+function _dictRenderDict() {
+  const body = document.getElementById('dict-body');
+  if (!body) return;
+  let html = '<div class="dict-dictbar"><span class="dict-dicthint">Terms and names amux should always spell correctly '
+    + 'in your dictation.</span><button class="btn primary" onclick="_dictAddWord()">Add new</button></div>';
+  if (!_dictWords.length) {
+    html += '<div class="dict-empty">No words yet.<br><span style="font-size:0.78rem">Add jargon, session names, '
+      + 'people — or fix a misspelling the model keeps making.</span></div>';
+  } else {
+    html += _dictWords.map(w => '<div class="dict-wordrow">'
+      + '<div class="dict-word">' + esc(w.word)
+      + (w.correct ? ' <span class="dict-arrow">&rarr;</span> <b>' + esc(w.correct) + '</b>' : '')
+      + '</div><div class="dict-acts">'
+      + '<button title="Edit" onclick="_dictEditWord(' + w.id + ')">&#9998;</button>'
+      + '<button title="Delete" class="danger" onclick="_dictDelWord(' + w.id + ')">&#128465;</button>'
+      + '</div></div>').join('');
+  }
+  body.innerHTML = html;
+}
+async function _dictAddWord(existing) {
+  const w = existing || null;
+  const isFix = w ? !!w.correct : false;
+  const html = '<div class="dict-modal-row"><label>Correct a misspelling</label>'
+    + '<input type="checkbox" id="dictm-fix" ' + (isFix ? 'checked' : '') + ' onchange="_dictModalToggle()"></div>'
+    + '<div id="dictm-single" style="' + (isFix ? 'display:none' : '') + '">'
+    + '<input id="dictm-word" class="dict-modal-input" placeholder="Add a new word" value="' + (w && !isFix ? esc(w.word) : '') + '"></div>'
+    + '<div id="dictm-pair" style="' + (isFix ? '' : 'display:none') + ';display:' + (isFix ? 'flex' : 'none') + ';gap:8px;align-items:center;">'
+    + '<input id="dictm-mis" class="dict-modal-input" placeholder="Misspelling" value="' + (w && isFix ? esc(w.word) : '') + '">'
+    + '<span style="color:var(--dim)">&rarr;</span>'
+    + '<input id="dictm-cor" class="dict-modal-input" placeholder="Correct spelling" value="' + (w && isFix ? esc(w.correct) : '') + '"></div>';
+  const ok = await showFormModal(w ? 'Edit vocabulary' : 'Add to vocabulary', html, w ? 'Save' : 'Add word');
+  if (!ok) return;
+  const fix = document.getElementById('dictm-fix')?.checked;
+  const word = fix ? (document.getElementById('dictm-mis')?.value || '').trim() : (document.getElementById('dictm-word')?.value || '').trim();
+  const correct = fix ? (document.getElementById('dictm-cor')?.value || '').trim() : '';
+  if (!word || (fix && !correct)) { showToast('Fill in both fields'); return; }
+  if (w) {
+    await fetch(API + '/api/dictation/dict/' + w.id, { method: 'PATCH',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ word, correct }) });
+  } else {
+    await fetch(API + '/api/dictation/dict', { method: 'POST',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ word, correct }) });
+  }
+  showToast(w ? 'Updated' : 'Added to vocabulary'); _dictLoad();
+}
+function _dictModalToggle() {
+  const fix = document.getElementById('dictm-fix')?.checked;
+  const s = document.getElementById('dictm-single'), p = document.getElementById('dictm-pair');
+  if (s) s.style.display = fix ? 'none' : '';
+  if (p) p.style.display = fix ? 'flex' : 'none';
+}
+function _dictEditWord(id) { const w = _dictWords.find(x => x.id === id); if (w) _dictAddWord(w); }
+async function _dictDelWord(id) {
+  await fetch(API + '/api/dictation/dict/' + id, { method: 'DELETE', headers: _authHeaders() });
+  _dictLoad();
+}
+
+// ── Settings (BYO key) ──
+function _dictRenderSettings() {
+  const body = document.getElementById('dict-body');
+  if (!body) return;
+  const c = _dictCfg || {};
+  const using = c.source === 'byo' ? 'your own Gemini key'
+    : c.source === 'server' ? "this amux server's Gemini key" : 'nothing configured';
+  body.innerHTML =
+    '<div class="dict-settings">'
+    + '<div class="dict-set-row"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
+    + '<div class="dict-set-row"><b>Currently using</b><span>' + using + '</span></div>'
+    + '<div class="dict-sethint">Bring your own Gemini API key (optional). If set, amux uses it instead of the '
+    + 'server\'s key. It is stored on the amux server and is <b>never sent back to any browser</b>. '
+    + 'Get one at <span style="color:var(--accent)">aistudio.google.com/apikey</span>.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;">'
+    + '<input id="dict-key-input" class="dict-modal-input" type="password" placeholder="'
+    + (c.source === 'byo' ? 'Key set — enter a new one to replace' : 'Paste your Gemini API key') + '" style="flex:1">'
+    + '<button class="btn primary" onclick="_dictSaveKey()">Save</button>'
+    + (c.source === 'byo' ? '<button class="btn" onclick="_dictClearKey()">Remove</button>' : '')
+    + '</div>'
+    + '<div class="dict-sethint" style="margin-top:14px;">Audio never touches this page’s JavaScript beyond the '
+    + 'recording itself — it is uploaded to your amux server, which calls Gemini and returns only text.</div>'
+    + '</div>';
+}
+async function _dictSaveKey() {
+  const k = (document.getElementById('dict-key-input')?.value || '').trim();
+  if (!k) { showToast('Paste a key first'); return; }
+  const r = await fetch(API + '/api/dictation/config', { method: 'POST',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ key: k }) });
+  const d = await r.json();
+  if (d.error) { showToast('Could not save key'); return; }
+  showToast('Using your Gemini key'); _dictLoad();
+}
+async function _dictClearKey() {
+  await fetch(API + '/api/dictation/config', { method: 'POST',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ key: '' }) });
+  showToast('Reverted to the server key'); _dictLoad();
+}
+
 // Peek Cost tab: this session's token/cost breakdown by task (reuses _costRender)
 function _peekCostLoad() {
   if (!peekSession) return;
@@ -30318,15 +31858,55 @@ function _peekCostLoad() {
     .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:16px;">Failed to load.</div>'; });
 }
 
+// Sent messages are stored with the "[H:MM PM email] " payload prefix doSend
+// adds. Strip it when INSERTING back into a composer — resending would
+// otherwise stack a second timestamp onto the old one.
+function _msgStripPrefix(text) {
+  return String(text || '').replace(/^\[\d{1,2}:\d{2}\s?[AP]M[^\]]*\]\s*/i, '');
+}
+// After inserting, GO TO the input: expand the send bar if collapsed, scroll the
+// composer into view, focus with the caret at the end — ready to edit/send.
+function _focusPeekComposer() {
+  const inp = document.getElementById('peek-cmd-input');
+  if (!inp) return;
+  // The composer lives in the terminal panel — on other peek tabs it's
+  // display:none and focus() lands nowhere. Go back to Terminal first.
+  try { if (typeof _peekTab !== 'undefined' && _peekTab !== 'terminal') setPeekTab('terminal'); } catch(e) {}
+  try { if (typeof peekCmdOpen !== 'undefined' && !peekCmdOpen) setPeekCmd(true); } catch(e) {}
+  inp.scrollIntoView({ block: 'nearest' });
+  inp.focus();
+  requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
+}
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
-    inp.value = text;
+    inp.value = _msgStripPrefix(text);
     autoGrow(inp);
-    inp.focus({ preventScroll: true });
-    requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
+    _focusPeekComposer();
   }
   closeCmdHistoryModal();
+}
+// Copy button on message rows: clipboard + a ✓ flash on the button itself.
+function _msgCopyBtn(btn, encText) {
+  const text = decodeURIComponent(encText);
+  const done = () => {
+    showToast('Copied');
+    if (btn) { const prev = btn.innerHTML; btn.innerHTML = '&#x2713;'; setTimeout(() => { btn.innerHTML = prev; }, 900); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => { _copyExplorePathFallback(text); done(); });
+  } else { _copyExplorePathFallback(text); done(); }
+}
+// Global Messages view: clicking a row opens that session's peek AND inserts the
+// message into its composer (prefix-stripped), ready to edit/resend.
+function _msgOpenInsert(sess, encText) {
+  if (!sess) { showToast('No session recorded for this message'); return; }
+  const text = _msgStripPrefix(decodeURIComponent(encText));
+  openPeek(sess);
+  setTimeout(() => {
+    const inp = document.getElementById('peek-cmd-input');
+    if (inp) { inp.value = text; autoGrow(inp); _focusPeekComposer(); }
+  }, 500);
 }
 
 function cmdHistoryUp(inp) {
@@ -30961,6 +32541,67 @@ function _bindReadPosFrame(iframe, path) {
 document.addEventListener('visibilitychange', () => { if (document.hidden && _readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
 window.addEventListener('pagehide', () => { if (_readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
 
+// Extension → highlight.js language. Names with no dot (Dockerfile, Makefile)
+// match by the whole filename.
+const _HLJS_EXT = {
+  js:'javascript', jsx:'javascript', mjs:'javascript', cjs:'javascript',
+  ts:'typescript', tsx:'typescript',
+  py:'python', rb:'ruby', go:'go', rs:'rust', java:'java', kt:'kotlin', scala:'scala',
+  c:'c', h:'c', cpp:'cpp', cc:'cpp', cxx:'cpp', hpp:'cpp', cs:'csharp', swift:'swift',
+  php:'php', sh:'bash', bash:'bash', zsh:'bash', fish:'bash',
+  yml:'yaml', yaml:'yaml', toml:'ini', ini:'ini', cfg:'ini', conf:'ini',
+  json:'json', jsonl:'json', ndjson:'json', geojson:'json',
+  xml:'xml', html:'xml', svg:'xml', vue:'xml', css:'css', scss:'scss', sass:'scss', less:'less',
+  sql:'sql', graphql:'graphql', gql:'graphql', md:'markdown', markdown:'markdown',
+  dockerfile:'dockerfile', makefile:'makefile', mk:'makefile', diff:'diff', patch:'diff',
+  lua:'lua', pl:'perl', r:'r', dart:'dart', proto:'protobuf', tf:'hcl', hcl:'hcl',
+  gradle:'gradle', groovy:'groovy', ps1:'powershell', bat:'dos',
+};
+const _HL_MAX = 600 * 1024;   // above this, skip highlight/format (perf)
+
+function _fileExtName(data) {
+  const name = (data.path || '').split('/').pop().toLowerCase();
+  return { name, ext: name.includes('.') ? name.split('.').pop() : name };
+}
+
+// Pretty-print JSON / JSONL so it's readable instead of one dense line.
+function _fileFormatJson(content, ext) {
+  try {
+    if (ext === 'json' || ext === 'geojson') return JSON.stringify(JSON.parse(content), null, 2);
+    if (ext === 'jsonl' || ext === 'ndjson') {
+      return content.split('\n').map(l => {
+        const t = l.trim(); if (!t) return '';
+        try { return JSON.stringify(JSON.parse(t), null, 2); } catch(e) { return l; }
+      }).join('\n');
+    }
+  } catch(e) {}
+  return content;
+}
+
+// Render a code/text file with highlight.js (tried-and-true). JSON/JSONL are
+// pretty-printed first. Degrades gracefully: too-large files or a missing hljs
+// (e.g. offline, CDN unreachable) fall back to plain escaped text — JSON is
+// still formatted either way.
+function _fileHighlightHTML(data) {
+  let content = data.content || '';
+  const { name, ext } = _fileExtName(data);
+  const big = content.length > _HL_MAX;
+  if (!big) content = _fileFormatJson(content, ext);
+  let inner;
+  const lang = _HLJS_EXT[ext] || _HLJS_EXT[name] || '';
+  if (!big && window.hljs) {
+    try {
+      inner = (lang && hljs.getLanguage(lang))
+        ? hljs.highlight(content, { language: lang, ignoreIllegals: true }).value
+        : hljs.highlightAuto(content).value;
+    } catch(e) { inner = esc(content); }
+  } else {
+    inner = esc(content);
+  }
+  const note = big ? '<div style="padding:4px 12px;font-size:0.7rem;color:var(--dim);">Large file — syntax highlighting skipped for performance.</div>' : '';
+  return note + '<pre class="hljs-pre"><code class="hljs">' + inner + '</code></pre>';
+}
+
 function _renderFileBody(data, mode) {
   _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
@@ -31103,9 +32744,10 @@ function _renderFileBody(data, mode) {
       } catch(e) {}
     };
   } else {
-    // plain text — preview = same as raw
-    body.className = 'file-overlay-body file-raw';
-    body.textContent = data.content;
+    // Code / plain text — syntax-highlighted preview (JSON/JSONL pretty-printed).
+    // The Raw tab still shows unformatted text (mode==='raw' above).
+    body.className = 'file-overlay-body file-code';
+    body.innerHTML = _fileHighlightHTML(data);
     _bindReadPosDiv(body, data.path);
   }
 }
@@ -31515,9 +33157,28 @@ function _filesGetBookmarks() {
 function _filesSaveBookmarks(bm) {
   const json = JSON.stringify(bm);
   try { localStorage.setItem(_filesBmLocalKey(), json); } catch(e) {}   // fast local mirror (also offline)
-  // Persist server-side too so shortcuts follow you across every device (like files_cwd).
-  fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
+  // Persist server-side too so shortcuts follow you across every device (like
+  // files_cwd). Returned so callers can await the write before re-rendering.
+  return fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({key: _filesBmServerKey(), value: json})}).catch(()=>{});
+}
+
+// The SERVER is the source of truth for shortcuts — so every client sees the
+// same list and no client clobbers another's. Returns the server array (also
+// refreshing the local cache); falls back to the local cache only if the
+// server is unreachable. Every mutation reads through here first so a stale
+// local cache can never overwrite server-stored shortcuts (the desktop-clobbers-
+// phone bug: adding on a fresh client dropped shortcuts saved elsewhere).
+async function _filesFetchBookmarks() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=' + encodeURIComponent(_filesBmServerKey()));
+    const d = await r.json();
+    if (d && typeof d.value === 'string' && d.value) {
+      try { localStorage.setItem(_filesBmLocalKey(), d.value); } catch(e) {}
+      try { return JSON.parse(d.value); } catch(e) {}
+    }
+  } catch(e) {}
+  return _filesGetBookmarks();
 }
 
 // Pull the current scope's shortcuts from the server (cross-device), then render.
@@ -31560,12 +33221,21 @@ function _filesRenderBookmarks() {
 }
 
 // Add a specific file/folder (from the ⋯ menu) as a shortcut in the CURRENT scope.
-function _filesAddBookmarkPath(path, type) {
+async function _filesAddBookmarkPath(path, type) {
   const label = path.split('/').filter(Boolean).pop() || path;
-  const bm = _filesGetBookmarks();
-  if (bm.find(b => b.path === path)) { showToast('Already a shortcut'); return; }
+  const scope = _filesBmScope();               // guard against navigating away mid-fetch
+  const bm = await _filesFetchBookmarks();      // server = source of truth → never clobber
+  if (_filesBmScope() !== scope) return;
+  if (bm.find(b => b.path === path)) {
+    // Already saved server-side but the chip wasn't visible (stale render /
+    // Safari PWA). Re-render from the just-fetched server list so it SHOWS,
+    // instead of silently telling the user it exists with no chip on screen.
+    _filesRenderBookmarks();
+    showToast('Already a shortcut');
+    return;
+  }
   bm.push({ label, path, type: (type === 'dir' || type === 'directory') ? 'dir' : 'file' });
-  _filesSaveBookmarks(bm);
+  await _filesSaveBookmarks(bm);
   _filesRenderBookmarks();
   showToast(_exploreSession ? ('Shortcut added to ' + _exploreSession) : ('Shortcut added: ' + label));
 }
@@ -31683,12 +33353,19 @@ function _libOpenBook(idx) {
   openFilePreview(b.formats[0].path);   // formats are rank-sorted — most readable first
 }
 
-function _filesRemoveBookmark(idx) {
-  const bm = _filesGetBookmarks();
-  const removed = bm.splice(idx, 1);
-  _filesSaveBookmarks(bm);
+async function _filesRemoveBookmark(idx) {
+  // Resolve the target by PATH from the currently-shown list, then remove it
+  // from the SERVER list (index can drift vs the server's authoritative set).
+  const shown = _filesGetBookmarks();
+  const target = shown[idx];
+  if (!target) return;
+  const scope = _filesBmScope();
+  let bm = await _filesFetchBookmarks();
+  if (_filesBmScope() !== scope) return;
+  bm = bm.filter(b => b.path !== target.path);
+  await _filesSaveBookmarks(bm);
   _filesRenderBookmarks();
-  if (removed[0]) showToast('Removed ' + removed[0].label);
+  showToast('Removed ' + target.label);
 }
 
 // Render bookmarks on load
@@ -31748,6 +33425,13 @@ function _filesOverflowToggle() {
   if (!menu) return;
   menu.classList.toggle('open');
   if (menu.classList.contains('open')) {
+    // Refresh the "Clear downloaded files" label with the live count + size.
+    _idb.cacheStats().then(s => {
+      const lbl = document.getElementById('files-clearcache-label');
+      if (lbl) lbl.textContent = s.count
+        ? `Clear downloaded files (${s.count} · ${_fmtSize(s.bytes)})`
+        : 'Clear downloaded files';
+    }).catch(()=>{});
     const close = (e) => { if (!document.getElementById('files-overflow-wrap')?.contains(e.target)) { menu.classList.remove('open'); document.removeEventListener('click', close, true); } };
     setTimeout(() => document.addEventListener('click', close, true), 0);
   }
@@ -31941,6 +33625,50 @@ function _renderFilesEntries(body, path, data, cacheTs) {
   body.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; body.classList.add('files-drop-active'); };
   body.ondragleave = () => body.classList.remove('files-drop-active');
   body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleFilesUpload(e.dataTransfer.files); };
+  _feMarkDownloaded();   // async: flag rows whose file is downloaded on this device
+}
+
+// Add a green ⤓ badge to each file row that is DOWNLOADED (cached) on this
+// device — works online AND offline (reflects local IndexedDB, not the network),
+// so you can always see what's available offline before you lose connection.
+async function _feMarkDownloaded() {
+  try {
+    const body = document.getElementById('files-body');
+    if (!body) return;
+    const rows = body.querySelectorAll('.fe-row:not(.fe-dir)');
+    if (!rows.length) return;
+    const set = await _idb.cachedFilePaths();
+    rows.forEach(row => {
+      const has = set.has(row.dataset.path);
+      const existing = row.querySelector('.fe-dl-badge');
+      if (has && !existing) {
+        const nameCell = row.querySelector('.fe-cell-name');
+        if (nameCell) {
+          const b = document.createElement('span');
+          b.className = 'fe-dl-badge';
+          b.title = 'Downloaded on this device — available offline';
+          b.textContent = '⤓';   // ⤓
+          nameCell.appendChild(b);
+        }
+      } else if (!has && existing) {
+        existing.remove();
+      }
+    });
+  } catch(e) {}
+}
+
+// Clear all files downloaded on this device (keeps dir listings for offline nav).
+async function _filesClearOfflineCache() {
+  const s = await _idb.cacheStats();
+  if (!s.count) { showToast('No downloaded files to clear'); return; }
+  const okGo = await showConfirm(
+    `Clear ${s.count} downloaded file${s.count===1?'':'s'} (${_fmtSize(s.bytes)}) from this device?\n\n` +
+    `They'll re-download next time you open them online. Files on the server are untouched.`,
+    'Clear', true);
+  if (!okGo) return;
+  const n = await _idb.clearCachedFiles();
+  showToast('Cleared ' + n + ' downloaded file' + (n===1?'':'s'));
+  if (typeof _filesLastData !== 'undefined' && _filesLastData) _feMarkDownloaded();
 }
 function _filesSearchFilter(q) {
   const body = document.getElementById('files-body');
@@ -34060,6 +35788,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
+  // Persist the tab to localStorage so it survives iOS evicting the backgrounded
+  // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
+  try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
   const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
   const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
   const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
@@ -34234,11 +35965,13 @@ async function _habitsDelete(idx) {
 let _map = null;
 let _mapPins = [];
 let _mapTags = [];
-let _mapSettings = { defaultZoom: 12, defaultLat: 40.7128, defaultLng: -74.0060, sidebarOpen: true };
+let _mapSettings = { defaultZoom: 12, defaultLat: 40.7128, defaultLng: -74.0060, sidebarOpen: true, tagMode: 'or', sortBy: 'name' };
 let _mapGoogleKey = '';
 let _mapFilterTags = new Set();
 let _mapSearchQ = '';
 let _mapMarkers = {};
+let _mapCluster = null;
+let _mapUserLoc = null;  // {lat,lng} cached from _mapLocateMe, ref point for Nearest sort
 let _mapDropMode = false;
 let _mapMobileSidebarInited = false; // mobile: show the map (not the pin list) on first open
 let _mapServerLoaded = false; // true once we've synced from the server — guards against empty overwrites
@@ -34347,17 +36080,27 @@ function _mapInit() {
   _mapRenderMarkers();
 }
 
+function _mapTagColor(tagId) {
+  const tag = _mapTags.find(function(t) { return t.id === tagId; });
+  return tag ? tag.color : '';
+}
+
 function _mapPinColor(pin) {
   if (!pin.tags || pin.tags.length === 0) return '#8b949e';
-  const tag = _mapTags.find(function(t) { return t.id === pin.tags[0]; });
-  return tag ? tag.color : '#8b949e';
+  return _mapTagColor(pin.tags[0]) || '#8b949e';
 }
 
 function _mapMakeIcon(pin) {
   const color = _mapPinColor(pin);
+  // Second tag (if any) colors the inner dot, so a Coffee+Girls pin reads as
+  // two-tone instead of hiding its secondary tag (AMUX-1865 #3).
+  const second = (pin.tags && pin.tags.length > 1) ? (_mapTagColor(pin.tags[1]) || '') : '';
+  const inner = second
+    ? '<circle cx="12" cy="12" r="5" fill="' + second + '" stroke="#fff" stroke-width="1.5"/>'
+    : '<circle cx="12" cy="12" r="4.5" fill="rgba(255,255,255,0.55)"/>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">' +
     '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="#fff" stroke-width="1.5"/>' +
-    '<circle cx="12" cy="12" r="4.5" fill="rgba(255,255,255,0.55)"/>' +
+    inner +
   '</svg>';
   return L.divIcon({
     className: '',
@@ -34369,8 +36112,17 @@ function _mapMakeIcon(pin) {
 }
 
 function _mapVisiblePins() {
+  const andMode = _mapSettings.tagMode === 'and';
   return _mapPins.filter(function(pin) {
-    if (_mapFilterTags.size > 0 && !(pin.tags && pin.tags.some(function(t) { return _mapFilterTags.has(t); }))) return false;
+    if (_mapFilterTags.size > 0) {
+      const pt = pin.tags || [];
+      // OR: pin has ANY selected tag. AND: pin has EVERY selected tag
+      // (intersection, e.g. Girls × Coffee).
+      const match = andMode
+        ? Array.from(_mapFilterTags).every(function(t) { return pt.indexOf(t) !== -1; })
+        : pt.some(function(t) { return _mapFilterTags.has(t); });
+      if (!match) return false;
+    }
     if (_mapSearchQ) {
       const q = _mapSearchQ;
       const nameMatch = (pin.name||'').toLowerCase().includes(q);
@@ -34398,7 +36150,23 @@ function _mapRenderTags() {
       : 'color:' + tag.color + ';border-color:' + tag.color + '88;';
     html += '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
   });
+  // AND/OR toggle — only meaningful (and only shown) with 2+ tags selected.
+  if (_mapFilterTags.size >= 2) {
+    const andMode = _mapSettings.tagMode === 'and';
+    html += '<button class="map-tag-chip map-tag-mode" onclick="_mapToggleTagMode()" title="' +
+      (andMode ? 'Matching pins with ALL selected tags — click for ANY' : 'Matching pins with ANY selected tag — click for ALL') +
+      '" style="font-weight:700;letter-spacing:0.5px;">' + (andMode ? 'AND' : 'OR') + '</button>';
+  }
   el.innerHTML = html;
+}
+
+function _mapToggleTagMode() {
+  _mapSettings.tagMode = (_mapSettings.tagMode === 'and') ? 'or' : 'and';
+  try { localStorage.setItem('amux_map_settings', JSON.stringify(_mapSettings)); } catch(e) {}
+  _mapSave();
+  _mapRenderTags();
+  _mapRenderPins();
+  _mapRenderMarkers();
 }
 
 function _mapFilterByTag(tagId) {
@@ -34419,10 +36187,26 @@ function _mapSearch(q) {
 function _mapRenderPins() {
   const el = document.getElementById('map-pin-list');
   if (!el) return;
-  const visible = _mapVisiblePins();
+  const sortSel = document.getElementById('map-sort');
+  if (sortSel && sortSel.value !== _mapSettings.sortBy) sortSel.value = _mapSettings.sortBy;
+  let visible = _mapVisiblePins();
   if (visible.length === 0) {
     el.innerHTML = '<div class="map-empty">' + (_mapPins.length === 0 ? 'No pins yet.<br>Click &ldquo;+ Pin&rdquo; to add one.' : 'No pins match your filter.') + '</div>';
     return;
+  }
+  // Sort (AMUX-1865 #5). Nearest measures from your located position if you've
+  // hit "locate me", else from the current map center.
+  const sortBy = _mapSettings.sortBy || 'name';
+  let ref = null;
+  if (sortBy === 'distance') {
+    ref = _mapUserLoc || (_map ? { lat: _map.getCenter().lat, lng: _map.getCenter().lng } : null);
+  }
+  if (sortBy === 'name') {
+    visible = visible.slice().sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
+  } else if (sortBy === 'recent') {
+    visible = visible.slice().sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
+  } else if (sortBy === 'distance' && ref) {
+    visible = visible.slice().sort(function(a,b){ return _mapDist(ref.lat,ref.lng,a.lat,a.lng) - _mapDist(ref.lat,ref.lng,b.lat,b.lng); });
   }
   el.innerHTML = visible.map(function(pin) {
     const color = _mapPinColor(pin);
@@ -34432,10 +36216,11 @@ function _mapRenderPins() {
     }).join('');
     const preview = pin.desc || pin.notes || '';
     const hasNotes = !!(pin.notes);
+    const distLabel = (sortBy === 'distance' && ref) ? '<span class="map-pin-dist"> \u00B7 ' + _mapFmtDist(_mapDist(ref.lat,ref.lng,pin.lat,pin.lng)) + '</span>' : '';
     return '<div class="map-pin-item" onclick="_mapFlyToPin(\x27' + pin.id + '\x27)" ondblclick="_mapOpenPinModal(\x27' + pin.id + '\x27)">' +
       '<div class="map-pin-dot" style="background:' + color + '"></div>' +
       '<div class="map-pin-info">' +
-        '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
+        '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
         (tagChips ? '<div class="map-pin-tagrow">' + tagChips + '</div>' : '') +
         (preview ? '<div class="map-pin-desc">' + escHtml(preview.substring(0,80)) + (preview.length>80?'\u2026':'') + '</div>' : '') +
       '</div>' +
@@ -34446,19 +36231,36 @@ function _mapRenderPins() {
 
 function _mapRenderMarkers() {
   if (!_map) return;
-  Object.values(_mapMarkers).forEach(function(m) { m.remove(); });
+  // Clustering (AMUX-1865 #4): ~67 pins overlap heavily in Manhattan. Use a
+  // markerClusterGroup when the plugin loaded; fall back to direct markers so
+  // the map still works if the CDN is unreachable.
+  const useCluster = typeof L.markerClusterGroup === 'function';
+  if (useCluster) {
+    if (!_mapCluster) {
+      _mapCluster = L.markerClusterGroup({ maxClusterRadius: 45, spiderfyOnMaxZoom: true, showCoverageOnHover: false });
+      _map.addLayer(_mapCluster);
+    } else {
+      _mapCluster.clearLayers();
+    }
+  } else {
+    Object.values(_mapMarkers).forEach(function(m) { m.remove(); });
+  }
   _mapMarkers = {};
   _mapVisiblePins().forEach(function(pin) {
     if (isNaN(parseFloat(pin.lat)) || isNaN(parseFloat(pin.lng))) return;
-    const marker = L.marker([pin.lat, pin.lng], { icon: _mapMakeIcon(pin) }).addTo(_map);
+    const marker = L.marker([pin.lat, pin.lng], { icon: _mapMakeIcon(pin) });
+    if (useCluster) { _mapCluster.addLayer(marker); } else { marker.addTo(_map); }
     const tagChips = (pin.tags||[]).map(function(tid) {
       const tag = _mapTags.find(function(t) { return t.id === tid; });
       return tag ? '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;background:' + tag.color + ';color:#fff;">' + escHtml(tag.name) + '</span>' : '';
     }).join(' ');
     const notesPreview = pin.notes ? (pin.notes.length > 150 ? pin.notes.substring(0, 150) + '\u2026' : pin.notes) : '';
+    var _photo = _mapPhotoUrl(pin.photoName, 400);
     marker.bindPopup(
       '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:13px">' +
+        (_photo ? '<img src="' + _photo + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
         '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
+        _mapMetaRow(pin) +
         (pin.desc ? '<div style="font-size:12px;color:#888;margin-bottom:4px">' + escHtml(pin.desc) + '</div>' : '') +
         (notesPreview ? '<div style="font-size:11.5px;color:#aaa;margin-bottom:4px;white-space:pre-wrap;line-height:1.4;border-left:2px solid #444;padding-left:6px;">' + escHtml(notesPreview) + '</div>' : '') +
         (tagChips ? '<div style="margin-bottom:4px">' + tagChips + '</div>' : '') +
@@ -34473,8 +36275,14 @@ function _mapRenderMarkers() {
 function _mapFlyToPin(id) {
   const pin = _mapPins.find(function(p) { return p.id === id; });
   if (!pin || !_map) return;
-  _map.flyTo([pin.lat, pin.lng], Math.max(_map.getZoom(), 14), { duration: 0.8 });
-  setTimeout(function() { if (_mapMarkers[id]) _mapMarkers[id].openPopup(); }, 900);
+  // With clustering, the marker may be hidden inside a cluster — ask the plugin
+  // to zoom/spiderfy until it's exposed, then open its popup (AMUX-1865 #4).
+  if (_mapCluster && _mapMarkers[id] && typeof _mapCluster.zoomToShowLayer === 'function') {
+    _mapCluster.zoomToShowLayer(_mapMarkers[id], function() { _mapMarkers[id].openPopup(); });
+  } else {
+    _map.flyTo([pin.lat, pin.lng], Math.max(_map.getZoom(), 14), { duration: 0.8 });
+    setTimeout(function() { if (_mapMarkers[id]) _mapMarkers[id].openPopup(); }, 900);
+  }
   document.querySelectorAll('.map-pin-item').forEach(function(el) { el.classList.remove('active'); });
   const visible = _mapVisiblePins();
   const idx = visible.findIndex(function(p) { return p.id === id; });
@@ -34496,8 +36304,157 @@ function _mapSetDefaultView() {
 function _mapLocateMe() {
   if (!navigator.geolocation) { alert('Geolocation not supported by your browser.'); return; }
   navigator.geolocation.getCurrentPosition(function(pos) {
+    _mapUserLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     if (_map) _map.flyTo([pos.coords.latitude, pos.coords.longitude], 14);
+    if (_mapSettings.sortBy === 'distance') _mapRenderPins();  // re-rank around me
   }, function() { alert('Could not get your location.'); });
+}
+
+// Haversine distance in meters (AMUX-1865 #5).
+function _mapDist(lat1, lng1, lat2, lng2) {
+  var toRad = Math.PI / 180;
+  var dLat = (lat2 - lat1) * toRad, dLng = (lng2 - lng1) * toRad;
+  var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+    Math.cos(lat1*toRad)*Math.cos(lat2*toRad)*Math.sin(dLng/2)*Math.sin(dLng/2);
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function _mapFmtDist(m) {
+  if (!isFinite(m)) return '';
+  var mi = m / 1609.344;
+  return mi < 0.1 ? Math.round(m*3.281) + ' ft' : mi.toFixed(mi < 10 ? 1 : 0) + ' mi';
+}
+
+function _mapSetSort(v) {
+  _mapSettings.sortBy = v;
+  try { localStorage.setItem('amux_map_settings', JSON.stringify(_mapSettings)); } catch(e) {}
+  _mapSave();
+  _mapRenderPins();
+}
+
+// ── Export / import (AMUX-1865 #6) — GeoJSON + CSV for backup/share/bulk-add ──
+function _mapDownload(filename, text, mime) {
+  var blob = new Blob([text], { type: mime || 'text/plain' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+}
+
+function _mapTagNames(pin) {
+  return (pin.tags||[]).map(function(tid){ var t=_mapTags.find(function(x){return x.id===tid;}); return t?t.name:''; }).filter(Boolean);
+}
+
+function _mapExportGeoJSON() {
+  var fc = { type: 'FeatureCollection', features: _mapPins.map(function(p){
+    return { type: 'Feature',
+      geometry: { type: 'Point', coordinates: [parseFloat(p.lng), parseFloat(p.lat)] },
+      properties: { name: p.name||'', desc: p.desc||'', notes: p.notes||'', tags: _mapTagNames(p),
+        rating: p.rating, priceLevel: p.priceLevel, placeId: p.placeId } };
+  }) };
+  _mapDownload('amux-map-' + Date.now() + '.geojson', JSON.stringify(fc, null, 2), 'application/geo+json');
+}
+
+function _mapExportCSV() {
+  var q = function(s){ s = (s==null?'':String(s)); return '"' + s.replace(/"/g,'""') + '"'; };
+  var rows = [['name','lat','lng','desc','notes','tags','rating','priceLevel'].join(',')];
+  _mapPins.forEach(function(p){
+    rows.push([q(p.name), p.lat, p.lng, q(p.desc||''), q(p.notes||''), q(_mapTagNames(p).join('; ')),
+      (p.rating==null?'':p.rating), (p.priceLevel==null?'':p.priceLevel)].join(','));
+  });
+  _mapDownload('amux-map-' + Date.now() + '.csv', rows.join('\n'), 'text/csv');
+}
+
+function _mapExportMenu(ev) {
+  ev.stopPropagation();
+  var old = document.getElementById('map-export-menu'); if (old) { old.remove(); return; }
+  var menu = document.createElement('div');
+  menu.id = 'map-export-menu';
+  menu.style.cssText = 'position:fixed;z-index:3000;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.4);padding:4px;font-size:0.78rem;min-width:160px';
+  var mk = function(label, fn){ var b=document.createElement('button'); b.textContent=label;
+    b.style.cssText='display:block;width:100%;text-align:left;padding:7px 10px;background:transparent;border:none;color:var(--text);cursor:pointer;border-radius:5px;font-size:0.78rem';
+    b.onmouseover=function(){b.style.background='var(--hover,rgba(127,127,127,0.15))';}; b.onmouseout=function(){b.style.background='transparent';};
+    b.onclick=function(){ menu.remove(); fn(); }; return b; };
+  menu.appendChild(mk('↓ Export GeoJSON (' + _mapPins.length + ')', _mapExportGeoJSON));
+  menu.appendChild(mk('↓ Export CSV (' + _mapPins.length + ')', _mapExportCSV));
+  menu.appendChild(mk('↑ Import GeoJSON / CSV…', function(){ document.getElementById('map-import-file').click(); }));
+  var r = ev.currentTarget.getBoundingClientRect();
+  menu.style.top = (r.bottom + 4) + 'px';
+  menu.style.left = Math.max(8, r.right - 160) + 'px';
+  document.body.appendChild(menu);
+  setTimeout(function(){ document.addEventListener('click', function h(){ menu.remove(); document.removeEventListener('click', h); }); }, 0);
+}
+
+// Minimal CSV row parser (handles quoted fields + escaped quotes).
+function _mapParseCSV(text) {
+  var lines = text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(function(l){return l.length;});
+  return lines.map(function(line){
+    var out=[], cur='', inq=false;
+    for (var i=0;i<line.length;i++){ var c=line[i];
+      if (inq){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else inq=false; } else cur+=c; }
+      else { if(c===','){out.push(cur);cur='';} else if(c==='"'){inq=true;} else cur+=c; }
+    }
+    out.push(cur); return out;
+  });
+}
+
+function _mapTagIdsFromNames(names) {
+  var ids = [];
+  names.forEach(function(nm){ nm=(nm||'').trim(); if(!nm) return;
+    var t=_mapTags.find(function(x){return x.name.toLowerCase()===nm.toLowerCase();});
+    if (t) ids.push(t.id);
+  });
+  return ids;
+}
+
+function _mapImportFile(input) {
+  var file = input.files && input.files[0]; if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var text = e.target.result, incoming = [];
+    try {
+      if (/\.csv$/i.test(file.name)) {
+        var rows = _mapParseCSV(text);
+        var hdr = rows.shift().map(function(h){return h.trim().toLowerCase();});
+        var ix = function(n){ return hdr.indexOf(n); };
+        rows.forEach(function(r){
+          var lat=parseFloat(r[ix('lat')]), lng=parseFloat(r[ix('lng')!==-1?ix('lng'):ix('lon')]);
+          if (isNaN(lat)||isNaN(lng)) return;
+          incoming.push({ name:(r[ix('name')]||'').trim(), lat:lat, lng:lng,
+            desc:(ix('desc')!==-1?r[ix('desc')]:'')||'', notes:(ix('notes')!==-1?r[ix('notes')]:'')||'',
+            tags:(ix('tags')!==-1?(r[ix('tags')]||'').split(/[;,]/):[]) });
+        });
+      } else {
+        var gj = JSON.parse(text);
+        var feats = gj.type==='FeatureCollection' ? gj.features : (gj.type==='Feature' ? [gj] : []);
+        feats.forEach(function(f){
+          if (!f.geometry || f.geometry.type!=='Point') return;
+          var co=f.geometry.coordinates, p=f.properties||{};
+          incoming.push({ name:(p.name||'').trim(), lat:co[1], lng:co[0], desc:p.desc||'', notes:p.notes||'',
+            tags:Array.isArray(p.tags)?p.tags:[], rating:p.rating, priceLevel:p.priceLevel, placeId:p.placeId });
+        });
+      }
+    } catch(err){ showToast('Import failed: ' + err.message); input.value=''; return; }
+    // Dedup against existing pins by name + ~11m coord match
+    var added=0, skipped=0;
+    incoming.forEach(function(n){
+      if (isNaN(n.lat)||isNaN(n.lng)) { skipped++; return; }
+      var dup=_mapPins.some(function(p){ return (p.name||'').toLowerCase()===(n.name||'').toLowerCase() &&
+        Math.abs(p.lat-n.lat)<1e-4 && Math.abs(p.lng-n.lng)<1e-4; });
+      if (dup){ skipped++; return; }
+      var pin={ id:'pin_'+Date.now()+'_'+added, name:n.name||'Imported pin', lat:n.lat, lng:n.lng,
+        desc:n.desc||'', notes:n.notes||'', tags:_mapTagIdsFromNames(n.tags||[]), createdAt:Date.now() };
+      if (typeof n.rating==='number') pin.rating=n.rating;
+      if (typeof n.priceLevel==='number') pin.priceLevel=n.priceLevel;
+      if (n.placeId) pin.placeId=n.placeId;
+      _mapPins.push(pin); added++;
+    });
+    input.value='';
+    if (added){ _mapSave(); _mapRenderPins(); _mapRenderMarkers(); }
+    showToast('Imported ' + added + ' pin' + (added===1?'':'s') + (skipped?(' · ' + skipped + ' skipped (dupe/invalid)'):''));
+  };
+  reader.readAsText(file);
 }
 
 function _mapToggleDropMode() {
@@ -34584,6 +36541,7 @@ function _mapToggleTagCheck(label) {
 function _mapClosePinModal() {
   document.getElementById('map-pin-modal').style.display = 'none';
   _mapEditingPin = null;
+  window._mapPendingPlace = null;
   _mapExitDropMode();
 }
 
@@ -34600,8 +36558,11 @@ function _mapSavePin() {
     const pin = _mapPins.find(function(p) { return p.id === _mapEditingPin; });
     if (pin) { pin.name=name; pin.desc=desc; pin.notes=notes; pin.lat=lat; pin.lng=lng; pin.tags=tags; }
   } else {
-    _mapPins.push({ id: 'pin_'+Date.now(), name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, createdAt: Date.now() });
+    var np = { id: 'pin_'+Date.now(), name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, createdAt: Date.now() };
+    if (window._mapPendingPlace) { Object.assign(np, window._mapPendingPlace); }
+    _mapPins.push(np);
   }
+  window._mapPendingPlace = null;
   _mapSave(); _mapClosePinModal(); _mapRenderPins(); _mapRenderMarkers();
 }
 
@@ -34727,6 +36688,43 @@ function _mapGeoMapsUrl(lat, lon, name) {
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent((name || '') + ' ' + lat + ',' + lon).trim();
 }
 
+// Extract the persistable rich-place fields from a Google search result (only
+// keys that are actually present, so pins stay lean).
+function _mapPlaceFields(r) {
+  var f = {};
+  if (typeof r.rating === 'number') f.rating = r.rating;
+  if (typeof r.rating_count === 'number') f.ratingCount = r.rating_count;
+  if (typeof r.price_level === 'number') f.priceLevel = r.price_level;
+  if (typeof r.open_now === 'boolean') f.openNow = r.open_now;
+  if (r.place_id) f.placeId = r.place_id;
+  if (r.photo_name) f.photoName = r.photo_name;
+  return f;
+}
+
+// Build a Google Places photo media URL from a stored photo resource name.
+function _mapPhotoUrl(photoName, maxW) {
+  if (!photoName || !_mapGoogleKey) return '';
+  return 'https://places.googleapis.com/v1/' + photoName + '/media?maxWidthPx=' + (maxW || 400) + '&key=' + _mapGoogleKey;
+}
+
+// One-line rich metadata badge row (rating · price · open-now) for popups.
+function _mapMetaRow(pin) {
+  var parts = [];
+  if (typeof pin.rating === 'number') {
+    parts.push('<span style="color:#f5b301;font-weight:600">★ ' + pin.rating.toFixed(1) + '</span>' +
+      (pin.ratingCount ? '<span style="color:#999"> (' + pin.ratingCount + ')</span>' : ''));
+  }
+  if (typeof pin.priceLevel === 'number') {
+    parts.push('<span style="color:#3fb950;font-weight:600">' + (pin.priceLevel === 0 ? 'Free' : '$'.repeat(pin.priceLevel)) + '</span>');
+  }
+  if (typeof pin.openNow === 'boolean') {
+    parts.push(pin.openNow
+      ? '<span style="color:#3fb950;font-weight:600">Open now</span>'
+      : '<span style="color:#f85149;font-weight:600">Closed</span>');
+  }
+  return parts.length ? '<div style="font-size:12px;margin-bottom:5px;display:flex;gap:8px;flex-wrap:wrap">' + parts.join('') + '</div>' : '';
+}
+
 function _mapGeoRenderResults(data) {
   var results = document.getElementById('map-geocoder-results');
   if (!results) return;
@@ -34782,7 +36780,7 @@ function _mapGeoQuickSave(idx) {
   var name = (r.name && r.name.length > 0) ? r.name : r.display_name.split(',')[0];
   var lat = parseFloat(r.lat), lng = parseFloat(r.lon);
   if (isNaN(lat) || isNaN(lng)) return;
-  var pin = { id: 'pin_'+Date.now(), name: name, desc: r.display_name || '', lat: lat, lng: lng, tags: [], createdAt: Date.now() };
+  var pin = Object.assign({ id: 'pin_'+Date.now(), name: name, desc: r.display_name || '', lat: lat, lng: lng, tags: [], createdAt: Date.now() }, _mapPlaceFields(r));
   _mapPins.push(pin);
   _mapSave();
   _mapRenderPins();
@@ -34799,6 +36797,8 @@ function _mapGeoSavePin(idx) {
   if (!r) return;
   var name = (r.name && r.name.length > 0) ? r.name : r.display_name.split(',')[0];
   if (window._mapGeoTempMarker) window._mapGeoTempMarker.closePopup();
+  // Stash the rich place fields; _mapSavePin merges them into the new pin.
+  window._mapPendingPlace = _mapPlaceFields(r);
   _mapOpenPinModal(null, { lat: parseFloat(r.lat), lng: parseFloat(r.lon) });
   setTimeout(function() {
     var nameEl = document.getElementById('map-pin-name');
@@ -36310,7 +38310,8 @@ async function saveSchedModal() {
   const payload = { title, session, kind, command, sched_type: stype, recurrence: null, run_at,
                     schedule_expr: schedExpr || null,
                     watch, done_pattern: donePattern || null, done_action: doneAction, watch_timeout: watchTimeout,
-                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions };
+                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions,
+                    by: 'dashboard' };
   const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
   const method = _schedEditId ? 'PATCH' : 'POST';
   const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -36324,7 +38325,7 @@ async function saveSchedModal() {
 }
 async function deleteSchedule(id) {
   if (!confirm('Delete this schedule?')) return;
-  await apiCall(API + '/api/schedules/' + id, { method: 'DELETE' });
+  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
   await fetchSchedules();
   renderCalendar();
   renderScheduler();
@@ -38352,6 +40353,37 @@ const _idb = (() => {
       cur.onerror = () => resolve(removed);
     })).catch(() => 0),
     clearFiles: () => _txw('files', os => os.clear()),
+    // Paths of files (not dir listings) cached on THIS device — for the
+    // "downloaded" indicator in the directory view.
+    cachedFilePaths: () => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readonly');
+      const cur = tx.objectStore('files').openCursor();
+      const set = new Set();
+      cur.onsuccess = (e) => { const c = e.target.result;
+        if (c) { if (c.value.type === 'file') set.add(c.value.path); c.continue(); } else resolve(set); };
+      cur.onerror = () => resolve(set);
+    })).catch(() => new Set()),
+    // Count + byte size of downloaded file blobs (for the purge UI).
+    cacheStats: () => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readonly');
+      const cur = tx.objectStore('files').openCursor();
+      let count = 0, bytes = 0;
+      cur.onsuccess = (e) => { const c = e.target.result;
+        if (c) { if (c.value.type === 'file') { count++; const dd = c.value.data || {};
+          bytes += ((dd.data_url||'').length + (dd.content||'').length); } c.continue(); }
+        else resolve({ count, bytes }); };
+      cur.onerror = () => resolve({ count, bytes });
+    })).catch(() => ({ count: 0, bytes: 0 })),
+    deleteFile: (path) => _txw('files', os => os.delete(path)),
+    // Purge only downloaded file blobs; keep dir listings (small, aid offline nav).
+    clearCachedFiles: () => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readwrite');
+      const cur = tx.objectStore('files').openCursor();
+      let removed = 0;
+      cur.onsuccess = (e) => { const c = e.target.result;
+        if (c) { if (c.value.type === 'file') { c.delete(); removed++; } c.continue(); } else resolve(removed); };
+      cur.onerror = () => resolve(removed);
+    })).catch(() => 0),
   };
 })();
 
@@ -38680,23 +40712,6 @@ if ('serviceWorker' in navigator) {
         if (reg.active) reg.active.postMessage({ type: 'CACHE_HTML', html });
       }).catch(() => {});
     }
-    // Listen for Background Sync completion messages from SW
-    navigator.serviceWorker.addEventListener('message', function(e) {
-      if (e.data && e.data.type === 'SYNC_COMPLETE') {
-        const { replayed, remaining } = e.data;
-        if (replayed > 0) showToast('Synced ' + replayed + ' queued op' + (replayed > 1 ? 's' : ''));
-        // Reload queue from IDB
-        _idb.get('offline_queue').then(val => {
-          offlineQueue = val || [];
-          saveQueue();
-          updateConnectionStatus();
-        });
-        // Refresh data and reconnect SSE
-        fetchSessions();
-        fetchBoard();
-        if (!_sseFallback && !_sse) { _sseRetries = 0; connectSSE(); }
-      }
-    });
   // Auto-reload when a new SW takes control (ensures fresh HTML after update)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     // Rescue in-progress peek input from the reload
@@ -38755,11 +40770,7 @@ _idb.get('offline_queue').then(val => {
     saveQueue();
     updateConnectionStatus();
   }
-  // On startup, register Background Sync if queue is non-empty
-  if ((offlineQueue.length || (val && val.length)) && 'serviceWorker' in navigator && 'SyncManager' in window) {
-    navigator.serviceWorker.ready.then(r => r.sync.register('replay-queue').catch(() => {}));
-  }
-  // Auto-retry queued ops on startup if online (fallback when BackgroundSync isn't available)
+  // Auto-retry queued ops on startup if online (single replayer: page-side only)
   if (offlineQueue.length || (val && val.length)) {
     setTimeout(() => {
       if (online && navigator.onLine !== false && (offlineQueue.length || drafts.length)) {
@@ -39991,9 +42002,37 @@ async function _handleDeeplink(hash) {
 }
 // On page load
 _handleDeeplink(location.hash);
-// Restore peek state from sessionStorage (survives refresh)
-try {
-  const _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null');
+// Restore the screen you were on — INCLUDING after iOS evicts a backgrounded
+// PWA (which wipes sessionStorage but keeps localStorage): the active tab and
+// any open session peek. Bounded to 24h so a days-later open still lands on a
+// sane default rather than a stale heavy tab.
+const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
+function _restoreScreen() {
+  // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
+  // defined later in the HTML than this inline script — calling it during boot
+  // (setTimeout 0) null-derefs and throws. The app never calls switchView on
+  // load (it relies on the hardcoded default tab), so ours is the first.
+  // Don't override an explicit file deeplink (#path=...).
+  const _hasDeeplink = location.hash && location.hash.startsWith('#path=');
+  // 1. Restore the tab.
+  if (!_hasDeeplink) {
+    try {
+      const _v = JSON.parse(localStorage.getItem('amux_ui_view') || 'null');
+      if (_v && _v.v && _v.v !== 'sessions' && (Date.now() - (_v.ts || 0) < _UI_RESTORE_MAX_AGE)) {
+        try { switchView(_v.v); } catch(e) {}
+      }
+    } catch(e) {}
+  }
+  // 2. Restore an open session peek. Prefer sessionStorage (same tab session);
+  //    fall back to localStorage when we came back after an eviction.
+  let _ps = null;
+  try { _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null'); } catch(e) {}
+  if (!_ps || !_ps.session) {
+    try {
+      const _lp = JSON.parse(localStorage.getItem('amux_peek_state') || 'null');
+      if (_lp && _lp.session && (Date.now() - (_lp.ts || 0) < _UI_RESTORE_MAX_AGE)) _ps = _lp;
+    } catch(e) {}
+  }
   if (_ps && _ps.session) {
     if (_ps.draft) _peekDrafts[_ps.session] = _ps.draft;   // rescued from pre-update reload
     setTimeout(() => {
@@ -40009,7 +42048,9 @@ try {
       }
     }, 200);
   }
-} catch(e) {}
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _restoreScreen);
+else _restoreScreen();
 // On hash change (e.g. paste URL into address bar while app already open — no page reload)
 window.addEventListener('hashchange', () => _handleDeeplink(location.hash));
 
@@ -40500,7 +42541,9 @@ async function pullFromRemote(btn) {
   }
 
   function _wtShow() {
-    document.getElementById('wt-overlay').classList.add('open');
+    var ov = document.getElementById('wt-overlay');
+    if (!ov) return;   // overlay gone (dismissed/removed) — a pending step tick must not throw
+    ov.classList.add('open');
     _wtPosition();
   }
 
@@ -41188,23 +43231,55 @@ function _vpMimeFromUrl(url) {
   return map[ext] || 'video/mp4';
 }
 
+async function _vpPrepareAndPlay(v, q, origUrl) {
+  const status = document.getElementById('vp-status');
+  for (;;) {
+    if (v._vpUrl !== origUrl) return;   // player closed or another video opened
+    let d;
+    try {
+      const r = await fetch(_authUrl(API + '/api/file/prepare?' + q));
+      d = await r.json();
+    } catch (e) { d = null; }
+    if (d && d.ready && d.cached_path) {
+      v.src = _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(d.cached_path));
+      v.play().catch(() => {});
+      return;
+    }
+    if (!d || d.error) {
+      // Prepare unavailable (no ffmpeg / no disk) — fall back to the live
+      // transcode pipe, which still works in desktop browsers.
+      v.src = _authUrl(API + '/api/file/transcode?' + q);
+      v.play().catch(() => {});
+      if (d && d.error) console.warn('prepare failed:', d.error);
+      return;
+    }
+    status.style.display = 'flex';
+    const pct = d.progress != null ? Math.round(d.progress) : 0;
+    status.textContent = pct >= 99 ? 'Preparing video… finishing up'
+                                   : 'Preparing video… ' + pct + '%';
+    await new Promise(res => setTimeout(res, 2000));
+  }
+}
+
 function _playVideoUrl(url, title) {
   const v = document.getElementById('video-player');
   const status = document.getElementById('vp-status');
 
-  // MKV/AVI can't play natively — use server-side transcode to MP4
+  // MKV/AVI can't play natively — prepare a seekable MP4 server-side and play
+  // that. The old live-transcode pipe (no Content-Length, no ranges) never
+  // starts on iOS AVPlayer; a prepared cached mp4 streams + seeks everywhere.
   const ext = url.split('?')[0].split('.').pop().toLowerCase();
   const needsTranscode = ['mkv', 'avi'].includes(ext);
+  v._vpUrl = url;
   if (needsTranscode) {
-    // Extract path and cwd params from the raw URL to build transcode URL
+    // Extract path and cwd params from the raw URL for the prepare call
     const u = new URL(url, location.origin);
-    const tUrl = API + '/api/file/transcode?path=' + encodeURIComponent(u.searchParams.get('path') || '')
+    const q = 'path=' + encodeURIComponent(u.searchParams.get('path') || '')
       + (u.searchParams.get('cwd') ? '&cwd=' + encodeURIComponent(u.searchParams.get('cwd')) : '');
-    v.src = _authUrl(tUrl);
+    _vpPrepareAndPlay(v, q, url);
   } else {
     v.src = _authUrl(url);
   }
-  v._vpUrl = url;
 
   document.getElementById('vp-title').textContent = title || url.split('/').pop();
   document.getElementById('video-overlay').style.display = 'flex';
@@ -41749,10 +43824,10 @@ function _messagesRender() {
     return;
   }
   list.innerHTML = rows.map(m => {
-    const enc = encodeURIComponent(m.text || '');
+    const enc = encodeURIComponent(m.text || '').replace(/'/g, '%27');
     const sess = m.session || '';
     const tag = m.type === 'steering' ? '<span class="msg-tag steering">queued</span>' : '';
-    return '<div class="msg-row" onclick="openPeek(\'' + escJs(sess) + '\')" title="Open ' + esc(sess) + '">' +
+    return '<div class="msg-row" onclick="_msgOpenInsert(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open ' + esc(sess) + ' with this message in the composer">' +
       '<div class="msg-main">' +
         '<div class="msg-meta">' +
           (sess ? '<span class="msg-sess">' + esc(sess) + '</span>' : '<span class="msg-sess" style="color:var(--dim);">(unknown)</span>') +
@@ -41760,6 +43835,7 @@ function _messagesRender() {
         '</div>' +
         '<div class="msg-text">' + esc(m.text || '') + '</div>' +
       '</div>' +
+      '<button class="btn msg-copy" onclick="event.stopPropagation();_msgCopyBtn(this,\'' + enc + '\')" title="Copy message text">&#x1F4CB;</button>' +
       '<button class="btn msg-locate" onclick="event.stopPropagation();_msgLocate(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open the peek and scroll to where this was sent">&#x2316; Locate</button>' +
     '</div>';
   }).join('');
@@ -45239,7 +47315,9 @@ window.addEventListener('load', _pinnedNotesRefresh);
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
 <!-- AMUX-LOCAL:session-chat — chat tab UI (Scope B2); defer so it runs after the inline script defines apiCall/esc/renderMarkdown/_chatPoll --><script src="/chat.js" defer></script><!-- /AMUX-LOCAL:session-chat -->
 <div id="grid-view">
@@ -45346,7 +47424,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.169';
+const CACHE = 'amux-v0.9.199';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45456,56 +47534,13 @@ self.addEventListener('fetch', e => {
   );
 });
 
-// Background Sync — replay offline queue when connectivity returns
-self.addEventListener('sync', e => {
-  if (e.tag !== 'replay-queue') return;
-  e.waitUntil((async () => {
-    // Open IndexedDB directly (SW can't access localStorage)
-    const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open('amux', 1);
-      req.onupgradeneeded = () => {
-        const d = req.result;
-        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-    const tx = db.transaction('kv', 'readonly');
-    const queue = await new Promise((resolve, reject) => {
-      const r = tx.objectStore('kv').get('offline_queue');
-      r.onsuccess = () => resolve(r.result || []);
-      r.onerror = () => reject(r.error);
-    });
-    if (!queue.length) return;
-
-    const failures = [];
-    let replayed = 0;
-    for (const item of queue) {
-      try {
-        const r = await fetch(item.url, item.options);
-        if (r.status >= 500) {
-          failures.push(item);  // retry later
-        } else {
-          replayed++;  // 2xx/3xx/4xx — done (4xx = stale, drop)
-        }
-      } catch(e) {
-        failures.push(item);  // network error — retry later
-      }
-    }
-
-    // Write remaining failures back to IDB
-    const tx2 = db.transaction('kv', 'readwrite');
-    tx2.objectStore('kv').put(failures, 'offline_queue');
-    await new Promise((resolve, reject) => {
-      tx2.oncomplete = resolve;
-      tx2.onerror = () => reject(tx2.error);
-    });
-
-    // Notify all clients
-    const clients = await self.clients.matchAll();
-    clients.forEach(c => c.postMessage({ type: 'SYNC_COMPLETE', replayed, remaining: failures.length }));
-  })());
-});
+// NOTE: no Background Sync replay here — deliberately. The page-side flush
+// (runSyncBanner, triggered by online/visibilitychange/startup) is the SINGLE
+// replayer. A second SW-side replayer raced it: both fired at reconnect, the
+// SW replayed from a stale IDB snapshot (duplicate-delivery risk) and its
+// SYNC_COMPLETE→IDB merge resurrected ops the page had already settled
+// (observed live in the AMUX-1825 e2e). iOS never supported Background Sync
+// anyway, so page-side-only is also the one behavior that works everywhere.
 """.strip()
 
 
@@ -45547,6 +47582,88 @@ class ResilientHTTPSServer(ThreadingHTTPServer):
             self.handle_error(request, client_address)
         finally:
             self.shutdown_request(request)
+
+
+# ── Media prepare: background remux to a seekable on-disk MP4 (AMUX-1824) ─────
+# iOS cannot demux MKV, and AVPlayer never starts playback on the live
+# /api/file/transcode pipe (chunked, no Content-Length, no Range support). The
+# only thing iOS reliably plays is a REAL mp4 file served with ranges — so
+# /api/file/prepare remuxes into ~/.amux/media-cache once, in the background,
+# and the player polls until it can stream the cached copy via /api/file/raw.
+_MEDIA_CACHE_DIR = Path(os.path.expanduser("~/.amux/media-cache"))
+_MEDIA_PREP_JOBS: dict = {}
+_media_prep_lock = threading.Lock()
+
+
+def _media_prepare_job(src: Path, out: Path, key: str):
+    """Remux/transcode `src` into a faststart MP4 at `out`, tracking progress in
+    _MEDIA_PREP_JOBS[key]. Stream-copy when codecs are iOS-playable — HEVC needs
+    the hvc1 sample-entry tag or AVPlayer rejects it — else transcode via the
+    videotoolbox hardware encoder (far faster than libx264 on this Mac)."""
+    import subprocess as sp
+    job = _MEDIA_PREP_JOBS[key]
+    tmp = out.parent / (out.stem + ".part.mp4")
+    try:
+        _MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for old in _MEDIA_CACHE_DIR.glob("*.mp4"):   # prune copies idle >30 days
+            try:
+                if now - old.stat().st_atime > 30 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
+        dur = 0.0
+        vcodec = acodec = ""
+        try:
+            probe = sp.run(["ffprobe", "-v", "quiet", "-show_entries",
+                            "format=duration:stream=codec_type,codec_name",
+                            "-of", "json", str(src)], capture_output=True, text=True, timeout=15)
+            info = json.loads(probe.stdout or "{}")
+            dur = float(info.get("format", {}).get("duration") or 0)
+            for s in info.get("streams", []):
+                if s.get("codec_type") == "video" and not vcodec:
+                    vcodec = s.get("codec_name", "")
+                elif s.get("codec_type") == "audio" and not acodec:
+                    acodec = s.get("codec_name", "")
+        except Exception:
+            pass
+        vcopy = vcodec in ("h264", "hevc")
+        acopy = acodec in ("aac", "mp3")
+        cmd = ["ffmpeg", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?",
+               "-c:v", "copy" if vcopy else "h264_videotoolbox"]
+        if vcopy and vcodec == "hevc":
+            cmd += ["-tag:v", "hvc1"]
+        if not vcopy:
+            cmd += ["-b:v", "6000k"]
+        cmd += ["-c:a", "copy" if acopy else "aac"]
+        if not acopy:
+            cmd += ["-b:a", "192k", "-ac", "2"]
+        cmd += ["-movflags", "+faststart", "-f", "mp4",
+                "-progress", "pipe:1", "-nostats", "-loglevel", "error", str(tmp)]
+        slog(f"[media-prep] {src.name}: v={vcodec}{'(copy)' if vcopy else '→h264'} "
+             f"a={acodec}{'(copy)' if acopy else '→aac'}")
+        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+        for line in proc.stdout:
+            if line.startswith("out_time_us=") and dur > 0:
+                try:   # caps at 99 — the faststart moov-relocation pass runs after
+                    job["progress"] = min(99.0, int(line.split("=")[1]) / 1e6 / dur * 100)
+                except ValueError:
+                    pass
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg exit {proc.returncode}: "
+                               f"{(proc.stderr.read() or '')[:300]}")
+        tmp.replace(out)
+        job["progress"] = 100.0
+        job["done"] = True
+        slog(f"[media-prep] {src.name} → {out.name} ready ({out.stat().st_size:,} bytes)")
+    except Exception as e:
+        job["error"] = str(e)[:300]
+        slog(f"[media-prep] {src.name} FAILED: {e}")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 class CCHandler(BaseHTTPRequestHandler):
@@ -45689,23 +47806,18 @@ class CCHandler(BaseHTTPRequestHandler):
                     end = int(m_range.group(2)) if m_range.group(2) else fsize - 1
                     end = min(end, fsize - 1)
                     length = end - start + 1
+                    self._media_keepalive()
                     self.send_response(206)
                     self._cors()
                     self.send_header("Content-Type", ct)
                     self.send_header("Content-Range", f"bytes {start}-{end}/{fsize}")
                     self.send_header("Content-Length", str(length))
                     self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Connection", "keep-alive")
                     self.end_headers()
-                    with real.open("rb") as fp:
-                        fp.seek(start)
-                        remaining = length
-                        while remaining > 0:
-                            chunk = fp.read(min(65536, remaining))
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
+                    self._stream_file_body(real, start, length)
                     return
+            self._media_keepalive()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", ct)
@@ -45713,31 +47825,98 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
             fname = real.name
             self.send_header("Content-Disposition", f'inline; filename="{fname}"')
+            self.send_header("Connection", "keep-alive")
             self.end_headers()
-            with real.open("rb") as fp:
-                while True:
-                    chunk = fp.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+            self._stream_file_body(real, 0, fsize)
             return
 
         return self._json({"error": "torrent route not found"}, 404)
 
+    def _media_keepalive(self):
+        """Switch THIS connection to HTTP/1.1 keep-alive for media streaming.
+        Video players fetch a file as hundreds of Range requests; under the
+        handler's default HTTP/1.0 close-per-response, every one pays a fresh
+        TCP+TLS handshake — measured 457 MB/s for a single 100MB range vs
+        13.5 MB/s across 30 fresh-connection 1MB ranges on LOOPBACK, and far
+        worse over a real WiFi/Tailscale RTT (AMUX-1820). Safe here because
+        media responses always send an exact Content-Length. The pairing
+        send_header("Connection", "keep-alive") flips close_connection so the
+        handler loop keeps reading requests off this socket. The idle timeout
+        stops a parked player from pinning a worker thread forever."""
+        self.protocol_version = "HTTP/1.1"
+        try:
+            self.connection.settimeout(75)
+        except Exception:
+            pass
+
+    def _stream_file_body(self, path, start, length):
+        """Stream `length` bytes of `path` from offset `start` in 1MB chunks.
+        Players abort connections constantly (seeks, quality probes, teardown):
+        that must close this connection quietly, not traceback — and never let
+        the next request reuse a half-written socket."""
+        try:
+            with open(path, "rb") as fp:
+                fp.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = fp.read(min(1048576, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except OSError:   # BrokenPipe/ConnectionReset/SSLError/timeout
+            self.close_connection = True
+
+    def _gzip_out(self, body: bytes) -> tuple[bytes, bool]:
+        """Compress a response body when the client accepts gzip and it pays.
+        Mobile was pulling everything raw: 1.56MB app shell, 2.4MB board list,
+        104KB sessions on a polling loop (AMUX-1859) — gzip cuts those 63-84%
+        for ~1-56ms of CPU. Small bodies and non-accepting clients pass through."""
+        try:
+            if len(body) < 1024:
+                return body, False
+            if "gzip" not in (self.headers.get("Accept-Encoding") or "").lower():
+                return body, False
+            import gzip as _gzmod
+            gz = _gzmod.compress(body, 6)
+            if len(gz) >= len(body):
+                return body, False
+            return gz, True
+        except Exception:
+            return body, False
+
     def _json(self, data, status=200):
         body = json.dumps(data).encode()
+        body, gz = self._gzip_out(body)
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _json_raw(self, json_str, status=200):
+    def _json_raw(self, json_str, status=200, etag=""):
         body = json_str.encode() if isinstance(json_str, str) else json_str
+        if etag and self.headers.get("If-None-Match", "") == etag:
+            self.send_response(304)
+            self._cors()
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        body, gz = self._gzip_out(body)
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json")
+        if etag:
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -45759,11 +47938,15 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
+        body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-store")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         try:
@@ -45773,17 +47956,28 @@ class CCHandler(BaseHTTPRequestHandler):
 
     def _html(self, html):
         body = html.encode()
+        body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _raw(self, body: bytes, content_type: str, cache=False):
+        # gzip text-ish payloads only — images/video are already compressed
+        gz = False
+        if any(t in content_type for t in ("text/", "json", "svg", "javascript")):
+            body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", content_type)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         if cache:
             self.send_header("Cache-Control", "public, max-age=86400")
@@ -45797,8 +47991,45 @@ class CCHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
+        # Stream-level gzip with a sync-flush per write: every event leaves the
+        # socket immediately, compressed. The recurring SSE payloads were the
+        # biggest mobile drain — 104KB sessions per change, up to 2.4MB board —
+        # gzip cuts them 63-84% (AMUX-1859). EventSource decompresses natively.
+        _sse_gzip = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        if _sse_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self._cors()
         self.end_headers()
+        if _sse_gzip:
+            import zlib as _zlib
+
+            class _GzipEventStream:
+                """File-like wrapper compressing SSE writes with Z_SYNC_FLUSH so
+                each event is delivered whole, immediately."""
+                def __init__(self, raw):
+                    self._raw = raw
+                    self._c = _zlib.compressobj(6, _zlib.DEFLATED, 31)  # 31 = gzip wrapper
+                @property
+                def closed(self):
+                    return getattr(self._raw, 'closed', False)
+                def write(self, data):
+                    out = self._c.compress(data) + self._c.flush(_zlib.Z_SYNC_FLUSH)
+                    if out:
+                        self._raw.write(out)
+                    return len(data)
+                def flush(self):
+                    self._raw.flush()
+                def close(self):
+                    try:
+                        tail = self._c.flush(_zlib.Z_FINISH)
+                        if tail:
+                            self._raw.write(tail)
+                    except Exception:
+                        pass
+                    if hasattr(self._raw, 'close'):
+                        self._raw.close()
+            self.wfile = _GzipEventStream(self.wfile)
 
         # Cap SSE connection lifetime to avoid thread accumulation.
         # Browser EventSource auto-reconnects, so this is transparent.
@@ -45833,6 +48064,21 @@ class CCHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b"event: reconnect\ndata: {}\n\n")
                     self.wfile.flush()
                     break
+
+                # SSE threads live for hours and REBUILD the SHARED caches
+                # below — a dangling transaction on this thread's cached SQLite
+                # connection pins its WAL snapshot and would poison the board/
+                # sessions cache with frozen data every 2s, fleet-wide, until
+                # the connection dies (observed ~52s board-write invisibility,
+                # AMUX-1849 repros). Same guard as _route, per tick.
+                _sse_conn = getattr(_db_local, "conn", None)
+                if _sse_conn is not None and _sse_conn.in_transaction:
+                    try:
+                        _sse_conn.rollback()
+                        slog("[db] rolled back dangling transaction on SSE thread "
+                             "— it would have poisoned the shared caches")
+                    except Exception:
+                        pass
 
                 # Sessions — use shared cache to avoid redundant subprocess calls
                 # Lock prevents thundering herd: only one thread refreshes at a time
@@ -45959,6 +48205,22 @@ class CCHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         self._resp_status = 200
         t0 = time.monotonic()
+        # A dangling transaction left on this thread's cached SQLite connection
+        # pins its WAL read snapshot: every later request served by the thread
+        # reads FROZEN data. Harmless when threads died after one request; with
+        # media keep-alive (v0.9.179) handler threads live for minutes, and a
+        # stale thread even poisons shared caches it rebuilds (observed: board
+        # writes invisible fleet-wide for ~52s, AMUX-1849 repro). A finished
+        # request that didn't commit was never durable anyway — roll it back so
+        # every request starts on a fresh snapshot.
+        _conn = getattr(_db_local, "conn", None)
+        if _conn is not None and _conn.in_transaction:
+            try:
+                _conn.rollback()
+                slog(f"[db] rolled back dangling transaction on handler thread "
+                     f"(before {method} {path}) — some prior request leaked an open tx")
+            except Exception:
+                pass
         try:
             return self._route_inner(method, path, qs)
         except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as e:
@@ -46259,7 +48521,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 f'<script>window._AMUX_S3_ICAL_URL={_json.dumps(_S3_CAL_URL)};'
                 f'window._AMUX_AUTH_TOKEN={_json.dumps(AUTH_TOKEN)};'
                 f'window._AMUX_HOME={_json.dumps(str(Path.home()))};'
-                f'window._GOOGLE_API_KEY={_json.dumps(os.environ.get("GOOGLE_API_KEY",""))};'
+                # NOTE: GOOGLE_API_KEY is deliberately NOT injected here. It used
+                # to ship the real key into every served page (readable by anyone
+                # who could load the dashboard — LAN/Tailscale/share links). Anything
+                # needing Gemini goes through a server-side endpoint instead
+                # (see /api/dictate), so the key never leaves this process.
                 f'window._AMUX_POSTHOG_KEY={_json.dumps(os.environ.get("POSTHOG_KEY",""))};'
                 f'window._AMUX_POSTHOG_HOST={_json.dumps(os.environ.get("POSTHOG_HOST","https://us.i.posthog.com"))};'
                 f'window._AMUX_USER_EMAIL={_json.dumps(_user_email)};'
@@ -46671,7 +48937,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                         _sse_cache_lock.release()
                                 threading.Thread(target=_bg_refresh, daemon=True).start()
                                 released_to_bg = True
-                                return self._json_raw(sc["json"])
+                                return self._json_raw(sc["json"], etag=_cache_etag(sc))
                             # Cold cache — must block.
                             data = list_sessions()
                             sc["data"] = data
@@ -46684,12 +48950,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     # Another thread is refreshing. Return stale data immediately
                     # if we have any, otherwise wait briefly for the refresher.
                     if sc["json"]:
-                        return self._json_raw(sc["json"])
+                        return self._json_raw(sc["json"], etag=_cache_etag(sc))
                     for _ in range(100):  # up to 10s for cold start
                         time.sleep(0.1)
                         if sc["json"]:
                             break
-            return self._json_raw(sc["json"]) if sc["json"] else self._json([])
+            return self._json_raw(sc["json"], etag=_cache_etag(sc)) if sc["json"] else self._json([])
 
         # GET /api/sessions-git — bulk git info for all sessions (avoids 80+ individual requests)
         if method == "GET" and path == "/api/sessions-git":
@@ -46957,25 +49223,49 @@ class CCHandler(BaseHTTPRequestHandler):
                         headers={
                             "Content-Type": "application/json",
                             "X-Goog-Api-Key": gkey,
-                            "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.types"
+                            "X-Goog-FieldMask": ("places.id,places.displayName,places.formattedAddress,"
+                                                 "places.location,places.types,places.rating,"
+                                                 "places.userRatingCount,places.priceLevel,"
+                                                 "places.currentOpeningHours,places.photos")
                         }
                     )
                     with _urq.urlopen(req, timeout=5, context=_ctx) as resp:
                         data = json.loads(resp.read())
+                    # priceLevel comes back as an enum string; map to a $ count
+                    _price_map = {
+                        "PRICE_LEVEL_FREE": 0, "PRICE_LEVEL_INEXPENSIVE": 1,
+                        "PRICE_LEVEL_MODERATE": 2, "PRICE_LEVEL_EXPENSIVE": 3,
+                        "PRICE_LEVEL_VERY_EXPENSIVE": 4,
+                    }
                     results = []
                     for p in data.get("places", []):
                         loc = p.get("location", {})
                         name = p.get("displayName", {}).get("text", "")
                         addr = p.get("formattedAddress", "")
                         types = p.get("types", [])
-                        results.append({
+                        photos = p.get("photos", [])
+                        r = {
                             "name": name,
                             "display_name": addr,
                             "lat": str(loc.get("latitude", 0)),
                             "lon": str(loc.get("longitude", 0)),
                             "type": types[0] if types else "",
-                            "source": "google"
-                        })
+                            "source": "google",
+                            "place_id": p.get("id", ""),
+                        }
+                        if isinstance(p.get("rating"), (int, float)):
+                            r["rating"] = p["rating"]
+                        if isinstance(p.get("userRatingCount"), int):
+                            r["rating_count"] = p["userRatingCount"]
+                        if p.get("priceLevel") in _price_map:
+                            r["price_level"] = _price_map[p["priceLevel"]]
+                        oh = p.get("currentOpeningHours")
+                        if isinstance(oh, dict) and "openNow" in oh:
+                            r["open_now"] = bool(oh["openNow"])
+                        # photo resource name → client builds the media URL with its key
+                        if photos and photos[0].get("name"):
+                            r["photo_name"] = photos[0]["name"]
+                        results.append(r)
                     return self._json(results)
                 except Exception:
                     pass  # fall through to Nominatim
@@ -47527,11 +49817,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 db = get_db()
                 if session:
                     rows = db.execute(
-                        "SELECT id, text, type, session, ts FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ? OFFSET ?",
+                        "SELECT id, text, type, session, ts, origin FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ? OFFSET ?",
                         (session, limit, offset)).fetchall()
                 else:
                     rows = db.execute(
-                        "SELECT id, text, type, session, ts FROM cmd_history ORDER BY ts DESC LIMIT ? OFFSET ?",
+                        "SELECT id, text, type, session, ts, origin FROM cmd_history ORDER BY ts DESC LIMIT ? OFFSET ?",
                         (limit, offset)).fetchall()
                 return self._json([dict(r) for r in rows])
             if method == "POST" and path == "/api/history":
@@ -47539,13 +49829,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 text = body.get("text", "").strip()
                 if not text:
                     return self._json({"error": "text required"}, 400)
-                htype = body.get("type", "direct")
+                htype = body.get("type", "user")
                 session = body.get("session", "")
                 ts = body.get("ts") or int(time.time() * 1000)
                 db = get_db()
                 cur = db.execute(
-                    "INSERT INTO cmd_history (text, type, session, ts) VALUES (?, ?, ?, ?)",
-                    (text, htype, session, ts))
+                    "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?, ?, ?, ?, ?)",
+                    (text, htype, session, ts, (body.get("origin") or "")[:80]))
                 db.commit()
                 return self._json({"ok": True, "id": cur.lastrowid})
             if method == "POST" and path == "/api/history/import":
@@ -48149,47 +50439,86 @@ class CCHandler(BaseHTTPRequestHandler):
                 return
             range_header = self.headers.get("Range", "")
             import re as _re
-            CHUNK = 65536  # 64KB chunks for streaming
+            # Streamable media plays in place (video/audio elements need inline;
+            # attachment makes iOS Safari download 3GB instead of streaming it).
+            disp = "inline" if mime.split("/")[0] in ("video", "audio") else "attachment"
             if range_header:
                 m = _re.match(r'bytes=(\d*)-(\d*)', range_header)
                 start = int(m.group(1)) if m and m.group(1) else 0
                 end = int(m.group(2)) if m and m.group(2) else file_size - 1
                 end = min(end, file_size - 1)
                 length = end - start + 1
+                self._media_keepalive()
                 self.send_response(206)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                self.send_header("Content-Disposition", f'{disp}; filename="{p.name}"')
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                 self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, max-age=3600, immutable")
+                self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                with open(p, "rb") as f:
-                    f.seek(start)
-                    remaining = length
-                    while remaining > 0:
-                        chunk = f.read(min(CHUNK, remaining))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        remaining -= len(chunk)
+                self._stream_file_body(p, start, length)
             else:
+                self._media_keepalive()
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                self.send_header("Content-Disposition", f'{disp}; filename="{p.name}"')
                 self.send_header("Content-Length", str(file_size))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, max-age=3600, immutable")
+                self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                with open(p, "rb") as f:
-                    while True:
-                        chunk = f.read(CHUNK)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
+                self._stream_file_body(p, 0, file_size)
             return
+
+        # GET /api/file/prepare?path=...&cwd=...  — background-remux into a
+        # SEEKABLE on-disk MP4 (media-cache) and report progress. iOS AVPlayer
+        # never starts on the live /api/file/transcode pipe (no Content-Length,
+        # no ranges); the prepared copy streams through /api/file/raw instead.
+        if method == "GET" and path == "/api/file/prepare":
+            import shutil as _sh, hashlib as _hl
+            fpath = qs.get("path", [""])[0]
+            cwd = qs.get("cwd", [""])[0]
+            if not fpath:
+                return self._json({"error": "missing path"}, 400)
+            p = Path(fpath).expanduser()
+            if not p.is_absolute() and cwd:
+                p = Path(cwd).expanduser() / p
+            elif not p.is_absolute():
+                return self._json({"error": "relative path without cwd"}, 400)
+            if not _is_path_allowed(p):
+                return self._json({"error": "access denied"}, 403)
+            if not p.is_file():
+                return self._json({"error": "file not found"}, 404)
+            if not _sh.which("ffmpeg"):
+                return self._json({"error": "ffmpeg not installed"}, 500)
+            st = p.stat()
+            key = _hl.sha1(f"{p}|{int(st.st_mtime)}|{st.st_size}".encode()).hexdigest()[:24]
+            out = _MEDIA_CACHE_DIR / f"{key}.mp4"
+            with _media_prep_lock:
+                job = _MEDIA_PREP_JOBS.get(key)
+                if job:
+                    if job.get("error"):
+                        _MEDIA_PREP_JOBS.pop(key, None)   # allow a retry next call
+                        return self._json({"ready": False, "error": job["error"]})
+                    if job.get("done"):
+                        return self._json({"ready": True, "cached_path": str(out)})
+                    return self._json({"ready": False,
+                                       "progress": round(job.get("progress", 0.0), 1)})
+                if out.exists():
+                    return self._json({"ready": True, "cached_path": str(out)})
+                try:   # a remux lands at roughly input size — need that free, plus slack
+                    if _sh.disk_usage(str(Path.home())).free < st.st_size * 1.2:
+                        return self._json({"error": "not enough free disk for prepared copy"}, 507)
+                except Exception:
+                    pass
+                _MEDIA_PREP_JOBS[key] = {"progress": 0.0, "done": False, "error": ""}
+            threading.Thread(target=_media_prepare_job, args=(p, out, key),
+                             daemon=True, name=f"media-prep-{key[:8]}").start()
+            return self._json({"ready": False, "progress": 0.0, "started": True})
 
         # GET /api/file/transcode?path=...&cwd=...  — remux MKV/AVI → MP4 via ffmpeg
         if method == "GET" and path == "/api/file/transcode":
@@ -48664,7 +50993,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                             _sse_cache_lock.release()
                                     threading.Thread(target=_bg_board, daemon=True).start()
                                     released_to_bg = True
-                                    return self._json_raw(bc["json"])
+                                    return self._json_raw(bc["json"], etag=_cache_etag(bc))
                                 data = _load_board()
                                 bc["data"] = data
                                 bc["json"] = json.dumps(data, sort_keys=True)
@@ -48674,12 +51003,12 @@ class CCHandler(BaseHTTPRequestHandler):
                                 _sse_cache_lock.release()
                     else:
                         if bc["json"]:
-                            return self._json_raw(bc["json"])
+                            return self._json_raw(bc["json"], etag=_cache_etag(bc))
                         for _ in range(100):
                             time.sleep(0.1)
                             if bc["json"]:
                                 break
-                return self._json_raw(bc["json"]) if bc["json"] else self._json([])
+                return self._json_raw(bc["json"], etag=_cache_etag(bc)) if bc["json"] else self._json([])
 
             # POST /api/board — create issue
             if method == "POST" and path == "/api/board":
@@ -48694,7 +51023,17 @@ class CCHandler(BaseHTTPRequestHandler):
                 status = body.get("status", "todo")
                 due = body.get("due", "").strip() or None
                 due_time = body.get("due_time", "").strip() or None
-                creator = body.get("creator", "")
+                # Creator attribution, AMUX-1812 recipe: the body value is a
+                # self-reported CLAIM. The verified X-Amux-Session header wins;
+                # a disagreement is recorded, not silently trusted (caught live
+                # on GV-620: a session's raw curl left creator empty). No ip:
+                # fallback here — creator is a display field, not an audit row.
+                creator = (body.get("creator") or "").strip()[:64]
+                _chdr = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
+                if _chdr and creator and _chdr != creator:
+                    creator = f"{_chdr} (claimed {creator})"
+                elif not creator:
+                    creator = _chdr or self.headers.get("X-Amux-User-Email", "").strip()
                 desc = body.get("desc", "").strip()
                 tags = [t for t in body.get("tags", []) if t]
                 owner_type = body.get("owner_type", "agent" if session else "human")
@@ -49257,6 +51596,15 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
+                # Creation is a mutation too — unaudited creates were half of
+                # the AMUX-1812 forensics gap (8 schedules appeared AND
+                # vanished between daily snapshots with no attribution).
+                _sched_audit(sid, "created", "",
+                             json.dumps({"title": sched["title"], "session": sched["session"],
+                                         "expr": sched["schedule_expr"] or sched["run_at"],
+                                         "kind": sched["kind"]}),
+                             "api-create",
+                             _sched_mutation_by(self.headers, self.client_address, data))
                 _push_ical_bg()   # schedules drive the calendar feed now
                 self._json(sched, 201)
                 return
@@ -49332,16 +51680,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 _AUDIT_FIELDS = ("enabled","session","command","schedule_expr","done_action","trigger_on","kind")
                 _old_vals = {k: sched.get(k) for k in _AUDIT_FIELDS}
-                # Attribution can never be truly anonymous (AMUX-1765): explicit
-                # `by` wins, else the cloud user-email header, else the client IP.
-                # The "recurring UNATTRIBUTED disabler" was the DASHBOARD toggle —
-                # it sent no `by`, so human UI flips looked like a rogue script to
-                # the guardian. Now every flip carries at least its origin.
-                _by = str(body.get("by") or body.get("source_session") or "").strip()
-                if not _by:
-                    _by = (self.headers.get("X-Amux-User-Email", "").strip()
-                           or ("ip:" + (self.client_address[0] if self.client_address else "?")))
-                _by = _by[:64]
+                # Attribution can never be truly anonymous (AMUX-1765): verified
+                # X-Amux-Session header, else explicit `by`, else the cloud
+                # user-email header, else the client IP. The "recurring
+                # UNATTRIBUTED disabler" was the DASHBOARD toggle — it sent no
+                # `by`, so human UI flips looked like a rogue script to the
+                # guardian. Now every flip carries at least its origin.
+                _by = _sched_mutation_by(self.headers, self.client_address, body)
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
@@ -49380,12 +51725,31 @@ class CCHandler(BaseHTTPRequestHandler):
                 self._json(sched)
                 return
 
-            # DELETE /api/schedules/<id>
+            # DELETE /api/schedules/<id> — soft-delete, AUDITED (AMUX-1812: 8
+            # schedules vanished 07-21→22 with zero attribution; deletes must
+            # leave the same by_who trail as field PATCHes). `by` comes from
+            # the ?by= query param (DELETE bodies are unreliable) or the
+            # verified X-Amux-Session header.
             if method == "DELETE":
                 db = get_db()
+                row = db.execute("SELECT * FROM schedules WHERE id=?", (sched_id,)).fetchone()
+                if not row:
+                    self._json({"error": "not found"}, 404); return
+                sched = _sched_row_to_dict(row, _sched_cols(db))
+                if sched.get("deleted"):
+                    # idempotent re-delete — no duplicate audit row
+                    self._json({"deleted": sched_id, "already": True}); return
+                now_ts = int(_time.time())
                 db.execute("UPDATE schedules SET deleted=?,updated=? WHERE id=?",
-                           (int(_time.time()), int(_time.time()), sched_id))
+                           (now_ts, now_ts, sched_id))
                 db.commit()
+                _sched_audit(sched_id, "deleted",
+                             json.dumps({"title": sched.get("title"), "session": sched.get("session"),
+                                         "enabled": sched.get("enabled"),
+                                         "expr": sched.get("schedule_expr") or sched.get("run_at")}),
+                             str(now_ts), "api-delete",
+                             _sched_mutation_by(self.headers, self.client_address,
+                                                {"by": (qs.get("by", [""])[0] or "")}))
                 _push_ical_bg()   # schedule removed → refresh calendar feed
                 self._json({"deleted": sched_id})
                 return
@@ -49684,6 +52048,26 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "name": cc_name, "message": f"connected {tmux_session} as {cc_name}"})
 
         # POST /api/sessions (create new session)
+        # POST /api/git/staged-guard — the pre-commit staged-state guard asks:
+        # "which of my staged paths did a DIFFERENT session of this checkout
+        # edit recently?" Attribution comes from each session's own JSONL
+        # transcript (first-hand provenance, AMUX-1795), not from git state —
+        # git state is exactly what's ambiguous in a shared checkout (AMUX-1730).
+        if path == "/api/git/staged-guard" and method == "POST":
+            body = self._read_body()
+            # Server-verified origin wins over the claimed body session.
+            origin = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
+            session = origin or str(body.get("session", "")).strip()[:64]
+            wd = str(body.get("dir", "")).strip()
+            paths = body.get("paths") if isinstance(body.get("paths"), list) else []
+            if not wd:
+                return self._json({"ok": False, "error": "dir required"}, 400)
+            res = _staged_guard_check(session, wd, paths)
+            if res.get("foreign"):
+                slog(f"[staged-guard] {session}: blocked commit in {wd} — "
+                     + ", ".join(f"{f['path']} (owned by {f['owner']})" for f in res["foreign"][:5]))
+            return self._json(res)
+
         # GET /api/git-branches?dir=... — list branches for a git repo
         if method == "GET" and path == "/api/git-branches":
             wd = qs.get("dir", [""])[0]
@@ -50046,6 +52430,168 @@ class CCHandler(BaseHTTPRequestHandler):
 
             return self._json({"error": "not found"}, 404)
 
+        # ── /api/dictation/* — voice dictation (Gemini, server-side key) ─────
+        if path.startswith("/api/dictation") or path == "/api/dictate":
+            db = get_db()
+
+            # POST /api/dictate — audio in, cleaned transcription out.
+            if method == "POST" and path == "/api/dictate":
+                # RAW BINARY is the preferred upload (?session=&dur_ms=&mime=):
+                # base64 costs 33% more bytes, which matters on a phone with bad
+                # signal. JSON {audio: base64} still works for other callers.
+                ctype = (self.headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
+                session = (qs.get("session", [""])[0] or "").strip()[:64]
+                _dur_q = int(qs.get("dur_ms", ["0"])[0] or 0)
+                if ctype and ctype != "application/json":
+                    _len = int(self.headers.get("Content-Length", 0) or 0)
+                    if _len > _DICTATION_MAX_BYTES:
+                        return self._json({"error": "audio too large (max 25MB)"}, 413)
+                    _raw = self.rfile.read(_len) if _len else b""
+                    if not _raw:
+                        return self._json({"error": "audio required"}, 400)
+                    b64 = base64.b64encode(_raw).decode()
+                    mime = (qs.get("mime", [ctype])[0] or ctype).split(";")[0]
+                    body = {"dur_ms": _dur_q}
+                else:
+                    body = self._read_body()
+                    b64 = (body.get("audio") or "").strip()
+                    if not b64:
+                        return self._json({"error": "audio required"}, 400)
+                    if len(b64) > _DICTATION_MAX_BYTES * 4 // 3:
+                        return self._json({"error": "audio too large (max ~25MB)"}, 413)
+                    mime = (body.get("mime") or "audio/webm").split(";")[0]
+                    session = (body.get("session") or session).strip()[:64]
+                key, src = _dictation_key()
+                if not key:
+                    return self._json({"error": "no Gemini key configured — add your own key in the "
+                                                "Dictation tab, or set GOOGLE_API_KEY in server.env"}, 503)
+                t0 = time.time()
+                text, err = _gemini_generate(key, [
+                    {"text": _dictation_prompt(session) + "\n\nTranscribe and clean this dictation:"},
+                    {"inline_data": {"mime_type": mime, "data": b64}},
+                ])
+                if err:
+                    slog(f"[dictation] {src} key failed: {err}")
+                    return self._json({"error": err}, 502)
+                dur_ms = int(body.get("dur_ms") or 0)
+                words = len([w for w in text.split() if w.strip()])
+                cur = db.execute(
+                    "INSERT INTO dictation_history (session, ts, text, raw_text, words, dur_ms) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (session, int(time.time() * 1000), text, text, words, dur_ms))
+                db.commit()
+                slog(f"[dictation] {words}w in {time.time()-t0:.1f}s ({src} key)")
+                return self._json({"id": cur.lastrowid, "text": text, "words": words})
+
+            # GET /api/dictation/history?session=&limit=
+            if method == "GET" and path == "/api/dictation/history":
+                sess = qs.get("session", [""])[0]
+                limit = min(int(qs.get("limit", ["200"])[0]), 500)
+                if sess:
+                    rows = db.execute(
+                        "SELECT id, session, ts, text, raw_text, prev_text, ai_edited, words, dur_ms "
+                        "FROM dictation_history WHERE session=? ORDER BY ts DESC LIMIT ?",
+                        (sess, limit)).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT id, session, ts, text, raw_text, prev_text, ai_edited, words, dur_ms "
+                        "FROM dictation_history ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+                total = db.execute("SELECT COALESCE(SUM(words),0) w FROM dictation_history").fetchone()["w"]
+                return self._json({"items": [dict(r) for r in rows], "total_words": total})
+
+            # DELETE /api/dictation/history/<id>
+            m_dh = re.match(r"^/api/dictation/history/(\d+)$", path)
+            if m_dh and method == "DELETE":
+                db.execute("DELETE FROM dictation_history WHERE id=?", (m_dh.group(1),))
+                db.commit()
+                return self._json({"ok": True})
+
+            # POST /api/dictation/history/<id>/edit — AI-edit or undo
+            m_de = re.match(r"^/api/dictation/history/(\d+)/edit$", path)
+            if m_de and method == "POST":
+                rid = m_de.group(1)
+                body = self._read_body()
+                row = db.execute("SELECT * FROM dictation_history WHERE id=?", (rid,)).fetchone()
+                if not row:
+                    return self._json({"error": "not found"}, 404)
+                if body.get("undo"):
+                    prev = row["prev_text"] or row["raw_text"]
+                    db.execute("UPDATE dictation_history SET text=?, ai_edited=0, prev_text='' WHERE id=?",
+                               (prev, rid))
+                    db.commit()
+                    return self._json({"ok": True, "text": prev, "ai_edited": 0})
+                instruction = (body.get("instruction") or "Fix grammar and make it clearer.").strip()[:500]
+                key, _src = _dictation_key()
+                if not key:
+                    return self._json({"error": "no Gemini key configured"}, 503)
+                text, err = _gemini_generate(key, [{"text":
+                    "Edit this dictated text per the instruction. Output ONLY the edited text, "
+                    "no commentary.\n\nInstruction: " + instruction + "\n\nText: " + row["text"]}])
+                if err:
+                    return self._json({"error": err}, 502)
+                db.execute("UPDATE dictation_history SET text=?, prev_text=?, ai_edited=1 WHERE id=?",
+                           (text, row["text"], rid))
+                db.commit()
+                return self._json({"ok": True, "text": text, "ai_edited": 1})
+
+            # GET/POST /api/dictation/dict — personal vocabulary
+            if path == "/api/dictation/dict":
+                if method == "GET":
+                    rows = db.execute(
+                        "SELECT id, word, correct, created FROM dictation_dict ORDER BY created DESC").fetchall()
+                    return self._json([dict(r) for r in rows])
+                if method == "POST":
+                    body = self._read_body()
+                    word = (body.get("word") or "").strip()[:120]
+                    correct = (body.get("correct") or "").strip()[:120]
+                    if not word:
+                        return self._json({"error": "word required"}, 400)
+                    try:
+                        cur = db.execute(
+                            "INSERT INTO dictation_dict (word, correct, created) VALUES (?,?,?)",
+                            (word, correct, int(time.time())))
+                        db.commit()
+                        return self._json({"ok": True, "id": cur.lastrowid}, 201)
+                    except sqlite3.IntegrityError:
+                        return self._json({"ok": True, "already": True})
+
+            # PATCH/DELETE /api/dictation/dict/<id>
+            m_dd = re.match(r"^/api/dictation/dict/(\d+)$", path)
+            if m_dd:
+                did = m_dd.group(1)
+                if method == "DELETE":
+                    db.execute("DELETE FROM dictation_dict WHERE id=?", (did,))
+                    db.commit()
+                    return self._json({"ok": True})
+                if method == "PATCH":
+                    body = self._read_body()
+                    db.execute("UPDATE dictation_dict SET word=?, correct=? WHERE id=?",
+                               ((body.get("word") or "").strip()[:120],
+                                (body.get("correct") or "").strip()[:120], did))
+                    db.commit()
+                    return self._json({"ok": True})
+
+            # GET/POST /api/dictation/config — BYO key status / set (WRITE-ONLY:
+            # the key itself is never returned to any client).
+            if path == "/api/dictation/config":
+                if method == "GET":
+                    _k, src = _dictation_key()
+                    return self._json({"configured": bool(_k), "source": src if _k else "none",
+                                       "model": _DICTATION_MODEL})
+                if method == "POST":
+                    body = self._read_body()
+                    k = (body.get("key") or "").strip()
+                    if k:
+                        db.execute("INSERT INTO prefs (key, value) VALUES ('dictation_gemini_key', ?) "
+                                   "ON CONFLICT(key) DO UPDATE SET value=?", (k, k))
+                    else:
+                        db.execute("DELETE FROM prefs WHERE key='dictation_gemini_key'")
+                    db.commit()
+                    _k2, src2 = _dictation_key()
+                    return self._json({"ok": True, "configured": bool(_k2), "source": src2 if _k2 else "none"})
+
+            return self._json({"error": "dictation route not found"}, 404)
+
         # ── /api/tts — ElevenLabs text-to-speech ─────────────────────────────
         if path.startswith("/api/tts"):
             import urllib.request as _tts_ureq
@@ -50203,17 +52749,30 @@ class CCHandler(BaseHTTPRequestHandler):
             # GET /api/email/inbox — read recent messages from Mail.app
             if method == "GET" and path == "/api/email/inbox":
                 account_filter = qs.get("account", [""])[0]
-                count = min(int(qs.get("count", ["20"])[0]), 100)
+                # Hard cap raised to 500 (was 100) and `days` is now an
+                # authoritative Gmail date filter, so date-ranged scans get the
+                # whole window instead of a silently-truncated newest-N slice
+                # (AMUX-1886). ?envelope=1 wraps the list with a truncation
+                # marker so a caller can tell a real 0 from a capped scan.
+                count = min(int(qs.get("count", ["20"])[0]), 500)
                 lookback_days = float(qs.get("days", ["7"])[0])
                 lookback_secs = max(lookback_days * 86400, 3600)
-                max_msgs = min(count, 100)
+                max_msgs = min(count, 500)
                 lookback_days_frac = lookback_secs / 86400
+                _envelope = qs.get("envelope", ["0"])[0] in ("1", "true", "yes")
+
+                def _inbox_reply(msgs, truncated):
+                    if _envelope:
+                        return self._json({"messages": msgs, "returned": len(msgs),
+                                           "truncated": bool(truncated),
+                                           "window_days": lookback_days})
+                    return self._json(msgs)
                 # Prefer Gmail API for a connected account (clean, no AppleScript).
                 if account_filter and account_filter in _gmail_connected_accounts():
-                    res = _gmail_inbox_messages(account_filter, count=count)
+                    res = _gmail_inbox_messages(account_filter, count=count, days=lookback_days)
                     if res.get("error"):
                         return self._json(res, 502)
-                    return self._json(res.get("messages", []))
+                    return _inbox_reply(res.get("messages", []), res.get("truncated"))
                 # No account filter: serve the Gmail-connected accounts via the
                 # API, in PARALLEL. The AppleScript below drives Mail.app serially
                 # across every configured account and measured ~28s here — a Gmail
@@ -50238,8 +52797,9 @@ class CCHandler(BaseHTTPRequestHandler):
                             return 0.0
 
                     _msgs: list = []
+                    _any_trunc = False
                     with ThreadPoolExecutor(max_workers=min(8, len(_connected))) as _ex:
-                        _futs = [_ex.submit(_gmail_inbox_messages, _a, count)
+                        _futs = [_ex.submit(_gmail_inbox_messages, _a, count, "", lookback_days)
                                  for _a in _connected]
                         for _f in _futs:
                             try:
@@ -50250,8 +52810,14 @@ class CCHandler(BaseHTTPRequestHandler):
                                 continue
                             if not _r.get("error"):
                                 _msgs.extend(_r.get("messages", []))
+                                if _r.get("truncated"):
+                                    _any_trunc = True
                     _msgs.sort(key=_recv_key, reverse=True)
-                    return self._json(_msgs[:count])
+                    # Merged across accounts: a per-account truncation OR hitting
+                    # the overall cap both mean the window wasn't fully covered.
+                    if len(_msgs) > count:
+                        _any_trunc = True
+                    return _inbox_reply(_msgs[:count], _any_trunc)
                 # No-account script: iterate every account's INBOX. The
                 # per-account filter case has its own dedicated script below.
                 # (Earlier this branch interpolated a stray `end if` with no
@@ -50713,7 +53279,7 @@ end tell
                     return self._json({"error": "q parameter is required"}, 400)
                 # Prefer Gmail API for a connected account — maps mailbox to a
                 # Gmail query (e.g. Sent -> in:sent) so "read sent" works too.
-                if account and account in _gmail_connected_accounts():
+                def _gmail_query():
                     gq, mb = q, mailbox.lower()
                     if mb in ("sent", "sent mail"):
                         gq += " in:sent"
@@ -50721,10 +53287,47 @@ end tell
                         gq += " in:inbox"
                     elif mb and mb != "all":
                         gq += f" label:{mailbox}"
-                    res = _gmail_inbox_messages(account, count=limit, q=gq.strip())
+                    if days > 0:
+                        gq += f" newer_than:{days}d"   # days was silently ignored here
+                    return gq.strip()
+
+                if account and account in _gmail_connected_accounts():
+                    res = _gmail_inbox_messages(account, count=limit, q=_gmail_query())
                     if res.get("error"):
                         return self._json(res, 502)
                     return self._json(res.get("messages", []))
+                # No account filter: search ALL connected Gmail accounts via the
+                # API, in parallel — the same fan-out /inbox got. Without this,
+                # the common no-account call fell straight into the serial
+                # AppleScript walk below, which hangs for minutes on any large
+                # mailbox: gtm-engine burned three 30s+ timeouts hunting a
+                # contact and stalled its task on it (2026-07-22). A non-
+                # connected account is still searchable via ?account=<addr>.
+                _connected = _gmail_connected_accounts()
+                if not account and _connected:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from email.utils import parsedate_to_datetime
+                    _gq = _gmail_query()
+
+                    def _search_one(a):
+                        try:
+                            r = _gmail_inbox_messages(a, count=limit, q=_gq)
+                            return r.get("messages", []) if not r.get("error") else []
+                        except Exception:
+                            return []
+
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        merged = [m for msgs in ex.map(_search_one, _connected) for m in msgs]
+
+                    def _recv_key(m):
+                        """Newest first; an unparseable date sinks, never raises."""
+                        try:
+                            return parsedate_to_datetime(m.get("date", "")).timestamp()
+                        except Exception:
+                            return 0.0
+
+                    merged.sort(key=_recv_key, reverse=True)
+                    return self._json(merged[:limit])
                 q_safe = q.replace('"', '\\"')
                 acct_filter = ""
                 if account:
@@ -50951,6 +53554,40 @@ return "not_found"
                     return self._json({"error": str(e)}, 500)
 
             return self._json({"error": "not found"}, 404)
+
+        # ── Internal SMS bridge (smart-business-card sidecar → Twilio) ──
+        # Localhost/secret-gated, capped, inert without TWILIO_*. See _send_sms.
+        if path == "/api/sms" and method == "POST":
+            _cip = (self.client_address[0] if self.client_address else "")
+            _loopback = _cip in ("127.0.0.1", "::1", "localhost")
+            _tok = os.environ.get("AMUX_INTERNAL_TOKEN", "")
+            _hdr_tok = self.headers.get("X-Amux-Internal-Token", "")
+            if not (_loopback or (_tok and _hdr_tok == _tok)):
+                return self._json({"error": "forbidden — /api/sms is localhost/token-only"}, 403)
+            # Refuse stranger-facing sends over the owner's personal iMessage.
+            if not (os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN")
+                    and os.environ.get("TWILIO_FROM")):
+                return self._json({"error": "SMS not configured — set TWILIO_ACCOUNT_SID/AUTH_TOKEN/FROM in server.env"}, 503)
+            body = self._read_body()
+            to = str(body.get("to", "")).strip()
+            text = str(body.get("text", "")).strip()
+            if not re.match(r"^\+?[1-9]\d{6,14}$", to):
+                return self._json({"error": "invalid 'to' — must be E.164 (e.g. +15551234567)"}, 400)
+            if not text or len(text) > 1000:
+                return self._json({"error": "'text' required, max 1000 chars"}, 400)
+            ok, reason = _sms_bridge_gate(to, text)
+            if not ok:
+                return self._json({"error": reason, "throttled": True}, 429)
+            sent, detail = _send_sms(to, text)
+            if not sent:
+                # release the reservation so a real failure doesn't burn the cap
+                with _sms_bridge_lock:
+                    _sms_bridge_log["total"] = max(0, _sms_bridge_log["total"] - 1)
+                    if to in _sms_bridge_log["per_num"]:
+                        _sms_bridge_log["per_num"][to] = max(0, _sms_bridge_log["per_num"][to] - 1)
+                return self._json({"ok": False, "error": detail}, 502)
+            slog(f"[sms-bridge] sent to {to[:4]}…{to[-2:]} via {detail}")
+            return self._json({"ok": True, "via": detail})
 
         # ── Cloud Waitlist ──
         if path == "/api/waitlist":
@@ -52773,15 +55410,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                        "message": "duplicate retry ignored (already queued)"})
                 msg_id = _steer_enqueue(name, text)
                 # Server-side history record (atomic, device-independent) — see the
-                # /send handler. Gated on record_history; dedup above prevents doubles.
+                # /send handler. A queued human message is still 'user' origin (the
+                # queue is a delivery mechanism, not a sender). Dedup above prevents
+                # doubles.
                 if body.get("record_history"):
-                    try:
-                        _dbh = get_db()
-                        _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
-                                     (text, "steering", name, int(time.time() * 1000)))
-                        _dbh.commit()
-                    except Exception:
-                        pass
+                    _cmd_hist_record(name, text, "user",
+                                     self.headers.get("X-Amux-User-Email", ""))
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
@@ -52847,25 +55481,30 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                     {"chars": len(text), "preview": text[:120],
                                      "human": bool(body.get("record_history"))},
                                     idem=("send:" + msg_id) if msg_id else None, source="api-send")
-                    # Record to the shared history SERVER-SIDE, atomic with the send,
-                    # so the message is in history for EVERY client even if the sending
-                    # device's own history POST never lands (flaky phone / suspended
-                    # PWA). Gated on record_history so agent-to-agent sends on this same
-                    # endpoint don't flood the human history. The msg_id dedup above
-                    # means a retried/offline-replayed send never double-records.
+                    # Record to the shared Messages history SERVER-SIDE, atomic with
+                    # the send, tagged by origin so the peek can color-code it. A human
+                    # browser send (record_history) is 'user'; an inter-session send
+                    # (origin-stamped, X-Amux-Session header) is 'session' with the
+                    # sender name — previously these were dropped from history entirely,
+                    # so the peek couldn't show what other sessions sent. _orig_text is
+                    # the clean message (without the [amux-origin:] provenance prefix).
                     if body.get("record_history"):
-                        try:
-                            _dbh = get_db()
-                            _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
-                                         (text, "direct", name, int(time.time() * 1000)))
-                            _dbh.commit()
-                        except Exception:
-                            pass
+                        _cmd_hist_record(name, _orig_text, "user",
+                                         self.headers.get("X-Amux-User-Email", ""))
+                    elif _origin and _origin != name:
+                        _cmd_hist_record(name, _orig_text, "session", _origin)
                 elif msg_id:
                     _send_dedup_forget(name, msg_id)
                 # 409 = session exists but is not running (user-caused, not a server error)
                 code = 200 if ok else (409 if msg == "not running" else 500)
-                return self._json({"ok": ok, "message": msg}, code)
+                # Structured signal (AMUX-1882): the target is parked at a
+                # human-gated selector, so this message is queued and won't
+                # deliver until it resolves. An agent sender can see this and
+                # route around instead of assuming prompt delivery.
+                _resp = {"ok": ok, "message": msg}
+                if ok and "at a selector" in msg:
+                    _resp["held_at_selector"] = True
+                return self._json(_resp, code)
             if action == "instructions":
                 # Set the per-session standing instruction and/or apply it now.
                 # Body: {"instructions": "<text>"} to save, {"apply": true} to send.
@@ -54799,6 +57438,8 @@ def main():
     schedule_job(_evict_stale_caches,    interval=300,                  name="cache_evict", initial_delay=60)
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
+    schedule_job(_check_orphaned_git_state, interval=600,               name="git_orphan",  initial_delay=120)
+    schedule_job(_check_stale_amux_cli,     interval=21600,             name="stale_cli",   initial_delay=90)
     # DISABLED 2026-07-06 — auto-steering every idle session about stale doing/review
     # cards woke ~20 sessions at once into a churn storm and created a nag loop
     # (each nudge is a message → _summarize_task_bg re-titles the session's active

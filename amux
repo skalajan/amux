@@ -574,7 +574,33 @@ cmd_peek() {
   echo "${BOLD}── end ──${RESET}"
 }
 
+_send_usage() {
+  cat <<USAGE
+${BOLD}amux send${RESET} — send a message to a session
+
+  amux send <session> --stdin        read the message from stdin ${GREEN}(preferred)${RESET}
+  amux send <session> --file <path>  read the message from a file
+  amux send <session> <text>         inline text (see the warning below)
+  amux send <session> --keys 'C-c'   send a raw key sequence
+
+${BOLD}Why --stdin is preferred${RESET}
+  With inline text your SHELL evaluates the string before amux ever sees it, so
+  \`backticks\` and \$(...) inside the message are EXECUTED, not sent. That has
+  garbled messages, leaked a credential, and fired a stray git command on a
+  shared checkout. --stdin/--file pass the bytes through untouched.
+
+  amux send api --stdin <<'EOF'
+  fix the auth bug — see \`git log -1\` and \$(date) stay literal
+  EOF
+USAGE
+}
+
 cmd_send() {
+  # --help must not be parsed as a session name (it used to error with
+  # "session '--help' not found", so the safe form was undiscoverable).
+  case "${1:-}" in
+    --help|-h|help) _send_usage; return 0 ;;
+  esac
   local name
   name=$(resolve_session "${1:-}")
   shift
@@ -584,6 +610,27 @@ cmd_send() {
   tname=$(tmux_name "$name")
   is_running "$name" || die "session '$name' is not running"
 
+  # ── Payload via --stdin / --file: the text NEVER transits a shell-evaluated
+  # string (AMUX-1888). Passing a message as a double-quoted argument lets the
+  # SENDER'S shell expand backticks/$() before amux ever sees it — demonstrated
+  # blast radii: garbled messages, a leaked credential, and a stray
+  # `git rebase --quit` on a SHARED checkout. Heredoc-per-call fixes it only if
+  # every caller remembers; this encodes the safe path instead.
+  #   amux send X --stdin <<'EOF' ... EOF
+  #   amux send X --file /tmp/msg.txt
+  if [[ "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then
+    local msg; msg=$(cat)
+    [[ -n "$msg" ]] || die "no message on stdin"
+    _send_via_api "$name" "$msg"; return $?
+  fi
+  if [[ "${1:-}" == "--file" ]]; then
+    local f="${2:-}"
+    [[ -n "$f" && -r "$f" ]] || die "usage: amux send <session> --file <path>"
+    local msg; msg=$(cat "$f")
+    [[ -n "$msg" ]] || die "file is empty: $f"
+    _send_via_api "$name" "$msg"; return $?
+  fi
+
   # Check for --keys flag
   if [[ "${1:-}" == "--keys" ]]; then
     shift
@@ -591,15 +638,57 @@ cmd_send() {
     echo "${GREEN}sent keys${RESET} to $name"
   else
     local text="$*"
-    [[ -n "$text" ]] || die "usage: amux send <name> <text>  or  amux send <name> --keys 'C-c'"
-    # Send text literally (-l), then Enter as a separate key after a short
-    # delay. Claude Code's TUI buffers/debounces input; sending text and Enter
-    # in one send-keys call lets Enter arrive before the text is processed.
-    tmux send-keys -t "=$tname:" -l "$text"
-    sleep 0.05
-    tmux send-keys -t "=$tname:" Enter
-    echo "${GREEN}sent${RESET} to $name: $text"
+    [[ -n "$text" ]] || { _send_usage; return 1; }
+    # NUDGE ON USE, not content: by the time we see $text the shell has already
+    # expanded it, so a warning about backticks is too late to be evidence. What
+    # we CAN observe is the risky USAGE SHAPE — long or multi-line payloads are
+    # where code/quotes/substitutions live. Warns to stderr, never blocks: this
+    # is the only encoding available for callers who never read --help.
+    if [[ ${#text} -gt 280 || "$text" == *$'\n'* ]]; then
+      echo "${YELLOW}note:${RESET} long/multi-line payload sent as a shell argument — your shell already" >&2
+      echo "      expanded any \`backticks\`/\$(...) in it. Prefer: amux send $name --stdin <<'EOF'" >&2
+    fi
+    _send_via_api "$name" "$text"
   fi
+}
+
+# Deliver a message through the server: SERVER-VERIFIED origin stamp
+# (X-Amux-Session, AMUX-1768), busy-deferral, audit event. The old raw
+# `tmux send-keys` path delivered ANONYMOUS text straight into the pane — no
+# provenance, no record, could interrupt an in-flight turn — which is how the
+# 2026-07-22 ts-gke→mvs-infra→gtm-engine misroute happened (AMUX-1818). Raw
+# tmux is kept only as a loud last-resort fallback when the server is down.
+_send_via_api() {
+  local name="$1" text="$2"
+  local tname; tname=$(tmux_name "$name")
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local body resp rc
+  body=$(MSG="$text" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
+  resp=$(curl -sk -m 15 -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    -d "$body" "$AMUX_API/api/sessions/$name/send" 2>/dev/null) || resp=""
+  if [[ -n "$resp" ]]; then
+    rc=0
+    RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+tgt = os.environ["TGT"]
+if d.get("error") or d.get("ok") is False:
+    print(f"send to {tgt} FAILED: {d.get('error') or d.get('message')}")
+    sys.exit(2)
+print(f"sent to {tgt} (origin-stamped): {d.get('message', 'ok')}")
+PYEOF
+    [[ $rc -eq 0 ]] && return 0
+    [[ $rc -eq 2 ]] && return 1   # server understood and refused — do NOT fall back
+  fi
+  echo "${YELLOW}warning:${RESET} amux server unreachable — falling back to raw tmux send (UNSTAMPED, unaudited)" >&2
+  tmux send-keys -t "=$tname:" -l "$text"
+  sleep 0.05
+  tmux send-keys -t "=$tname:" Enter
+  echo "${GREEN}sent${RESET} to $name (raw tmux, no origin stamp): $text"
 }
 
 cmd_stop() {
@@ -830,11 +919,24 @@ cmd_board() {
       echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'],'→',d['status'])" 2>/dev/null || echo "$result"
       ;;
     add|create)
-      local title="$*"; [[ -n "$title" ]] || die "Usage: amux board add <title>"
-      local result
+      # Title via --stdin/--file keeps it out of a shell-evaluated string
+      # (AMUX-1888); the JSON body is built with json.dumps, not string
+      # interpolation, so a quote/newline/backslash in the title can't produce
+      # malformed JSON (the old `-d "{\"title\":\"$title\"}"` form did).
+      local title
+      if [[ "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then title=$(cat)
+      elif [[ "${1:-}" == "--file" ]]; then
+        [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board add --file <path>"
+        title=$(cat "$2")
+      else title="$*"; fi
+      [[ -n "$title" ]] || die "Usage: amux board add <title> | --stdin | --file <path>"
+      local body result
+      body=$(T="$title" S="${AMUX_SESSION:-}" python3 -c \
+        "import json,os; print(json.dumps({'title': os.environ['T'].strip(), 'status':'todo', 'session': os.environ['S']}))")
       result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST \
         -H 'Content-Type: application/json' \
-        -d "{\"title\":\"$title\",\"status\":\"todo\"}" \
+        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -d "$body" \
         "$AMUX_API/api/board")
       echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Created',d['id'],'→',d['title'])" 2>/dev/null || echo "$result"
       ;;
@@ -1138,7 +1240,14 @@ ${BOLD}Session management:${RESET}
 ${BOLD}Interaction:${RESET}
   amux attach <name>             Attach to a running session (detach: Ctrl-b d)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
-  amux send <name> <text>        Send text + Enter to a session
+  amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
+                                 ${DIM}amux send api --stdin <<'EOF'${RESET}
+                                 ${DIM}  fix the auth bug in login.ts${RESET}
+                                 ${DIM}EOF${RESET}
+  amux send <name> --file <path> Send a message read from a file
+  amux send <name> <text>        Send inline text. ${DIM}Your SHELL expands \`backticks\`${RESET}
+                                 ${DIM}and \$(...) BEFORE amux sees them — use --stdin for${RESET}
+                                 ${DIM}anything long, multi-line, or containing code.${RESET}
   amux send <name> --keys 'C-c'  Send raw key sequence (e.g., Ctrl-C)
 
 ${BOLD}Info:${RESET}

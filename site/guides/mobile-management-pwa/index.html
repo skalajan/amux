@@ -45,7 +45,7 @@
     "description": "The amux iOS app is the remote control for your AI engineering team. Monitor Claude Code sessions, approve actions, inspect terminal output, and steer agents — from anywhere. PWA + native iOS app.",
     "url": "https://amux.io/guides/mobile-management-pwa/",
     "datePublished": "2026-02-26",
-    "dateModified": "2026-07-13",
+    "dateModified": "2026-07-25",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -173,7 +173,7 @@
         <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="44"/>
       </a>
     </div>
-    <p class="subtitle">Keep your AI coding agents running—even when you're away from your desk. Updated July 2026.</p>
+    <p class="subtitle">Keep your AI coding agents running—even when you're away from your desk. Updated July 2026 (v0.9.189 — iOS PWA state restore).</p>
 
     <p>Keep your AI coding agents running—even when you're away from your desk. The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux iOS app</a> and PWA put your AI engineering team in your pocket: monitor live Claude Code sessions, approve pending actions, inspect terminal output, and steer agents from anywhere.</p>
 
@@ -246,6 +246,17 @@
       <li><strong>Stale connection</strong> — if the agent gets stuck waiting for a response that never comes, the watchdog detects the stall and intervenes</li>
     </ul>
     <p>None of this requires your phone to be online. The watchdog runs continuously on the server. You can start a 12-hour agent run, put your phone in airplane mode, and come back to completed work.</p>
+
+    <h2>Returning to Your Dashboard — iOS PWA State Restore</h2>
+    <p>iOS aggressively evicts backgrounded apps to reclaim memory. When you switch to another app and return, iOS may have fully unloaded the PWA — causing a page reload that previously reset your session to the default view.</p>
+    <p>As of v0.9.189, amux restores your exact position automatically after an iOS eviction:</p>
+    <ul>
+      <li><strong>Active tab</strong> — if you were on the Board tab, it reopens on the Board tab, not the default Sessions tab</li>
+      <li><strong>Open peek panel</strong> — if you had a session's peek panel open (watching live output), it reopens the same session's peek immediately</li>
+      <li><strong>No flash</strong> — the restore happens before the first paint, so there's no flicker back to the Sessions default</li>
+    </ul>
+    <p>This is implemented using <code>sessionStorage</code>: the dashboard writes its current tab and open peek session on every state change, and reads + applies this state on page load before rendering. Because <code>sessionStorage</code> survives an iOS app eviction (it's tied to the browser session, not the JS heap), the restore is reliable even after a full page reload.</p>
+    <p>The practical result: switch to Messages to read an email, come back to amux three minutes later, and you're exactly where you left off — watching the same agent's output, on the same tab.</p>
 
     <h2>The Kanban Board on Mobile</h2>
     <p>The shared kanban board is fully functional on mobile. All touch targets are at least 44×44 pixels per iOS Human Interface Guidelines. You can:</p>

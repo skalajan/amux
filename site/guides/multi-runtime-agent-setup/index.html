@@ -45,7 +45,7 @@
     "description": "How to run Claude Code, OpenAI Codex CLI, and Antigravity CLI (Gemini) together in one amux dashboard. Configure all three runtimes, balance workloads, and monitor from your phone.",
     "url": "https://amux.io/guides/multi-runtime-agent-setup/",
     "datePublished": "2026-07-07",
-    "dateModified": "2026-07-07",
+    "dateModified": "2026-07-24",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png",
@@ -411,6 +411,15 @@ Claiming workflow:
       <summary style="cursor:pointer;font-weight:600;">Is there a way to route tasks to specific providers automatically?</summary>
       <p style="margin:0.8rem 0 0;">The recommended pattern is board task tags in the description field (e.g. [arch], [gen], [gemini]) combined with per-session CLAUDE.md files that instruct each agent which tags to claim. This is a simple, runtime-agnostic approach that requires no code changes to amux.</p>
     </details>
+
+    <!-- EXP-014 -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — run Claude Code, Codex, and Gemini CLI from one dashboard (310★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Mix three AI coding runtimes, balance rate limits across providers, and monitor your entire fleet from your phone. Open source, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
