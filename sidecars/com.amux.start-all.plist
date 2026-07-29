@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Boot-time session starter. One-shot at login: waits for the amux server
+  (com.amux.serve) to come up, then `amux start-all` brings every registered
+  session online. Sessions idle >30 min hibernate again on their own — this
+  only guarantees the fleet is reachable right after a reboot without manual
+  wakes. NOT auto-installed:
+
+    cp sidecars/com.amux.start-all.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.start-all.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amux.start-all</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>for i in $(seq 1 30); do curl -sk -o /dev/null https://localhost:8822/api/sessions &amp;&amp; break; sleep 2; done; /usr/local/bin/amux start-all</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/janskala</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/janskala/.amux/logs/start-all.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/janskala/.amux/logs/start-all.log</string>
+</dict>
+</plist>
