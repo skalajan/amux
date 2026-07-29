@@ -57,6 +57,8 @@ class MockAmux:
         self._seen_ids = set()    # server-side idempotency
         self.fail_posts = 0
         self.sessions = []
+        self.raw_sent = []        # (session, text) via /type
+        self.keys_sent = []       # (session, key) via /keys, one entry per key
 
     def health(self):
         return {"status": "ok"}
@@ -90,6 +92,14 @@ class MockAmux:
         return {"ok": True}
 
     def create_session(self, name, directory=""):
+        return {"ok": True}
+
+    def raw_send(self, session, text):
+        self.raw_sent.append((session, text))
+        return {"ok": True}
+
+    def send_key(self, session, key):
+        self.keys_sent.append((session, key))
         return {"ok": True}
 
 
@@ -251,6 +261,75 @@ os.chmod(cfgp, 0o600)
 c = tg.load_config(cfgp, write_token_path=os.path.join(td, "nope"), environ={})
 assert c["owner_id"] == 42 and c["bot_token"] == "t"
 print("config ok — insecure perms refused; 0600 config parses")
+
+
+# ── 10. /type: raw-inject preserves the exact argument, bypasses steering ──────
+assert tg.command_raw_arg("/type  AB  CD!@#  123") == "AB  CD!@#  123", \
+    "must preserve internal spacing/punctuation, not collapse to the first token"
+assert tg.command_raw_arg("/type") == "", "no argument -> empty"
+assert tg.command_raw_arg("/type\ttabbed\targ") == "tabbed\targ"
+print("command_raw_arg ok — spacing/punctuation/tabs preserved verbatim, no-arg -> empty")
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(20, "/type  AB1-code_23!  ", topic_id=100))
+assert ma.raw_sent == [("sessA", "AB1-code_23!")], ma.raw_sent
+assert [t for (_c, t, _tid) in mt.sent] == ["typed ✓"], mt.sent
+print("type ok — raw text injected verbatim (spaces/punctuation preserved), confirms in-topic")
+
+# General topic (no message_thread_id) -> unmapped, refuse with an error, no amux write
+bot2, mt2, ma2, off2 = make_bot(topics_state={"topics": {"sessA": 100}})
+bot2.handle_update(owner_msg(21, "/type hello", topic_id=None))
+assert ma2.raw_sent == [], "General/unmapped topic must not raw-inject"
+assert any("mapped session topic" in t for (_c, t, _tid) in mt2.sent), mt2.sent
+print("type ok — General/unmapped topic refuses with an error, no amux write")
+
+# non-owner -> ignored entirely (never reaches the command dispatcher)
+bot3, mt3, ma3, off3 = make_bot(topics_state={"topics": {"sessA": 100}})
+bot3.handle_update(owner_msg(22, "/type sneaky", topic_id=100, from_id=999))
+assert ma3.raw_sent == [], "non-owner /type must never reach amux"
+print("type ok — non-owner /type ignored")
+
+
+# ── 11. /keys: multiple keys sent in order, one call per key, bypasses steering ─
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(23, "/keys C-c Tab Enter", topic_id=100))
+assert ma.keys_sent == [("sessA", "C-c"), ("sessA", "Tab"), ("sessA", "Enter")], ma.keys_sent
+assert [t for (_c, t, _tid) in mt.sent] == ["keys sent ✓"], mt.sent
+print("keys ok — multiple keys sent in order, one call per key, confirms in-topic")
+
+# unmapped (non-General) topic id -> refuse with an error, no amux write
+bot2, mt2, ma2, off2 = make_bot()
+bot2.handle_update(owner_msg(24, "/keys Enter", topic_id=777))
+assert ma2.keys_sent == [], "unmapped topic must not send keys"
+assert any("mapped session topic" in t for (_c, t, _tid) in mt2.sent), mt2.sent
+print("keys ok — unmapped topic refuses with an error, no amux write")
+
+# non-owner -> ignored entirely
+bot3, mt3, ma3, off3 = make_bot(topics_state={"topics": {"sessA": 100}})
+bot3.handle_update(owner_msg(25, "/keys Enter", topic_id=100, from_id=999))
+assert ma3.keys_sent == [], "non-owner /keys must never reach amux"
+print("keys ok — non-owner /keys ignored")
+
+
+# ── 12. AmuxClient payload shapes for /type + /keys (real client, no mock) ──────
+class _RecordingCall:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, method, path, params=None, body=None, timeout=20):
+        self.calls.append((method, path, body))
+        return 200, {"ok": True}
+
+
+client = tg.AmuxClient("https://localhost:1", "wt")
+rec = _RecordingCall()
+client._call = rec
+client.raw_send("sessA", "the-code")
+client.send_key("sessA", "Enter")
+assert rec.calls[0] == ("POST", "/api/sessions/sessA/send",
+                        {"text": "the-code", "deliver_now": True}), rec.calls[0]
+assert rec.calls[1] == ("POST", "/api/sessions/sessA/keys", {"keys": "Enter"}), rec.calls[1]
+print("payload ok — raw_send body {'text','deliver_now':True}; send_key body {'keys':<one key>}")
 
 
 print("\nALL TELEGRAM-SIDECAR CHECKS PASSED")

@@ -108,9 +108,34 @@ launchctl bootout gui/$(id -u)/com.amux.telegram
 | `/wake <session>` | resume a session and ensure it has a topic |
 | `/create <session> [dir]` | create a session and ensure it has a topic |
 | `/mute` · `/unmute` | stop / resume forwarding replies into the current topic |
+| `/type <text>` | raw-inject text into the session's tmux pane, bypassing steering |
+| `/keys <key> [key...]` | send raw key names (e.g. `Enter`, `C-c`, `Tab`, `Up`, `Down`, `Escape`), bypassing steering |
 
 Anything else prints a short help. A plain (non-command) message inside a session's
 topic is injected into that session.
+
+**`/type` and `/keys` bypass turn-boundary steering on purpose.** Every other
+inbound message (and command) is delivered through `/api/chat`, which queues at
+the next turn boundary — safe, but it never arrives while a session is sitting
+at a tool-approval prompt, a login/dialog picker, or otherwise "waiting", since
+those states never reach a turn boundary on their own. `/type` and `/keys` call
+the session's `send`/`keys` endpoints directly with immediate delivery, so they
+land right away — including while a turn is live. Use them only when steering
+genuinely can't reach the target (dialogs, logins); a real Claude Code auth
+prompt is exactly the case. Note: `/type` always submits with Enter after
+typing (the server's send path has no "type without submitting" mode) — the
+follow-up `/keys Enter` in the recipe below is a safety net for any additional
+prompt, not required to submit the typed text itself.
+
+### Remote re-login (expired Claude session)
+
+When a session's Claude Code login has expired and it's stuck at an OAuth
+prompt, drive the re-login from your phone:
+
+1. `/peek 30` — see the pending OAuth URL in the last 30 lines.
+2. Open the URL in a browser, sign in, and copy the code Claude gives you.
+3. `/type <code>` — types the code into the session's pane (and submits it).
+4. `/keys Enter` — in case a follow-up confirmation is waiting.
 
 ## State files (`~/.amux/`, all 0600, never in git)
 

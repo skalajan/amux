@@ -169,6 +169,17 @@ def parse_command(text):
     return cmd, parts[1:]
 
 
+def command_raw_arg(text):
+    """Everything after the command word, exactly as typed — internal spacing,
+    punctuation and case preserved. parse_command()'s text.split() collapses
+    runs of whitespace and loses this, which matters for /type (the argument
+    may be an OAuth code or similar where mangling it defeats the point).
+    str.split(None, 1) only consumes the single whitespace run separating the
+    command from its argument; everything after that is returned untouched."""
+    parts = text.split(None, 1)
+    return parts[1] if len(parts) > 1 else ""
+
+
 # ── pure logic: topic <-> session mapping (persisted) ──────────────────────────
 class TopicStore:
     """session <-> forum-topic-id map + per-session mute set. Pure logic; JSON persist."""
@@ -503,6 +514,36 @@ class AmuxClient:
             raise AmuxError(f"create {name} -> {code}: {body}")
         return body
 
+    def raw_send(self, session, text):
+        """Direct tmux-pane text injection via POST .../send with
+        deliver_now=True — this disables the server's busy-deferral (steering
+        queue) so the text lands immediately even while the session is
+        generating or parked at a tool-approval/dialog picker (the whole
+        point of /type: steering would otherwise hold it until a turn
+        boundary that a stuck dialog never reaches). Confirmed against the
+        handler (amux-server.py, action == "send"): send_text() ALWAYS types
+        the text then presses Enter to submit it — there is no "type without
+        submitting" mode, so a caller must not assume otherwise."""
+        code, body = self._call(
+            "POST", f"/api/sessions/{urllib.parse.quote(session)}/send",
+            body={"text": text, "deliver_now": True})
+        if code != 200:
+            raise AmuxError(f"raw_send {session} -> {code}: {body}")
+        return body
+
+    def send_key(self, session, key):
+        """One raw tmux key name via POST .../keys (e.g. "Enter", "C-c",
+        "Tab") — confirmed against the handler (action == "keys"): it reads a
+        single 'keys' string and validates it against a fixed allow-list, so
+        this call carries exactly one key per request. Send a sequence by
+        calling this once per key, in order."""
+        code, body = self._call(
+            "POST", f"/api/sessions/{urllib.parse.quote(session)}/keys",
+            body={"keys": key})
+        if code != 200:
+            raise AmuxError(f"send_key {session} {key!r} -> {code}: {body}")
+        return body
+
 
 # ── pure logic: session status label ───────────────────────────────────────────
 def session_status_label(s):
@@ -587,6 +628,10 @@ class Bot:
                 self._cmd_mute(topic_id, True)
             elif cmd == "/unmute":
                 self._cmd_mute(topic_id, False)
+            elif cmd == "/type":
+                self._cmd_type(update, topic_id)
+            elif cmd == "/keys":
+                self._cmd_keys(topic_id, args)
             else:
                 self._reply(topic_id, self._help())
         except AmuxError as e:
@@ -662,13 +707,51 @@ class Bot:
         self._save_topics()
         self._reply(topic_id, f"{'muted' if mute else 'unmuted'} {session}")
 
+    def _cmd_type(self, update, topic_id):
+        """Raw-inject text into the session's tmux pane, DELIBERATELY bypassing
+        the /api/chat steering path (that queues until a turn boundary, which
+        a stuck dialog/picker never reaches). Owner-only is already enforced
+        by the caller. Never log the raw text — it may be an OAuth code or
+        other secret — only its length."""
+        session = self.topics.session_for_topic(topic_id)
+        if not session:
+            self._reply(topic_id, "Run /type inside a mapped session topic.")
+            return
+        text = command_raw_arg(message_text(update))
+        if not text:
+            self._reply(topic_id, "usage: /type <text>")
+            return
+        self.amux.raw_send(session, text)
+        log.info("owner /type -> %s (%d chars)", session, len(text))
+        self._reply(topic_id, "typed ✓")
+
+    def _cmd_keys(self, topic_id, args):
+        """Send one or more raw tmux key names in order (Enter, Up, Down,
+        Escape, C-c, Tab, ...; the server validates each against its
+        allow-list). DELIBERATELY bypasses steering, same rationale as /type."""
+        session = self.topics.session_for_topic(topic_id)
+        if not session:
+            self._reply(topic_id, "Run /keys inside a mapped session topic.")
+            return
+        if not args:
+            self._reply(topic_id, "usage: /keys <key> [key...] (e.g. Enter, C-c, Tab)")
+            return
+        for key in args:
+            self.amux.send_key(session, key)
+        log.info("owner /keys -> %s: %s", session, " ".join(args))
+        self._reply(topic_id, "keys sent ✓")
+
     def _help(self):
         return ("commands:\n"
                 "/sessions — list sessions + status\n"
                 "/peek [session] [N] — last N lines\n"
                 "/wake <session> — resume a session\n"
                 "/create <session> [dir] — create a session\n"
-                "/mute · /unmute — stop/resume forwarding in this topic")
+                "/mute · /unmute — stop/resume forwarding in this topic\n"
+                "/type <text> — raw-inject text into the pane (owner-only)\n"
+                "/keys <key> [key...] — send raw keys, e.g. Enter, C-c, Tab (owner-only)\n"
+                "⚠️ /type and /keys bypass turn-boundary steering — they can interrupt "
+                "a live turn, so use them only for dialogs/logins steering can't reach.")
 
     def _reply(self, topic_id, text):
         try:
