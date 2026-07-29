@@ -127,6 +127,16 @@ typing (the server's send path has no "type without submitting" mode) — the
 follow-up `/keys Enter` in the recipe below is a safety net for any additional
 prompt, not required to submit the typed text itself.
 
+`/type` sends `record_history: true` (not `deliver_now`) to get immediate,
+non-deferred delivery — live-verified that `deliver_now` alone (without
+`record_history`) 500s the handler with an `_origin`-unbound error in the
+current `amux-server.py` (the text still lands before the crash, but the
+sidecar would misreport the send as failed). `record_history` sidesteps the
+bug and is also the semantically correct flag: a Telegram `/type` is a
+deliberate owner action, same as typing in the dashboard — one side effect is
+the typed text becomes visible in the session's own history/transcript, same
+visibility level as it already has in the live pane.
+
 ### Remote re-login (expired Claude session)
 
 When a session's Claude Code login has expired and it's stuck at an OAuth

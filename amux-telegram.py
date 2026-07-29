@@ -516,17 +516,30 @@ class AmuxClient:
 
     def raw_send(self, session, text):
         """Direct tmux-pane text injection via POST .../send with
-        deliver_now=True — this disables the server's busy-deferral (steering
-        queue) so the text lands immediately even while the session is
-        generating or parked at a tool-approval/dialog picker (the whole
-        point of /type: steering would otherwise hold it until a turn
-        boundary that a stuck dialog never reaches). Confirmed against the
-        handler (amux-server.py, action == "send"): send_text() ALWAYS types
-        the text then presses Enter to submit it — there is no "type without
-        submitting" mode, so a caller must not assume otherwise."""
+        record_history=True — this disables the server's busy-deferral
+        (steering queue) so the text lands immediately even while the
+        session is generating or parked at a tool-approval/dialog picker
+        (the whole point of /type: steering would otherwise hold it until a
+        turn boundary that a stuck dialog never reaches). record_history is
+        semantically right here too (a Telegram /type IS a deliberate owner
+        action, same as a human typing in the dashboard).
+
+        NOT deliver_now: live-verified against the running server that
+        deliver_now=True WITHOUT record_history crashes the handler with
+        "cannot access local variable '_origin'" (amux-server.py's
+        POST .../send only initializes _origin inside its `if _defer_busy`
+        branch, but references it again unconditionally afterward) — the
+        text still lands before the crash, but the request 500s. Zero
+        changes to amux-server.py are allowed, so record_history is the
+        correct — and working — way to get immediate, non-deferred delivery.
+
+        Confirmed against the handler (action == "send"): send_text()
+        ALWAYS types the text then presses Enter to submit it — there is no
+        "type without submitting" mode, so a caller must not assume
+        otherwise."""
         code, body = self._call(
             "POST", f"/api/sessions/{urllib.parse.quote(session)}/send",
-            body={"text": text, "deliver_now": True})
+            body={"text": text, "record_history": True})
         if code != 200:
             raise AmuxError(f"raw_send {session} -> {code}: {body}")
         return body

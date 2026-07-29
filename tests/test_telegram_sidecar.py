@@ -327,9 +327,9 @@ client._call = rec
 client.raw_send("sessA", "the-code")
 client.send_key("sessA", "Enter")
 assert rec.calls[0] == ("POST", "/api/sessions/sessA/send",
-                        {"text": "the-code", "deliver_now": True}), rec.calls[0]
+                        {"text": "the-code", "record_history": True}), rec.calls[0]
 assert rec.calls[1] == ("POST", "/api/sessions/sessA/keys", {"keys": "Enter"}), rec.calls[1]
-print("payload ok — raw_send body {'text','deliver_now':True}; send_key body {'keys':<one key>}")
+print("payload ok — raw_send body {'text','record_history':True}; send_key body {'keys':<one key>}")
 
 
 print("\nALL TELEGRAM-SIDECAR CHECKS PASSED")
