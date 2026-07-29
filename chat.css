@@ -42,6 +42,16 @@
 }
 .chat-msg.pending .chat-bubble { opacity: 0.6; }
 
+/* Reply-summary expand affordance (docs/reply-summary.md) — collapsed session
+ * bubbles (summary or client-truncated preview) show this to reveal the full
+ * text. min-height 44px keeps it a real touch target on mobile. */
+.chat-expand {
+  align-self: flex-start; margin-top: 4px; min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: transparent;
+  color: var(--accent); font-size: 0.78rem; font-weight: 600; cursor: pointer;
+}
+.chat-expand:active { background: var(--accent); color: #0a0a0c; }
+
 /* Rendered markdown inside a bubble stays compact. */
 .chat-bubble p { margin: 0 0 6px; }
 .chat-bubble p:last-child { margin-bottom: 0; }

@@ -26,8 +26,19 @@
   var _items = new Map();          // id -> thread item (dedup key = stable id)
   var _shellBuilt = false;
   var _renderTimer = 0;
+  // Reply-summary collapse (docs/reply-summary.md): a session bubble collapses to
+  // its `summary` (server-parsed "⌁" marker or the background Haiku fill-in) when
+  // present, else to a client-side truncation for long unmarked replies. Expand
+  // state is per-message, in-memory only (no persistence across tab reopen).
+  var CHAT_COLLAPSE_CHARS = 600;
+  var _expanded = new Set();       // message ids the user has manually expanded
 
   function _panel() { return document.getElementById('peek-chat-panel'); }
+
+  function _isCollapsible(item) {
+    return item.role === 'session' &&
+      !!(item.summary || (item.text || '').length > CHAT_COLLAPSE_CHARS);
+  }
 
   function _sessionStatus(name) {
     var s = sessions.find(function (x) { return x && x.name === name; });
@@ -44,8 +55,16 @@
   function _bodyHtml(item) {
     // Session replies are markdown; owner/system text is shown verbatim (escaped,
     // CSS white-space:pre-wrap preserves newlines) so a typed message is exact.
-    if (item.role === 'session') return renderMarkdown(item.text || '');
-    return esc(item.text || '');
+    if (item.role !== 'session') return esc(item.text || '');
+    if (_isCollapsible(item) && !_expanded.has(item.id)) {
+      // A real summary is one plain sentence (no markdown, per the marker
+      // contract) — escape it verbatim. Without one, fall back to a client-side
+      // truncated preview of the (still-markdown) full text.
+      if (item.summary) return esc(item.summary);
+      var t = (item.text || '');
+      return renderMarkdown(t.slice(0, CHAT_COLLAPSE_CHARS).trim() + '…');
+    }
+    return renderMarkdown(item.text || '');
   }
 
   function _msgHtml(item) {
@@ -68,8 +87,14 @@
     var t = _fmtTime(item.ts);
     if (t) metaBits.push('<span class="chat-time">' + esc(t) + '</span>');
     var meta = metaBits.length ? '<div class="chat-meta">' + metaBits.join('') + '</div>' : '';
+    var expandBtn = '';
+    if (_isCollapsible(item)) {
+      var open = _expanded.has(item.id);
+      expandBtn = '<button type="button" class="chat-expand" data-expand-id="' + esc(item.id) + '">' +
+                  (open ? 'skrýt ▴' : 'zobrazit vše ▾') + '</button>';
+    }
     return '<div class="chat-msg ' + role + pending + '" data-id="' + esc(item.id) + '">' +
-             '<div class="chat-bubble">' + _bodyHtml(item) + '</div>' + meta +
+             '<div class="chat-bubble">' + _bodyHtml(item) + '</div>' + expandBtn + meta +
            '</div>';
   }
 
@@ -199,6 +224,19 @@
       var name = window._chatActiveSession || '';
       if (name) wakeSession(name);
     });
+    // Delegated on the (never-replaced) thread element, not per-button: _render()
+    // rebuilds innerHTML on every update, so a direct per-button listener would be
+    // lost on the very next render.
+    var thread = panel.querySelector('.chat-thread');
+    if (thread) {
+      thread.addEventListener('click', function (e) {
+        var btn = e.target.closest && e.target.closest('.chat-expand');
+        if (!btn) return;
+        var id = btn.getAttribute('data-expand-id');
+        if (_expanded.has(id)) _expanded.delete(id); else _expanded.add(id);
+        _render();
+      });
+    }
     _shellBuilt = true;
   }
 
@@ -207,6 +245,7 @@
     if (!session) return;
     if (!_shellBuilt) _buildShell();
     _items.clear();
+    _expanded.clear();
     window._chatActiveSession = session;
     window._chatCursor = 0;               // reset the B1 cursor -> next poll is a full load
     _render();
