@@ -1089,7 +1089,14 @@ class Bot:
         """Render one outbound item per the session's display mode. System
         rows and short session replies are always forwarded verbatim; smart
         mode runs the reply through the summarizer with a brief-truncation
-        fallback on ANY failure (never blocks or drops the reply)."""
+        fallback on ANY failure (never blocks or drops the reply).
+
+        A reply's server-provided `summary` (docs/reply-summary.md — either the
+        owner's own "⌁" marker or the server's background Haiku fill-in) is
+        preferred over a local summarizer call: it's free (no extra `claude -p`
+        subprocess) and, for a marker, has full session context the summarizer
+        never sees. The local summarizer is only a fallback for items the server
+        never summarized."""
         if item.get("role") == "system":
             return format_item(session, item)
         text = item.get("text") or ""
@@ -1101,6 +1108,9 @@ class Bot:
         if mode == "brief":
             return brief_truncate(text)
         # smart
+        server_summary = (item.get("summary") or "").strip()
+        if server_summary:
+            return SMART_PREFIX + server_summary + SMART_SUFFIX
         summary = None
         if self.summarizer is not None:
             try:
