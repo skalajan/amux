@@ -22,8 +22,9 @@ SERVER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 # ── AST-load the real pure helpers + the real schema ──────────────────────────
 ns: dict = {}
 tree = ast.parse(open(SERVER, encoding="utf-8").read())
-_want_func = {"_chat_extract_turns", "_chat_iso_to_epoch", "_chat_delivery_status"}
-_want_assign = {"_DB_SCHEMA"}
+_want_func = {"_chat_extract_turns", "_chat_iso_to_epoch", "_chat_delivery_status",
+             "_chat_parse_summary_marker"}
+_want_assign = {"_DB_SCHEMA", "_CHAT_SUMMARY_MARKER", "_CHAT_SUMMARY_MAX_CHARS"}
 for node in tree.body:
     if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
             and node.targets[0].id in _want_assign:
@@ -32,9 +33,12 @@ for node in tree.body:
         exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), ns)
 
 extract = ns["_chat_extract_turns"]
+parse_marker = ns["_chat_parse_summary_marker"]
 SCHEMA = ns["_DB_SCHEMA"]
 assert callable(extract), "helpers not extracted from amux-server.py"
+assert callable(parse_marker), "_chat_parse_summary_marker not extracted from amux-server.py"
 assert "chat_replies" in SCHEMA and "chat_messages" in SCHEMA, "chat tables missing from _DB_SCHEMA"
+assert "summary" in SCHEMA, "chat_replies.summary column missing from _DB_SCHEMA"
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -104,6 +108,37 @@ assert extract(rows, CONV, 3) == [], "since=3 over a 3-turn span must yield 0 ne
 assert [t["turn_index"] for t in extract(rows, CONV, 1)] == [2, 3], "since=1 must yield only 2,3"
 print("cursor ok — since_index re-run yields only strictly-newer turns")
 
+# ── reply-summary marker parsing (docs/reply-summary.md) ──────────────────────
+assert parse_marker("line one\nline two\n⌁ hotovo, vse v poradku") == \
+    ("line one\nline two", "hotovo, vse v poradku"), "marker line must be parsed + stripped"
+# glyph + space variants — no space, and extra whitespace, both normalize the same
+assert parse_marker("body\n⌁hotovo") == ("body", "hotovo"), "no-space variant must still parse"
+assert parse_marker("body\n⌁   hotovo  ") == ("body", "hotovo"), "extra-whitespace variant must still parse"
+# no marker present -> unchanged text, summary None
+assert parse_marker("just a normal reply\nwith two lines") == \
+    ("just a normal reply\nwith two lines", None), "no marker -> summary None, text untouched"
+# marker sentence capped to _CHAT_SUMMARY_MAX_CHARS
+_long_marker = "⌁ " + ("x" * 400)
+_clean, _summ = parse_marker("body text\n" + _long_marker)
+assert _clean == "body text", "marker line must still be stripped when the sentence is long"
+assert len(_summ) == ns["_CHAT_SUMMARY_MAX_CHARS"] == 300, f"summary must be capped to 300 chars: {len(_summ)}"
+# marker-only text: stripping it would leave nothing -> keep the original text, still return summary
+assert parse_marker("⌁ only marker") == ("⌁ only marker", "only marker"), \
+    "stripping the only line must not produce an empty stored text"
+print("marker-parse ok — ⌁ marker parsed + stripped (with glyph/space variants), capped at 300, "
+      "no-marker and marker-only edge cases handled")
+
+# ── marker integration through _chat_extract_turns ─────────────────────────────
+marked_rows = [reply("did the thing.\nall good.\n⌁ done, no blockers", 0)]
+mt = extract(marked_rows, CONV, 0)
+assert len(mt) == 1 and mt[0]["text"] == "did the thing.\nall good." and \
+    mt[0]["summary"] == "done, no blockers", f"marker must be extracted+stripped in turns: {mt}"
+unmarked_rows = [reply("plain reply, no marker here", 0)]
+ut = extract(unmarked_rows, CONV, 0)
+assert ut[0]["summary"] is None and ut[0]["text"] == "plain reply, no marker here", \
+    f"no-marker turn must carry summary=None and untouched text: {ut}"
+print("marker-integration ok — _chat_extract_turns surfaces summary + stripped text per turn")
+
 
 # ── DB-backed invariants against the REAL schema ──────────────────────────────
 def fresh_db():
@@ -114,14 +149,18 @@ def fresh_db():
 
 def populate(db, session, conv, rows):
     """Mirror the server's single-writer populate loop (ascending turn_index,
-    INSERT OR IGNORE on the stable id), driven by the REAL _chat_extract_turns."""
+    INSERT OR IGNORE on the stable id), driven by the REAL _chat_extract_turns.
+    Also mirrors the real _chat_populate_replies' summary column write, so a
+    rebuild replay re-derives summary from the transcript exactly like the
+    server does (see the C-crit-2 rebuild test below)."""
     last = db.execute("SELECT id FROM chat_replies WHERE session=? AND id LIKE ? "
                       "ORDER BY rowid_seq DESC LIMIT 1", (session, conv + ":%")).fetchone()
     since = int(str(last["id"]).rsplit(":", 1)[1]) if last else 0
     ins = 0
     for t in extract(rows, conv, since):
-        cur = db.execute("INSERT OR IGNORE INTO chat_replies(id, session, text, turn_ts, created_ts) "
-                         "VALUES(?,?,?,?,?)", (t["id"], session, t["text"], t["turn_ts"], int(time.time())))
+        cur = db.execute("INSERT OR IGNORE INTO chat_replies(id, session, text, summary, turn_ts, created_ts) "
+                         "VALUES(?,?,?,?,?,?)",
+                         (t["id"], session, t["text"], t.get("summary"), t["turn_ts"], int(time.time())))
         ins += cur.rowcount
     db.commit()
     return ins
@@ -170,6 +209,27 @@ populate(db, SESS, CONV, full)
 drop_min = db.execute("SELECT MIN(rowid_seq) m FROM chat_replies").fetchone()["m"]
 assert drop_min == 1, f"sanity: DROP should reset AUTOINCREMENT to 1, got {drop_min}"
 print("C-crit-2 ok — DELETE rebuild keeps higher seqs + stable ids; DROP resets (why DELETE)")
+
+# ── rebuild replay re-derives summary from the transcript (docs/reply-summary.md) ─
+# summary is NOT authoritative state — like the rest of chat_replies it's a
+# projection over the JSONL text, so a DELETE+replay must reconstruct it exactly,
+# with no separate persistence path required.
+SESS2 = "_summarytest"
+marked_full = [reply("r1", 0), reply("did work.\n⌁ hotovo, vse ok", 1), reply("r3", 2)]
+dbm = fresh_db()
+populate(dbm, SESS2, CONV, marked_full)
+before = [(r["id"], r["text"], r["summary"]) for r in
+          dbm.execute("SELECT id, text, summary FROM chat_replies ORDER BY rowid_seq")]
+assert before[1][1] == "did work." and before[1][2] == "hotovo, vse ok", \
+    f"summary must be derived + text stripped at first populate: {before}"
+assert before[0][2] is None and before[2][2] is None, "unmarked turns must have summary None"
+dbm.execute("DELETE FROM chat_replies")   # rebuild the cache — MUST be DELETE, never DROP
+dbm.commit()
+populate(dbm, SESS2, CONV, marked_full)   # replay the full transcript
+after = [(r["id"], r["text"], r["summary"]) for r in
+         dbm.execute("SELECT id, text, summary FROM chat_replies ORDER BY rowid_seq")]
+assert after == before, f"rebuild replay must re-derive identical (text, summary): {after} != {before}"
+print("rebuild-summary ok — DELETE-rebuild replay re-derives summary + stripped text identically")
 
 # ── delivery-status derivation via steering join ──────────────────────────────
 delivery = ns["_chat_delivery_status"]

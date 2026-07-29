@@ -533,7 +533,49 @@ assert [t for (_c, t, _tid) in mt.sent] == [LONG_REPLY], mt.sent
 print("full mode ok — verbatim forward, summarizer never invoked, no truncation")
 
 
-# ── 20. /mode: show/set per-topic override, persists, validates, owner+mapped ──
+# ── 20. smart mode: server-provided summary is preferred, local summarizer skipped ─
+# (docs/reply-summary.md) — the reply item carries a server `summary` (either the
+# owner's own "⌁" marker or the background Haiku fill-in); the sidecar must use it
+# directly and never spend a local `claude -p` call on the same reply.
+_calls5 = []
+
+
+def mock_summarize_track5(text):
+    _calls5.append(text)
+    return "should not be used — server summary must win"
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessH": 800}},
+                            outbound_state={"sessH": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track5)
+ma.threads["sessH"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1,
+     "summary": "Hotovo, vse v poradku."}]}
+bot.forward_session("sessH")
+assert _calls5 == [], "server-provided summary must skip the local summarizer entirely"
+assert [t for (_c, t, _tid) in mt.sent] == [tg.SMART_PREFIX + "Hotovo, vse v poradku." + tg.SMART_SUFFIX], mt.sent
+print("server-summary ok — server summary preferred over local summarizer, carries same prefix/suffix")
+
+
+# ── 21. smart mode: no server summary -> local summarizer still called as before ──
+def mock_summarize_track6(text):
+    assert text == LONG_REPLY
+    return "Lokalni shrnuti."
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessI": 801}},
+                            outbound_state={"sessI": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track6)
+# No "summary" key at all — mirrors an older server / a reply the server hasn't
+# filled in yet.
+ma.threads["sessI"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessI")
+assert [t for (_c, t, _tid) in mt.sent] == [tg.SMART_PREFIX + "Lokalni shrnuti." + tg.SMART_SUFFIX], mt.sent
+print("no-server-summary ok — absent server summary falls back to the local summarizer as before")
+
+
+# ── 22. /mode: show/set per-topic override, persists, validates, owner+mapped ──
 bot, mt, ma, off = make_bot(topics_state={"topics": {"sessG": 700}})
 bot.handle_update(owner_msg(40, "/mode", topic_id=700))
 assert [t for (_c, t, _tid) in mt.sent] == ["mode: smart (default)"], mt.sent
@@ -562,7 +604,7 @@ assert bot3.topics.mode_for_session("sessG") is None, "non-owner /mode must not 
 print("mode ok — /mode shows/sets per-topic override, persists, validates, owner+mapped gated")
 
 
-# ── 21. /last: full (unsummarized) text of the n-th most recent reply ──────────
+# ── 23. /last: full (unsummarized) text of the n-th most recent reply ──────────
 bot, mt, ma, off = make_bot(topics_state={"topics": {"sessH": 800}})
 LONG_SECOND = "second reply full text " * 50
 ma.threads["sessH"] = {"cursor": 3, "thread": [
@@ -594,7 +636,7 @@ assert mt3.sent == [], "non-owner /last must be ignored"
 print("last ok — /last returns full (unsummarized) text of the n-th most recent reply, validated, gated")
 
 
-# ── 22. Summarizer: injected runner — never invokes a real subprocess ──────────
+# ── 24. Summarizer: injected runner — never invokes a real subprocess ──────────
 class _FakeCompletedProcess:
     def __init__(self, returncode=0, stdout=""):
         self.returncode = returncode
