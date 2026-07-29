@@ -103,15 +103,18 @@ class MockAmux:
         return {"ok": True}
 
 
-def make_bot(topics_state=None, outbound_state=None, offset=0, chat_id="-100999"):
+def make_bot(topics_state=None, outbound_state=None, offset=0, chat_id="-100999",
+             summarizer=None, default_mode=None):
     td = tempfile.mkdtemp()
     topics = tg.TopicStore(os.path.join(td, "topics.json"), topics_state or {})
     outbound = tg.OutboundTracker(os.path.join(td, "out.json"), outbound_state or {})
     off = tg.OffsetStore(os.path.join(td, "offset"), offset)
     cfg = {"owner_id": 42, "chat_id": chat_id, "amux_base": "x", "tg_api_base": "y",
            "write_token": "wt", "poll_secs": 0.01, "long_poll_secs": 1}
+    if default_mode:
+        cfg["default_mode"] = default_mode
     mt, ma = MockTelegram(), MockAmux()
-    bot = tg.Bot(cfg, mt, ma, topics, off, outbound)
+    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=summarizer)
     return bot, mt, ma, off
 
 
@@ -260,7 +263,26 @@ except tg.ConfigError as e:
 os.chmod(cfgp, 0o600)
 c = tg.load_config(cfgp, write_token_path=os.path.join(td, "nope"), environ={})
 assert c["owner_id"] == 42 and c["bot_token"] == "t"
+assert c["default_mode"] == "smart", "TG_DEFAULT_MODE must default to smart for ALL topics"
+assert c["summary_model"] == "haiku"
+assert c["summary_timeout"] == 90.0
+assert c["summary_config_dir"] is None
 print("config ok — insecure perms refused; 0600 config parses")
+
+# TG_DEFAULT_MODE / TG_SUMMARY_* overrides (env wins over file, per load_config's get())
+c2 = tg.load_config(cfgp, write_token_path=os.path.join(td, "nope"), environ={
+    "TG_DEFAULT_MODE": "full", "TG_SUMMARY_MODEL": "sonnet",
+    "TG_SUMMARY_TIMEOUT": "30", "TG_SUMMARY_CONFIG_DIR": "/tmp/some-dir"})
+assert c2["default_mode"] == "full"
+assert c2["summary_model"] == "sonnet"
+assert c2["summary_timeout"] == 30.0
+assert c2["summary_config_dir"] == "/tmp/some-dir"
+
+# invalid TG_DEFAULT_MODE falls back to smart rather than raising
+c3 = tg.load_config(cfgp, write_token_path=os.path.join(td, "nope"),
+                    environ={"TG_DEFAULT_MODE": "loud"})
+assert c3["default_mode"] == "smart"
+print("config ok — TG_DEFAULT_MODE / TG_SUMMARY_* env overrides parse; invalid mode falls back to smart")
 
 
 # ── 10. /type: raw-inject preserves the exact argument, bypasses steering ──────
@@ -370,6 +392,264 @@ bot.handle_update(owner_msg(34, "//ralph fix tests", topic_id=777))
 assert ma.posted == [], "unmapped topic must not forward"
 assert any("No session is mapped" in t for (_c, t, _tid) in mt.sent), mt.sent
 print("// ok — unmapped topic behaves like plain text (no session mapped reply)")
+
+
+# ── 14. smart mode (default): long reply summarized, carries ≡ prefix/suffix ───
+LONG_REPLY = "Implementoval jsem novou funkci a opravil několik chyb. " * 20
+assert len(LONG_REPLY) > tg.SHORT_REPLY_CHARS, "fixture must exceed the short-reply bypass"
+
+
+def mock_summarize_ok(text):
+    assert text == LONG_REPLY, "summarizer must receive the full reply text (under the stdin cap)"
+    return "Úkol dokončen, vše v pořádku."
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}},
+                            outbound_state={"sessA": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_ok)
+ma.threads["sessA"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessA")
+sent = [t for (_c, t, _tid) in mt.sent]
+assert sent == [tg.SMART_PREFIX + "Úkol dokončen, vše v pořádku." + tg.SMART_SUFFIX], sent
+print("smart mode ok — long reply summarized, carries ≡ prefix + /last suffix")
+
+
+# ── 15. summarizer failure (None or raise) -> brief fallback, exactly-once ─────
+def mock_summarize_none(text):
+    return None  # mirrors Summarizer.summarize()'s own contract on any internal failure
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessB": 200}},
+                            outbound_state={"sessB": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_none)
+ma.threads["sessB"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessB")
+sent = [t for (_c, t, _tid) in mt.sent]
+assert sent == [tg.brief_truncate(LONG_REPLY)], sent
+assert tg.SMART_PREFIX not in sent[0], "a fallback message must not carry the smart-mode prefix"
+n_before = len(mt.sent)
+bot.forward_session("sessB")
+assert len(mt.sent) == n_before, "fallback-delivered reply must still be exactly-once"
+
+
+def mock_summarize_raises(text):
+    raise RuntimeError("boom")
+
+
+bot2, mt2, ma2, off2 = make_bot(topics_state={"topics": {"sessB2": 201}},
+                                outbound_state={"sessB2": {"last_seq": 0, "seen": []}},
+                                summarizer=mock_summarize_raises)
+ma2.threads["sessB2"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot2.forward_session("sessB2")
+assert [t for (_c, t, _tid) in mt2.sent] == [tg.brief_truncate(LONG_REPLY)]
+print("smart fallback ok — summarizer failure (None / exception) falls back to brief, exactly-once, "
+      "content still delivered")
+
+
+# ── 16. short replies bypass the summarizer entirely ────────────────────────────
+_calls = []
+
+
+def mock_summarize_track(text):
+    _calls.append(text)
+    return "should not be used"
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessC": 300}},
+                            outbound_state={"sessC": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track)
+SHORT_REPLY = "all done, quick fix applied."
+assert len(SHORT_REPLY) < tg.SHORT_REPLY_CHARS
+ma.threads["sessC"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": SHORT_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessC")
+assert _calls == [], "short reply must bypass the summarizer entirely"
+assert [t for (_c, t, _tid) in mt.sent] == [SHORT_REPLY], mt.sent
+print("short-reply bypass ok — replies under the threshold skip the summarizer, forwarded verbatim")
+
+
+# ── 17. system rows always verbatim — never summarized, even when long ─────────
+_calls2 = []
+
+
+def mock_summarize_track2(text):
+    _calls2.append(text)
+    return "x"
+
+
+LONG_SYSTEM = "usage limit details: " + ("detail " * 100)
+assert len(LONG_SYSTEM) > tg.SHORT_REPLY_CHARS
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessD": 400}},
+                            outbound_state={"sessD": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track2)
+ma.threads["sessD"] = {"cursor": 1, "thread": [
+    {"id": "SYS:1", "role": "system", "text": LONG_SYSTEM, "ts": 10, "seq": None}]}
+bot.forward_session("sessD")
+assert _calls2 == [], "system rows must never be summarized"
+assert [t for (_c, t, _tid) in mt.sent] == [f"⚙️ [sessD] {LONG_SYSTEM}"], mt.sent
+print("system-row ok — system rows always forwarded verbatim, never summarized/truncated")
+
+
+# ── 18. brief mode: deterministic truncation, summarizer never invoked ─────────
+_calls3 = []
+
+
+def mock_summarize_track3(text):
+    _calls3.append(text)
+    return "x"
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessE": 500}, "modes": {"sessE": "brief"}},
+                            outbound_state={"sessE": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track3)
+ma.threads["sessE"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessE")
+assert _calls3 == [], "brief mode must never call the summarizer"
+assert [t for (_c, t, _tid) in mt.sent] == [tg.brief_truncate(LONG_REPLY)], mt.sent
+print("brief mode ok — deterministic truncation, summarizer never invoked")
+
+
+# ── 19. full mode: verbatim, summarizer never invoked, no truncation ───────────
+_calls4 = []
+
+
+def mock_summarize_track4(text):
+    _calls4.append(text)
+    return "x"
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessF": 600}, "modes": {"sessF": "full"}},
+                            outbound_state={"sessF": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_track4)
+ma.threads["sessF"] = {"cursor": 1, "thread": [
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 10, "seq": 1}]}
+bot.forward_session("sessF")
+assert _calls4 == [], "full mode must never call the summarizer"
+assert [t for (_c, t, _tid) in mt.sent] == [LONG_REPLY], mt.sent
+print("full mode ok — verbatim forward, summarizer never invoked, no truncation")
+
+
+# ── 20. /mode: show/set per-topic override, persists, validates, owner+mapped ──
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessG": 700}})
+bot.handle_update(owner_msg(40, "/mode", topic_id=700))
+assert [t for (_c, t, _tid) in mt.sent] == ["mode: smart (default)"], mt.sent
+
+bot.handle_update(owner_msg(41, "/mode brief", topic_id=700))
+assert bot.topics.mode_for_session("sessG") == "brief"
+assert [t for (_c, t, _tid) in mt.sent][-1] == "mode set to brief for sessG", mt.sent
+
+reloaded = tg.TopicStore.load(bot.topics.path)
+assert reloaded.mode_for_session("sessG") == "brief", "mode override must persist to disk"
+
+bot.handle_update(owner_msg(42, "/mode", topic_id=700))
+assert [t for (_c, t, _tid) in mt.sent][-1] == "mode: brief", mt.sent
+
+bot.handle_update(owner_msg(43, "/mode loud", topic_id=700))
+assert bot.topics.mode_for_session("sessG") == "brief", "invalid mode must not change stored mode"
+assert [t for (_c, t, _tid) in mt.sent][-1] == "usage: /mode smart|brief|full", mt.sent
+
+bot2, mt2, ma2, off2 = make_bot()
+bot2.handle_update(owner_msg(44, "/mode smart", topic_id=999))
+assert any("mapped session topic" in t for (_c, t, _tid) in mt2.sent), mt2.sent
+
+bot3, mt3, ma3, off3 = make_bot(topics_state={"topics": {"sessG": 700}})
+bot3.handle_update(owner_msg(45, "/mode brief", topic_id=700, from_id=999))
+assert bot3.topics.mode_for_session("sessG") is None, "non-owner /mode must not change stored mode"
+print("mode ok — /mode shows/sets per-topic override, persists, validates, owner+mapped gated")
+
+
+# ── 21. /last: full (unsummarized) text of the n-th most recent reply ──────────
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessH": 800}})
+LONG_SECOND = "second reply full text " * 50
+ma.threads["sessH"] = {"cursor": 3, "thread": [
+    {"id": "S:1", "role": "session", "text": "first reply full text", "ts": 10, "seq": 1},
+    {"id": "SYS:1", "role": "system", "text": "usage note", "ts": 15, "seq": None},
+    {"id": "S:2", "role": "session", "text": LONG_SECOND, "ts": 20, "seq": 2},
+    {"id": "S:3", "role": "session", "text": "third reply full text", "ts": 30, "seq": 3},
+]}
+bot.handle_update(owner_msg(50, "/last", topic_id=800))
+assert [t for (_c, t, _tid) in mt.sent] == ["third reply full text"], mt.sent
+
+bot.handle_update(owner_msg(51, "/last 2", topic_id=800))
+assert [t for (_c, t, _tid) in mt.sent][-1] == LONG_SECOND, "must return the FULL text, not truncated"
+
+bot.handle_update(owner_msg(52, "/last 99", topic_id=800))
+assert "available" in [t for (_c, t, _tid) in mt.sent][-1]
+
+bot.handle_update(owner_msg(53, "/last abc", topic_id=800))
+assert [t for (_c, t, _tid) in mt.sent][-1] == "usage: /last [n]"
+
+bot2, mt2, ma2, off2 = make_bot()
+bot2.handle_update(owner_msg(54, "/last", topic_id=999))
+assert any("mapped session topic" in t for (_c, t, _tid) in mt2.sent), mt2.sent
+
+bot3, mt3, ma3, off3 = make_bot(topics_state={"topics": {"sessH": 800}})
+ma3.threads["sessH"] = ma.threads["sessH"]
+bot3.handle_update(owner_msg(55, "/last", topic_id=800, from_id=999))
+assert mt3.sent == [], "non-owner /last must be ignored"
+print("last ok — /last returns full (unsummarized) text of the n-th most recent reply, validated, gated")
+
+
+# ── 22. Summarizer: injected runner — never invokes a real subprocess ──────────
+class _FakeCompletedProcess:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+class _FakeRunner:
+    """Records every call; returns (or raises) whatever result is queued next."""
+    def __init__(self):
+        self.calls = []
+        self._queue = []
+
+    def queue(self, result):
+        self._queue.append(result)
+
+    def __call__(self, cmd, input, capture_output, text, timeout, env):
+        self.calls.append({"cmd": cmd, "input": input, "timeout": timeout, "env": env})
+        result = self._queue.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+runner = _FakeRunner()
+summ = tg.Summarizer(model="haiku", timeout=42, config_dir="/tmp/fake-cfg",
+                     claude_bin="/tmp/fake/claude", runner=runner)
+
+runner.queue(_FakeCompletedProcess(0, "  Krátké shrnutí.  \n"))
+assert summ.summarize("some long reply text") == "Krátké shrnutí."
+call = runner.calls[-1]
+assert call["cmd"] == ["/tmp/fake/claude", "-p", tg.SUMMARY_PROMPT, "--model", "haiku"], call["cmd"]
+assert call["timeout"] == 42
+assert call["env"]["CLAUDE_CONFIG_DIR"] == "/tmp/fake-cfg"
+assert call["env"]["PATH"].startswith("/tmp/fake:"), call["env"]["PATH"]
+assert call["env"].get("USER"), "USER must be populated even under a minimal (launchd-style) env"
+assert "CLAUDECODE" not in call["env"] and "CLAUDE_CODE_ENTRYPOINT" not in call["env"], \
+    "child env is built from scratch — no recursive-invocation vars leak through"
+
+runner.queue(_FakeCompletedProcess(1, ""))            # nonzero exit
+assert summ.summarize("x") is None
+runner.queue(_FakeCompletedProcess(0, "   \n"))        # empty output
+assert summ.summarize("x") is None
+runner.queue(tg.subprocess.TimeoutExpired(cmd="claude", timeout=42))  # timeout
+assert summ.summarize("x") is None
+runner.queue(OSError("no such file"))                  # binary missing / exec failure
+assert summ.summarize("x") is None
+print("Summarizer ok — env built explicitly (USER populated, no CLAUDECODE leak); "
+      "ANY failure mode (nonzero/empty/timeout/OSError) returns None, never raises")
+
+big = ("A" * 9000) + "MIDDLE" + ("B" * 9000)
+capped = tg._cap_stdin(big)
+assert capped.startswith("A" * 8000) and capped.endswith("B" * 4000)
+assert len(capped) == 8000 + len("\n…\n") + 4000
+assert tg._cap_stdin("short text") == "short text"
+print("cap_stdin ok — oversized input capped to first 8k + elision + last 4k; short input untouched")
 
 
 print("\nALL TELEGRAM-SIDECAR CHECKS PASSED")

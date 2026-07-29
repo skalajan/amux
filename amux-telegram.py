@@ -31,6 +31,7 @@ import logging
 import os
 import ssl
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +51,11 @@ OUTBOUND_PATH = os.path.join(AMUX_DIR, "telegram-outbound.json")
 
 DEFAULT_TG_API_BASE = "https://api.telegram.org"
 DEFAULT_AMUX_BASE = "https://localhost:8822"
+
+# Per-topic display mode for outbound session replies. "smart" is the DEFAULT
+# for every topic (new and pre-existing) unless overridden by /mode or
+# TG_DEFAULT_MODE.
+VALID_MODES = ("smart", "brief", "full")
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -114,6 +120,13 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
         log.warning("write token not readable at %s — amux writes may 401", write_token_path)
 
     chat_id = (get("TG_CHAT_ID") or "").strip()
+
+    default_mode = (get("TG_DEFAULT_MODE") or "smart").strip().lower()
+    if default_mode not in VALID_MODES:
+        log.warning("TG_DEFAULT_MODE=%r invalid (want smart/brief/full) — using 'smart'",
+                    default_mode)
+        default_mode = "smart"
+
     return {
         "bot_token": token,
         "owner_id": owner_id,
@@ -123,6 +136,10 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
         "write_token": write_token,
         "poll_secs": float(get("TG_POLL_SECS", "2.0") or 2.0),
         "long_poll_secs": int(get("TG_LONG_POLL_SECS", "25") or 25),
+        "default_mode": default_mode,
+        "summary_model": (get("TG_SUMMARY_MODEL") or "haiku").strip(),
+        "summary_timeout": float(get("TG_SUMMARY_TIMEOUT", "90") or 90),
+        "summary_config_dir": (get("TG_SUMMARY_CONFIG_DIR") or "").strip() or None,
     }
 
 
@@ -190,6 +207,11 @@ class TopicStore:
         # session -> topic_id
         self._topics = {str(k): int(v) for k, v in (state.get("topics") or {}).items()}
         self._muted = set(str(s) for s in (state.get("muted") or []))
+        # session -> display mode override ("smart"/"brief"/"full"); absent ->
+        # falls back to the global TG_DEFAULT_MODE. Unknown values from a
+        # hand-edited file are dropped rather than raising.
+        self._modes = {str(k): v for k, v in (state.get("modes") or {}).items()
+                       if v in VALID_MODES}
 
     @classmethod
     def load(cls, path=TOPICS_PATH):
@@ -200,7 +222,8 @@ class TopicStore:
             return cls(path, {})
 
     def to_dict(self):
-        return {"topics": dict(self._topics), "muted": sorted(self._muted)}
+        return {"topics": dict(self._topics), "muted": sorted(self._muted),
+                "modes": dict(self._modes)}
 
     def save(self):
         _atomic_write_0600(self.path, json.dumps(self.to_dict(), indent=2))
@@ -227,6 +250,16 @@ class TopicStore:
 
     def unmute(self, session):
         self._muted.discard(str(session))
+
+    def mode_for_session(self, session):
+        """This session's mode override, or None (caller falls back to the
+        global default)."""
+        return self._modes.get(str(session))
+
+    def set_mode(self, session, mode):
+        if mode not in VALID_MODES:
+            raise ValueError(f"invalid mode: {mode!r} (want one of {VALID_MODES})")
+        self._modes[str(session)] = mode
 
 
 # ── pure logic: inbound long-poll offset (persisted) ───────────────────────────
@@ -558,6 +591,139 @@ class AmuxClient:
         return body
 
 
+# ── smart-mode summarizer: one-shot `claude -p` subprocess (injectable) ─────────
+# Compresses a long session reply into a short Czech chat message using the
+# OWNER's existing Claude Code plan — a one-shot `claude -p --model haiku`
+# call, NOT the API (no API key involved). Runs in the outbound forward path;
+# ANY failure falls back to deterministic brief truncation (never blocks or
+# drops the reply).
+#
+# The child runs under launchd's near-empty env (see
+# sidecars/com.amux.telegram.plist — only HOME+PATH are set), so PATH,
+# CLAUDE_CONFIG_DIR and user identity are resolved explicitly here rather than
+# inherited. Empirically verified on this machine: `env -i` with only
+# HOME+PATH+CLAUDE_CONFIG_DIR set still fails "Not logged in" — macOS Keychain
+# credential lookup additionally needs USER/LOGNAME populated.
+
+SUMMARY_PROMPT = (
+    "Následující text je odpověď AI kódovacího agenta z coding session. Shrň "
+    "ji do KRÁTKÉ zprávy do chatu (2 až 4 věty, v češtině): co bylo uděláno, "
+    "jaký je výsledek, a jestli něco blokuje nebo je potřeba rozhodnutí/"
+    "pozornost majitele. Bez implementačních detailů, bez kódu, bez nadpisů "
+    "a bez markdown formátování — piš to jako běžnou textovou zprávu člověku."
+)
+
+# Checked empirically on this machine: `claude` is a shell alias
+# (--dangerously-skip-permissions), not a real PATH entry, and
+# /usr/local/bin/claude does not exist — the native installer put the real
+# binary at ~/.local/bin/claude. Try known install locations, falling back to
+# bare "claude" so PATH resolution still works on a differently-laid-out host.
+_CLAUDE_BIN_CANDIDATES = ("~/.local/bin/claude", "/usr/local/bin/claude", "/opt/homebrew/bin/claude")
+
+# Priority order mirrors amux-server.py's account-routing convention
+# (MODIFICATIONS.md "Account routing / multi-home"): first config home whose
+# .claude.json shows a logged-in oauthAccount wins.
+_SUMMARY_CONFIG_DIR_CANDIDATES = ("~/.claude-personal-2", "~/.claude-personal", "~/.claude")
+
+_STDIN_HEAD = 8000
+_STDIN_TAIL = 4000
+
+
+def _resolve_claude_bin():
+    for c in _CLAUDE_BIN_CANDIDATES:
+        p = os.path.expanduser(c)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return "claude"
+
+
+def _pick_summary_config_dir():
+    for c in _SUMMARY_CONFIG_DIR_CANDIDATES:
+        d = os.path.expanduser(c)
+        try:
+            with open(os.path.join(d, ".claude.json"), encoding="utf-8") as f:
+                if json.loads(f.read()).get("oauthAccount"):
+                    return d
+        except (OSError, ValueError):
+            continue
+    return os.path.expanduser("~/.claude")
+
+
+def _current_user():
+    """OS username without relying on env vars — launchd's own env for this
+    sidecar (sidecars/com.amux.telegram.plist) sets only HOME+PATH, so
+    os.environ won't have USER/LOGNAME either; pwd resolves off the uid."""
+    for key in ("USER", "LOGNAME"):
+        v = os.environ.get(key)
+        if v:
+            return v
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return ""
+
+
+def _cap_stdin(text, head=_STDIN_HEAD, tail=_STDIN_TAIL):
+    """Cap the piped reply at ~12k chars: first 8k + an elision marker + last
+    4k when longer, so an oversized reply can't blow up the summarizer call."""
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + "\n…\n" + text[-tail:]
+
+
+class Summarizer:
+    """One-shot `claude -p` text summarizer (network-ish; injectable via
+    `runner` for tests — never invoke a real subprocess in tests)."""
+
+    def __init__(self, model="haiku", timeout=90.0, config_dir=None, claude_bin=None, runner=None):
+        self.model = model
+        self.timeout = timeout
+        self.config_dir = os.path.expanduser(config_dir) if config_dir else _pick_summary_config_dir()
+        self.claude_bin = claude_bin or _resolve_claude_bin()
+        self._run = runner or subprocess.run
+
+    def _env(self):
+        home = os.path.expanduser("~")
+        user = _current_user()
+        claude_dir = (os.path.dirname(self.claude_bin) if os.path.isabs(self.claude_bin)
+                      else os.path.join(home, ".local", "bin"))
+        env = {
+            "HOME": home,
+            "USER": user,
+            "LOGNAME": user,
+            "PATH": f"{claude_dir}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "CLAUDE_CONFIG_DIR": self.config_dir,
+        }
+        tmpdir = os.environ.get("TMPDIR")
+        if tmpdir:
+            env["TMPDIR"] = tmpdir
+        return env
+
+    def summarize(self, text):
+        """Return a short Czech summary, or None on ANY failure (caller falls
+        back to brief truncation). Never raises."""
+        try:
+            proc = self._run(
+                [self.claude_bin, "-p", SUMMARY_PROMPT, "--model", self.model],
+                input=_cap_stdin(text), capture_output=True, text=True,
+                timeout=self.timeout, env=self._env())
+        except subprocess.TimeoutExpired:
+            log.info("summarizer timed out after %ss — falling back to brief", self.timeout)
+            return None
+        except OSError as e:
+            log.info("summarizer failed to start (%s) — falling back to brief", e)
+            return None
+        if proc.returncode != 0:
+            log.info("summarizer exited %s — falling back to brief", proc.returncode)
+            return None
+        out = (proc.stdout or "").strip()
+        if not out:
+            log.info("summarizer produced empty output — falling back to brief")
+            return None
+        return out
+
+
 # ── pure logic: session status label ───────────────────────────────────────────
 def session_status_label(s):
     """Map an /api/sessions row to one of idle/active/waiting/limit."""
@@ -580,10 +746,39 @@ def format_item(session, item):
     return text
 
 
+# ── pure logic: display-mode formatting for outbound session replies ───────────
+SHORT_REPLY_CHARS = 300   # replies shorter than this bypass mode processing entirely
+BRIEF_CHARS = 600
+SMART_PREFIX = "≡ "
+SMART_SUFFIX = "\n(/last = celý výpis)"
+
+
+def brief_truncate(text):
+    """Deterministic 'brief' mode: truncate to ~600 chars + a line-count note.
+    No AI involved — this is also the smart-mode fallback on any summarizer
+    failure."""
+    if len(text) <= BRIEF_CHARS:
+        return text
+    n_lines = text.count("\n") + 1
+    return text[:BRIEF_CHARS].rstrip() + f"\n… ({n_lines} lines total)"
+
+
+# ── pure logic: /last — locate the n-th most recent session reply ──────────────
+def sorted_session_replies(thread):
+    """role=='session' items from a merged thread, sorted in transcript order
+    (ts, then seq) — used by /last to index from the most recent (index -n)."""
+    items = [it for it in thread if it.get("role") == "session"]
+    items.sort(key=lambda x: (x.get("ts") or 0,
+                              x.get("seq") if x.get("seq") is not None else -1))
+    return items
+
+
 # ── the bot (orchestration; network via injected clients) ──────────────────────
 class Bot:
-    def __init__(self, config, telegram, amux, topics, offset, outbound):
+    def __init__(self, config, telegram, amux, topics, offset, outbound, summarizer=None):
         self.cfg = config
+        self.default_mode = config.get("default_mode", "smart")
+        self.summarizer = summarizer  # callable(text) -> str|None; None disables smart mode
         self.tg = telegram
         self.amux = amux
         self.topics = topics
@@ -659,6 +854,10 @@ class Bot:
                 self._cmd_type(update, topic_id)
             elif cmd == "/keys":
                 self._cmd_keys(topic_id, args)
+            elif cmd == "/mode":
+                self._cmd_mode(topic_id, args)
+            elif cmd == "/last":
+                self._cmd_last(topic_id, args)
             else:
                 self._reply(topic_id, self._help())
         except AmuxError as e:
@@ -768,6 +967,45 @@ class Bot:
         log.info("owner /keys -> %s: %s", session, " ".join(args))
         self._reply(topic_id, "keys sent ✓")
 
+    def _cmd_mode(self, topic_id, args):
+        session = self.topics.session_for_topic(topic_id)
+        if not session:
+            self._reply(topic_id, "Run /mode inside a mapped session topic.")
+            return
+        if not args:
+            current = self.topics.mode_for_session(session)
+            if current:
+                self._reply(topic_id, f"mode: {current}")
+            else:
+                self._reply(topic_id, f"mode: {self.default_mode} (default)")
+            return
+        mode = args[0].strip().lower()
+        if mode not in VALID_MODES:
+            self._reply(topic_id, "usage: /mode smart|brief|full")
+            return
+        self.topics.set_mode(session, mode)
+        self._save_topics()
+        self._reply(topic_id, f"mode set to {mode} for {session}")
+
+    def _cmd_last(self, topic_id, args):
+        session = self.topics.session_for_topic(topic_id)
+        if not session:
+            self._reply(topic_id, "Run /last inside a mapped session topic.")
+            return
+        n = 1
+        if args:
+            if not args[0].isdigit() or int(args[0]) < 1:
+                self._reply(topic_id, "usage: /last [n]")
+                return
+            n = int(args[0])
+        data = self.amux.get_chat(session, since=0)  # may raise AmuxError
+        replies = sorted_session_replies(data.get("thread", []))
+        if n > len(replies):
+            self._reply(topic_id,
+                        f"only {len(replies)} repl{'y' if len(replies) == 1 else 'ies'} available")
+            return
+        self.tg.send_message(self.chat_id, replies[-n].get("text") or "", topic_id)
+
     def _help(self):
         return ("commands:\n"
                 "/sessions — list sessions + status\n"
@@ -775,6 +1013,8 @@ class Bot:
                 "/wake <session> — resume a session\n"
                 "/create <session> [dir] — create a session\n"
                 "/mute · /unmute — stop/resume forwarding in this topic\n"
+                "/mode [smart|brief|full] — show or set this topic's reply display mode\n"
+                "/last [n] — full text of the n-th most recent reply (default 1)\n"
                 "/type <text> — raw-inject text into the pane (owner-only)\n"
                 "/keys <key> [key...] — send raw keys, e.g. Enter, C-c, Tab (owner-only)\n"
                 "//<cmd> — forward a slash command to the session (e.g. //ralph fix X)\n"
@@ -838,12 +1078,39 @@ class Bot:
                 break
             tid = self._ensure_topic(session)
             try:
-                self.tg.send_message(self.chat_id, format_item(session, item), tid)
+                self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid)
             except TelegramError as e:
                 log.warning("forward to %s failed: %s — retry next poll", session, e)
                 break  # leave item un-marked; retried next poll
             self.outbound.mark_sent(session, item)
             self._save_outbound()
+
+    def _render_outbound(self, session, item):
+        """Render one outbound item per the session's display mode. System
+        rows and short session replies are always forwarded verbatim; smart
+        mode runs the reply through the summarizer with a brief-truncation
+        fallback on ANY failure (never blocks or drops the reply)."""
+        if item.get("role") == "system":
+            return format_item(session, item)
+        text = item.get("text") or ""
+        if len(text) < SHORT_REPLY_CHARS:
+            return text
+        mode = self.topics.mode_for_session(session) or self.default_mode
+        if mode == "full":
+            return text
+        if mode == "brief":
+            return brief_truncate(text)
+        # smart
+        summary = None
+        if self.summarizer is not None:
+            try:
+                summary = self.summarizer(text)
+            except Exception as e:
+                log.info("summarizer raised for %s — falling back to brief: %s", session, e)
+                summary = None
+        if not summary:
+            return brief_truncate(text)
+        return SMART_PREFIX + summary + SMART_SUFFIX
 
     def outbound_loop(self):
         backoff = self.cfg["poll_secs"]
@@ -913,7 +1180,9 @@ def build_bot(config):
     topics = TopicStore.load()
     offset = OffsetStore.load()
     outbound = OutboundTracker.load()
-    return Bot(config, telegram, amux, topics, offset, outbound)
+    summarizer = Summarizer(model=config["summary_model"], timeout=config["summary_timeout"],
+                            config_dir=config.get("summary_config_dir"))
+    return Bot(config, telegram, amux, topics, offset, outbound, summarizer=summarizer.summarize)
 
 
 def main():

@@ -71,6 +71,11 @@ Optional overrides (env or file): `TG_API_BASE` (default `https://api.telegram.o
 `AMUX_BASE` (default `https://localhost:8822`), `TG_POLL_SECS` (outbound poll cadence,
 default `2.0`), `TG_LONG_POLL_SECS` (inbound long-poll hold, default `25`).
 
+Smart-summary overrides (see [Reply display modes](#reply-display-modes) below):
+`TG_DEFAULT_MODE` (default `smart`), `TG_SUMMARY_MODEL` (default `haiku`),
+`TG_SUMMARY_TIMEOUT` (seconds, default `90`), `TG_SUMMARY_CONFIG_DIR` (default:
+auto-detected).
+
 ## 5. Run it
 
 Foreground (to check it connects):
@@ -108,6 +113,8 @@ launchctl bootout gui/$(id -u)/com.amux.telegram
 | `/wake <session>` | resume a session and ensure it has a topic |
 | `/create <session> [dir]` | create a session and ensure it has a topic |
 | `/mute` · `/unmute` | stop / resume forwarding replies into the current topic |
+| `/mode [smart\|brief\|full]` | show or set this topic's reply display mode (see below) |
+| `/last [n]` | send the full, unsummarized text of the n-th most recent reply (default 1) |
 | `/type <text>` | raw-inject text into the session's tmux pane, bypassing steering |
 | `/keys <key> [key...]` | send raw key names (e.g. `Enter`, `C-c`, `Tab`, `Up`, `Down`, `Escape`), bypassing steering |
 | `//<cmd> [args]` | forward a slash command to the mapped session's topic, e.g. `//ralph fix X` → the session receives `/ralph fix X` |
@@ -144,6 +151,48 @@ deliberate owner action, same as typing in the dashboard — one side effect is
 the typed text becomes visible in the session's own history/transcript, same
 visibility level as it already has in the live pane.
 
+## Reply display modes
+
+Long session replies can flood a phone chat, so every topic forwards replies
+through one of three display modes. **`smart` is the default for every topic**
+(new and pre-existing) unless overridden per-topic with `/mode` or globally
+with `TG_DEFAULT_MODE`.
+
+| mode | behavior |
+|---|---|
+| `smart` (default) | Replies ≥300 chars are compressed by a one-shot `claude -p --model haiku` call into a 2–4 sentence Czech summary, prefixed `≡ ` and suffixed `(/last = celý výpis)`. |
+| `brief` | Deterministic truncation to ~600 chars + a line-count note — no AI call. |
+| `full` | The current/original behavior: the complete reply, chunked at Telegram's 4096-char limit. |
+
+Replies under ~300 chars and all system rows (usage-limit notices, etc.) are
+always forwarded verbatim in every mode — too short to bother summarizing or
+truncating.
+
+Set with `/mode smart|brief|full` inside a mapped session topic; `/mode` alone
+shows the topic's current mode. Use `/last [n]` any time to get the full,
+unsummarized text of the n-th most recent reply (default 1), regardless of
+the topic's mode.
+
+**Plan usage note.** The `smart`-mode summarizer runs as a one-shot `claude -p`
+call using the **owner's own Claude Code plan** on this Mac — no Anthropic API
+key involved, but each summarized reply consumes a small amount of the plan's
+usage (configurable via `TG_SUMMARY_MODEL`, default `haiku`, the cheapest
+model). Switch a noisy topic to `brief` or `full` to avoid that entirely.
+
+**Fallback behavior.** The summarizer call is capped at `TG_SUMMARY_TIMEOUT`
+seconds (default 90) and the piped reply is capped at ~12k chars (first 8k +
+last 4k) before being sent to it. **Any** failure — non-zero exit, timeout,
+empty output, a Claude usage-limit, or the subprocess failing to start —
+silently falls back to the same deterministic `brief` truncation used by
+`brief` mode. A reply is never blocked or dropped because the summarizer
+failed; only the fallback reason (not the reply content) is logged.
+
+`TG_SUMMARY_CONFIG_DIR` picks which Claude.ai account the summarizer subprocess
+authenticates as; if unset, it auto-picks the first of `~/.claude-personal-2`,
+`~/.claude-personal`, `~/.claude` whose `.claude.json` shows a logged-in
+account (same account-routing convention `amux-server.py` uses — see
+`MODIFICATIONS.md`).
+
 ### Remote re-login (expired Claude session)
 
 When a session's Claude Code login has expired and it's stuck at an OAuth
@@ -157,7 +206,7 @@ prompt, drive the re-login from your phone:
 ## State files (`~/.amux/`, all 0600, never in git)
 
 - `telegram.env` — your config (above).
-- `telegram-topics.json` — session ⇄ topic map + muted set.
+- `telegram-topics.json` — session ⇄ topic map + muted set + per-topic mode overrides (`/mode`).
 - `telegram-offset` — inbound long-poll offset (advanced only after a durable amux ack).
 - `telegram-outbound.json` — per-session outbound cursor + forwarded stable-ids (dedup).
 
