@@ -318,8 +318,8 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   $AMUX_URL/api/sessions/reviewer/send
 
 # Agent checks peer's progress
-curl -sk "$AMUX_URL/api/sessions/reviewer/peek?lines=20" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+curl -sk "$AMUX_URL/api/sessions/reviewer/peek?lines=600" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"</code></pre>
 
 <h3>MCP in amux sessions</h3>
 

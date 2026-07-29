@@ -150,8 +150,8 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 <p>Sometimes an agent needs to check what another agent is doing without interrupting it. Peek reads the last N lines of a session's terminal output:</p>
 
 <pre><code># Check what worker-5 is currently doing
-curl -sk "$AMUX_URL/api/sessions/worker-5/peek?lines=50" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+curl -sk "$AMUX_URL/api/sessions/worker-5/peek?lines=600" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"</code></pre>
 
 <p>This is critical for <strong>triage agents</strong> — agents whose sole job is to monitor other agents, reassign stuck tasks, and escalate blockers.</p>
 

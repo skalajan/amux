@@ -684,11 +684,38 @@ PYEOF
     [[ $rc -eq 0 ]] && return 0
     [[ $rc -eq 2 ]] && return 1   # server understood and refused — do NOT fall back
   fi
-  echo "${YELLOW}warning:${RESET} amux server unreachable — falling back to raw tmux send (UNSTAMPED, unaudited)" >&2
-  tmux send-keys -t "=$tname:" -l "$text"
+  # ── Raw-tmux last resort (AMUX-1987) ────────────────────────────────────
+  # This path used to print a GREEN "sent to <name>" followed by the entire
+  # message body, with no check that tmux had accepted anything. That echo is
+  # the most confirmation-shaped output the tool produces, and it was emitted
+  # on the one path that can silently deliver nothing — a real message was lost
+  # this way and the sender never re-sent, because they had been told it landed.
+  #
+  # Two honest changes: verify what CAN be verified (the session exists, tmux
+  # accepted the keys) and hard-fail if not; and never claim delivery, because
+  # typing into a pane IS NOT delivery. If the pane has a full-screen picker or
+  # modal open, the keystrokes go to the picker and the message evaporates —
+  # exactly the failure this codebase already documents for peek output.
+  echo "${YELLOW}warning:${RESET} amux server unreachable — falling back to raw tmux (UNSTAMPED, unaudited)" >&2
+  if ! tmux has-session -t "=$tname" 2>/dev/null; then
+    echo "${RED}FAILED${RESET} to send to $name: tmux session '$tname' does not exist. NOTHING was delivered." >&2
+    return 1
+  fi
+  if ! tmux send-keys -t "=$tname:" -l "$text" 2>/dev/null; then
+    echo "${RED}FAILED${RESET} to send to $name: tmux rejected the message body. NOTHING was delivered." >&2
+    return 1
+  fi
   sleep 0.05
-  tmux send-keys -t "=$tname:" Enter
-  echo "${GREEN}sent${RESET} to $name (raw tmux, no origin stamp): $text"
+  if ! tmux send-keys -t "=$tname:" Enter 2>/dev/null; then
+    echo "${RED}FAILED${RESET} to send to $name: body typed but Enter was rejected — the message is sitting UNSENT in the pane." >&2
+    return 1
+  fi
+  # Deliberately does NOT echo the body, and deliberately does not say "sent".
+  echo "${YELLOW}injected${RESET} into $name via raw tmux — DELIVERY UNVERIFIED, no origin stamp, no audit." >&2
+  echo "  Keystrokes reached the pane. If a picker/modal was open they went there instead." >&2
+  echo "  Confirm it arrived, or re-send with \`amux send\` once the server is back:" >&2
+  echo "    curl -sk \"\$AMUX_URL/api/sessions/$name/peek?lines=200\"" >&2
+  return 0
 }
 
 cmd_stop() {

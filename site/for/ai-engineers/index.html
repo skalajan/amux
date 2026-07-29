@@ -339,8 +339,8 @@ Every 30 minutes:
   $AMUX_URL/api/sessions/reviewer-agent/send</code></pre>
 
     <p><strong>2. Peek / transcript read</strong> — read another session's output without interrupting it:</p>
-    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk "$AMUX_URL/api/sessions/payments-agent/peek?lines=50" | \
-  python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk "$AMUX_URL/api/sessions/payments-agent/peek?lines=600" | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"</code></pre>
 
     <p><strong>3. Session fork</strong> — clone a session's conversation history to a new agent on a new branch. Useful for spawning exploration branches from a common starting point.</p>
 

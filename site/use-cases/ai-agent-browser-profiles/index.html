@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Browser Profiles for AI Agents — Persistent Authentication at Scale | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Save browser sessions once. Run dozens of authenticated AI automation tasks without re-logging in. amux browser profiles persist cookies and auth state across all your AI agent runs.">
+  <meta name="keywords" content="AI agent browser profiles, saved browser authentication AI, Claude Code browser session, AI agent login persistence, browser automation without re-logging in, amux browser profiles">
+  <link rel="canonical" href="https://amux.io/use-cases/ai-agent-browser-profiles/">
+  <meta property="og:title" content="Browser Profiles for AI Agents — Persistent Authentication at Scale">
+  <meta property="og:description" content="Save browser sessions once. Run dozens of authenticated AI automation tasks without re-logging in. amux browser profiles persist cookies and auth state across all your AI agent runs.">
+  <meta property="og:url" content="https://amux.io/use-cases/ai-agent-browser-profiles/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Browser Profiles for AI Agents","item":"https://amux.io/use-cases/ai-agent-browser-profiles/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Browser Profiles for AI Agents — Persistent Authentication at Scale","description":"Save browser sessions once. Run dozens of authenticated AI automation tasks without re-logging in. amux browser profiles persist cookies and auth state across all your AI agent runs.","datePublished":"2026-07-29","dateModified":"2026-07-29","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"url":"https://amux.io/use-cases/ai-agent-browser-profiles/","mainEntityOfPage":"https://amux.io/use-cases/ai-agent-browser-profiles/"}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to use browser profiles with AI agents in amux","description":"Save named browser sessions in amux so AI agents can run authenticated browser tasks without re-logging in on every run.","step":[{"@type":"HowToStep","position":1,"name":"Create a named profile in the Browser tab","text":"Open the amux dashboard, go to the Browser tab, and click 'New Profile'. Give it a descriptive name like 'stripe', 'github-work', or 'client-acme'. amux stores the profile config in ~/.amux/browser-profiles/."},{"@type":"HowToStep","position":2,"name":"Log in once and save the session","text":"Launch a browser session under the new profile. Navigate to your target site and complete login normally — including MFA if required. Once logged in, stop the session. amux persists the full cookie jar and localStorage state to the profile."},{"@type":"HowToStep","position":3,"name":"Launch AI automation tasks using the saved profile","text":"When scheduling a browser automation task, select the saved profile from the profile picker. The AI agent starts the browser session already authenticated — no login step, no CAPTCHA, no MFA prompt mid-task."},{"@type":"HowToStep","position":4,"name":"Monitor multiple authenticated sessions from one dashboard","text":"Run a fleet of agents, each using a different profile. From the amux dashboard (or the iOS app), watch all sessions live — one pulling Stripe data, another checking GitHub PRs, a third running client portal tasks. All authenticated, all running in parallel."}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a browser profile in amux?","acceptedAnswer":{"@type":"Answer","text":"A browser profile in amux is a named, saved Chrome browser session that persists cookies, localStorage, and authentication state across runs. You create a profile (e.g. 'stripe'), log in to the target site once, and every AI agent task launched with that profile starts already authenticated — no re-login needed."}},{"@type":"Question","name":"How do AI agents use saved browser sessions?","acceptedAnswer":{"@type":"Answer","text":"When you create a browser automation task in amux, you select a profile from the profile picker. amux launches Chrome via CDP (Chrome DevTools Protocol) with the saved profile's credentials loaded. The agent sees the site as already logged in and can proceed directly to the task — pulling reports, filling forms, reading dashboards — without triggering login flows."}},{"@type":"Question","name":"Is it safe to store browser credentials in amux?","acceptedAnswer":{"@type":"Answer","text":"amux is a local-first tool. Browser profiles are stored in ~/.amux/browser-profiles/ on your own machine. The dashboard runs at https://localhost:8822 — it is never exposed to the internet unless you explicitly use the tunnel feature. Your credentials never leave your machine, and no amux server ever sees them."}},{"@type":"Question","name":"Can multiple AI agents use different browser profiles at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each agent runs in its own isolated Chrome session tied to a specific profile. You can run a 'stripe' agent pulling financial data simultaneously with a 'github-work' agent reviewing PRs and a 'client-acme' agent checking a client portal — all in parallel, all authenticated independently."}},{"@type":"Question","name":"What browsers does amux support for browser profiles?","acceptedAnswer":{"@type":"Answer","text":"amux uses Chrome (or Chromium) via the Chrome DevTools Protocol (CDP). Chrome must be installed on the machine running amux. The profiles store Chrome-native session data (cookies, localStorage). Firefox and Safari are not supported for profile-based automation."}},{"@type":"Question","name":"How is this different from Playwright test fixtures?","acceptedAnswer":{"@type":"Answer","text":"Playwright test fixtures create fresh browser state on each run — authentication typically requires a setup step that logs in programmatically using stored credentials. amux browser profiles are persistent human-created sessions: you log in interactively once (including MFA flows that are impossible to script), and the saved state is reused indefinitely. There is no credential management code to write and maintain."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>Browser Profiles for AI Agents</span></div>
+
+    <h1>Browser Profiles for AI Agents — Persistent Authentication at Scale</h1>
+    <p class="subtitle">Save browser sessions once. Run dozens of authenticated AI automation tasks without re-logging in. Updated July 2026.</p>
+
+    <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
+      <p style="margin:0;font-size:.95rem;line-height:1.65"><strong>amux browser profiles</strong> let you save named Chrome browser sessions — with their full cookie and authentication state — so AI agents can run authenticated web tasks without ever logging in again. Create a profile once (interactively, with real MFA), and every subsequent agent run starts already inside your account. Multiple agents can use different profiles in parallel: one pulling Stripe data, another reviewing GitHub PRs, a third checking a client portal — all authenticated, all running simultaneously, all monitored from your phone.</p>
+    </div>
+
+    <!-- EXP-014 -->
+    <div style="border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:14px 18px;margin:2rem 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:rgba(99,102,241,.05)">
+      <div style="flex:1;min-width:200px;font-size:.9rem">Run dozens of authenticated browser sessions in parallel — <strong>amux is free and open source.</strong></div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:rgba(99,102,241,.15);color:var(--text);border:1px solid rgba(99,102,241,.35);padding:7px 14px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.85rem;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <h2>Why Browser Authentication Is the Hardest Part of AI Automation</h2>
+    <p>Browser automation has been technically possible for years. The reason most AI agent automation workflows fail in practice is not the agent logic — it is authentication.</p>
+    <p>Every enterprise SaaS tool, financial dashboard, and client portal sits behind a login wall. Re-implementing that login on every run means:</p>
+    <ul>
+      <li><strong>MFA blockers:</strong> TOTP, push notifications, and hardware keys cannot be scripted. Every automated login triggers them.</li>
+      <li><strong>CAPTCHA interruptions:</strong> Sites detect programmatic logins and serve CAPTCHAs. The agent stalls, waits, or fails.</li>
+      <li><strong>Session timeouts:</strong> Scripted logins using stored passwords break when sites enforce 2FA on new sessions, change their login flow, or add bot detection.</li>
+      <li><strong>Credential sprawl:</strong> Storing plaintext passwords in environment variables or scripts is a security anti-pattern that grows more fragile with each rotation.</li>
+    </ul>
+    <p>The right solution is to log in once as a human — with all the friction of MFA and CAPTCHA — and hand the resulting authenticated session state to the AI agent. That is exactly what amux browser profiles do.</p>
+
+    <h2>How amux Browser Profiles Work</h2>
+    <p>amux connects to Chrome via the Chrome DevTools Protocol (CDP). Browser profiles are named Chrome sessions stored in <code>~/.amux/browser-profiles/</code>. Each profile maintains its own isolated cookie jar, localStorage, and session state.</p>
+
+    <h3>Step 1 — Create a named profile in the Browser tab</h3>
+    <p>Open the amux dashboard at <code>https://localhost:8822</code>. Go to the <strong>Browser</strong> tab and click <strong>New Profile</strong>. Give it a descriptive name that reflects the account or service:</p>
+    <pre><code>stripe          # Stripe financial dashboard
+github-work     # GitHub work organization
+client-acme     # Acme Corp client portal
+jira-internal   # Internal Jira instance</code></pre>
+    <p>amux creates an isolated Chrome session config for this profile in <code>~/.amux/browser-profiles/&lt;name&gt;/</code>.</p>
+
+    <h3>Step 2 — Log in once and save the session</h3>
+    <p>Launch a browser session under the new profile from the Browser tab. A Chrome window opens in the profile's isolated state (no existing cookies, completely fresh). Navigate to your target site and complete the full login flow — username, password, MFA code, push notification, hardware key, whatever the site requires. This is a real human login, so there are no bot-detection or CAPTCHA issues.</p>
+    <p>Once you are inside the account, close the session from the amux Browser tab. amux persists the full authenticated state to disk. The next session launched under this profile skips the login entirely.</p>
+
+    <h3>Step 3 — Launch AI automation tasks using the saved profile</h3>
+    <p>When writing a browser automation prompt or scheduling a browser task, specify the profile by name. The AI agent's Chrome session starts with the saved cookies loaded — it opens to the authenticated state, not the login page. Tasks that previously required scripted credential handling now just work:</p>
+    <pre><code># Example: pull last 7 days of Stripe payouts
+Profile: stripe
+Task: Go to dashboard.stripe.com/payouts, filter to the last 7 days,
+      read the total payout amount, and post it to the amux board.</code></pre>
+    <p>No credential configuration. No MFA workarounds. The agent operates inside the account exactly as a logged-in human would.</p>
+
+    <h3>Step 4 — Monitor multiple authenticated sessions from one dashboard</h3>
+    <p>Run a fleet of agents concurrently, each using a different profile. The amux dashboard (and iOS app) shows all active browser sessions live. From your phone you can watch one agent pulling financial data, another reviewing PRs, and a third checking client deliverables — all authenticated, all in parallel.</p>
+
+    <h2>Multi-Profile Fleet: Who Uses What</h2>
+    <table>
+      <thead><tr><th>Profile</th><th>Agent task</th><th>Runs</th></tr></thead>
+      <tbody>
+        <tr><td><code>stripe</code></td><td>Pull daily payout report → post to board</td><td>Daily at 8am (scheduler)</td></tr>
+        <tr><td><code>github-work</code></td><td>Draft PR review comments on new PRs</td><td>On push (webhook)</td></tr>
+        <tr><td><code>client-acme</code></td><td>Check deliverable portal for new feedback</td><td>Every 2 hours</td></tr>
+        <tr><td><code>client-beta</code></td><td>Download weekly status report PDF</td><td>Monday at 9am</td></tr>
+        <tr><td><code>jira-internal</code></td><td>Update ticket statuses from board changes</td><td>On board PATCH</td></tr>
+      </tbody>
+    </table>
+    <p>All five agents run on the same amux instance, each in an isolated authenticated session, all visible from one dashboard.</p>
+
+    <h2>Real Use Cases</h2>
+
+    <h3>Financial reporting automation</h3>
+    <p>A solo founder creates a <code>stripe</code> profile and logs in to the Stripe dashboard once. Each morning, amux schedules an agent to open Stripe, navigate to payouts, read yesterday's total, and post it as a board item. No API key required, no Stripe SDK integration, no dashboard re-login. The same pattern works for QuickBooks, Brex, Mercury, or any financial tool the founder uses.</p>
+
+    <h3>Agency client management</h3>
+    <p>A development agency manages 8 clients, each with their own portal. Rather than maintaining a password vault and re-logging in for each client check, the agency creates one profile per client portal. An amux scheduler checks each portal daily for new deliverable feedback, new support tickets, or project status changes — and posts summaries to the board. The account executive monitors all 8 from the iOS app on their phone.</p>
+    <p>See: <a href="/for/agencies/">How agencies use amux to manage AI agents for clients →</a></p>
+
+    <h3>Internal tool automation</h3>
+    <p>An engineering team uses Jira, GitHub, and an internal analytics dashboard — all behind SSO. A <code>github-work</code> profile handles PR triage (drafting review comments, labeling issues). A <code>jira-internal</code> profile handles ticket status syncing. These run as background agents while the team ships code, surfacing updates to the shared board without any manual context switching.</p>
+
+    <h3>Multi-tenant SaaS testing</h3>
+    <p>A SaaS product team creates profiles for different test accounts (<code>tier-free</code>, <code>tier-pro</code>, <code>tier-enterprise</code>). Browser automation tests run against each tier in parallel — testing feature gating, quota enforcement, and UI differences across tiers simultaneously, with each session already authenticated to the correct account.</p>
+    <p>See: <a href="/guides/ai-agent-live-browser-automation/">Live browser automation guide →</a></p>
+
+    <h2>Browser Profiles vs. Alternatives</h2>
+    <table>
+      <thead><tr><th>Approach</th><th>Auth handling</th><th>MFA support</th><th>Maintenance</th><th>Security</th></tr></thead>
+      <tbody>
+        <tr><td><strong>amux browser profiles</strong></td><td>Human login once, session persists</td><td>Full — any MFA method works</td><td>Re-login when session expires</td><td>Local-only (~/.amux/)</td></tr>
+        <tr><td>Re-login on every run</td><td>Agent scripted login</td><td>Breaks on TOTP/push MFA</td><td>High — login flow changes break automation</td><td>Credentials in prompts/env</td></tr>
+        <tr><td>Environment variable credentials</td><td>Scripted using stored password</td><td>None — bots can't do push MFA</td><td>Medium — rotate on password change</td><td>Plaintext in shell env</td></tr>
+        <tr><td>Playwright test fixtures</td><td>Scripted storageState setup step</td><td>Partial — TOTP possible, push MFA not</td><td>High — login script breaks on UI changes</td><td>Credentials in test code</td></tr>
+        <tr><td>Devin / hosted AI agents</td><td>Sandbox accounts (not your real accounts)</td><td>N/A — uses test accounts only</td><td>Must maintain separate test credentials</td><td>Credentials shared with vendor sandbox</td></tr>
+        <tr><td>Custom browser automation scripts</td><td>Scripted, session cached to disk</td><td>Manual implementation required</td><td>Very high — custom code to maintain</td><td>Depends on implementation</td></tr>
+        <tr><td>Manual browser + copy-paste</td><td>Human logs in each time</td><td>Full</td><td>None (fully manual)</td><td>No credential exposure</td></tr>
+        <tr><td>API integration (where available)</td><td>API key / OAuth token</td><td>N/A</td><td>Low — rotate API keys</td><td>API key storage required</td></tr>
+      </tbody>
+    </table>
+    <p>amux browser profiles are the only approach that combines real human authentication (including full MFA), persistent session state, parallel multi-profile execution, and local-only credential storage — with zero credential management code.</p>
+
+    <h2>Security: What Is Stored and Where</h2>
+    <p>amux is a local-first tool. All browser profile data is stored on your own machine:</p>
+    <ul>
+      <li><strong>Location:</strong> <code>~/.amux/browser-profiles/&lt;profile-name&gt;/</code></li>
+      <li><strong>Content:</strong> Chrome user data directory — cookies, localStorage, IndexedDB, session state. No passwords stored in plaintext; only the post-authentication session tokens.</li>
+      <li><strong>Network exposure:</strong> The amux dashboard runs at <code>https://localhost:8822</code>. It is not exposed to the internet unless you explicitly use <a href="/features/tunnel/">amux tunnel</a>. Profile data never leaves your machine.</li>
+      <li><strong>Access control:</strong> Standard OS file permissions on <code>~/.amux/</code>. The same protection as your browser's existing profile directory.</li>
+    </ul>
+    <p>If a session token expires, the agent will hit the login page and stop — it will not attempt to re-authenticate or access credentials. You re-run the interactive login to refresh the profile.</p>
+
+    <h2>Getting Started</h2>
+    <ol>
+      <li>Install amux: <code>brew install mixpeek/tap/amux</code> (or <code>pip install amux</code>)</li>
+      <li>Start the server: <code>amux serve</code></li>
+      <li>Open <code>https://localhost:8822</code> → Browser tab → New Profile</li>
+      <li>Name the profile, launch a session, log in to your target site, stop the session</li>
+      <li>Schedule a browser task using the saved profile</li>
+    </ol>
+    <p>Chrome (or Chromium) must be installed on the machine running amux. No additional configuration is required.</p>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <h3>What is a browser profile in amux?</h3>
+    <p>A browser profile in amux is a named, saved Chrome browser session that persists cookies, localStorage, and authentication state across runs. You create a profile (e.g. "stripe"), log in to the target site once, and every AI agent task launched with that profile starts already authenticated — no re-login needed.</p>
+
+    <h3>How do AI agents use saved browser sessions?</h3>
+    <p>When you create a browser automation task in amux, you select a profile from the profile picker. amux launches Chrome via CDP (Chrome DevTools Protocol) with the saved profile's credentials loaded. The agent sees the site as already logged in and can proceed directly to the task — pulling reports, filling forms, reading dashboards — without triggering login flows.</p>
+
+    <h3>Is it safe to store browser credentials in amux?</h3>
+    <p>amux is a local-first tool. Browser profiles are stored in <code>~/.amux/browser-profiles/</code> on your own machine. The dashboard runs at <code>https://localhost:8822</code> — it is never exposed to the internet unless you explicitly use the tunnel feature. Your credentials never leave your machine, and no amux server ever sees them.</p>
+
+    <h3>Can multiple AI agents use different browser profiles at the same time?</h3>
+    <p>Yes. Each agent runs in its own isolated Chrome session tied to a specific profile. You can run a "stripe" agent pulling financial data simultaneously with a "github-work" agent reviewing PRs and a "client-acme" agent checking a client portal — all in parallel, all authenticated independently.</p>
+
+    <h3>What browsers does amux support for browser profiles?</h3>
+    <p>amux uses Chrome (or Chromium) via the Chrome DevTools Protocol (CDP). Chrome must be installed on the machine running amux. The profiles store Chrome-native session data (cookies, localStorage). Firefox and Safari are not supported for profile-based automation.</p>
+
+    <h3>How is this different from Playwright test fixtures?</h3>
+    <p>Playwright test fixtures create fresh browser state on each run — authentication typically requires a setup step that logs in programmatically using stored credentials. amux browser profiles are persistent human-created sessions: you log in interactively once (including MFA flows that are impossible to script), and the saved state is reused indefinitely. There is no credential management code to write and maintain.</p>
+
+    <div class="cta-box">
+      <h3>Run authenticated AI automation at scale</h3>
+      <p>amux is open source, self-hosted, and free. Your credentials stay on your machine. Install in 30 seconds.</p>
+      <pre><code>brew install mixpeek/tap/amux
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+      <a class="btn" href="/guides/ai-agent-live-browser-automation/" style="margin-left:.5rem">Browser automation guide →</a>
+    </div>
+
+    <h2>Related</h2>
+    <ul>
+      <li><a href="/guides/ai-agent-live-browser-automation/">AI agent live browser automation — the full guide</a></li>
+      <li><a href="/use-cases/ai-agent-business-automation/">Automate business tasks with AI agents</a></li>
+      <li><a href="/for/agencies/">How agencies use amux to manage AI agents for clients</a></li>
+      <li><a href="/use-cases/ai-coding-while-you-sleep/">Running AI coding agents overnight unattended</a></li>
+      <li><a href="/guides/scheduling-ai-agents/">Schedule AI agents with cron expressions</a></li>
+      <li><a href="/features/tunnel/">amux tunnel — share your local agent dashboard publicly</a></li>
+    </ul>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agent teams.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Use Cases</div>
+          <ul>
+            <li><a href="/use-cases/ai-agent-business-automation/">Business automation</a></li>
+            <li><a href="/use-cases/ai-coding-while-you-sleep/">Overnight agents</a></li>
+            <li><a href="/use-cases/ai-agent-google-calendar/">Calendar integration</a></li>
+            <li><a href="/use-cases/">All use cases</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

@@ -24,7 +24,9 @@ STRIPE_SECRET_KEY       = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRO_PRICE_ID     = os.environ.get("STRIPE_PRO_PRICE_ID", "")      # monthly
 STRIPE_ANNUAL_PRICE_ID  = os.environ.get("STRIPE_ANNUAL_PRICE_ID", "")   # annual
+STRIPE_PLATFORM_FEE_PRICE_ID = os.environ.get("STRIPE_PLATFORM_FEE_PRICE_ID", "")  # one-time onboarding fee
 TRIAL_DAYS              = int(os.environ.get("TRIAL_DAYS", "7"))
+TRIAL_BUDGET_USD        = float(os.environ.get("TRIAL_BUDGET_USD", "5"))  # default spend cap for provisioned trials
 REFERRAL_BONUS_DAYS     = int(os.environ.get("REFERRAL_BONUS_DAYS", "7"))
 
 PORT          = int(os.environ.get("GATEWAY_PORT", "8080"))
@@ -37,6 +39,8 @@ PORT_BASE     = 9000
 COOKIE_MAX_AGE = 86400 * 7  # 7 days
 # Signup is open — no passcode required
 ADMIN_EMAILS    = set(e.strip() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip())
+# Public origin containers use to reach the Anthropic proxy on this gateway.
+PROXY_PUBLIC_BASE = os.environ.get("AMUX_PROXY_BASE", "https://cloud.amux.io")
 GATEWAY_LOG     = "/var/log/amux-gateway.log"
 
 # ── Starting HTML (shown while container boots) ──────────────────────────────
@@ -477,6 +481,86 @@ _UPGRADE_HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# ── Budget exceeded HTML (trial spend cap hit) ────────────────────────────────
+_BUDGET_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upgrade — amux cloud</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a; color: #e5e5e5;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .wrap { max-width: 520px; width: 90%; text-align: center; padding: 32px 0; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: #fff; margin-bottom: 28px; }
+    .logo span { color: #555; font-weight: 400; }
+    h1 { font-size: 1.3rem; margin-bottom: 8px; }
+    .meter { background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
+      padding: 14px 18px; margin: 0 auto 20px; max-width: 340px; }
+    .meter .nums { font-size: 1.3rem; font-weight: 700; color: #f0b429; }
+    .meter .lbl { color: #888; font-size: 0.78rem; margin-top: 2px; }
+    p.sub { color: #888; font-size: 0.88rem; margin-bottom: 24px; line-height: 1.5; }
+    .pitch { background: #14142a; border: 1px solid #3a3a5c; border-radius: 12px;
+      padding: 20px; text-align: left; margin-bottom: 20px; }
+    .pitch h3 { font-size: 0.95rem; margin-bottom: 10px; color: #c4b5fd; }
+    .pitch ul { list-style: none; }
+    .pitch li { color: #bbb; font-size: 0.84rem; padding: 5px 0 5px 24px; position: relative; }
+    .pitch li::before { content: '✓'; position: absolute; left: 4px; color: #3fb950; font-weight: 700; }
+    .btn { display: inline-block; background: #7c6fcd; color: #fff; border: none;
+      border-radius: 8px; padding: 12px 24px; font-size: 0.95rem; font-weight: 600;
+      cursor: pointer; width: 100%; margin-bottom: 10px; min-height: 44px; }
+    .btn:hover { background: #9b8ee0; }
+    .btn.alt { background: #26263e; border: 1px solid #3a3a5c; }
+    .btn.alt:hover { background: #32324e; }
+    .fee-note { color: #666; font-size: 0.75rem; margin-top: 6px; }
+    .logout { color: #555; font-size: 0.78rem; margin-top: 16px; }
+    .logout a { color: #888; text-decoration: underline; text-underline-offset: 3px; }
+    #error { color: #f87171; font-size: 0.82rem; margin-top: 8px; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo">amux <span>cloud</span></div>
+    <h1>Your trial budget is used up</h1>
+    <div class="meter">
+      <div class="nums">$__SPENT__ of $__BUDGET__</div>
+      <div class="lbl">agent usage this trial</div>
+    </div>
+    <p class="sub">Your workspace and all your sessions are safe. Upgrade to keep your agents running.</p>
+    <div class="pitch">
+      <h3>What you get when you upgrade</h3>
+      <ul>
+        <li>Your sessions made production-grade, with our team onboarding you</li>
+        <li>A dedicated, isolated machine for your workloads</li>
+        <li>Support and maintenance from the amux team</li>
+        <li>Ongoing workflow creation, tuning, and teaching</li>
+      </ul>
+    </div>
+    <button class="btn" onclick="checkout('monthly')">Upgrade — platform fee + monthly</button>
+    <button class="btn alt" onclick="checkout('annual')">Upgrade — platform fee + annual (save 17%)</button>
+    <div class="fee-note">One-time onboarding platform fee, then the subscription. Cancel the subscription anytime.</div>
+    <div id="error"></div>
+    <div class="logout"><a href="/api/cloud-logout">Log out</a></div>
+  </div>
+  <script>
+    async function checkout(billing) {
+      document.getElementById('error').textContent = '';
+      try {
+        const r = await fetch('/api/stripe/checkout', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ billing: billing, platform_fee: true })
+        });
+        const d = await r.json();
+        if (d.url) location.href = d.url;
+        else document.getElementById('error').textContent = d.error || 'Failed to start checkout';
+      } catch(e) { document.getElementById('error').textContent = 'Connection error'; }
+    }
+  </script>
+</body>
+</html>"""
+
 # ── Referral page HTML ─────────────────────────────────────────────────────────
 _REFERRAL_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -730,6 +814,14 @@ def get_db():
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE orgs ADD COLUMN api_key TEXT")
         conn.commit()
+    # Migrate: budget columns (spend caps for provisioned trials)
+    try:
+        conn.execute("SELECT budget_usd FROM orgs LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE orgs ADD COLUMN budget_usd REAL")
+        conn.execute("ALTER TABLE orgs ADD COLUMN spend_usd REAL NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE orgs ADD COLUMN spend_checked_at INTEGER")
+        conn.commit()
     # Migrate: add org_id + role columns to org_invites if missing (old schema had owner_id)
     try:
         conn.execute("SELECT org_id FROM org_invites LIMIT 1")
@@ -929,6 +1021,287 @@ def _resolve_api_key(db, user_id):
     """, (user_id,)).fetchone()
     return row["api_key"] if row else None
 
+def _is_admin_email(email):
+    """God mode gate: emails listed in ADMIN_EMAILS get full access to every workspace."""
+    return bool(ADMIN_EMAILS) and (email or "").strip().lower() in {a.lower() for a in ADMIN_EMAILS}
+
+def _container_api(port, path, method="GET", timeout=10):
+    """Call a user container's local API. Returns parsed JSON or None."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        return json.loads(resp.read())
+    except Exception:
+        return None
+
+def _refresh_org_spend(db, org_id, port):
+    """Read the org container's cost ledger and cache total spend. Returns spend or None."""
+    data = _container_api(port, "/api/observability?days=365", timeout=20)
+    if not isinstance(data, dict):
+        return None
+    spend = float(data.get("total_cost") or 0)
+    with _db_lock:
+        db.execute("UPDATE orgs SET spend_usd=?, spend_checked_at=? WHERE id=?",
+                   (spend, int(time.time()), org_id))
+        db.commit()
+    return spend
+
+def _stop_org_sessions(port):
+    """Stop every session in a container. Budget enforcement must halt token burn
+    even when nobody is looking at the dashboard."""
+    sessions = _container_api(port, "/api/sessions", timeout=15) or []
+    stopped = []
+    for s in sessions:
+        name = s.get("name") if isinstance(s, dict) else None
+        if not name:
+            continue
+        _container_api(port, f"/api/sessions/{name}/stop", method="POST", timeout=20)
+        stopped.append(name)
+    return stopped
+
+def _clerk_send_invitation(email, redirect_url, notify=True):
+    """Create a Clerk email invitation. Returns (ok, id_or_error)."""
+    body = json.dumps({
+        "email_address": email,
+        "redirect_url": redirect_url,
+        "notify": bool(notify),
+        "ignore_existing": True,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.clerk.com/v1/invitations", data=body, method="POST",
+        # UA required: Cloudflare blocks urllib's default agent (error 1010)
+        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}",
+                 "Content-Type": "application/json",
+                 "User-Agent": "amux-gateway/1.0"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        return True, json.loads(resp.read()).get("id", "")
+    except urllib.error.HTTPError as e:
+        return False, e.read().decode()[:300]
+    except Exception as e:
+        return False, str(e)
+
+BUDGET_POLL_SECONDS  = int(os.environ.get("BUDGET_POLL_SECONDS", "30"))
+BUDGET_NEAR_FRACTION = float(os.environ.get("BUDGET_NEAR_FRACTION", "0.6"))
+
+
+def _enforce_budget(db, org_row, spend):
+    """Stop every session once spend crosses the cap. Returns True if enforced."""
+    budget = org_row["budget_usd"]
+    if budget is None or org_row["plan"] == "pro" or spend < budget:
+        return False
+    stopped = _stop_org_sessions(org_row["port"])
+    print(f"[budget] org {org_row['id']} over cap (${spend:.2f} >= ${budget:.2f}) "
+          f"— stopped sessions: {stopped}", flush=True)
+    return True
+
+
+def _org_proxy_token(org_id):
+    """Deterministic per-org token for the Anthropic proxy. Derived from
+    COOKIE_SECRET so it needs no storage and rotates with the secret."""
+    return hmac.new(COOKIE_SECRET.encode(), f"anthropic-proxy:{org_id}".encode(),
+                    hashlib.sha256).hexdigest()[:40]
+
+
+def _org_for_proxy_token(db, token):
+    """Reverse a proxy token to its org. Linear over orgs, which is fine at this
+    scale and avoids storing a second credential."""
+    for r in db.execute("SELECT id, port, plan, budget_usd, spend_usd FROM orgs").fetchall():
+        if hmac.compare_digest(_org_proxy_token(r["id"]), token):
+            return r
+    return None
+
+
+_PROXY_PRICES = {  # USD per 1M tokens (input, cache_write, cache_read, output)
+    "opus":   (15.0, 18.75, 1.50, 75.0),
+    "sonnet": (3.0,  3.75,  0.30, 15.0),
+    "haiku":  (0.80, 1.00,  0.08, 4.0),
+}
+
+
+def _proxy_cost_usd(model, usage):
+    m = (model or "").lower()
+    tier = "opus" if "opus" in m else ("haiku" if "haiku" in m else "sonnet")
+    pi, pcw, pcr, po = _PROXY_PRICES[tier]
+    return ((usage.get("input_tokens", 0) or 0) * pi
+            + (usage.get("cache_creation_input_tokens", 0) or 0) * pcw
+            + (usage.get("cache_read_input_tokens", 0) or 0) * pcr
+            + (usage.get("output_tokens", 0) or 0) * po) / 1_000_000.0
+
+
+def _record_proxy_spend(org_id, cost):
+    """Add a request's cost to the org's running spend. This is exact and
+    immediate — no transcript parsing, no polling lag."""
+    if cost <= 0:
+        return
+    try:
+        db = get_db()
+        with _db_lock:
+            db.execute("UPDATE orgs SET spend_usd = COALESCE(spend_usd,0) + ?, spend_checked_at=? WHERE id=?",
+                       (cost, int(time.time()), org_id))
+            db.commit()
+    except Exception as e:
+        print(f"[proxy] spend record failed for {org_id}: {e}", flush=True)
+
+
+def _handle_anthropic_proxy(handler, path, qs):
+    """Forward /anthropic/<token>/<upstream path> to api.anthropic.com with the
+    house key injected server-side.
+
+    Containers get ANTHROPIC_BASE_URL pointed here plus a per-org token, so the
+    real key never exists inside a workspace a trial user can read. Every reply
+    is metered, so the budget is enforced per request rather than on a poll.
+    """
+    rest = path[len("/anthropic/"):]
+    token, _, upstream = rest.partition("/")
+    if not token:
+        return handler._json({"error": "missing proxy token"}, 401)
+    db = get_db()
+    org = _org_for_proxy_token(db, token)
+    if not org:
+        return handler._json({"error": "invalid proxy token"}, 403)
+    if not ANTHROPIC_API_KEY:
+        return handler._json({"type": "error", "error": {"type": "api_error",
+                              "message": "amux cloud has no upstream API key configured"}}, 503)
+    # Budget gate — refuse before spending anything more.
+    if (org["budget_usd"] is not None and org["plan"] != "pro"
+            and (org["spend_usd"] or 0) >= org["budget_usd"]):
+        return handler._json({"type": "error", "error": {"type": "budget_exceeded",
+                              "message": f"amux trial budget exhausted "
+                                         f"(${org['spend_usd']:.2f} of ${org['budget_usd']:.2f}). "
+                                         f"Upgrade at https://cloud.amux.io to continue."}}, 402)
+
+    length = int(handler.headers.get("Content-Length", 0))
+    body = handler.rfile.read(length) if length else None
+    url = "https://api.anthropic.com/" + upstream
+    if qs:
+        url += "?" + qs
+    skip = {"host", "content-length", "authorization", "x-api-key", "cookie", "connection"}
+    fwd = {k: v for k, v in handler.headers.items() if k.lower() not in skip}
+    fwd["x-api-key"] = ANTHROPIC_API_KEY
+    fwd.setdefault("anthropic-version", "2023-06-01")
+    req = urllib.request.Request(url, data=body, method=handler.command, headers=fwd)
+    try:
+        resp = urllib.request.urlopen(req, timeout=600)
+    except urllib.error.HTTPError as e:
+        payload = e.read()
+        handler.send_response(e.code)
+        handler.send_header("Content-Type", e.headers.get("Content-Type", "application/json"))
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        try:
+            handler.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        return
+    except Exception as e:
+        return handler._json({"type": "error",
+                              "error": {"type": "api_error", "message": str(e)}}, 502)
+
+    ctype = resp.headers.get("Content-Type", "")
+    handler.send_response(resp.status)
+    for k, v in resp.headers.items():
+        if k.lower() not in ("transfer-encoding", "content-encoding", "connection", "content-length"):
+            handler.send_header(k, v)
+    is_stream = "text/event-stream" in ctype
+    model_seen, usage_acc = "", {}
+    if is_stream:
+        handler.end_headers()
+        buf = b""
+        try:
+            while True:
+                chunk = resp.read(1024)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+                handler.wfile.flush()
+                buf += chunk
+                # Meter from the SSE frames without disturbing the byte stream.
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.startswith(b"data: "):
+                        continue
+                    try:
+                        ev = json.loads(line[6:].decode())
+                    except Exception:
+                        continue
+                    if ev.get("type") == "message_start":
+                        msg = ev.get("message", {})
+                        model_seen = msg.get("model", model_seen)
+                        for k, v in (msg.get("usage") or {}).items():
+                            if isinstance(v, int):
+                                usage_acc[k] = usage_acc.get(k, 0) + v
+                    elif ev.get("type") == "message_delta":
+                        for k, v in (ev.get("usage") or {}).items():
+                            if isinstance(v, int):
+                                usage_acc[k] = usage_acc.get(k, 0) + v
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+    else:
+        payload = resp.read()
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        try:
+            handler.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        try:
+            d = json.loads(payload)
+            model_seen = d.get("model", "")
+            usage_acc = d.get("usage") or {}
+        except Exception:
+            pass
+
+    if usage_acc:
+        cost = _proxy_cost_usd(model_seen, usage_acc)
+        _record_proxy_spend(org["id"], cost)
+        # Crossing the cap mid-conversation stops the fleet immediately rather
+        # than waiting for the next poll.
+        try:
+            fresh = get_db().execute(
+                "SELECT id, port, plan, budget_usd, spend_usd FROM orgs WHERE id=?",
+                (org["id"],)).fetchone()
+            if (fresh and fresh["budget_usd"] is not None and fresh["plan"] != "pro"
+                    and (fresh["spend_usd"] or 0) >= fresh["budget_usd"]):
+                threading.Thread(target=_stop_org_sessions, args=(fresh["port"],),
+                                 daemon=True).start()
+                print(f"[proxy] org {org['id']} hit cap "
+                      f"(${fresh['spend_usd']:.2f}/${fresh['budget_usd']:.2f}) — stopping sessions", flush=True)
+        except Exception:
+            pass
+
+
+def _budget_poller():
+    """Refresh cached spend for budget-capped orgs and stop sessions the moment a
+    cap is crossed — running agents burn tokens whether or not anyone is watching.
+
+    Orgs near their cap are checked every cycle; the rest every 4th cycle, so the
+    common case stays cheap while the expensive case (about to overspend) is tight.
+    Worst-case overshoot is one cycle of burn instead of one coarse poll interval."""
+    cycle = 0
+    while True:
+        time.sleep(BUDGET_POLL_SECONDS)
+        cycle += 1
+        try:
+            db = get_db()
+            rows = db.execute(
+                "SELECT id, port, budget_usd, spend_usd, plan FROM orgs "
+                "WHERE budget_usd IS NOT NULL AND plan != 'pro' AND port IS NOT NULL"
+            ).fetchall()
+            for r in rows:
+                near = (r["spend_usd"] or 0) >= (r["budget_usd"] or 0) * BUDGET_NEAR_FRACTION
+                if not near and cycle % 4 != 0:
+                    continue
+                if not container_running(r["id"]):
+                    continue
+                spend = _refresh_org_spend(db, r["id"], r["port"])
+                if spend is not None:
+                    _enforce_budget(db, r, spend)
+        except Exception as e:
+            print(f"[budget] poller error: {e}", flush=True)
+
+threading.Thread(target=_budget_poller, daemon=True).start()
+
 _starting_containers = set()
 _starting_lock = threading.Lock()
 
@@ -948,13 +1321,43 @@ def _ensure_container_starting(user_id, port):
                 _starting_containers.discard(user_id)
     threading.Thread(target=_run, daemon=True).start()
 
+def _write_proxy_env(user_id):
+    """Point the container's Claude Code at our proxy instead of handing it a key.
+
+    ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN are all Claude Code needs; the
+    token only works through our gateway, is scoped to this one org, and is
+    worthless if a trial user copies it out. The real key stays on the host.
+    """
+    if not ANTHROPIC_API_KEY:
+        return False
+    base = f"{PROXY_PUBLIC_BASE}/anthropic/{_org_proxy_token(user_id)}"
+    vol = f"amux-data-{user_id}"
+    script = (
+        'ENV=/root/.amux/server.env; touch "$ENV"; '
+        'grep -v -e "^ANTHROPIC_BASE_URL=" -e "^ANTHROPIC_AUTH_TOKEN=" -e "^ANTHROPIC_API_KEY=" '
+        '  "$ENV" > "$ENV.tmp" 2>/dev/null || true; mv "$ENV.tmp" "$ENV"; '
+        'printf "ANTHROPIC_BASE_URL=%s\\nANTHROPIC_AUTH_TOKEN=%s\\n" "$1" "$2" >> "$ENV"'
+    )
+    try:
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{vol}:/root/.amux", "alpine:latest",
+             "sh", "-c", script, "--", base, _org_proxy_token(user_id)],
+            capture_output=True, timeout=30)
+        return True
+    except Exception as e:
+        print(f"[proxy] failed to write proxy env for {user_id}: {e}", flush=True)
+        return False
+
+
 def start_container(user_id, port):
     _write_compose(user_id, port)
     _restore_user_files(user_id)
-    # Inject API key into server.env before starting — own org or shared org
+    # Preferred path: route through our proxy so no key lands in the container.
+    _proxied = _write_proxy_env(user_id)
+    # Fallback (self-supplied or per-org key) only when there is no house key.
     try:
         db = get_db()
-        api_key = _resolve_api_key(db, user_id)
+        api_key = None if _proxied else _resolve_api_key(db, user_id)
         if api_key:
             vol = f"amux-data-{user_id}"
             subprocess.run(
@@ -1108,7 +1511,9 @@ def _clerk_get_email(user_id):
     try:
         req = urllib.request.Request(
             f"https://api.clerk.com/v1/users/{user_id}",
-            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+            # UA required: Cloudflare blocks urllib's default agent (error 1010)
+            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}",
+                     "User-Agent": "amux-gateway/1.0"}
         )
         resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read())
@@ -1587,6 +1992,13 @@ class Handler(BaseHTTPRequestHandler):
             _tunnel_serve_public(self, _sub_tid, path, qs)
             return
 
+        # ── Anthropic proxy: /anthropic/<org-token>/… (token-authed) ──
+        # Bearer-free by design: the caller proves identity with the per-org
+        # token in the path, and the house key is injected here so it never
+        # exists inside a user container.
+        if path.startswith("/anthropic/"):
+            return _handle_anthropic_proxy(self, path, qs)
+
         # ── amux tunnel: /t/<tid>/… (public) + /tunnel/* (token-authed) ──
         if path.startswith("/t/") or path.startswith("/tunnel/"):
             if _tunnel_routes(self, path, qs):
@@ -1714,7 +2126,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Public: Clerk health check ──
         if path == "/api/cloud-health" and self.command == "GET":
-            health = {"clerk": "unknown", "domain": ""}
+            health = {"clerk": "unknown", "domain": "",
+                      "admin_configured": bool(ADMIN_EMAILS),
+                      "stripe_configured": bool(STRIPE_SECRET_KEY),
+                      "platform_fee_configured": bool(STRIPE_PLATFORM_FEE_PRICE_ID),
+                      "trial_budget_default_usd": TRIAL_BUDGET_USD}
             try:
                 raw = CLERK_PUBLISHABLE_KEY.split("_", 2)[2]
                 raw += "=" * (-len(raw) % 4)
@@ -1917,6 +2333,14 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("UPDATE users SET email=? WHERE id=?", (user_email, user_id))
                     db.commit()
 
+        # ── God mode: ADMIN_EMAILS users get full access to every workspace.
+        # The e2e secret (COOKIE_SECRET via X-E2E-Secret) grants the same for
+        # automated tests — it already gates destructive cleanup, same trust tier.
+        _e2e_hdr = self.headers.get("X-E2E-Secret", "")
+        is_e2e_admin = bool(_e2e_hdr and COOKIE_SECRET
+                            and hmac.compare_digest(_e2e_hdr, COOKIE_SECRET))
+        is_admin = _is_admin_email(user_email) or is_e2e_admin
+
         # ── Gateway-level org/invite interceptors ─────────────────────────────
 
         # ── Helper: resolve org_id from cookie or default to personal ──
@@ -1924,6 +2348,8 @@ class Handler(BaseHTTPRequestHandler):
             cookies = _parse_cookies(self.headers.get("Cookie", ""))
             oid = cookies.get("amux_org", "")
             if oid:
+                if is_admin and db.execute("SELECT 1 FROM orgs WHERE id=?", (oid,)).fetchone():
+                    return oid  # god mode: admins may enter any workspace
                 mem = db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (oid, user_id)).fetchone()
                 if mem:
                     return oid
@@ -1931,6 +2357,8 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Helper: check if user has role in org ──
         def _has_role(org_id, *roles):
+            if is_admin:
+                return True  # god mode
             r = db.execute("SELECT role FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone()
             return r and r["role"] in roles
 
@@ -1953,11 +2381,16 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/gateway/invite/") and path.endswith("/accept"):
             tok = path[len("/api/gateway/invite/"):-len("/accept")]
             inv = db.execute(
-                "SELECT org_id, role FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
+                "SELECT org_id, role, email FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
                 (tok, now)
             ).fetchone()
             if not inv:
                 return self._json({"error": "invalid or expired invite"}, 410)
+            # Email-bound invites (provisioned trials) can only be accepted by
+            # the invited address — a forwarded link must not hijack the workspace.
+            if inv["email"] and (user_email or "").strip().lower() != inv["email"].strip().lower():
+                return self._json(
+                    {"error": f"this invite was issued to {inv['email']} — sign in with that email"}, 403)
             org_id = inv["org_id"]
             role = inv["role"] or "member"
             db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
@@ -2071,7 +2504,7 @@ class Handler(BaseHTTPRequestHandler):
         # GET /api/gateway/orgs/<org_id> → org details
         if path.startswith("/api/gateway/orgs/") and self.command == "GET" and path.count("/") == 4 and not path.endswith("/members"):
             org_id = path.split("/")[4]
-            if not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
+            if not is_admin and not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
                 return self._json({"error": "not a member"}, 403)
             org = db.execute("SELECT * FROM orgs WHERE id=?", (org_id,)).fetchone()
             if not org:
@@ -2146,7 +2579,7 @@ class Handler(BaseHTTPRequestHandler):
         # GET /api/gateway/orgs/<org_id>/members → list members
         if path.startswith("/api/gateway/orgs/") and path.endswith("/members") and self.command == "GET":
             org_id = path.split("/")[4]
-            if not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
+            if not is_admin and not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
                 return self._json({"error": "not a member"}, 403)
             rows = db.execute(
                 "SELECT m.user_id, m.role, m.joined_at, u.email "
@@ -2200,7 +2633,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?",
                 (org_id, user_id)
             ).fetchone()
-            if not member_row:
+            if not member_row and not (is_admin and db.execute("SELECT 1 FROM orgs WHERE id=?", (org_id,)).fetchone()):
                 return self._json({"error": "not a member of this workspace"}, 403)
             return self._redirect(
                 self._base_url() + "/",
@@ -2244,9 +2677,13 @@ class Handler(BaseHTTPRequestHandler):
             base = self._base_url()
             org_row = db.execute("SELECT stripe_customer_id, trial_ends_at FROM orgs WHERE id=?", (target_org,)).fetchone()
             has_had_trial = org_row and (org_row["stripe_customer_id"] or org_row["trial_ends_at"])
+            line_items = [{"price": price_id, "quantity": 1}]
+            # Trial upgrade: one-time onboarding platform fee ahead of the subscription
+            if body.get("platform_fee") and STRIPE_PLATFORM_FEE_PRICE_ID:
+                line_items.insert(0, {"price": STRIPE_PLATFORM_FEE_PRICE_ID, "quantity": 1})
             checkout_params = dict(
                 mode="subscription",
-                line_items=[{"price": price_id, "quantity": 1}],
+                line_items=line_items,
                 client_reference_id=target_org,  # org_id as reference
                 success_url=base + "/?billing=success",
                 cancel_url=base + "/?billing=cancel",
@@ -2298,10 +2735,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/stripe/status" and self.command == "GET":
             target_org = _active_org_id()
-            org_row = db.execute("SELECT plan, stripe_customer_id, trial_ends_at FROM orgs WHERE id=?", (target_org,)).fetchone()
+            org_row = db.execute(
+                "SELECT plan, stripe_customer_id, trial_ends_at, budget_usd, spend_usd "
+                "FROM orgs WHERE id=?", (target_org,)).fetchone()
             now_ts = int(time.time())
             trial_ends = org_row["trial_ends_at"] if org_row else None
             in_trial = bool(trial_ends and trial_ends > now_ts)
+            budget = org_row["budget_usd"] if org_row else None
+            spend = (org_row["spend_usd"] or 0) if org_row else 0
             return self._json({
                 "plan": org_row["plan"] if org_row else "free",
                 "has_billing": bool(org_row and org_row["stripe_customer_id"]),
@@ -2310,6 +2751,12 @@ class Handler(BaseHTTPRequestHandler):
                 "in_trial": in_trial,
                 "trial_days": TRIAL_DAYS,
                 "has_annual": bool(STRIPE_ANNUAL_PRICE_ID),
+                "has_platform_fee": bool(STRIPE_PLATFORM_FEE_PRICE_ID),
+                "budget_usd": budget,
+                "spend_usd": round(spend, 4),
+                "budget_remaining_usd": (round(max(0.0, budget - spend), 4)
+                                         if budget is not None else None),
+                "is_admin": is_admin,
                 "org_id": target_org,
             })
 
@@ -2377,7 +2824,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Admin: promo code management ─────────────────────────────────────
         if path == "/api/gateway/admin/promo" and self.command == "POST":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
@@ -2399,14 +2846,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "code": code, "bonus_days": bonus_days})
 
         if path == "/api/gateway/admin/promos" and self.command == "GET":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             rows = db.execute("SELECT * FROM promo_codes ORDER BY created_at DESC").fetchall()
             return self._json({"promo_codes": [dict(r) for r in rows]})
 
         # ── Admin: gateway logs ───────────────────────────────────────────────
         if path.startswith("/api/gateway/logs") and self.command == "GET":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
 
             from urllib.parse import parse_qs
@@ -2417,9 +2864,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if source == "container":
                 org_id = params.get("org_id", [""])[0] or _active_org_id()
-                # Verify user is a member of this org
+                # Verify user is a member of this org (admins bypass — god mode)
                 with _db_lock:
-                    if not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
+                    if not is_admin and not db.execute("SELECT 1 FROM org_memberships WHERE org_id=? AND user_id=?", (org_id, user_id)).fetchone():
                         return self._json({"error": "not a member of this workspace"}, 403)
                 try:
                     result = subprocess.run(
@@ -2443,7 +2890,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Admin: list containers ────────────────────────────────────────────
         if path == "/api/gateway/admin/containers" and self.command == "GET":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             try:
                 result = subprocess.run(
@@ -2466,7 +2913,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Admin: list users + orgs overview ─────────────────────────────────
         if path == "/api/gateway/admin/users" and self.command == "GET":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             rows = db.execute(
                 "SELECT u.id, u.email, u.plan, u.created_at, u.last_seen, "
@@ -2482,7 +2929,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Admin: DB query (read-only) ───────────────────────────────────────
         if path == "/api/gateway/admin/query" and self.command == "POST":
-            if not ADMIN_EMAILS or user_email not in ADMIN_EMAILS:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             body = self._read_body()
             sql = body.get("sql", "").strip()
@@ -2499,13 +2946,141 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 400)
 
+        # ── Admin: provision a trial workspace by email ───────────────────────
+        # Creates an org with a spend budget + trial expiry, adds all admins as
+        # members (god mode also applies dynamically), emails a Clerk invitation
+        # that lands on the invite-accept page, and pre-injects our API key so
+        # the workspace works before the user brings any keys.
+        if path == "/api/gateway/admin/provision" and self.command == "POST":
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            import secrets as _sec
+            body = self._read_body()
+            invitee = (body.get("email") or "").strip().lower()
+            if not invitee or "@" not in invitee:
+                return self._json({"error": "valid email required"}, 400)
+            trial_days = int(body.get("trial_days", TRIAL_DAYS))
+            budget = body.get("budget_usd", TRIAL_BUDGET_USD)
+            budget = float(budget) if budget is not None else None
+            org_name = (body.get("name") or "").strip() or f"{invitee} (trial)"
+            notify = body.get("notify", True)
+            prov_key = (body.get("api_key") or ANTHROPIC_API_KEY or "").strip() or None
+            org_id = "org_" + _sec.token_hex(8)
+            trial_end = now + trial_days * 86400
+            with _db_lock:
+                org_port = alloc_port(db)
+                db.execute(
+                    "INSERT INTO orgs (id, name, slug, owner_id, port, plan, trial_ends_at, api_key, created_at, budget_usd) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (org_id, org_name, None, user_id, org_port, "free", trial_end, prov_key, now, budget))
+                db.execute(
+                    "INSERT INTO org_memberships (org_id, user_id, role, joined_at) VALUES (?,?,?,?)",
+                    (org_id, user_id, "owner", now))
+                if ADMIN_EMAILS:
+                    ph = ",".join("?" * len(ADMIN_EMAILS))
+                    for arow in db.execute(
+                            f"SELECT id FROM users WHERE email IN ({ph})",
+                            tuple(ADMIN_EMAILS)).fetchall():
+                        db.execute(
+                            "INSERT OR IGNORE INTO org_memberships (org_id, user_id, role, joined_at) VALUES (?,?,?,?)",
+                            (org_id, arow["id"], "admin", now))
+                tok = _sec.token_urlsafe(24)
+                db.execute(
+                    "INSERT INTO org_invites (token, org_id, owner_id, email, role, created_at, expires_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (tok, org_id, user_id, invitee, "admin", now, trial_end))
+                db.commit()
+            invite_url = f"{self._base_url()}/invite/{tok}"
+            if notify:
+                sent, clerk_detail = _clerk_send_invitation(invitee, invite_url)
+            else:
+                sent, clerk_detail = False, "notify disabled"
+            print(f"[provision] {user_email or 'e2e'} provisioned {org_id} for {invitee} "
+                  f"trial={trial_days}d budget={budget} invite_sent={sent}", flush=True)
+            return self._json({
+                "org_id": org_id, "port": org_port, "email": invitee,
+                "invite_url": invite_url, "invite_token": tok,
+                "trial_ends_at": trial_end, "budget_usd": budget,
+                "clerk_invitation_sent": bool(sent),
+                "clerk_detail": "" if sent else clerk_detail,
+                "api_key_provisioned": bool(prov_key),
+            }, 201)
+
+        # ── Admin: list all orgs with trial/budget/spend state ────────────────
+        if path == "/api/gateway/admin/orgs" and self.command == "GET":
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            rows = db.execute(
+                "SELECT o.id, o.name, o.owner_id, o.plan, o.port, o.trial_ends_at, "
+                "o.budget_usd, o.spend_usd, o.spend_checked_at, o.created_at, "
+                "u.email AS owner_email "
+                "FROM orgs o LEFT JOIN users u ON u.id = o.owner_id "
+                "ORDER BY o.created_at DESC").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["running"] = container_running(r["id"])
+                d["members"] = [dict(m) for m in db.execute(
+                    "SELECT m.user_id, m.role, u.email FROM org_memberships m "
+                    "LEFT JOIN users u ON u.id = m.user_id WHERE m.org_id=?", (r["id"],)).fetchall()]
+                out.append(d)
+            return self._json({"orgs": out, "count": len(out)})
+
+        # ── Admin: update an org's trial/budget/plan ──────────────────────────
+        _adm_org_m = re.match(r"^/api/gateway/admin/orgs/([^/]+)$", path)
+        if _adm_org_m and self.command == "PATCH":
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            oid = _adm_org_m.group(1)
+            if not db.execute("SELECT 1 FROM orgs WHERE id=?", (oid,)).fetchone():
+                return self._json({"error": "org not found"}, 404)
+            body = self._read_body()
+            updates, params = [], []
+            if "budget_usd" in body:
+                updates.append("budget_usd=?")
+                params.append(float(body["budget_usd"]) if body["budget_usd"] is not None else None)
+            if "trial_days_from_now" in body:
+                updates.append("trial_ends_at=?")
+                params.append(now + int(body["trial_days_from_now"]) * 86400)
+            elif "trial_ends_at" in body:
+                updates.append("trial_ends_at=?")
+                params.append(int(body["trial_ends_at"]))
+            if body.get("plan") in ("free", "pro"):
+                updates.append("plan=?")
+                params.append(body["plan"])
+            if not updates:
+                return self._json({"error": "nothing to update"}, 400)
+            with _db_lock:
+                db.execute(f"UPDATE orgs SET {','.join(updates)} WHERE id=?", (*params, oid))
+                db.commit()
+            return self._json({"ok": True})
+
+        # ── Admin: force a spend refresh (and enforce) for one org ────────────
+        _adm_spend_m = re.match(r"^/api/gateway/admin/orgs/([^/]+)/refresh-spend$", path)
+        if _adm_spend_m and self.command == "POST":
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            oid = _adm_spend_m.group(1)
+            org = db.execute("SELECT id, port, budget_usd, plan, spend_usd FROM orgs WHERE id=?", (oid,)).fetchone()
+            if not org or not org["port"]:
+                return self._json({"error": "org not found"}, 404)
+            spend = _refresh_org_spend(db, oid, org["port"])
+            effective = spend if spend is not None else (org["spend_usd"] or 0)
+            enforced = False
+            stopped = []
+            if (org["budget_usd"] is not None and org["plan"] != "pro"
+                    and effective >= org["budget_usd"]):
+                stopped = _stop_org_sessions(org["port"])
+                enforced = True
+            return self._json({"ok": True, "spend_usd": effective,
+                               "budget_usd": org["budget_usd"],
+                               "refreshed": spend is not None,
+                               "enforced": enforced, "sessions_stopped": stopped})
+
         # ── Admin: cleanup user container + DB records (e2e test support) ─────
         _cleanup_match = re.match(r"^/api/gateway/admin/cleanup/(.+)$", path)
         if _cleanup_match and self.command == "DELETE":
-            e2e_secret = self.headers.get("X-E2E-Secret", "")
-            is_admin = ADMIN_EMAILS and user_email in ADMIN_EMAILS
-            is_e2e = e2e_secret and COOKIE_SECRET and hmac.compare_digest(e2e_secret, COOKIE_SECRET)
-            if not is_admin and not is_e2e:
+            if not is_admin:
                 return self._json({"error": "forbidden"}, 403)
             target_uid = _cleanup_match.group(1)
             stopped = False
@@ -2518,6 +3093,8 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("DELETE FROM users WHERE id=?", (target_uid,))
                 db.execute("DELETE FROM orgs WHERE id=?", (target_uid,))
                 db.execute("DELETE FROM org_memberships WHERE user_id=?", (target_uid,))
+                db.execute("DELETE FROM org_memberships WHERE org_id=?", (target_uid,))
+                db.execute("DELETE FROM org_invites WHERE org_id=?", (target_uid,))
                 db.commit()
             except Exception as e:
                 print(f"[admin] cleanup DB for {target_uid} failed: {e}", flush=True)
@@ -2525,7 +3102,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Determine target container via active org ─────────────────────────
         active_org = _active_org_id()
-        org_data = db.execute("SELECT id, port, plan, trial_ends_at FROM orgs WHERE id=?", (active_org,)).fetchone()
+        org_data = db.execute(
+            "SELECT id, port, plan, trial_ends_at, budget_usd, spend_usd, spend_checked_at FROM orgs WHERE id=?",
+            (active_org,)).fetchone()
         if not org_data or not org_data["port"]:
             return self._json({"error": "workspace not found"}, 404)
         target_org_id = org_data["id"]
@@ -2533,7 +3112,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── Hard gate: block expired free-plan users ─────────────────────────
         # Allow through: pro users, users still in trial, billing/gateway API calls, admins
-        if org_data["plan"] != "pro" and not (ADMIN_EMAILS and user_email in ADMIN_EMAILS):
+        if org_data["plan"] != "pro" and not is_admin:
             trial_end = org_data["trial_ends_at"] or 0
             if trial_end < now:
                 # Trial expired — allow only billing and gateway endpoints
@@ -2543,6 +3122,38 @@ class Handler(BaseHTTPRequestHandler):
                     if "text/html" in accept or not path.startswith("/api/"):
                         return self._html(_UPGRADE_HTML)
                     return self._json({"error": "trial_expired", "upgrade_url": "/upgrade"}, 402)
+
+        # ── Budget freshness: re-read spend inline when close to the cap ─────
+        # The poller alone leaves a window where an org can burn past its cap
+        # between cycles. Once an org is near the cap, refresh synchronously
+        # (one loopback call) so the gate below decides on current numbers.
+        if (org_data["budget_usd"] and org_data["plan"] != "pro" and not is_admin
+                and (org_data["spend_usd"] or 0) >= org_data["budget_usd"] * BUDGET_NEAR_FRACTION
+                and now - (org_data["spend_checked_at"] or 0) >= 20
+                and container_running(target_org_id)):
+            _fresh = _refresh_org_spend(db, target_org_id, target_port)
+            if _fresh is not None:
+                if _enforce_budget(db, org_data, _fresh):
+                    pass  # sessions stopped; the gate below serves the upgrade path
+                org_data = db.execute(
+                    "SELECT id, port, plan, trial_ends_at, budget_usd, spend_usd, spend_checked_at FROM orgs WHERE id=?",
+                    (target_org_id,)).fetchone()
+
+        # ── Hard gate: budget-capped trials that used up their spend ─────────
+        if (org_data["budget_usd"] is not None and org_data["plan"] != "pro"
+                and not is_admin
+                and (org_data["spend_usd"] or 0) >= org_data["budget_usd"]):
+            _allowed_prefixes = ("/api/stripe/", "/api/gateway/", "/api/cloud-")
+            if not any(path.startswith(p) for p in _allowed_prefixes):
+                accept = self.headers.get("Accept", "")
+                if "text/html" in accept or not path.startswith("/api/"):
+                    page = (_BUDGET_HTML
+                            .replace("__SPENT__", f"{(org_data['spend_usd'] or 0):.2f}")
+                            .replace("__BUDGET__", f"{org_data['budget_usd']:.2f}"))
+                    return self._html(page)
+                return self._json({"error": "budget_exceeded",
+                                   "spend_usd": round(org_data["spend_usd"] or 0, 2),
+                                   "budget_usd": org_data["budget_usd"]}, 402)
 
         # Refresh user's last_seen
         db.execute("UPDATE users SET last_seen=? WHERE id=?", (now, user_id))

@@ -207,9 +207,11 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 # Atomically claim a board item
 curl -sk -X POST $AMUX_URL/api/board/PROJ-5/claim
 
-# Watch another session's output
-curl -sk "$AMUX_URL/api/sessions/worker-1/peek?lines=50" | \
-  python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"
+# Read another session's scrollback. Use `history`, not `output` — `output` is only
+# the current terminal frame, and a full-screen prompt (usage-credits modal, resume
+# picker) clears the screen, so the session's work drops off-viewport.
+curl -sk "$AMUX_URL/api/sessions/worker-1/peek?lines=600" | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"
 ```
 
 Agents get the full API reference in their global memory, so plain-English orchestration just works.

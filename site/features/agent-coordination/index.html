@@ -82,8 +82,8 @@ curl -s -X POST -H 'Content-Type: application/json' \
     <h3>3. Peer output inspection</h3>
     <p>Read another agent's recent terminal output — the last N lines of its tmux pane:</p>
     <pre><code># Check if agent B has finished its current task
-curl -s "$AMUX_URL/api/sessions/worker-b/peek?lines=20" | \
-  python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+curl -s "$AMUX_URL/api/sessions/worker-b/peek?lines=600" | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"</code></pre>
     <p>Use this for lightweight polling ("is agent B done yet?"), debugging ("what is agent B actually doing?"), or for orchestrators that want to consume an agent's output programmatically.</p>
 
     <h3>4. Shared global memory</h3>

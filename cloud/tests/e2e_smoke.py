@@ -16,7 +16,7 @@ Env vars required (set in ~/.amux/server.env or shell):
 Usage:
   python3 cloud/tests/e2e_smoke.py [--gateway https://cloud.amux.io]
 """
-import argparse, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error
+import argparse, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error, urllib.parse
 
 GATEWAY = os.environ.get("E2E_GATEWAY", "https://cloud.amux.io")
 CLERK_SECRET = os.environ.get("CLERK_SECRET_KEY", "")
@@ -71,9 +71,27 @@ def clerk_api(method, path, body=None):
         raise RuntimeError(f"Clerk API {method} {path} → {e.code}: {err_body}")
 
 
+def _user_emails(u):
+    return {a.get("email_address", "").strip().lower()
+            for a in (u.get("email_addresses") or [])}
+
+
 def clerk_find_test_user():
-    data = clerk_api("GET", f"/users?email_address[]={TEST_EMAIL}&limit=1")
-    return data[0] if data else None
+    """Look up the test user by email.
+
+    Uses ?email_address= (NOT ?email_address[]=). Clerk silently IGNORES the
+    bracketed form and returns the full, unfiltered user list — so [0] was the
+    newest real account, and the caller deleted it. That destroyed 9 real user
+    accounts (2026-07-13..07-29) before it was caught. Every result is
+    re-verified below, so a filter that breaks again cannot authorize a delete.
+    """
+    data = clerk_api("GET", f"/users?email_address={urllib.parse.quote(TEST_EMAIL)}&limit=5")
+    if not isinstance(data, list):
+        return None
+    for u in data:
+        if TEST_EMAIL.strip().lower() in _user_emails(u):
+            return u
+    return None
 
 
 def clerk_create_user():
@@ -87,6 +105,19 @@ def clerk_create_user():
 
 
 def clerk_delete_user(user_id):
+    """Delete a Clerk user — ONLY if it really is the test account.
+
+    Re-reads the user and refuses unless TEST_EMAIL is one of its addresses.
+    This is the backstop that a broken/ignored query filter cannot bypass.
+    """
+    try:
+        u = clerk_api("GET", f"/users/{user_id}")
+    except RuntimeError:
+        return None
+    if TEST_EMAIL.strip().lower() not in _user_emails(u):
+        raise RuntimeError(
+            f"REFUSING to delete {user_id}: emails {sorted(_user_emails(u))} "
+            f"do not include the test address {TEST_EMAIL}")
     return clerk_api("DELETE", f"/users/{user_id}")
 
 

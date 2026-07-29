@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>Best Terminal AI Coding Agents in 2026: Claude Code, Gemini CLI, Codex, OpenCode, Aider, Warp, Goose &amp; Q Developer Compared &mdash; amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="The definitive comparison of every terminal-native AI coding agent in 2026. 8 CLI tools compared on models, pricing, open source status, agent capabilities, and when to use each. Updated May 2026.">
+  <meta name="description" content="The definitive comparison of every terminal-native AI coding agent in 2026. 8 CLI tools compared on models, pricing, open source status, agent capabilities, and when to use each. Updated July 2026.">
   <meta name="keywords" content="terminal AI coding agents, CLI coding agent, Claude Code vs Gemini CLI, Claude Code vs Codex CLI, OpenCode vs Claude Code, best CLI coding agent 2026, Aider vs Claude Code, Warp AI agent, Goose AI agent, Amazon Q Developer CLI, terminal coding tools compared">
   <link rel="canonical" href="https://amux.io/blog/best-terminal-ai-coding-agents-2026/">
   <meta property="og:title" content="Best Terminal AI Coding Agents in 2026: 8 CLI Tools Compared">
@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-11",
-    "dateModified":"2026-05-11",
+    "dateModified":"2026-07-28",
     "mainEntityOfPage":"https://amux.io/blog/best-terminal-ai-coding-agents-2026/"
   }</script>
   <script type="application/ld+json">{
@@ -137,6 +137,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>Best Terminal AI Coding Agents 2026</span></div>
 
     <h1>Best Terminal AI Coding Agents in 2026</h1>
+    <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.5rem">Updated July 2026 — new: Antigravity CLI note, amux v0.9.202 features, freshened star counts</p>
     <p class="subtitle">The IDE is optional. In 2026, the most productive developers run AI coding agents directly in the terminal &mdash; headless, scriptable, parallelizable. Eight CLI tools now dominate this space: <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">OpenCode</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://www.warp.dev/" target="_blank" rel="noopener">Warp</a>, <a href="https://github.com/block/goose" target="_blank" rel="noopener">Goose</a>, and <a href="https://aws.amazon.com/q/developer/" target="_blank" rel="noopener">Amazon Q Developer CLI</a>. This guide compares all of them.</p>
 
     <!-- ───────── TL;DR ───────── -->
@@ -437,6 +438,9 @@
         <strong>Best for:</strong> Developers who want to try terminal-based AI coding at zero cost. Students, open-source contributors, and anyone evaluating CLI agents before committing to a subscription. The 1M context window is unmatched for working with large codebases.<br>
         <strong>Trade-off:</strong> Locked to Gemini models. Gemini&rsquo;s code quality trails Opus 4.7 on benchmarks. No subagent system, hooks, or SDK for advanced automation.
       </div>
+      <div style="background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.25);border-radius:6px;padding:10px 14px;margin-top:1rem;font-size:0.83rem;color:var(--dim);">
+        <strong>July 2026 update:</strong> Google rebranded and relaunched Gemini CLI as <strong>Antigravity CLI (agy)</strong> on June 18, 2026. The free tier (1,000 req/day) and Gemini model access remain unchanged. If you installed <code>gemini-cli</code> before June 2026, it still works — but new installs use <code>npm i -g @antigravity/cli</code>. amux supports orchestrating multiple Antigravity CLI sessions the same way it does Gemini CLI.
+      </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════
@@ -722,7 +726,23 @@
         <span>Open source (MIT)</span>
         <span><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></span>
       </div>
-      <p>The terminal agents above are powerful individually. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> makes them powerful <em>at scale</em>: spawn 10&ndash;50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> sessions, monitor them from a web dashboard or phone, auto-recover from crashes, and coordinate tasks through a shared board. One Python file. No Docker. No npm. Installs in one command.</p>
+      <p>The terminal agents above are powerful individually. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> makes them powerful <em>at scale</em>: spawn 10&ndash;50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or Antigravity CLI (agy) sessions, monitor them from a web dashboard or your phone, auto-recover from crashes, and coordinate tasks through a shared board. <strong>315★ GitHub</strong>, MIT licensed. One Python file. No Docker. No npm. Installs in one command.</p>
+      <ul style="margin:0.8rem 0 0;font-size:0.88rem;color:var(--dim);">
+        <li><strong>Mobile dashboard + PWA</strong> — manage your entire agent fleet from your phone; iOS app available</li>
+        <li><strong>Offline scrollback cache (v0.9.200)</strong> — every agent's output cached locally so you can review work during commutes, flights, or dead zones</li>
+        <li><strong>Voice dictation (v0.9.202)</strong> — dictate messages to agents using local Whisper (12× faster than cloud, works fully offline); persistent outbox so no audio is ever lost</li>
+        <li><strong>Self-healing watchdog</strong> — detects stalled agents, replays last message, restarts crashed sessions unattended</li>
+        <li><strong>Built-in CRM, email, scheduler</strong> — beyond coding agents: run business operations from the same dashboard</li>
+      </ul>
+    </div>
+
+    <!-- EXP-014 GitHub CTA -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — orchestrate your entire agent fleet from one dashboard (315★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Open-source control plane for Claude Code, Codex CLI, and Antigravity CLI. Self-healing, offline scrollback, voice dictation, mobile PWA, kanban, CRM — MIT licensed, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
 
     <pre><code><span class="dim"># Install and run 5 agents on your project</span>

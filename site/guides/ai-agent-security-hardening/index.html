@@ -666,8 +666,8 @@ SESSIONS=$(curl -sk https://localhost:8822/api/sessions | \
   python3 -c "import json,sys; [print(s['name']) for s in json.load(sys.stdin)]")
 
 for session in $SESSIONS; do
-  OUTPUT=$(curl -sk "https://localhost:8822/api/sessions/$session/peek?lines=50" | \
-    python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))")
+  OUTPUT=$(curl -sk "https://localhost:8822/api/sessions/$session/peek?lines=600" | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))")
   for pattern in "${ALERT_PATTERNS[@]}"; do
     if echo "$OUTPUT" | grep -qEi "$pattern"; then
       echo "🚨 ALERT: Session '$session' matched pattern: $pattern"

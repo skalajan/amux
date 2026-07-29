@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Reviewing AI Agents Offline — Check Your Fleet Without Internet — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux v0.9.200 caches every running session's scrollback locally, so you can review what your AI coding agents were doing the last time you had internet. Works on plane, subway, or any offline environment.">
+  <meta name="keywords" content="review AI agents offline, check Claude Code agents offline, AI coding agent offline monitoring, AI agent status without internet, amux offline mode, AI agent progress phone, check agents subway plane, offline AI agent review, AI engineering team offline">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-offline-review/">
+  <meta property="og:title" content="Reviewing Your AI Agents Offline — amux Scrollback Cache">
+  <meta property="og:description" content="amux v0.9.200 caches every running session's scrollback so you can review your fleet without an internet connection. Perfect for travel, commutes, and low-signal environments.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-offline-review/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Reviewing Your AI Agents Offline — amux Scrollback Cache (v0.9.200)">
+  <meta name="twitter:description" content="Check what your Claude Code, Codex, and Gemini CLI agents were doing — without any internet connection. amux caches all session scrollback locally in your PWA.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Reviewing AI Agents Offline","item":"https://amux.io/guides/ai-agent-offline-review/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Reviewing Your AI Agents Offline — amux Scrollback Cache","description":"amux v0.9.200 caches every running session's scrollback locally so you can review your AI coding agent fleet without internet. Works on planes, subways, and any offline environment.","url":"https://amux.io/guides/ai-agent-offline-review/","datePublished":"2026-07-27","dateModified":"2026-07-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/ai-agent-offline-review/"},"keywords":"review AI agents offline, offline AI agent monitoring, Claude Code offline, AI agent progress without internet"}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Review AI Agents Offline with amux","description":"Review your Claude Code, Codex, and Gemini CLI agents without an internet connection using amux's offline scrollback cache.","step":[{"@type":"HowToStep","position":1,"name":"Install amux and open the PWA","text":"Install amux (brew install mixpeek/amux/amux or pipx install amux) and open the dashboard in your mobile browser. Add it to your home screen as a PWA (Share → Add to Home Screen on iOS, Install App on Android Chrome)."},{"@type":"HowToStep","position":2,"name":"Start your sessions while online","text":"While connected to wifi or cellular, start your coding sessions normally. amux automatically begins caching the scrollback for every running session in the background using IndexedDB — no configuration needed."},{"@type":"HowToStep","position":3,"name":"Cache updates as agents run","text":"Every time you open a session's Peek panel while online, the latest scrollback is written to local IndexedDB. The cache survives browser restarts and app backgrounding on iOS."},{"@type":"HowToStep","position":4,"name":"Go offline — the dashboard stays readable","text":"On a plane, subway, or in a dead zone, open the amux PWA. All sessions show their last-cached scrollback. You can read the full terminal output, check the kanban board, and review notes — all without a server connection."},{"@type":"HowToStep","position":5,"name":"Queue actions for when you reconnect","text":"Need to steer a session? Use the offline outbox: type your message and hit Send. The message is held in IndexedDB and automatically delivered to the server the moment you reconnect — no copy-pasting required."}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can I check my AI agents without internet?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux v0.9.200 caches every running session's scrollback locally in your browser's IndexedDB. When you open the amux PWA offline, you see the last-cached output for each session. You can read terminal output, check the task board, and review notes without any server connection."}},{"@type":"Question","name":"How does amux cache session scrollback?","acceptedAnswer":{"@type":"Answer","text":"amux uses IndexedDB (the browser's persistent local storage) to cache each session's terminal scrollback. Every time you view a session's Peek panel while online, the current output is written to IndexedDB. On iOS, this cache survives app backgrounding and device restarts. The cache is scoped to your local device — nothing is stored on a third-party server."}},{"@type":"Question","name":"What can I do offline with amux?","acceptedAnswer":{"@type":"Answer","text":"While offline you can: read full terminal scrollback for all sessions, check the kanban board and task statuses, read notes and reference material, review the session message log, and queue new messages for delivery when you reconnect. You cannot start/stop sessions, run commands, or receive live updates — those require a server connection."}},{"@type":"Question","name":"What can I not do when offline?","acceptedAnswer":{"@type":"Answer","text":"Actions that require a live server connection are not available offline: starting or stopping sessions, receiving live terminal updates, triggering new agent tasks, and viewing the real-time output stream. When you reconnect, the dashboard syncs immediately and live updates resume from where they left off."}},{"@type":"Question","name":"Does the offline cache work on iPhone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux iOS app and the installable PWA (Add to Home Screen in Safari) both use IndexedDB for offline scrollback storage. iOS WebKit fully supports IndexedDB and persists it across background eviction cycles. If Safari evicts the PWA from memory (common on low-storage devices), the IndexedDB data is retained — you re-open the app to the same cached state."}},{"@type":"Question","name":"How fresh is the offline cache?","acceptedAnswer":{"@type":"Answer","text":"The cache is as fresh as the last time you viewed that session's Peek panel while online. amux does not run a background sync while the app is closed — it writes to IndexedDB on demand as you browse sessions. For long trips, a quick session-by-session review before boarding ensures the most current scrollback is cached."}},{"@type":"Question","name":"Can I send messages to agents while offline?","acceptedAnswer":{"@type":"Answer","text":"Yes — through the offline outbox. Type your message in any session's composer and press Send. The message is queued in IndexedDB and automatically delivered to the session the moment your device reconnects. This pairs with the offline scrollback cache: you read what the agent did, you write a correction or next step, and the instruction lands as soon as signal returns."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Reviewing AI Agents Offline</span></div>
+
+    <h1>Reviewing Your AI Agents Offline</h1>
+    <p class="subtitle">amux v0.9.200 caches every running session&rsquo;s scrollback locally in your PWA, so you can review your full agent fleet without any internet connection &mdash; on a plane, subway, or anywhere signal drops out. Updated July 2026.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>TL;DR:</strong> Install the amux PWA or iOS app, browse your sessions while online, and the scrollback is cached locally. Open amux offline and every session shows its last-known terminal output. Queue new instructions via the offline outbox — they deliver the moment you reconnect.
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#why-offline-matters" style="color:var(--dim);text-decoration:none;">Why Offline Matters for AI Engineering Teams</a></li>
+        <li><a href="#what-works-offline" style="color:var(--dim);text-decoration:none;">What Works Offline vs Online-Only</a></li>
+        <li><a href="#how-it-works" style="color:var(--dim);text-decoration:none;">How the Scrollback Cache Works</a></li>
+        <li><a href="#setup" style="color:var(--dim);text-decoration:none;">Setup Guide</a></li>
+        <li><a href="#outbox" style="color:var(--dim);text-decoration:none;">Offline Outbox — Queue Messages for Later</a></li>
+        <li><a href="#scenarios" style="color:var(--dim);text-decoration:none;">Real-World Scenarios</a></li>
+        <li><a href="#ios" style="color:var(--dim);text-decoration:none;">iOS-Specific Notes</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─── WHY OFFLINE MATTERS ─── -->
+    <h2 id="why-offline-matters">Why Offline Matters for AI Engineering Teams</h2>
+
+    <p>Running an AI engineering team means your agents are always working, but you&rsquo;re not always online. The morning commute, a trans-continental flight, a conference with spotty wifi, a walk between buildings &mdash; these are the moments when you most want to check what your overnight agents accomplished. Before amux v0.9.200, every one of these gaps meant opening your laptop, SSH-ing in, and running <code>tmux attach</code> &mdash; which required a working network connection.</p>
+
+    <p>The amux offline scrollback cache changes that. Every session&rsquo;s terminal output is written to local IndexedDB the moment you view it while online. When you go offline, the full history is already on your device. No server needed to read what your agents did. The dashboard behaves identically, just with a last-synced timestamp instead of a live stream.</p>
+
+    <p>This pairs with the rest of the phone-first amux stack: you can read what your agents did (scrollback cache), review the task board (kanban cached locally), check what&rsquo;s blocked or completed (stalled badge), and write your next instruction (offline outbox) &mdash; all without a connection, and all from your phone.</p>
+
+    <!-- ─── WHAT WORKS OFFLINE ─── -->
+    <h2 id="what-works-offline">What Works Offline vs Online-Only</h2>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);">
+            <th style="text-align:left;padding:10px 14px;">Action</th>
+            <th style="text-align:center;padding:10px 14px;">Offline</th>
+            <th style="text-align:center;padding:10px 14px;">Online</th>
+            <th style="text-align:left;padding:10px 14px;">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Read session scrollback</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Offline shows last-cached snapshot; online shows live stream</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>View kanban board and task statuses</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Board state cached from last sync</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Read notes and reference docs</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Notes cached in PWA service worker cache</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Check stalled/active session badges</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Stalled Nm badge visible from last sync</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Queue messages (offline outbox)</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Queued in IndexedDB, auto-delivered on reconnect</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Receive live scrollback updates</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#f87171;">&#10007;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">SSE live stream requires server connection</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Start or stop sessions</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#f87171;">&#10007;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Lifecycle control requires server</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Deliver messages immediately</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#f87171;">&#10007;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Messages queue offline; delivered when signal returns</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 14px;"><strong>Use voice dictation</strong></td>
+            <td style="text-align:center;padding:10px 14px;color:#fbbf24;">&#126;</td>
+            <td style="text-align:center;padding:10px 14px;color:#6ee7b7;">&#10003;</td>
+            <td style="padding:10px 14px;color:var(--muted);">Record while offline; Gemini transcription queues until reconnect</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─── HOW IT WORKS ─── -->
+    <h2 id="how-it-works">How the Scrollback Cache Works</h2>
+
+    <p>The amux dashboard uses <a href="https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API" target="_blank" rel="noopener">IndexedDB</a>, the browser&rsquo;s built-in structured storage, to persist session scrollback locally. Here&rsquo;s the data flow:</p>
+
+    <ol style="line-height:2;">
+      <li><strong>Write on view:</strong> When you open a session&rsquo;s Peek panel while online, the current scrollback buffer is written to IndexedDB under that session&rsquo;s ID. This happens immediately, in the background, without any loading indicator.</li>
+      <li><strong>Cache survives backgrounding:</strong> Unlike session storage (which clears when the tab is suspended), IndexedDB persists across background eviction, device lock, and app restarts on both iOS and Android.</li>
+      <li><strong>Served from cache when offline:</strong> When the dashboard detects no server connection, it reads scrollback from IndexedDB and renders it exactly as it would render live output &mdash; same Peek panel, same formatting, same syntax highlighting for code blocks.</li>
+      <li><strong>Auto-sync on reconnect:</strong> The moment the SSE connection re-establishes, the dashboard fetches fresh scrollback and writes it back to IndexedDB. The offline snapshot is replaced without any manual refresh.</li>
+    </ol>
+
+    <p>The cache size is bounded by the session&rsquo;s scrollback buffer (typically the last few thousand lines of output). It does not store the full JSONL conversation history &mdash; only the rendered terminal output you would see in the Peek panel.</p>
+
+    <!-- ─── SETUP ─── -->
+    <h2 id="setup">Setup Guide</h2>
+
+    <p>No configuration is needed &mdash; offline scrollback caching is on by default in amux v0.9.200 and later. The steps below ensure you have the best offline experience before you need it.</p>
+
+    <h3>Step 1: Install amux</h3>
+    <pre><code><span class="comment"># Homebrew (recommended — macOS/Linux)</span>
+brew install mixpeek/amux/amux
+amux serve   <span class="comment"># → dashboard at https://localhost:8822</span>
+
+<span class="comment"># PyPI</span>
+pipx install amux &amp;&amp; amux serve
+
+<span class="comment"># Zero-install trial</span>
+uvx amux serve</code></pre>
+
+    <h3>Step 2: Install the PWA on your phone</h3>
+    <p>The offline cache only works in the <strong>installed PWA or iOS app</strong> &mdash; it does not apply to a regular browser tab that gets closed. Install steps:</p>
+    <ul>
+      <li><strong>iOS Safari:</strong> Open your amux dashboard URL &rarr; tap the Share button &rarr; Add to Home Screen. The PWA installs in standalone mode (full screen, no Safari chrome).</li>
+      <li><strong>Android Chrome:</strong> Open the dashboard &rarr; tap the three-dot menu &rarr; Add to Home Screen (or &ldquo;Install App&rdquo; if the banner appears).</li>
+      <li><strong>Native iOS app:</strong> <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Download from the App Store</a> &mdash; includes the same offline cache behavior plus native push notifications for stalled sessions.</li>
+    </ul>
+
+    <h3>Step 3: Prime the cache before you go offline</h3>
+    <p>Open each session&rsquo;s Peek panel once while you have signal. The scrollback writes to IndexedDB in the background. A quick pass through the Sessions tab &mdash; tap each card to open Peek, let it load, move to the next &mdash; takes about 30 seconds for a fleet of 10 agents and leaves you with a full offline snapshot of every session.</p>
+    <p>For automated priming, schedule a daily <a href="/guides/scheduling-ai-agents/">amux scheduler job</a> that opens and polls each session while your device is on wifi overnight.</p>
+
+    <h3>Step 4: Use the dashboard offline</h3>
+    <p>When signal drops, the dashboard shows a small offline indicator in the header. All previously-cached sessions remain fully readable. The last-synced timestamp appears in the Peek header so you know exactly how fresh your snapshot is.</p>
+
+    <!-- ─── OFFLINE OUTBOX ─── -->
+    <h2 id="outbox">Offline Outbox &mdash; Queue Messages for Later</h2>
+
+    <p>Reading scrollback offline is useful. <em>Writing instructions offline</em> is what makes it operational. The amux offline outbox lets you compose a message to any session and hit Send while completely offline. The message is stored in IndexedDB with a pending status and automatically sent to the server the moment connectivity returns.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Use case:</strong> You board a plane, review your agents&rsquo; overnight work in the scrollback cache, notice that agent-2 went down a wrong path, and type <code>revert your last 3 edits and restart from the spec in /docs/requirements.md</code>. You hit Send. Your phone queues the message. When the plane lands and your phone reconnects to cell signal, the instruction is delivered to agent-2 within seconds.
+    </div>
+
+    <p>The outbox uses the same deduplication mechanism as the dictation offline queue: each message has a <code>msg_id</code> UUID generated at composition time. If the PWA reconnects and retries, the server rejects duplicate <code>msg_id</code>s, so you never accidentally send the same instruction twice.</p>
+
+    <h3>Voice dictation offline</h3>
+    <p>If you use <a href="/guides/voice-dictation-ai-agents/">voice dictation</a>, recordings captured while offline are also queued. Your phone records and saves the audio locally; when signal returns, the audio uploads to Gemini for transcription, and the resulting text lands in the session composer for your final review before sending. The offline queue for dictation and for typed messages share the same auto-flush mechanism.</p>
+
+    <!-- ─── REAL-WORLD SCENARIOS ─── -->
+    <h2 id="scenarios">Real-World Scenarios</h2>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.25rem;margin:2rem 0;">
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#9992; Transcontinental flight</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Your team of 12 agents ran overnight. Board the plane, open amux, read every session&rsquo;s scrollback in airplane mode. Compose correction messages for 3 agents that went off-spec. They all deliver the moment wheels down.</p>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#128653; Subway commute</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Open amux before descending underground. Cache primes automatically as you browse sessions above ground. Below ground, read what your agents built overnight. Queue your morning direction. Exit the station: instructions delivered.</p>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#127979; Conference with bad wifi</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Hotel wifi at 50 people is unusable. Your agents are still running on your home machine. Review their progress in the cached scrollback. Queue next-step instructions. When you step outside for a break and cellular kicks in, they all go through.</p>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#127968; Travel day</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Driving between cities with spotty coverage. Passenger uses voice dictation to describe corrections to the agent mid-route. The voice recording caches locally. First cell tower hit: transcribed, reviewed, delivered.</p>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#127966; Morning walk</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Wake up, prime the cache over home wifi (30-second Peek pass through all sessions). Go for your morning walk. Review everything the agents built while you slept. No data usage on cellular, full offline access.</p>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;">&#128337; Client meeting (device in bag)</div>
+        <p style="color:var(--dim);font-size:0.9rem;margin:0;">Your phone locks during a 2-hour meeting. IndexedDB persists through the lock screen. After the meeting, open amux and the cached scrollback is exactly where you left it &mdash; no re-loading, no re-scrolling.</p>
+      </div>
+
+    </div>
+
+    <!-- ─── iOS NOTES ─── -->
+    <h2 id="ios">iOS-Specific Notes</h2>
+
+    <p>iOS WebKit (Safari engine) has a few behaviors worth knowing when using the amux offline cache:</p>
+
+    <ul>
+      <li><strong>IndexedDB persists through background eviction:</strong> iOS aggressively evicts PWA memory when you switch apps. The amux v0.9.200 cache is in IndexedDB, not in-memory, so the scrollback survives this eviction. When you tap the amux icon again, it reads from IndexedDB and shows the cached state instantly &mdash; no re-load from network needed.</li>
+      <li><strong>Stand-alone mode required for best behavior:</strong> The offline cache works in any browser, but the iOS-specific state restoration (re-selecting the last-open session, re-opening the Peek panel) only works in standalone PWA mode (Add to Home Screen). In a regular Safari tab, iOS may clear the tab&rsquo;s session state on eviction.</li>
+      <li><strong>IndexedDB storage quota:</strong> iOS typically allows 1–2 GB of IndexedDB storage per origin. amux&rsquo;s scrollback cache is kilobytes per session &mdash; even 100 active sessions with 10,000 lines of output each would use less than 50 MB.</li>
+      <li><strong>Native iOS app:</strong> The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux iOS app</a> (App Store) uses the same IndexedDB-backed offline cache as the PWA and additionally supports push notifications for stalled session alerts, so you can be paged when an agent needs attention even while the app is in the background.</li>
+    </ul>
+
+    <!-- ─── HOW TO STEPS ─── -->
+    <h2 id="howto-steps">Quick Setup (5 Steps)</h2>
+
+    <ol style="line-height:2.2;">
+      <li><strong>Install amux:</strong> <code>brew install mixpeek/amux/amux &amp;&amp; amux serve</code></li>
+      <li><strong>Install the PWA:</strong> Open dashboard &rarr; Share &rarr; Add to Home Screen (iOS) or Install App (Android)</li>
+      <li><strong>Start your sessions</strong> and run your normal agent workflow</li>
+      <li><strong>Prime the offline cache:</strong> Open each session&rsquo;s Peek panel once while on wifi to write the scrollback to IndexedDB</li>
+      <li><strong>Go offline confidently:</strong> Open amux anywhere, read all your agents&rsquo; cached output, queue instructions, reconnect to deliver them</li>
+    </ol>
+
+    <!-- ─── FAQ ─── -->
+    <h2 id="faq">FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">Can I check my AI agents without internet?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">Yes &mdash; amux v0.9.200 caches every running session&rsquo;s scrollback locally in IndexedDB. When you open the amux PWA or iOS app offline, you see the last-cached output for each session. You can read terminal output, check the task board, and review notes without any server connection.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">Does this require amux Cloud?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">No. Offline scrollback caching is a client-side feature built into the open-source amux PWA &mdash; it works with any self-hosted amux instance. The IndexedDB cache stores scrollback on your device, not on any amux server. <a href="https://amux.io/cloud/">amux Cloud</a> adds a hosted dashboard, tunnel, and automatic backups, but offline caching works without it.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">How fresh is the offline cache?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">The cache is as fresh as the last time you viewed that session&rsquo;s Peek panel while online. amux writes to IndexedDB on demand &mdash; it does not run background syncs while the app is closed. For best results, do a quick Peek pass through all your sessions before going offline. For automated freshness, use the amux scheduler to run a regular peek poll while on wifi.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">Does the offline cache work on iPhone?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">Yes. iOS WebKit fully supports IndexedDB and persists it across background eviction cycles &mdash; the scrollback survives iOS suspending the app. The PWA (Add to Home Screen in Safari) and the native iOS app both use the same IndexedDB-backed cache. IndexedDB is not affected by the &ldquo;website data&rdquo; quota that Safari caps at 50 MB; structured storage for installed PWAs gets the same quota as native apps on modern iOS.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">Can I send messages to agents while offline?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">Yes, through the offline outbox. Type your message in the session composer and press Send. The message queues in IndexedDB with a unique <code>msg_id</code> and auto-delivers the moment connectivity returns. Duplicate delivery is prevented by server-side <code>msg_id</code> deduplication.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">What version introduced offline scrollback caching?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">v0.9.200 (shipped 2026-07-26, commit <code>a5e73c0</code>). Earlier versions cached some PWA shell assets (HTML/CSS/JS) but not session scrollback. If you installed amux before this version, run <code>brew upgrade mixpeek/amux/amux</code> to update.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.2rem;margin:0.75rem 0;">
+      <summary style="font-weight:600;cursor:pointer;">How is this different from the PWA offline sync outbox?</summary>
+      <p style="margin-top:0.75rem;color:var(--dim);">The <a href="/guides/pwa-offline-sync-outbox-pattern/">offline outbox</a> (v0.9.179) handles <em>writing</em> while offline &mdash; queuing messages you compose and delivering them on reconnect. The scrollback cache (v0.9.200) handles <em>reading</em> while offline &mdash; storing your agents&rsquo; output so you can review it without a server. They complement each other: read what agents did (scrollback cache), write your next instruction (outbox), deliver it when connected.</p>
+    </details>
+
+    <!-- EXP-014 -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux &mdash; review your AI agent fleet from anywhere, online or offline (315&#9733; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Open-source control plane for AI engineering teams. Offline scrollback cache, offline outbox, voice dictation, self-healing watchdog, and full PWA. Run Claude Code, Codex, and Gemini CLI from your phone.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
+    </div>
+
+    <!-- ─── CTA ─── -->
+    <div style="background:linear-gradient(135deg,oklch(0.24 0.015 250),oklch(0.21 0.014 250));border:1px solid var(--border);border-radius:12px;padding:2rem 2.4rem;margin:3rem 0;text-align:center;">
+      <h2 style="margin:0 0 0.5rem;font-size:1.4rem;">Review your agents anywhere &mdash; even offline</h2>
+      <p style="color:var(--dim);margin:0 0 1.5rem;max-width:520px;margin-left:auto;margin-right:auto;">Install amux in 30 seconds. Open-source, MIT licensed, single Python file, no cloud dependency. The offline scrollback cache is built in &mdash; no configuration needed.</p>
+      <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--accent);color:var(--bg);font-weight:600;padding:0.7rem 1.6rem;border-radius:6px;text-decoration:none;font-size:0.95rem;">Star on GitHub</a>
+        <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="display:inline-block;background:var(--surface-2);border:1px solid var(--border);color:var(--fg);font-weight:500;padding:0.7rem 1.6rem;border-radius:6px;text-decoration:none;font-size:0.95rem;">Download iOS App</a>
+      </div>
+    </div>
+
+    <!-- ─── RELATED ─── -->
+    <h2>Related Guides</h2>
+    <ul>
+      <li><a href="/guides/pwa-offline-sync-outbox-pattern/">PWA Offline Sync Outbox Pattern &mdash; Queue Agent Messages When Offline</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing AI Agents from Your Phone &mdash; amux PWA Guide</a></li>
+      <li><a href="/guides/voice-dictation-ai-agents/">Voice Dictation for AI Coding Agents &mdash; Steer Your Fleet by Speaking</a></li>
+      <li><a href="/guides/scheduling-ai-agents/">Scheduling AI Agents &mdash; Automated Cron Jobs for Claude Code</a></li>
+      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Coding Agents Overnight Unattended</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-Healing Configuration for AI Coding Agents</a></li>
+      <li><a href="/use-cases/ai-agent-daily-standup/">AI Agent Daily Standup &mdash; Morning Review Workflow</a></li>
+    </ul>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        <a href="/">amux</a> &mdash;
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
+        <a href="/docs/">Docs</a> &middot;
+        <a href="/guides/">Guides</a> &middot;
+        <a href="/compare/">Compare</a> &middot;
+        <a href="/blog/">Blog</a> &middot;
+        <a href="/pricing/">Pricing</a> &middot;
+        <a href="/privacy/">Privacy</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>

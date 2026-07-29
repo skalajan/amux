@@ -6,6 +6,8 @@
 # ═══════════════════════════════════════════
 
 import base64
+import difflib
+import importlib.util
 import json
 import os
 import re
@@ -1264,6 +1266,133 @@ def _bu_list_profiles() -> list:
 _PROFILES_REGISTRY = CC_HOME / "playwright-auth" / "profiles.json"
 _registry_lock = threading.Lock()
 
+_PW_AUTH_DIR = CC_HOME / "playwright-auth"
+_PW_PROFILES_DIR = _PW_AUTH_DIR / "profiles"
+
+
+def _bu_pw_profile_dirs() -> list:
+    """Named Playwright persistent-context profiles that exist on disk.
+
+    These are the ones an agent actually launches with
+    launchPersistentContext(playwright-auth/profiles/<name>). 'default' is the
+    bare playwright-auth/profile directory and is surfaced under that name.
+    """
+    out = []
+    try:
+        if _PW_PROFILES_DIR.is_dir():
+            out = [p.name for p in _PW_PROFILES_DIR.iterdir()
+                   if p.is_dir() and not p.name.startswith(".")]
+    except Exception:
+        out = []
+    try:
+        if (_PW_AUTH_DIR / "profile").is_dir():
+            out.append("default")
+    except Exception:
+        pass
+    return sorted(set(out))
+
+
+def _bu_profile_dir(name: str):
+    """Absolute path for a profile name ('default' maps to the bare dir)."""
+    n = (name or "").strip()
+    if not n or n == "default":
+        return _PW_AUTH_DIR / "profile"
+    return _PW_PROFILES_DIR / n
+
+
+def _bu_profile_size_mb(name: str) -> float:
+    """Rough on-disk size. Cheap enough for a listing: Chrome profiles are a few
+    hundred files, and the number is what tells you a profile is real and
+    logged in versus an empty directory left behind by a crashed run."""
+    try:
+        d = _bu_profile_dir(name)
+        if not d.is_dir():
+            return 0.0
+        total = 0
+        for root, _dirs, files in os.walk(d):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+            if total > 400 * 1024 * 1024:   # stop early; exact size is not the point
+                break
+        return round(total / 1048576.0, 1)
+    except Exception:
+        return 0.0
+
+
+# Headed sign-in window for a NAMED profile. `amux playwright-auth capture`
+# only ever wrote the single default profile, so there was no supported way to
+# create a named one and log into it — which is why 35 profiles existed on disk
+# with an empty registry: every one was made by hand in a throwaway script.
+#
+# Runs detached so the HTTP request returns immediately; the window stays open
+# until the person closes it, and closing the context is what flushes cookies
+# and localStorage to disk. cwd is the repo so `require('playwright')` resolves.
+_PW_SIGNIN_JS = r"""
+const { chromium } = require('playwright');
+const dir = process.argv[2], url = process.argv[3] || 'about:blank';
+(async () => {
+  const ctx = await chromium.launchPersistentContext(dir, {
+    headless: false,
+    ignoreHTTPSErrors: true,
+    viewport: null,
+    args: ['--no-first-run', '--no-default-browser-check'],
+  });
+  const page = ctx.pages()[0] || await ctx.newPage();
+  try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
+  // Resolve when the user closes the window. Persistent context writes its
+  // storage on close, so this is the moment the login becomes reusable.
+  await new Promise(res => ctx.on('close', res));
+  process.exit(0);
+})().catch(e => { console.error(String(e)); process.exit(1); });
+"""
+
+
+def _bu_profile_signin(name: str, url: str) -> dict:
+    """Open a headed browser under `name` so a human can sign in."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", (name or "").strip())[:48]
+    if not safe:
+        return {"error": "profile name required"}
+    d = _bu_profile_dir(safe)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return {"error": f"could not create profile dir: {e}"}
+    script = TLS_DIR.parent / "pw-signin.cjs"
+    try:
+        script.write_text(_PW_SIGNIN_JS)
+    except Exception as e:
+        return {"error": f"could not write launcher: {e}"}
+    try:
+        subprocess.Popen(
+            ["node", str(script), str(d), url or "about:blank"],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        return {"error": f"could not launch browser: {e}"}
+    return {"ok": True, "profile": safe, "dir": str(d), "url": url,
+            "next": "Sign in, then CLOSE the browser window — closing is what saves the session."}
+
+
+_bu_chrome_cache = {"ts": 0.0, "v": []}
+
+
+def _bu_list_profiles_cached() -> list:
+    """`browser-use profile list` is a subprocess with a 10s timeout, run on
+    every profiles fetch. The set of real Chrome profiles changes rarely, so
+    cache it for a minute rather than gating the picker on a process spawn."""
+    now = time.time()
+    if now - _bu_chrome_cache["ts"] < 60 and _bu_chrome_cache["v"]:
+        return _bu_chrome_cache["v"]
+    v = _bu_list_profiles()
+    _bu_chrome_cache.update({"ts": now, "v": v})
+    return v
+
+
 def _bu_registry_load() -> dict:
     try:
         if _PROFILES_REGISTRY.exists():
@@ -2144,7 +2273,8 @@ _event_log_lock = threading.Lock()
 _req_tl = threading.local()  # per-request enrichment (set by handlers, read by _route)
 
 def _emit_http_event(etype: str, action: str, target: str = "", session: str = "",
-                     detail: str = "", status: int = 200, ip: str = "") -> None:
+                     detail: str = "", status: int = 200, ip: str = "",
+                     actor: str = "") -> None:
     # Don't emit semantic events (e.g. message-sent, started) for failed requests.
     # Downgrade to a plain http event so they don't spam the event log as false positives.
     if status >= 400 and etype != "http":
@@ -2160,6 +2290,7 @@ def _emit_http_event(etype: str, action: str, target: str = "", session: str = "
             "detail": detail,
             "status": status,
             "ip": ip,
+            "actor": actor,
         })
 
 def _classify_request(method: str, path: str) -> tuple:
@@ -4116,10 +4247,44 @@ _MODEL_CREDIT_LIMIT_RE = re.compile(
     r"/usage-credits\b|switch\s+models?\s+with\s+/model",
     re.IGNORECASE,
 )
+# Required alongside the fragment above: the banner always STATES the limit
+# ("You've reached your Fable 5 limit"). Prose that merely cites "/usage-credits"
+# — a commit message, a code comment, a relayed report — carries no such
+# statement, and citing the fragment alone used to be enough to flag a healthy
+# session.
+_MODEL_CREDIT_LIMIT_CTX_RE = re.compile(
+    r"reached\s+your\s+[A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?\s+limit",
+    re.IGNORECASE,
+)
+# The MENU-style variant of the same gate, shipped later:
+#     Fable 5 now uses usage credits
+#     Fable 5 runs on usage credits, purchased separately from your plan.
+#     You don't have usage credits yet.
+#       1. Set up usage credits on claude.ai
+#     ❯ 2. Switch to Opus 5 (1M context) and continue
+#     Enter to confirm · Esc to cancel
+# It carries NEITHER anchor above (no "/usage-credits", no "switch models with
+# /model"), so _MODEL_CREDIT_LIMIT_RE missed it entirely and two sessions sat
+# wedged with credit_limited=False — invisible to the badge and to the one-tap
+# model-switch bulk action (gtm-media-assets + gtm-videos, 2026-07-27; same
+# class as AMUX-1272 / AMUX-1256). Anchor on the numbered menu OPTION line,
+# which only exists in a live render — the prose alone shows up whenever a
+# session merely discusses the gate (this file does). Callers additionally
+# require it in the live region's tail.
+_MODEL_CREDIT_MENU_RE = re.compile(
+    r"^\s*\d+\.\s*set\s+up\s+usage\s+credits",
+    re.IGNORECASE | re.MULTILINE,
+)
+# The modal's prose lines, used only as corroboration for the option line above.
+_MODEL_CREDIT_BANNER_RE = re.compile(
+    r"(?:uses|runs\s+on|have)\s+usage\s+credits",
+    re.IGNORECASE,
+)
 # Pull the model name out for display ("Fable 5", "Opus", ...). Best-effort.
 _MODEL_CREDIT_NAME_RE = re.compile(
-    r"reached\s+your\s+([A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?)\s+limit",
-    re.IGNORECASE,
+    r"reached\s+your\s+([A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?)\s+limit"
+    r"|^\s*([A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?)\s+now\s+uses\s+usage\s+credits",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Permissive fallback: any bare HH:MM (optionally with AM/PM) in the
@@ -4482,9 +4647,56 @@ def _rate_limit_auto_respond():
             # Both weekly and session-limit banners are menu-less and keep their
             # banner on screen until reset — group them as "banner" limits.
             is_banner = is_weekly or is_session_banner
-            # Per-model credit limit: menu-less, no reset time, NOT auto-resumable.
-            is_credit = (matched_idx < 0 and not is_banner
-                         and bool(_MODEL_CREDIT_LIMIT_RE.search(live)))
+            # Per-model credit limit: no reset time, NOT auto-resumable. Two
+            # renders: the menu-less banner (_MODEL_CREDIT_LIMIT_RE) and the
+            # newer "now uses usage credits" MENU. The menu's option line is
+            # only tested against the live region's TAIL — the surrounding prose
+            # appears in ordinary transcript whenever a session discusses the
+            # gate, and flagging on that would wedge-label a healthy session.
+            # Position, not just phrasing, is what makes the menu render real.
+            # _live_limit_region cuts at the highlighted "❯ 2. Switch to <model>
+            # and continue" row, so in a LIVE modal the "1. Set up usage credits"
+            # option is the region's LAST line — always. A looser tail-window
+            # check flagged a healthy session within minutes of shipping
+            # (social-media, whose screen happened to be showing a message that
+            # QUOTED this modal while we were debugging it). A false credit flag
+            # is not cosmetic: it would sweep that session into the model-switch
+            # bulk action. Require the exact position, corroborated by the
+            # banner prose just above it.
+            _live_ne = [l for l in live.splitlines() if l.strip()]
+            _is_menu_gate = bool(
+                _live_ne
+                and _MODEL_CREDIT_MENU_RE.search(_live_ne[-1])
+                and _MODEL_CREDIT_BANNER_RE.search("\n".join(_live_ne[-6:])))
+            # The BANNER variant needs the same positional discipline. It used to
+            # be searched across the whole live region, so the literal string
+            # "/usage-credits" anywhere in a transcript flagged the session —
+            # which fires hardest on exactly the sessions discussing the gate: it
+            # transiently flagged THIS session while it was implementing the
+            # detector, and any session relaying a report about it. That warning
+            # then rides out on every send to the target, so a false FAILURE gets
+            # asserted to other agents (social-media, 2026-07-27). Claude Code
+            # renders the banner as the last transcript content before the input
+            # box, so the region's final few lines are where a live one is.
+            _is_banner_gate = bool(
+                _MODEL_CREDIT_LIMIT_RE.search("\n".join(_live_ne[-5:]))
+                and _MODEL_CREDIT_LIMIT_CTX_RE.search("\n".join(_live_ne[-5:])))
+            _credit_raw = (matched_idx < 0 and not is_banner
+                           and (_is_banner_gate or _is_menu_gate))
+            # PERSISTENCE GATE. No regex fully separates "this session is gated"
+            # from "this session is displaying text about the gate" — the source
+            # file documenting these very patterns matches them, so any session
+            # reading it trips the check. But the two differ in TIME: a real gate
+            # holds the screen until a human clears it, while quoted text scrolls
+            # away. Require the match on two consecutive scans. That is what
+            # makes the flag trustworthy enough to assert to other agents on the
+            # send path, where a false positive tells a sender its message is
+            # undeliverable when it was in fact delivered (social-media,
+            # 2026-07-27). Costs one scan interval of detection latency.
+            _st = _session_auto_actions.setdefault(name, {})
+            _credit_prev = bool(_st.get("credit_raw_prev"))
+            _st["credit_raw_prev"] = _credit_raw
+            is_credit = _credit_raw and _credit_prev
             if matched_idx < 0 and not is_banner and not is_credit:
                 # No live rate-limit UI. A real banner cap keeps its banner on
                 # screen until reset, so a session flagged from a banner without a
@@ -4523,8 +4735,11 @@ def _rate_limit_auto_respond():
                 # No reset time exists for a credit limit; auto-resume keys off
                 # rate_limit_reset_at, so leaving it unset keeps auto-resume from
                 # firing a useless "continue". Record the model name for the UI.
-                m = _MODEL_CREDIT_NAME_RE.search(live)
-                actions["rate_limit_model_name"] = (m.group(1).strip() if m else "")
+                # Same tail restriction: a model name lifted from prose higher up
+                # would mislabel the badge even when the gate itself is real.
+                m = _MODEL_CREDIT_NAME_RE.search("\n".join(_live_ne[-6:]))
+                actions["rate_limit_model_name"] = (
+                    (m.group(1) or m.group(2) or "").strip() if m else "")
                 actions["rate_limit_last_event_ts"] = int(now)
                 actions.pop("rate_limit_reset_at", None)
                 actions.pop("rate_limit_reset_at_fallback", None)
@@ -4777,12 +4992,46 @@ _ALERT_TYPE_LABELS = {
     "urgent": "URGENT", "git_orphan": "git rebase orphaned",
     "stale_cli": "stale amux CLI on PATH",
     "selector_block": "selector blocking coordination",
+    "session_gated": "session stopped at a model gate",
 }
 # A session parked at a human-gated selector can't receive inter-session
 # messages — they queue until it resolves. Past this many seconds, surface the
 # block to the owner so the held coordination isn't silently stuck (AMUX-1882:
 # an Ethan-gated selector froze mvs-infra's READY GO to backend for ~2.5h).
 _SELECTOR_BLOCK_ALERT_SECS = 600
+
+
+def _waiting_since_from_events(name: str, now: float) -> float:
+    """When the session's CURRENT waiting episode began, per the durable log.
+
+    Falls back to `now` unless the newest recorded status transition is
+    session.waiting — i.e. nothing has moved the session since. Without this the
+    stall clock lives only in memory and resets on every server reload, so a
+    long-wedged session reads as freshly waiting and never crosses the alert
+    threshold (this server execv-reloads on every save).
+    """
+    try:
+        db = get_db()
+        # Last time the session actually MOVED. Anything after this is one
+        # unbroken waiting episode.
+        _mv = db.execute(
+            "SELECT MAX(ts) AS ts FROM session_events WHERE session=? AND type IN "
+            "('session.working','session.idle','session.started')", (name,)).fetchone()
+        last_move = float((_mv["ts"] if _mv else 0) or 0)
+        # EARLIEST waiting since then — not the latest. A server reload clears
+        # _session_prev_status and the send path re-seeds it to "active", so a
+        # session that never moved can log a second, spurious session.waiting;
+        # taking the newest row would credit it with a fresh clock and hide a
+        # long wedge (gtm-media-assets logged one at 02:34 while waiting since
+        # 02:11).
+        _w = db.execute(
+            "SELECT MIN(ts) AS ts FROM session_events WHERE session=? AND "
+            "type='session.waiting' AND ts > ?", (name, last_move)).fetchone()
+        ts = float((_w["ts"] if _w else 0) or 0)
+    except Exception:
+        return now
+    # Guard against a clock-skewed or absurdly old row seeding a bogus age.
+    return ts if 0 < ts <= now else now
 
 
 def _env_set(key: str, value: str):
@@ -6017,8 +6266,14 @@ def _snapshot_all_sessions_inner():
 
             if status == "waiting" and not actions.get("restarting"):
                 if "ac_waiting_since" not in actions:
-                    # First snapshot seeing this session waiting — remember it
-                    actions["ac_waiting_since"] = now
+                    # First snapshot seeing this session waiting. _session_auto_actions
+                    # is in-memory, so a plain `now` restarts the stall clock on every
+                    # server reload — and this server reloads on every file save, which
+                    # made a session wedged for hours report "waiting 0 min" and reset
+                    # the alert threshold each time. Recover the true start from the
+                    # durable event log instead: if the newest status transition on
+                    # record is session.waiting, the session has been waiting since it.
+                    actions["ac_waiting_since"] = _waiting_since_from_events(name, now)
                 else:
                     # Still waiting on a subsequent snapshot — check opt-in flag
                     cfg_ac = parse_env_file(f)
@@ -6085,6 +6340,30 @@ def _snapshot_all_sessions_inner():
                         _emit_event(name, "selector.blocking",
                                     {"held": len(_held), "mins": _mins, "origins": _origins[:8]},
                                     source="selector-block")
+                    elif actions.get("rate_limit_credits"):
+                        # ── 4c. HARD GATE with an empty queue ────────────────
+                        # The branch above only fires when something is queued
+                        # BEHIND the selector. A per-model credit gate has no
+                        # reset time and no auto-resume, so a session that hit
+                        # it between messages just stops — queue empty, status
+                        # 'waiting', nobody notified. That is exactly how
+                        # gtm-media-assets and gtm-videos sat 80m+ at the
+                        # "Fable 5 now uses usage credits" modal while a
+                        # delivered message went unworked (2026-07-27), and how
+                        # AMUX-1272 / AMUX-1256 played out before it. Alert on
+                        # the gate itself, not on who's blocked behind it.
+                        _mins = int((now - _ws) / 60)
+                        _mdl = actions.get("rate_limit_model_name") or "the current model"
+                        actions["selector_block_alerted"] = now
+                        slog(f"[gate] {name}: hard model/credit gate for {_mins}m "
+                             f"(model={_mdl!r}) — needs a model switch or credits")
+                        _push_alert("session_gated", name,
+                                    f"'{name}' has been stopped {_mins}m at a {_mdl} "
+                                    f"usage-credits gate. It won't self-resolve — switch "
+                                    f"models or top up credits to unblock the lane.")
+                        _emit_event(name, "session.gated",
+                                    {"mins": _mins, "model": _mdl, "kind": "credits"},
+                                    source="gate-watch")
             else:
                 # Session no longer waiting — reset tracking
                 actions.pop("ac_waiting_since", None)
@@ -8480,6 +8759,11 @@ _VAGUE_INPUTS = {
 _task_summary_last: dict = {}   # session -> monotonic ts of last label call
 _TASK_SUMMARY_MIN_GAP = float(os.environ.get("AMUX_TASK_LABEL_GAP_SECS", "600"))
 
+# Auto-labels that open with a negation read as an owner directive on the board.
+# Imperatives are fine (a task legitimately says "Disable Rate Throttling"); a
+# PROHIBITION is the shape an agent complies with without re-deriving it.
+_PROHIBITIVE_LABEL_RE = re.compile(r"^\s*(no|never|don'?t|do\s+not)\b", re.IGNORECASE)
+
 
 def _summarize_task_bg(session_name: str, text: str):
     """Summarize a message into a 3-word task label via `claude -p`, then auto-create a board issue.
@@ -8521,6 +8805,14 @@ def _summarize_task_bg(session_name: str, text: str):
                 capture_output=True, text=True, timeout=60,
             )
             summary = result.stdout.strip().rstrip(".") if result.returncode == 0 else ""
+            # A 3-word label that opens with a NEGATION reads as an owner directive
+            # once it is sitting on the board ("No Personal Posts"), and the board
+            # outlives the message it was derived from. Imperatives are left alone —
+            # "Disable Rate Throttling" is what a real task looks like — but a
+            # prohibition is the shape agents obey without re-deriving, so it gets
+            # marked as a subject line instead of a command.
+            if summary and _PROHIBITIVE_LABEL_RE.match(summary):
+                summary = "Re: " + summary
             if summary:
                 _update_meta(session_name, task_summary=summary)
                 _auto_create_board_issue(session_name, summary, text)
@@ -8765,6 +9057,70 @@ _DEFAULT_STATUSES = [
     {"id": "verified",  "label": "Verified"},
     {"id": "discarded", "label": "Discarded"},
 ]
+
+# ── Message kinds ───────────────────────────────────────────────────────────
+# Every message that reaches a session is exactly one of THREE things, and the
+# distinction is the only one that matters when reading history: did a human ask
+# for this, did another session, or did a clock?
+#
+#   human     — a person typed it. Covers `direct` (sent straight through) and
+#               `steering` (queued while the session was busy). Both are the
+#               same authority; only the delivery path differs, which is why
+#               `queued` is a delivery flag and NOT a fourth kind.
+#   session   — inter-session correspondence. `origin` is the SENDING session,
+#               stamped server-side (AMUX-1768) so it cannot be forged in text.
+#   schedule  — fired by the scheduler. `origin` is the schedule title.
+#
+# The raw `type` column carries five historical values (direct/steering/user/
+# session/schedule) and is kept as-is so nothing is rewritten; `kind` is derived
+# on read. Storing five and displaying three is what let the history modal badge
+# a session message as "direct".
+_MSG_KINDS = ("human", "session", "schedule")
+_MSG_KIND_OF = {
+    "direct": "human", "steering": "human", "user": "human", "": "human",
+    "session": "session",
+    "schedule": "schedule",
+}
+
+
+def _msg_kind(mtype) -> str:
+    """Canonical kind for a cmd_history row type. Unknown types read as human —
+    a message whose provenance we cannot establish is treated as if a person
+    sent it, because that is the reading that gets it looked at rather than
+    filtered away."""
+    return _MSG_KIND_OF.get(str(mtype or "").strip().lower(), "human")
+
+
+def _msg_is_queued(mtype) -> bool:
+    """True for a human message that was queued as steering rather than sent
+    straight through. A delivery detail, not a kind."""
+    return str(mtype or "").strip().lower() == "steering"
+
+
+# ── Status synonyms ─────────────────────────────────────────────────────────
+# Eight distinct status values were live on the board: the canonical seven plus
+# `in_review` (2 items) and `resolved` (1). Nothing rejected them on write, and
+# the board's column bucketer files anything it does not recognise under To Do —
+# so a card reading "resolved" displayed as "To Do", and every status-specific
+# server rule (the one-doing cap, the clean-tree check, the gate) skipped it
+# because it never string-matched. Normalise on write; the client aliases the
+# same map on read so existing rows display correctly without a migration
+# rewriting cards other sessions own.
+#
+# ONLY true synonyms belong here. `blocked` is deliberately absent: mapping it
+# to `doing` would assert something false, which is worse than not recognising it.
+_STATUS_ALIASES = {
+    "in_review": "review", "inreview": "review", "in review": "review",
+    "resolved": "done", "complete": "done", "completed": "done", "closed": "done",
+    "wip": "doing", "in_progress": "doing", "inprogress": "doing",
+}
+
+
+def _status_canon(s) -> str:
+    """Map a status synonym to its canonical id; unknown values pass through."""
+    k = str(s or "todo").strip().lower()
+    return _STATUS_ALIASES.get(k, k)
+
 
 # ── Item types & type-derived gates (AMUX-1713) ─────────────────────────────
 # The gate is GOOD — it enforces done != verified in code rather than etiquette.
@@ -11783,6 +12139,14 @@ def list_sessions() -> list:
             # NOT auto-resume; surfaced in bulk actions for a one-tap switch.
             "credit_limited": bool(_aa.get("rate_limit_credits")),
             "credit_limit_model": _aa.get("rate_limit_model_name", ""),
+            # When the current 'waiting' episode began (0 = not waiting). A
+            # session parked at a selector does no work and nothing surfaced
+            # that: the AMUX-1882 escalation only fires when messages are
+            # QUEUED behind it, so a gate with an empty queue stayed invisible
+            # indefinitely (gtm-media-assets + gtm-videos sat 80m+ at the
+            # usage-credits modal, 2026-07-27). Exporting the timestamp lets
+            # the card badge a long wait without any push-alert noise.
+            "waiting_since": int(_aa.get("ac_waiting_since", 0) or 0),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -11954,6 +12318,119 @@ def _live_conv_id(name: str, work_dir: str = "") -> str:
 
 _GLOBAL_MEM_FILE = CC_MEMORY / "_global.md"
 _MEM_MARKER = "<!-- amux:session-memory -->"
+# Topic file holding the shared amux-API block, written beside MEMORY.md. Keeps
+# ~239 lines of call shapes OUT of a 200-line-limited index (see _compose_memory).
+_MEM_TOPIC_FILE = "amux-api.md"
+# The documented MEMORY.md index-entry shape: "- [Title](file.md) — hook".
+_MEM_ENTRY_RE = re.compile(r"^\s*[-*]\s*\[[^\]]+\]\([^)]+\.md\)")
+# Archive store for index entries that no longer fit the read ceiling, and the
+# budget the composed index is held to. Read limits are the CLIENT's (200 lines /
+# ~17.5KB), so amux cannot raise them — it can only decide WHICH entries survive.
+_MEM_ARCHIVE_FILE = "memory-archive.md"
+_MEM_MAX_LINES = int(os.environ.get("AMUX_MEMORY_MAX_LINES", "185"))
+_MEM_MAX_BYTES = int(os.environ.get("AMUX_MEMORY_MAX_BYTES", "16800"))
+# Floor on how small a fold may leave the index — an index worth scanning.
+_MEM_KEEP_NEWEST = int(os.environ.get("AMUX_MEMORY_KEEP_NEWEST", "40"))
+
+
+def _fold_memory_overflow(name: str, session_content: str) -> str:
+    """Hold a session's index under the read ceiling by ARCHIVING its oldest
+    entries, and return the trimmed index.
+
+    The index outgrows the ceiling by entry COUNT, not verbosity: at ~118 bytes
+    per entry, 154 entries cannot fit 17.5KB no matter how hard they are
+    compressed, and over-compressing fails SILENTLY — an entry trimmed to "peek
+    reads" still looks like an entry but no longer discriminates (social-media,
+    2026-07-27, who reported this rather than grinding out another bad trim).
+
+    So entries move instead of shrinking. Oldest first, because the client
+    truncates from the BOTTOM — the newest memories are the ones currently being
+    dropped, which is exactly backwards. Nothing is deleted: overflow lands in a
+    sibling archive store that the index points at, so a session can still read
+    it deliberately.
+    """
+    lines = session_content.splitlines()
+    entry_idx = [i for i, l in enumerate(lines) if _MEM_ENTRY_RE.match(l)]
+
+    ptr = f"- [Archived memories]({_MEM_ARCHIVE_FILE}) — older entries folded out of this index to fit the read ceiling; read it when the index has no answer."
+    # Budget the pointer line UP FRONT. Measuring the kept lines alone stopped the
+    # fold ~150B short of the ceiling, then appending the pointer put the result
+    # back over it — a fold that reported success and didn't achieve the goal.
+    _res_b = _MEM_MAX_BYTES - (len(ptr.encode()) + 1)
+    _res_l = _MEM_MAX_LINES - 1
+
+    def over(ls):
+        body = "\n".join(ls)
+        return len(ls) > _res_l or len(body.encode()) > _res_b
+
+    if not over(lines) or not entry_idx:
+        return session_content
+
+    archived, keep = [], list(lines)
+    # Oldest entries sit nearest the top; peel them off until we fit. Never go
+    # below _MEM_KEEP_NEWEST — a fold that ate the index would be the same
+    # silent-erasure failure in a different costume.
+    floor = min(len(entry_idx), _MEM_KEEP_NEWEST)
+    for i in entry_idx[:-floor] if floor else entry_idx:
+        if not over([l for l in keep if l is not None]):
+            break
+        archived.append(lines[i])
+        keep[i] = None
+    kept = [l for l in keep if l is not None]
+    # Entry-folding cannot fix a store whose bulk is PROSE rather than index
+    # entries. If we hit the floor and are still over, archiving dozens of
+    # entries buys nothing — revert and say so, instead of churning them out of
+    # sight for no gain and reporting success.
+    if over(kept):
+        slog(f"[memory] {name}: over the index ceiling and entry-folding cannot fix it "
+             f"({len(lines)} lines, {len(session_content.encode())}B, only {len(entry_idx)} "
+             f"index entries) — the bulk is prose, needs manual attention")
+        return session_content
+
+    # Drop headings orphaned by the fold (no entry before the next heading/EOF).
+    out, n = [], len(kept)
+    for i, l in enumerate(kept):
+        if l.lstrip().startswith("#"):
+            has = False
+            for j in range(i + 1, n):
+                if kept[j].lstrip().startswith("#"):
+                    break
+                if _MEM_ENTRY_RE.match(kept[j]):
+                    has = True
+                    break
+            if not has:
+                continue
+        out.append(l)
+
+    if not archived:
+        return session_content
+
+    # Append to the archive store, deduped, so successive folds accumulate.
+    # FAIL SAFE: if the archive cannot be written, keep the index over-budget
+    # rather than returning a trimmed one. An over-long index loses its tail to
+    # the reader; a trim with no archive loses those entries permanently, and the
+    # whole point of folding is that nothing is deleted.
+    store = CC_MEMORY / f"{name}.archive.md"
+    try:
+        prev = store.read_text(errors="replace") if store.exists() else ""
+        fresh = [a for a in archived if a.strip() not in prev]
+        if fresh:
+            store.write_text((prev.rstrip() + "\n" + "\n".join(fresh)).strip() + "\n")
+    except Exception as e:
+        slog(f"[memory] {name}: archive write FAILED ({e}) — leaving index intact")
+        return session_content
+    body = "\n".join(out).strip()
+    if _MEM_ARCHIVE_FILE not in body:
+        body = ptr + "\n" + body
+    # A fold that doesn't shrink the index isn't a fold. Just over the budget, the
+    # pointer line can cost more than the single entry it displaces, leaving the
+    # index BIGGER and one entry further away — so only keep the result if it
+    # actually helped.
+    if len(body.encode()) >= len(session_content.strip().encode()):
+        return session_content
+    slog(f"[memory] {name}: folded {len(archived)} entry(ies) into {store.name} "
+         f"to fit the index ceiling")
+    return body + "\n"
 
 GLOBAL_MEMORY_DEFAULT = """\
 # Shared Context
@@ -11969,10 +12446,20 @@ You are session **$AMUX_SESSION** (env var). API base: **$AMUX_URL** (use `curl 
 curl -sk $AMUX_URL/api/sessions | python3 -c "import json,sys; [print(s['name'], s.get('status',''), '-', s.get('desc','')) for s in json.load(sys.stdin)]"
 ```
 
-### Peek at another session's output
+### Peek at another session — read `history`, NOT `output`
 ```bash
-curl -sk "$AMUX_URL/api/sessions/OTHER/peek?lines=100" | python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"
+curl -sk "$AMUX_URL/api/sessions/OTHER/peek?lines=600" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"
 ```
+
+`output` is only the **current terminal frame**. A full-screen prompt (a usage-credits
+modal, the resume picker, `/model`) CLEARS the screen, so everything the session was
+doing drops off-viewport and `output` collapses to a handful of lines. Reading `output`
+and concluding "it never happened" is a real failure mode. The response also returns
+`output_is_viewport_only`, `output_lines`, `history_lines` and a `hint` — if
+`history_lines` is much larger than `output_lines`, you are looking at a sliver.
+
+**Never conclude "absent" from a peek that returned few lines.** Check `history_lines`
+first, and cross-check `GET /api/sessions/<n>` before reporting anything as lost.
 
 ### Send a message to another session
 ```bash
@@ -12013,12 +12500,22 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \\
   $AMUX_URL/api/board/TASK-ID
 ```
 
-### Notes vs board issues — when to use each
+### Where a document belongs — REPO FILE first, note only for scratch
 
-**Use notes** (`/api/notes`) for: documents, write-ups, research, drafts, reference material, anything meant to be *read* by a human.
-**Use board issues** (`/api/board`) for: tasks, todos, bugs, action items, anything meant to be *done* or *tracked*.
+**Default: write it as a file in the repo you are working in, and commit it.** Design
+docs, write-ups, research, runbooks, reports, analyses, plans — these belong in the
+codebase next to the work they describe, where they are git-versioned, reviewable, and
+survive amux itself.
 
-> Rule of thumb: "create a note about X" → `/api/notes`. "create a task/issue/todo for X" → `/api/board`.
+**Use notes** (`/api/notes`) ONLY for personal scratch: a throwaway draft, a clipboard,
+something with no repo to live in. Notes are stored under `~/.amux/notes` and are **NOT
+git-versioned** — a work doc saved there is invisible to review and lost on a restore.
+
+**Use board issues** (`/api/board`) for: tasks, todos, bugs, action items — anything
+meant to be *done* or *tracked*.
+
+> Rule of thumb: "write a doc about X" → a committed file in the repo. "jot down X" →
+> `/api/notes`. "create a task/issue/todo for X" → `/api/board`.
 
 ```bash
 # List all notes
@@ -12446,10 +12943,27 @@ if CC_SESSIONS.is_dir():
 
 
 def _compose_memory(global_content: str, session_content: str) -> str:
-    """Compose global + session memory into a single MEMORY.md for Claude."""
+    """Compose the MEMORY.md index: a POINTER to shared context, then session memory.
+
+    The shared block used to be inlined above the marker. It is ~239 lines, and
+    MEMORY.md is read with a 200-line limit — so the preamble alone overran the
+    limit and everything below it was silently dropped, newest entries first
+    (they sort to the bottom). Measured across the fleet before this change: 201
+    of 215 indexes over the limit, 197 of them over on the preamble ALONE, median
+    file 241 lines of which 240 was preamble. Sessions were re-trimming it by
+    hand and _write_claude_memory put it straight back on the next send.
+
+    So the shared block now lives in its own topic file and the index carries one
+    line pointing at it — which is what an index is for, and what the memory
+    contract asks of every other entry.
+    """
     parts = []
     if global_content.strip():
-        parts.append(global_content.strip())
+        # No heading: the session's own index below supplies one, and emitting a
+        # second "# Shared Context" above it just reads as a duplicate.
+        parts.append(f"- [amux inter-session API]({_MEM_TOPIC_FILE}) — "
+                     f"sessions/peek/send, board, notes, CRM, browser, Drive. Read it when you "
+                     f"need the call shapes; it is also in ~/.claude/CLAUDE.md.")
     parts.append(_MEM_MARKER)
     if session_content.strip():
         parts.append(session_content.strip())
@@ -12466,7 +12980,41 @@ def _capture_claude_memory_changes(name: str, work_dir: str):
     try:
         content = claude_mem_file.read_text(errors="replace")
         if _MEM_MARKER in content:
-            session_part = content.split(_MEM_MARKER, 1)[1].strip()
+            _above, session_part = content.split(_MEM_MARKER, 1)
+            session_part = session_part.strip()
+            # RESCUE index entries written ABOVE the marker. Only the part below
+            # was ever captured, so anything a session added above it was
+            # discarded on the next send — silent, and now load-bearing, because
+            # this rewrite replaces the whole preamble. Two projects hold real
+            # entries up there ("- [Hike benchmark: Cutthroat Pass](...)",
+            # "- [Sessions & board](...)"), written by sessions that had already
+            # done this topic-file split by hand.
+            #
+            # Match on the documented index-entry SHAPE ("- [Title](file.md)"),
+            # never on position: most above-marker drift is a STALE COPY of the
+            # shared block (41 projects still carry an old screenshot recipe),
+            # and rescuing that would seed junk into 41 session memories.
+            _gl = set()
+            if _GLOBAL_MEM_FILE.exists():
+                _gl = {l.strip() for l in _GLOBAL_MEM_FILE.read_text(errors="replace").splitlines()}
+            # Exclude the pointer line this composer itself emits: it is an
+            # index entry, above the marker, and absent from _global.md, so it
+            # matched all three tests and got rescued INTO session memory —
+            # where the next compose put it above the marker again, duplicating
+            # it every cycle.
+            _orphans = [l.rstrip() for l in _above.splitlines()
+                        if _MEM_ENTRY_RE.match(l) and _MEM_TOPIC_FILE not in l
+                        and l.strip() not in _gl and l.strip() not in session_part]
+            if _orphans:
+                # Full fidelity backup beside MEMORY.md: the shape filter is a
+                # judgement call, so keep the original recoverable rather than
+                # trusting it.
+                try:
+                    (claude_mem_file.parent / "MEMORY.preamble-backup.md").write_text(
+                        _above.rstrip() + "\n")
+                except Exception:
+                    pass
+                session_part = ("\n".join(_orphans) + "\n\n" + session_part).strip()
         else:
             session_part = content.strip()
         if session_part:
@@ -12483,11 +13031,32 @@ def _write_claude_memory(name: str, work_dir: str):
     session_file = CC_MEMORY / f"{name}.md"
     global_content = _GLOBAL_MEM_FILE.read_text(errors="replace") if _GLOBAL_MEM_FILE.exists() else ""
     session_content = session_file.read_text(errors="replace") if session_file.exists() else ""
+    # Fold before composing, and persist the fold to the STORE. The store is the
+    # source of truth: _capture_claude_memory_changes copies MEMORY.md's
+    # below-marker section back over it, so trimming only the composed file would
+    # make the next capture delete the archived entries for good.
+    folded = _fold_memory_overflow(name, session_content)
+    if folded.strip() != session_content.strip():
+        try:
+            session_file.write_text(folded)
+            session_content = folded
+        except Exception:
+            pass
     composed = _compose_memory(global_content, session_content)
     claude_mem_dir = _session_claude_home(name) / "projects" / pname / "memory"
     claude_mem_file = claude_mem_dir / "MEMORY.md"
     try:
         claude_mem_dir.mkdir(parents=True, exist_ok=True)
+        # The shared block the index now points at. Written beside MEMORY.md so
+        # the pointer resolves, and rewritten each time so an edit to _global.md
+        # propagates the same way inlining used to.
+        if global_content.strip():
+            (claude_mem_dir / _MEM_TOPIC_FILE).write_text(global_content.strip() + "\n")
+        # Materialise the archive next to MEMORY.md so the index's pointer to it
+        # resolves — an archive the session cannot open is the same as deleting it.
+        _arch = CC_MEMORY / f"{name}.archive.md"
+        if _arch.exists():
+            (claude_mem_dir / _MEM_ARCHIVE_FILE).write_text(_arch.read_text(errors="replace"))
         if claude_mem_file.is_symlink():
             claude_mem_file.unlink()
         claude_mem_file.write_text(composed)
@@ -15174,6 +15743,8 @@ _GMAIL_DEFAULT_CLIENT = None  # Must supply ~/.amux/gmail-oauth-client.json
 
 # Pending OAuth flows: state → (account, flow)
 _gmail_pending: dict = {}
+_gmail_creds_fail: dict = {}  # account → timestamp of last refresh failure (negative cache)
+_GMAIL_CREDS_FAIL_TTL = 300   # skip refresh retries for 5 min after a failure
 
 _GMAIL_REDIRECT_URI = "http://localhost:8822/api/gmail/callback"
 
@@ -15200,6 +15771,9 @@ def _gmail_token_path(account: str) -> Path:
 
 def _gmail_load_creds(account: str):
     """Load and auto-refresh OAuth credentials for an account. Returns Credentials or None."""
+    fail_ts = _gmail_creds_fail.get(account, 0)
+    if fail_ts and time.time() - fail_ts < _GMAIL_CREDS_FAIL_TTL:
+        return None
     p = _gmail_token_path(account)
     if not p.exists():
         return None
@@ -15219,6 +15793,7 @@ def _gmail_load_creds(account: str):
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                _gmail_creds_fail.pop(account, None)
                 p.write_text(json.dumps({
                     "token": creds.token, "refresh_token": creds.refresh_token,
                     "token_uri": creds.token_uri, "client_id": creds.client_id,
@@ -15228,6 +15803,7 @@ def _gmail_load_creds(account: str):
                 return None
         return creds
     except Exception as e:
+        _gmail_creds_fail[account] = time.time()
         slog(f"[gmail] load_creds {account}: {e}")
         return None
 
@@ -15893,6 +16469,251 @@ def _dictation_prompt(session: str = "") -> str:
     if vocab:
         parts.append(vocab)
     return "\n".join(parts)
+
+
+# ── Local transcription (Whisper) ───────────────────────────────────────────
+# Presence-detected, never build-flagged: if the module and the weights are on
+# this box, dictation runs locally; otherwise it falls through to Gemini. Same
+# file, same code, both deployments (single-codebase rule).
+#
+# Measured on this host (Intel, CPU, 5.8s clip): base transcribes in ~1.1s vs
+# ~12.5s for the Gemini round trip. Whisper alone is USELESS for amux though —
+# it renders ts-gke as "T-S-G-K-E", mvs-infra as "MBS Infra", mixpeek as
+# "Mixbeak" (0/7 session names across the benchmark). _dictation_fix_names below
+# is what makes the local path usable; together they scored 7/7 names at ~1.06s.
+_WHISPER_MODEL_NAME = os.environ.get("AMUX_WHISPER_MODEL", "base").strip()
+_whisper_proc = None
+_whisper_lock = threading.Lock()
+_whisper_failed = False
+_whisper_py_cached = None
+
+_WHISPER_WORKER = r"""
+import sys, json, os
+try:
+    import torch; torch.set_num_threads(max(2, min(6, (os.cpu_count() or 4) - 2)))
+    import whisper
+    m = whisper.load_model(os.environ["AMUX_WHISPER_MODEL"], device="cpu")
+except Exception as e:
+    print(json.dumps({"fatal": str(e)[:200]}), flush=True); sys.exit(1)
+print(json.dumps({"ready": True}), flush=True)
+for line in sys.stdin:
+    path = line.strip()
+    if not path: continue
+    try:
+        r = m.transcribe(path, fp16=False, language="en")
+        print(json.dumps({"text": (r.get("text") or "").strip()}), flush=True)
+    except Exception as e:
+        print(json.dumps({"error": str(e)[:200]}), flush=True)
+"""
+
+
+def _whisper_weights_path(name: str):
+    """Local weights file, or None. Checked BEFORE anything loads a model: a
+    missing model makes openai-whisper reach out to download, which hung for
+    ~300s on this host — exactly wrong for a feature whose point is working with
+    no uplink."""
+    p = Path(os.path.expanduser("~/.cache/whisper")) / f"{name}.pt"
+    return p if p.exists() else None
+
+
+def _whisper_python():
+    """An interpreter that can `import whisper`, or None.
+
+    The server's own interpreter often isn't it — here the server runs 3.12
+    (torch, no whisper) while whisper lives in 3.11. Rather than installing into
+    a machine that runs 24/7, find the interpreter that already has it. Presence
+    detection, so the same file behaves correctly wherever it runs."""
+    global _whisper_py_cached
+    if _whisper_py_cached is not None:
+        return _whisper_py_cached or None
+    cands = [os.environ.get("AMUX_WHISPER_PYTHON", "").strip(), sys.executable]
+    cands += [shutil.which(c) for c in ("python3.11", "python3.12", "python3.13", "python3")]
+    for c in cands:
+        if not c or not os.path.exists(c):
+            continue
+        try:
+            r = subprocess.run([c, "-c", "import importlib.util as u,sys;"
+                                         "sys.exit(0 if u.find_spec('whisper') and u.find_spec('torch') else 1)"],
+                               capture_output=True, timeout=20)
+            if r.returncode == 0:
+                _whisper_py_cached = c
+                return c
+        except Exception:
+            continue
+    _whisper_py_cached = ""
+    return None
+
+
+def _whisper_available() -> bool:
+    if not _WHISPER_MODEL_NAME or _WHISPER_MODEL_NAME.lower() in ("off", "none", "0"):
+        return False
+    if _whisper_failed:
+        return False
+    if _whisper_weights_path(_WHISPER_MODEL_NAME) is None:
+        return False
+    return _whisper_python() is not None
+
+
+def _whisper_start():
+    """Spawn the warm worker. Loading the model costs 0.6-2.6s; paying it per
+    request would erase most of the latency win this path exists for, so the
+    process is kept alive with the model resident."""
+    global _whisper_proc, _whisper_failed
+    py = _whisper_python()
+    if not py:
+        return None
+    env = dict(os.environ, AMUX_WHISPER_MODEL=_WHISPER_MODEL_NAME, PYTHONUNBUFFERED="1")
+    try:
+        pr = subprocess.Popen([py, "-u", "-c", _WHISPER_WORKER], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              text=True, env=env)
+        line = pr.stdout.readline()
+        if not line or '"ready"' not in line:
+            try: pr.kill()
+            except Exception: pass
+            _whisper_failed = True
+            slog(f"[dictation] whisper worker failed to start: {line.strip()[:160]}")
+            return None
+        _whisper_proc = pr
+        slog(f"[dictation] whisper '{_WHISPER_MODEL_NAME}' warm via {py}")
+        return pr
+    except Exception as e:
+        _whisper_failed = True
+        slog(f"[dictation] whisper worker spawn failed: {e}")
+        return None
+
+
+def _whisper_transcribe(raw: bytes, mime: str) -> tuple:
+    """(text, err) from the warm local worker."""
+    global _whisper_proc
+    import tempfile
+    ext = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".mp4",
+           "audio/aac": ".aac", "audio/wav": ".wav", "audio/x-wav": ".wav",
+           "audio/mpeg": ".mp3"}.get((mime or "").lower(), ".webm")
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+            f.write(raw); tmp = f.name
+        with _whisper_lock:
+            pr = _whisper_proc
+            if pr is None or pr.poll() is not None:   # never started, or died
+                pr = _whisper_start()
+            if pr is None:
+                return "", "local transcription unavailable"
+            pr.stdin.write(tmp + "\n"); pr.stdin.flush()
+            line = pr.stdout.readline()
+        if not line:
+            _whisper_proc = None
+            return "", "local worker died"
+        d = json.loads(line)
+        return (d.get("text") or ""), (d.get("error") or d.get("fatal") or "")
+    except Exception as e:
+        _whisper_proc = None
+        return "", str(e)[:200]
+    finally:
+        if tmp:
+            try: os.unlink(tmp)
+            except Exception: pass
+
+
+# ── Session-name recovery for locally-transcribed text ──────────────────────
+# Speech-to-text mangles session names constantly and they are the one token you
+# actually paste. A deterministic pass fixes them with no network, which is what
+# makes the offline path worth having.
+_DN_STOP = set("""a an and are as ask at be but by can do for from get go had has have
+he her him his how i if in is it its me my no not of on or our out ping put say see
+she so tell than that the then there they this to try up us was we what when where
+which who why will with you your""".split())
+_DN_SUB = [("ph","f"),("ck","k"),("qu","k"),("x","ks"),("z","s"),("v","f"),("b","p"),
+           ("d","t"),("g","k"),("ee","i"),("ea","i"),("ai","a"),("y","i"),("c","k")]
+
+
+def _dn_norm(x: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", x.lower())
+
+
+def _dn_phon(x: str) -> str:
+    x = _dn_norm(x)
+    for a, b in _DN_SUB:
+        x = x.replace(a, b)
+    x = re.sub(r"(.)\1+", r"\1", x)
+    return re.sub(r"[aeiou]", "", x)
+
+
+def _dn_score(cn, cp, nn, np_) -> float:
+    """Literal ratio with a phonetic alternative. The phonetic score is ALWAYS
+    considered, not only when the literal one is weak — scoring one span with the
+    boost and another without made them incomparable, and the guard that protects
+    a span's leading word silently stopped firing (it ate "tell")."""
+    r = difflib.SequenceMatcher(None, cn, nn).ratio()
+    rp = difflib.SequenceMatcher(None, cp, np_).ratio()
+    return max(r, rp * 0.97) if rp >= 0.9 else r
+
+
+def _dn_targets() -> list:
+    names = []
+    try:
+        names = [f.stem for f in CC_SESSIONS.glob("*.env")]
+    except Exception:
+        pass
+    try:
+        for r in get_db().execute("SELECT word, correct FROM dictation_dict LIMIT 300"):
+            w = (r["correct"] or r["word"] or "").strip()
+            if w:
+                names.append(w)
+    except Exception:
+        pass
+    seen, out = set(), []
+    for n in names:
+        if n and n.lower() not in seen and len(_dn_norm(n)) >= 4:
+            seen.add(n.lower()); out.append((n, _dn_norm(n), _dn_phon(n)))
+    return out
+
+
+def _dictation_fix_names(text: str, thresh: float = 0.86) -> str:
+    """Map spoken session names back onto their exact spelling."""
+    if not text:
+        return text
+    targets = _dn_targets()
+    if not targets:
+        return text
+    words, out, i = text.split(), [], 0
+    while i < len(words):
+        best = None
+        for span in (4, 3, 2, 1):
+            if i + span > len(words):
+                continue
+            chunk = " ".join(words[i:i + span])
+            core = re.sub(r"^[^\w]+|[^\w.,!?]+$", "", chunk)
+            trail = chunk[len(core):]
+            cn, cp = _dn_norm(core), _dn_phon(core)
+            if len(cn) < 4:
+                continue
+            toks = [t for t in re.split(r"[^a-z0-9]+", core.lower()) if t]
+            # One ordinary word inside the span means we are about to delete it.
+            # Dropping a real word is worse than leaving a name unresolved,
+            # because it is invisible in the result.
+            if any(t in _DN_STOP for t in toks):
+                continue
+            for name, nn, np_ in targets:
+                if abs(len(cn) - len(nn)) > max(4, len(nn) * 0.35):
+                    continue
+                r = _dn_score(cn, cp, nn, np_)
+                if r < thresh:
+                    continue
+                if span > 1:
+                    inner = " ".join(words[i + 1:i + span])
+                    # The leading word must EARN its place: if dropping it matches
+                    # this name as well or better, it was never part of the name.
+                    if _dn_score(_dn_norm(inner), _dn_phon(inner), nn, np_) >= r:
+                        continue
+                if best is None or r > best[0] + 1e-9 or (abs(r - best[0]) < 1e-9 and span > best[2]):
+                    best = (r, name, span, trail)
+        if best:
+            out.append(best[1] + best[3]); i += best[2]
+        else:
+            out.append(words[i]); i += 1
+    return " ".join(out)
 
 
 def _gemini_generate(key: str, parts: list, timeout: int = 90) -> tuple:
@@ -17915,6 +18736,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-tab-count .psc-on  { color: #3fb950; font-weight: 700; }
   .peek-tab-count .psc-off { color: #f85149; font-weight: 700; }
   .peek-tab-count .psc-sep { color: var(--dim); margin: 0 3px; opacity: 0.7; }
+  /* Session card: scrollback cached on this device (readable with no signal). */
+  .card-offline-dot { color: #3fb950; font-size: 0.7rem; opacity: 0.8; }
   /* ── Dictation: compact recording popup (above the composer) ── */
   .dict-popup { display: none; position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 60;
     background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
@@ -17949,6 +18772,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .dict-search { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px;
     font-size: 0.76rem; color: var(--text); outline: none; max-width: 190px; }
   .dict-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 12px; }
+
+  /* Pending dictation clips — 44px touch targets, readable on a 375px screen. */
+  .dict-item-pending { border-left:3px solid var(--accent,#4a9eff); background:rgba(74,158,255,0.05); }
+  .dict-item-head { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; }
+  .dict-state { font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; }
+  .dict-state-failed { color:#ff6b6b; }
+  .dict-state-sending { color:var(--accent,#4a9eff); }
+  .dict-state-offline, .dict-state-pending { color:var(--dim,#888); }
+  .dict-err { font-size:0.75rem; color:#ff6b6b; margin:0.25rem 0; word-break:break-word; }
+  .dict-actions { display:flex; gap:0.4rem; margin-top:0.45rem; flex-wrap:wrap; }
+  .dict-actions .btn.small { min-height:44px; min-width:44px; padding:0 0.75rem; font-size:0.8rem; }
+  @media (max-width: 600px) { .dict-actions .btn.small { flex:1 1 auto; } }
   .dict-empty { color: var(--dim); font-size: 0.85rem; text-align: center; padding: 34px 12px; line-height: 1.7; }
   .dict-day { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; color: var(--dim); margin: 14px 0 6px; }
   .dict-day:first-child { margin-top: 0; }
@@ -19095,6 +19930,47 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .new-status-input:focus { border-color: var(--accent); }
   .board-filters { display: flex; gap: 6px; flex-wrap: nowrap; padding: 6px 0 8px; align-items: center; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   .board-filters::-webkit-scrollbar { display: none; }
+  /* Saved-view chips. Horizontally scrollable so 8 views don't wrap the board
+     off-screen on a 375px phone; scrollbar hidden to match .board-filters. */
+  .board-views { display: flex; gap: 6px; flex-wrap: nowrap; padding: 8px 0 4px; align-items: center;
+                 overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .board-views::-webkit-scrollbar { display: none; }
+  /* Message-kind filter chips (peek Messages tab + Message history modal).
+     One shared class so the two surfaces cannot drift apart. Measured at 19px
+     tall in WebKit before this existed — well under the 44px touch minimum, on
+     the control that is now the primary way to read history on a phone. */
+  .msg-kind-chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+    padding: 4px 11px; min-height: 26px; border-radius: 13px; cursor: pointer;
+  }
+  @media (max-width: 600px) {
+    /* 44px tall AND 44px of tappable width, so a short label like "All" is
+       still a full target rather than a sliver. */
+    .msg-kind-chip { min-height: 44px; min-width: 44px; padding: 4px 10px;
+                     font-size: 0.74rem; border-radius: 22px; flex: 0 0 auto; }
+  }
+  .board-view-chip {
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    font-size: 0.72rem; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+  }
+  .board-view-chip:hover { border-color: var(--dim); }
+  .board-view-chip.active { background: rgba(88,166,255,0.15); color: var(--accent); border-color: rgba(88,166,255,0.45); }
+  .board-view-chip.empty { color: var(--dim); }
+  .board-view-chip.add { color: var(--dim); border-style: dashed; }
+  .board-view-chip .bvc-n { font-size: 0.66rem; padding: 0 5px; border-radius: 999px;
+                            background: rgba(139,148,158,0.18); color: var(--dim); }
+  .board-view-chip.active .bvc-n { background: rgba(88,166,255,0.22); color: var(--accent); }
+  .board-view-chip .bvc-x { opacity: 0.35; padding: 0 2px; font-size: 0.7rem; }
+  .board-view-chip .bvc-x:hover { opacity: 1; color: #f85149; }
+  @media (max-width: 600px) {
+    /* 44px touch target without making the chips visually huge: the padding is
+       vertical breathing room, the row keeps its compact look. */
+    .board-view-chip { min-height: 34px; padding: 8px 12px; font-size: 0.74rem; }
+    .board-view-chip .bvc-x { padding: 0 6px; font-size: 0.8rem; }
+    .board-views { padding: 8px 0 6px; }
+  }
   .board-filter-label { font-size: 0.68rem; color: var(--dim); white-space: nowrap; }
   .board-filter-chip {
     font-size: 0.72rem; padding: 3px 10px; border-radius: 12px;
@@ -20471,6 +21347,33 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <span style="font-size:1rem;">?</span> Walkthrough
           </button>
         </div>
+        <!-- Cloud trial/billing card — populated only when the gateway answers
+             /api/stripe/status (cloud). Self-hosted leaves it hidden. -->
+        <div class="settings-section" id="settings-cloud-plan" style="display:none;padding:10px 14px;">
+          <div class="settings-section-label">Plan</div>
+          <div id="cloud-plan-body" style="font-size:0.8rem;color:var(--dim);line-height:1.5;"></div>
+          <div id="cloud-plan-meter" style="height:6px;border-radius:4px;background:var(--border);margin:8px 0 6px;overflow:hidden;display:none;">
+            <div id="cloud-plan-meter-fill" style="height:100%;width:0;background:var(--accent);border-radius:4px;transition:width .3s;"></div>
+          </div>
+          <button id="cloud-plan-btn" onclick="_upgradeCheckout('monthly')"
+            style="width:100%;min-height:44px;padding:9px 12px;border-radius:8px;border:none;background:#7c6fcd;color:#fff;font-size:0.82rem;font-weight:600;cursor:pointer;display:none;">
+            Upgrade
+          </button>
+          <button id="cloud-plan-manage" onclick="_cloudBillingPortal()"
+            style="width:100%;min-height:44px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:0.82rem;font-weight:600;cursor:pointer;display:none;">
+            Manage billing
+          </button>
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section">
+          <div class="settings-section-label">Offline</div>
+          <div id="offline-cache-info" style="font-size:0.78rem;color:var(--dim);margin-bottom:6px;line-height:1.5;"></div>
+          <button onclick="_offlinePrefetch(true)" style="width:100%;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:0.8rem;font-weight:600;cursor:pointer;">
+            &#x2B07; Save all sessions for offline
+          </button>
+          <div id="offline-sync-status" style="display:none;font-size:0.74rem;color:var(--accent);margin-top:5px;"></div>
+          <div id="offline-cache-settings"></div>
+        </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label" id="settings-device-label">Device</div>
@@ -20731,8 +21634,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="board-view" style="display:none;">
   <div class="board-toolbar">
     <div class="board-search-wrap" style="flex:1;">
-      <input id="board-search" class="search-input" type="text" placeholder="Search board..." oninput="boardSearchQuery=this.value.toLowerCase();renderBoard()">
-      <button class="search-clear" onclick="document.getElementById('board-search').value='';boardSearchQuery='';renderBoard()">&#x2715;</button>
+      <input id="board-search" class="search-input" type="text" placeholder="Search or filter: is:rotting, status:doing, -session:none" autocapitalize="off" autocorrect="off" spellcheck="false" oninput="boardSearchQuery=this.value;_boardActiveView='';renderBoard()">
+      <button class="search-clear" onclick="document.getElementById('board-search').value='';boardSearchQuery='';_boardActiveView='';renderBoard()">&#x2715;</button>
     </div>
     <button class="btn primary board-new-btn" onclick="openBoardAdd('todo')"><span class="board-new-label">+ New issue</span><span class="board-new-icon">+</span></button>
     <div class="board-owner-toggle">
@@ -20744,6 +21647,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button id="bv-status" class="bv-btn" onclick="setBoardView('status')" title="Group by status">&#x2630;</button>
     </div>
   </div>
+  <div class="board-views" id="board-views"></div>
   <div class="board-filters" id="board-filters"></div>
   <div class="board-columns" id="board-columns"></div>
 </div>
@@ -21400,11 +22304,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="search-wrap" style="flex:1;min-width:180px;">
       <input class="search-input" id="msgs-search" type="text" placeholder="Search messages..." autocomplete="off" oninput="_messagesRender()">
     </div>
-    <select id="msgs-session-filter" onchange="_messagesRender()" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+    <select id="msgs-session-filter" onchange="_msgsCounts=null;_messagesLoad(true,this.value)" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
       <option value="">All sessions</option>
     </select>
     <span id="msgs-count" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;"></span>
-    <button class="btn" onclick="_messagesLoad(true)" title="Refresh" style="font-size:0.78rem;padding:5px 10px;">&#x21BB;</button>
+  </div>
+  <div id="msgs-kind-filter" style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin-bottom:10px;flex-shrink:0;align-items:center;">
+    <button class="btn" onclick="_messagesLoad(true)" title="Refresh" style="font-size:0.78rem;padding:5px 10px;min-height:44px;flex:0 0 auto;">&#x21BB;</button>
   </div>
   <div id="msgs-list" style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;-webkit-overflow-scrolling:touch;"></div>
   <div style="flex-shrink:0;padding-top:8px;text-align:center;">
@@ -21486,6 +22392,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     #browser-view .bw-btn.active { background:var(--accent);color:#fff;border-color:var(--accent); }
     #browser-view .bw-in { font-size:0.82rem;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:inherit; }
     #browser-view .bw-row { display:flex;align-items:center;gap:6px;padding:0 8px 8px;flex-wrap:wrap; }
+    /* switchView shows this view with display:flex. Its children are stacked
+       toolbar strips, so without an explicit column direction all four .bw-row
+       strips became side-by-side columns 690px tall — controls scattered across
+       the page with the URL bar, Save and Run agent in three different places.
+       Column direction restores the intended stack and keeps flex so the
+       screenshot area can still take the remaining height. */
+    #browser-view { flex-direction: column; }
     #bw-elements-panel .bw-el { padding:4px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:0.74rem;display:flex;gap:6px;align-items:baseline; }
     #bw-elements-panel .bw-el:hover { background:var(--surface); }
     #bw-elements-panel .bw-el .idx { color:var(--accent);font-family:monospace;font-weight:600;min-width:34px; }
@@ -21513,6 +22426,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn primary" onclick="_bwGo()">Go</button>
     <button id="bw-live-btn" class="bw-btn" onclick="_bwToggleLive()" title="Live auto-refresh">&#9658; Live</button>
     <button class="bw-btn" onclick="_bwScreenshot()" title="Snapshot">&#128247;</button>
+    <button class="bw-btn" onclick="_bwNewProfile()" title="Create a profile and sign in to it">&#43; Profile</button>
     <button class="bw-btn" onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
   </div>
   <!-- Status / logged-in indicator -->
@@ -22125,13 +23039,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
-    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task">Cost</button>
+    <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text">Dictation<span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Board<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
-    <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
-    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
-    <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')">Commits</button>
     <button class="peek-tab" id="peek-tab-notes" onclick="setPeekTab('notes')">Notes<span class="peek-tab-count" id="peek-tab-notes-count"></span></button>
-    <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text">Dictation</button>
+    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task">Cost</button>
+    <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
+    <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')">Commits</button>
+    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
   </div>
   <!-- Working directory bar -->
   <div class="peek-dir-bar">
@@ -22190,7 +23104,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <button class="peek-attach-btn" id="peek-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EE;</button>
           <div class="peek-more-menu" id="peek-more-menu">
             <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
-            <button type="button" onclick="_peekMoreClose();openCmdHistoryModal()">&#x1F551; Message history</button>
+            <button type="button" onclick="_peekMoreClose();openCmdHistoryModal(peekSession||'')">&#x1F551; Message history</button>
             <button type="button" onclick="_peekMoreClose();_openSavedMessages()">&#128190; Saved messages</button>
             <button type="button" onclick="_peekMoreClose();_dictOpenPopup()">&#127908; Dictate</button>
             <button type="button" onclick="_peekMoreClose();setPeekTab('dictation')">&#128220; Dictation history</button>
@@ -22303,7 +23217,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
       <span id="peek-messages-count" style="font-size:0.72rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
     </div>
-    <div id="peek-messages-filter" style="display:flex;gap:5px;padding:0 10px 8px;flex-wrap:wrap;"></div>
+    <div id="peek-messages-filter" style="display:flex;gap:5px;padding:0 10px 8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;"></div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
   </div>
   <!-- AMUX-LOCAL:session-chat — chat tab panel (Scope B2); chat.js builds the thread + composer into it --><div id="peek-chat-panel" class="peek-tasks-panel"></div><!-- /AMUX-LOCAL:session-chat -->
@@ -22325,7 +23239,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span style="flex:1;"></span>
       <input type="search" id="dict-search" class="dict-search" placeholder="Search&hellip;" oninput="_dictRenderHistory()">
     </div>
-    <div id="dict-body" class="dict-body"></div>
+    <div id="dict-outbox-strip"></div>
+      <div id="dict-body" class="dict-body"></div>
   </div>
   <div id="peek-cost-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
@@ -22653,11 +23568,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input type="search" id="cmd-history-search" placeholder="Search past messages..."
         oninput="_renderCmdHistoryList()"
         style="flex:1;min-width:0;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;outline:none;">
-      <select id="cmd-history-session-filter" onchange="_renderCmdHistoryList()" title="Filter by session"
+      <select id="cmd-history-session-filter" onchange="_cmdHistRows=null;_cmdHistCounts=null;_renderCmdHistoryList();_cmdHistFetch()" title="Filter by session"
         style="flex-shrink:0;max-width:200px;box-sizing:border-box;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;cursor:pointer;">
         <option value="">All sessions</option>
       </select>
     </div>
+    <div id="cmd-history-filter" style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:10px;align-items:center;scrollbar-width:none;"></div>
     <div id="cmd-history-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
   </div>
 </div>
@@ -22794,6 +23710,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
       <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
+      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy relative path">Path</button>
       <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy deep link">Link</button>
     </div>
     <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
@@ -22926,6 +23843,131 @@ async function toggleAutoResume(checked) {
 
 // ═══════ STATE & GLOBALS ═══════
 const API = '';
+
+// ═══════ Cloud upgrade modal (402 from the gateway) ═══════
+// The cloud gateway answers 402 with {error: 'budget_exceeded'|'trial_expired'}
+// when a trial hits its spend cap or expiry. Surface one upgrade modal instead
+// of letting every poll fail silently. Self-hosted servers never emit 402.
+let _upgradeModalShown = false;
+(function() {
+  const _origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    return _origFetch.call(this, url, opts).then(resp => {
+      try {
+        if (resp.status === 402 && !_upgradeModalShown && typeof url === 'string' && url.indexOf('/api/') !== -1) {
+          resp.clone().json().then(d => {
+            if (d && (d.error === 'budget_exceeded' || d.error === 'trial_expired')) {
+              _showUpgradeModal(d);
+            }
+          }).catch(() => {});
+        }
+      } catch(e) {}
+      return resp;
+    });
+  };
+})();
+
+function _showUpgradeModal(d) {
+  if (_upgradeModalShown) return;
+  _upgradeModalShown = true;
+  const isBudget = d.error === 'budget_exceeded';
+  const spent = (d.spend_usd != null) ? Number(d.spend_usd).toFixed(2) : null;
+  const budget = (d.budget_usd != null) ? Number(d.budget_usd).toFixed(2) : null;
+  const wrap = document.createElement('div');
+  wrap.id = 'upgrade-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,5,10,0.88);display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));';
+  wrap.innerHTML =
+    '<div style="background:#14142a;border:1px solid #3a3a5c;border-radius:14px;max-width:440px;width:100%;padding:26px 22px;text-align:center;max-height:90vh;overflow-y:auto;">' +
+      '<div style="font-size:1.15rem;font-weight:700;margin-bottom:6px;">' +
+        (isBudget ? 'Your trial budget is used up' : 'Your trial has ended') + '</div>' +
+      (isBudget && spent ? '<div style="color:#f0b429;font-size:1.05rem;font-weight:600;margin-bottom:10px;">$' + spent + ' of $' + budget + ' used</div>' : '') +
+      '<div style="color:#999;font-size:0.86rem;margin-bottom:16px;line-height:1.5;">Your workspace and sessions are safe. Upgrade to keep your agents running.</div>' +
+      '<div style="background:#0f0f22;border:1px solid #2a2a4a;border-radius:10px;padding:14px 16px;text-align:left;margin-bottom:18px;">' +
+        '<div style="color:#c4b5fd;font-size:0.82rem;font-weight:600;margin-bottom:8px;">What you get when you upgrade</div>' +
+        ['Your sessions made production-grade, with our team onboarding you',
+         'A dedicated, isolated machine for your workloads',
+         'Support and maintenance from the amux team',
+         'Ongoing workflow creation, tuning, and teaching'].map(f =>
+          '<div style="color:#aaa;font-size:0.8rem;padding:3px 0 3px 20px;position:relative;"><span style="position:absolute;left:2px;color:#3fb950;font-weight:700;">✓</span>' + f + '</div>').join('') +
+      '</div>' +
+      '<button onclick="_upgradeCheckout(\'monthly\')" style="display:block;width:100%;min-height:44px;background:#7c6fcd;color:#fff;border:none;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Upgrade — monthly</button>' +
+      '<button onclick="_upgradeCheckout(\'annual\')" style="display:block;width:100%;min-height:44px;background:#26263e;color:#e5e5e5;border:1px solid #3a3a5c;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Upgrade — annual (save 17%)</button>' +
+      '<div id="upgrade-modal-err" style="color:#f87171;font-size:0.8rem;min-height:1.1em;"></div>' +
+    '</div>';
+  document.body.appendChild(wrap);
+}
+
+// Cloud plan card in Settings. /api/stripe/status only exists on the cloud
+// gateway, so a failed fetch (self-hosted) simply leaves the card hidden.
+async function _loadCloudPlan() {
+  try {
+    const r = await fetch('/api/stripe/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d || !d.plan) return;
+    const sec = document.getElementById('settings-cloud-plan');
+    const body = document.getElementById('cloud-plan-body');
+    const btn = document.getElementById('cloud-plan-btn');
+    const manage = document.getElementById('cloud-plan-manage');
+    const meter = document.getElementById('cloud-plan-meter');
+    const fill = document.getElementById('cloud-plan-meter-fill');
+    if (!sec) return;
+    sec.style.display = '';
+    const lines = [];
+    if (d.plan === 'pro') {
+      lines.push('<span style="color:#3fb950;font-weight:600;">Pro</span> — unlimited sessions');
+    } else {
+      lines.push('<span style="font-weight:600;color:var(--text);">Trial</span>');
+      if (d.trial_ends_at) {
+        const days = Math.max(0, Math.ceil((d.trial_ends_at * 1000 - Date.now()) / 86400000));
+        lines.push(days + ' day' + (days === 1 ? '' : 's') + ' left');
+      }
+      if (d.budget_usd != null) {
+        const spent = Number(d.spend_usd || 0), cap = Number(d.budget_usd);
+        const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
+        lines.push('$' + spent.toFixed(2) + ' of $' + cap.toFixed(2) + ' agent usage');
+        if (meter && fill) {
+          meter.style.display = '';
+          fill.style.width = pct + '%';
+          fill.style.background = pct >= 100 ? 'var(--red)' : (pct >= 60 ? '#f0b429' : 'var(--accent)');
+        }
+      }
+    }
+    body.innerHTML = lines.join(' &middot; ');
+    if (d.plan === 'pro' || d.has_billing) {
+      if (manage) manage.style.display = '';
+    }
+    if (d.plan !== 'pro' && d.stripe_configured) {
+      btn.style.display = '';
+      btn.textContent = (d.budget_usd != null && Number(d.spend_usd || 0) >= Number(d.budget_usd))
+        ? 'Budget used up — upgrade' : 'Upgrade';
+    }
+  } catch(e) { /* self-hosted: no cloud gateway, card stays hidden */ }
+}
+
+async function _cloudBillingPortal() {
+  try {
+    const r = await fetch('/api/stripe/portal', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'});
+    const d = await r.json();
+    if (d.url) location.href = d.url;
+  } catch(e) {}
+}
+
+async function _upgradeCheckout(billing) {
+  try {
+    const r = await fetch('/api/stripe/checkout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ billing: billing, platform_fee: true })
+    });
+    const d = await r.json();
+    if (d.url) { location.href = d.url; return; }
+    document.getElementById('upgrade-modal-err').textContent = d.error || 'Checkout failed';
+  } catch(e) {
+    document.getElementById('upgrade-modal-err').textContent = 'Connection error';
+  }
+}
+
 let sessions = [];
 let archivedExpanded = false;
 let gitInfo = {};  // {sessionName: {branch, repo, _conflict}}
@@ -24797,13 +25839,14 @@ function render() {
     const schedOn = _schedMine.filter(sc => sc.enabled).length;
     const schedOff = _schedMine.length - schedOn;
     const taskStale = _taskStaleAge(s);
+    const offCached = !!(_peekIndex && _peekIndex[s.name]);
     const taskDim = taskStale && s.task_source === 'board';   // stale board title shown as last resort
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
         <div class="card-header-top">
           <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
-          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}</div>
+          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_name||"")}')"><span class="mi">&#x270F;</span> Task label${s.task_name ? '' : ' (none)'}</div>
@@ -24833,7 +25876,7 @@ function render() {
         </div>
         ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || !online) ? `<div class="card-header-meta">
           ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
-          ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
+          ${s.status === 'waiting' ? `<span class="status-badge waiting">needs input</span>${_stalledFor(s)}` : ''}
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
           ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)">${esc(s.credit_limit_model || 'model')} limit</span>` : ''}
@@ -25091,6 +26134,22 @@ function _fmtResetTime(epoch) {
   const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   if (d.toDateString() === new Date().toDateString()) return time;
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
+}
+
+// How long a session has been parked at a selector, once that's long enough to
+// mean "stalled" rather than "the human is mid-thought". This is the BACKSTOP
+// for the wedge class: a regex only catches gate renders we already know about
+// (the "Fable 5 now uses usage credits" MENU shipped without either anchor the
+// credit-limit pattern looked for, and two lanes sat dead for 80m+ with nothing
+// surfaced). A clock needs no pattern, so the NEXT unrecognized gate still shows
+// up here. Suppressed when a limit badge already names the cause.
+const _STALL_MINS = 15;
+function _stalledFor(s) {
+  if (!s.waiting_since || s.credit_limited || s.rate_limited_until) return '';
+  const mins = Math.floor((Date.now() / 1000 - s.waiting_since) / 60);
+  if (mins < _STALL_MINS) return '';
+  const label = mins >= 120 ? Math.floor(mins / 60) + 'h' : mins + 'm';
+  return `<span class="status-badge rate-limited" title="Parked at a prompt for ${label} — no work is happening in this lane">stalled ${label}</span>`;
 }
 
 // ═══════ GIT BRANCH AWARENESS ═══════
@@ -27436,6 +28495,14 @@ async function _peekUpdateTabCounts() {
     const n = all.filter(x => x.path && x.path.startsWith(folder)).length;
     setCount('peek-tab-notes-count', n);
   } catch(e) {}
+  try {
+    const r = await fetch(API + '/api/dictation/history?count=1&session=' + encodeURIComponent(sess),
+                          { headers: _authHeaders() });
+    if (peekSession !== sess) return;
+    const d = await r.json();
+    _dictCount = d.count || 0;
+  } catch(e) { _dictCount = 0; }
+  _dictPendingBadge();   // reads the outbox, then paints the combined badge
 }
 
 let _peekSchedSearch = '';
@@ -27905,11 +28972,161 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.199';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.226';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
 // instead of painting a silent EMPTY terminal.
+// ── Offline peek cache ──────────────────────────────────────────────────────
+// Keeps a scrollback snapshot of EVERY running session on-device so the whole
+// fleet is reviewable with no connectivity — not just sessions you happened to
+// open. Two things make this affordable on a phone:
+//   • /peek supports ETag → 304 in 0 bytes, so re-syncing unchanged sessions is
+//     free; only the first sync pays (~36KB gzipped each).
+//   • We cache the SCROLLBACK only (lines=N), not the full history blob, which
+//     is the bulk of a peek payload.
+// The index lives in IDB under 'peek_index': { name: {etag, time, bytes} }.
+const _PEEK_CACHE_LINES = 200;
+const _PEEK_CACHE_TAIL = 40000;      // per-session scrollback tail kept on-device (~40KB)
+// Offline cache cap (FIFO — oldest-touched entries evicted first). Saved
+// SERVER-side via /api/prefs so the limit follows you across devices instead of
+// each phone quietly keeping its own. _PEEK_CACHE_MAX stays as the fallback
+// until the pref loads, so a slow prefs fetch can never mean "unbounded".
+const _PEEK_CACHE_MAX = 80;
+let _offlineCap = _PEEK_CACHE_MAX;
+const _OFFLINE_CAP_CHOICES = [10, 25, 50, 80, 150, 300];
+async function _offlineCapLoad() {
+  try {
+    const d = await (await fetch(API + '/api/prefs?key=offline_cache_cap')).json();
+    const n = parseInt(d && d.value, 10);
+    if (n > 0) _offlineCap = n;
+  } catch(e) {}
+  return _offlineCap;
+}
+async function _offlineCapSet(n) {
+  n = parseInt(n, 10);
+  if (!(n > 0)) return;
+  _offlineCap = n;
+  try {
+    await fetch(API + '/api/prefs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'offline_cache_cap', value: String(n) }) });
+  } catch(e) {}
+  await _offlineTrimToCap();      // shrinking the cap must evict NOW, not next sync
+  _offlineInfoRefresh();
+  showToast('Offline cache limit: ' + n + ' sessions');
+}
+// FIFO eviction by last-touched time. Shared by the post-sync prune and the
+// settings change, so both use one definition of "oldest".
+async function _offlineTrimToCap() {
+  await _peekIndexLoad();
+  const names = Object.keys(_peekIndex).sort((a, b) => (_peekIndex[b].time||0) - (_peekIndex[a].time||0));
+  for (const n of names.slice(_offlineCap)) {
+    try { _idb.del('peek_' + n); } catch(e) {}
+    try { _idb.del('file_' + n); } catch(e) {}
+    delete _peekIndex[n];
+  }
+  _peekIndexSave();
+}
+let _peekIndex = {};                 // name -> {etag, time, bytes}
+let _prefetchRunning = false, _prefetchAbort = false;
+
+async function _peekIndexLoad() {
+  try { _peekIndex = (await _idb.get('peek_index')) || {}; } catch(e) { _peekIndex = {}; }
+  return _peekIndex;
+}
+function _peekIndexSave() { try { _idb.set('peek_index', _peekIndex); } catch(e) {} }
+
+// Is this link good enough to prefetch ~1.7MB unprompted? Manual runs bypass.
+function _linkIsCheap() {
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!c) return true;                       // unknown — assume fine
+  if (c.saveData) return false;              // user asked us not to
+  return !/(^|-)(2g|slow-2g|3g)$/.test(c.effectiveType || '');
+}
+
+// Priority: what you'd actually want offline, in order — sessions doing work
+// now, then ones you recently looked at, then the rest.
+function _prefetchOrder() {
+  const running = (sessions || []).filter(s => s.running);
+  const recent = new Set([peekSession, _lastPeekedSession].filter(Boolean));
+  const rank = s => (s.status === 'active' || s.status === 'waiting' ? 0 : recent.has(s.name) ? 1 : 2);
+  return running.sort((a, b) => rank(a) - rank(b) || (b.last_activity || 0) - (a.last_activity || 0));
+}
+
+// Sync every running session's scrollback. Unchanged sessions cost 0 bytes
+// (304). Throttled so a weak link isn't hit with 49 parallel requests.
+async function _offlinePrefetch(manual) {
+  if (_prefetchRunning) return;
+  if (typeof online !== 'undefined' && !online) { if (manual) showToast('Offline — connect to sync'); return; }
+  if (!manual && !_linkIsCheap()) return;    // never auto-blast on 2g/3g/saveData
+  _prefetchRunning = true; _prefetchAbort = false;
+  await _peekIndexLoad();
+  const list = _prefetchOrder();
+  let fetched = 0, unchanged = 0, bytes = 0, done = 0;
+  const CONC = manual ? 4 : 2;
+  const report = () => { if (manual) _offlineSyncStatus(
+    `Saving for offline… ${done}/${list.length} (${fetched} new, ${unchanged} unchanged)`); };
+  const worker = async () => {
+    while (list.length && !_prefetchAbort) {
+      const s = list.shift();
+      try {
+        const prev = _peekIndex[s.name];
+        const h = _authHeaders();
+        if (prev && prev.etag) h['If-None-Match'] = prev.etag;
+        const r = await fetch(API + '/api/sessions/' + encodeURIComponent(s.name)
+                              + '/peek?lines=' + _PEEK_CACHE_LINES, { headers: h });
+        if (r.status === 304) { unchanged++; _peekIndex[s.name] = { ...prev, time: Date.now() }; }
+        else if (r.ok) {
+          const d = await r.json();
+          const out = d.output || '';
+          // "What's scrollable, not the full log": `output` alone is just the
+          // current frame (~1KB) — useless for review. The scrollback lives in
+          // `history` (~119KB/session), which IS the full log. So keep the TAIL:
+          // the most recent _PEEK_CACHE_TAIL chars, trimmed at a line boundary
+          // so the top isn't a half-line. The server already sent the whole
+          // thing, so trimming costs nothing in transfer and bounds storage.
+          let hist = d.history || '';
+          if (hist.length > _PEEK_CACHE_TAIL) {
+            hist = hist.slice(-_PEEK_CACHE_TAIL);
+            const nl = hist.indexOf('\n');
+            if (nl > 0 && nl < 2000) hist = hist.slice(nl + 1);
+          }
+          await _idb.set('peek_' + s.name, { output: out, history: hist, time: Date.now(), offline: true });
+          const sz = out.length + hist.length;
+          _peekIndex[s.name] = { etag: r.headers.get('ETag') || '', time: Date.now(), bytes: sz };
+          fetched++; bytes += sz;
+        }
+      } catch(e) { /* skip this one; a dropped link shouldn't kill the pass */ }
+      done++; report();
+    }
+  };
+  await Promise.all(Array.from({ length: CONC }, worker));
+  // Evict stopped/vanished sessions and trim to the cap (oldest first).
+  const live = new Set((sessions || []).filter(s => s.running).map(s => s.name));
+  for (const name of Object.keys(_peekIndex)) {
+    if (!live.has(name)) { try { _idb.del('peek_' + name); } catch(e) {} delete _peekIndex[name]; }
+  }
+  const names = Object.keys(_peekIndex).sort((a,b) => (_peekIndex[b].time||0) - (_peekIndex[a].time||0));
+  for (const n of names.slice(_offlineCap)) { try { _idb.del('peek_' + n); } catch(e) {} delete _peekIndex[n]; }
+  _peekIndexSave();
+  _prefetchRunning = false;
+  if (manual) {
+    _offlineSyncStatus('');
+    showToast(`Offline ready: ${Object.keys(_peekIndex).length} sessions` +
+              (fetched ? ` · ${(bytes/1024).toFixed(0)}KB new` : ' · already current'));
+  }
+  render();   // repaint cached badges
+}
+function _offlineSyncStatus(t) {
+  const el = document.getElementById('offline-sync-status');
+  if (el) { el.textContent = t; el.style.display = t ? '' : 'none'; }
+}
+function _offlineCacheInfo() {
+  const n = Object.keys(_peekIndex).length;
+  const kb = Object.values(_peekIndex).reduce((a, v) => a + (v.bytes || 0), 0) / 1024;
+  return { n, kb };
+}
+
 function _paintCachedPeek(cached) {
   if (!cached || (!cached.output && !cached.history)) return false;
   _peekHistoryRaw = cached.history || '';
@@ -27998,9 +29215,11 @@ function openPeek(name, opts) {
   updatePeekStatus();
   document.getElementById('peek-body').innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading latest…</span></div>';
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
-  ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count'].forEach(id => {
+  _dictCount = 0;   // stale count from the previous session must not linger
+  ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count',
+   'peek-tab-dictation-count'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.textContent = ''; el.classList.remove('has-count', 'sched-on', 'sched-off'); }
+    if (el) { el.textContent = ''; el.classList.remove('has-count', 'has-pending', 'sched-on', 'sched-off'); }
   });
   _peekUpdateTabCounts();
   loadPeekCommitGuard(name);
@@ -31234,15 +32453,27 @@ function cmdHistoryAdd(text, opts) {
 
 function cmdHistoryReset() { _cmdHistoryIdx = -1; }
 
-function openCmdHistoryModal() {
+function openCmdHistoryModal(scopeSession) {
   const m = document.getElementById('cmd-history-modal');
   if (!m) return;
   m.classList.add('active');
   const s = document.getElementById('cmd-history-search');
   if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
-  // Opened from a session's peek (the "Message history" button lives in the peek
-  // more-menu, so peekSession is set) → pre-scope the filter to that session.
-  const _ctx = (typeof peekSession !== 'undefined' && peekSession) ? peekSession : '';
+  // Scope follows the ENTRY POINT, explicitly rather than by reading whatever
+  // peekSession happens to hold:
+  //   from inside a peek  -> pre-select that session (this modal's only entry
+  //                          point today is the peek's more-menu, and the
+  //                          question there is about THIS session)
+  //   called with ''      -> all sessions, no filter
+  // Passing it in avoids the stale-`peekSession` bug the fleet-wide Messages
+  // tab had, where a closed peek still scoped a global view.
+  const _ctx = (scopeSession != null)
+    ? scopeSession
+    : ((typeof peekSession !== 'undefined' && peekSession) || '');
+  // Drop the previous open's window/counts — they were fetched for a different
+  // scope, and reusing them would show one session's rows under another's
+  // heading until the refetch lands.
+  _cmdHistRows = null; _cmdHistCounts = null;
   _populateCmdHistorySessions(_ctx);
   _renderCmdHistoryList();
   // History is server-side, but this page only pulled it once at load — a
@@ -31251,14 +32482,19 @@ function openCmdHistoryModal() {
   _loadCmdHistoryFromServer().then(() => {
     _populateCmdHistorySessions(_ctx);
     _renderCmdHistoryList();
+    _cmdHistFetch();      // kind-scoped window + true per-kind totals
   });
 }
 function _populateCmdHistorySessions(presetSession) {
   const sel = document.getElementById('cmd-history-session-filter');
   if (!sel) return;
-  // Opening from a session (presetSession) scopes the filter to it; a plain
-  // re-populate (no arg, e.g. the async reload) keeps the current choice.
-  const desired = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
+  // Three distinct intents, and '' must mean the SECOND one, not the third:
+  //   'name'        -> scope to that session
+  //   ''            -> explicitly ALL sessions (clear any previous scope)
+  //   null/undefined-> plain re-populate, keep whatever is chosen
+  // Lumping '' in with "keep current" meant opening the modal unscoped after
+  // having opened it from a peek left the old session still selected.
+  const desired = (presetSession != null) ? presetSession : sel.value;
   const names = [...new Set(_cmdHistory.map(e => typeof e === 'string' ? '' : (e.session || '')).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
   sel.innerHTML = '<option value="">All sessions</option>' + names.map(n => {
@@ -31271,18 +32507,81 @@ function closeCmdHistoryModal() {
   const m = document.getElementById('cmd-history-modal');
   if (m) m.classList.remove('active');
 }
+// Defaults to HUMAN across ALL sessions: opening Message history, the question
+// is "what have I asked the fleet to do", and human messages are the minority
+// on the sessions that matter most (mixpeek-orchestrator alone has 395 inbound
+// session messages). Kind chips are rendered from the same _MSG_KIND_ORDER the
+// peek tab uses, so the two surfaces cannot drift apart.
+let _cmdHistKind = 'human';   // all | human | session | schedule
+let _cmdHistRows = null;      // server window for the CURRENT kind+session, or null
+// Ask the server for the slice we are showing. Filtering the shared 500-row
+// global cache client-side meant "Human across every session" showed 48 rows
+// out of 2783 — the human messages had been crowded out of the window by
+// session and schedule traffic before the filter ever ran.
+let _cmdHistCounts = null;    // true per-kind totals from the server
+async function _cmdHistFetch() {
+  const sess = document.getElementById('cmd-history-session-filter')?.value || '';
+  const qsess = sess ? '&session=' + encodeURIComponent(sess) : '';
+  let u = API + '/api/history?limit=500' + qsess;
+  if (_cmdHistKind !== 'all') u += '&kind=' + encodeURIComponent(_cmdHistKind);
+  try {
+    const [r, rc] = await Promise.all([
+      fetch(u, { headers: _authHeaders() }),
+      fetch(API + '/api/history?counts=1' + qsess, { headers: _authHeaders() }),
+    ]);
+    if (r.ok) {
+      const rows = (await r.json()).map(x => ({ text: x.text, type: x.type, session: x.session,
+        time: x.ts, id: x.id, origin: x.origin || '', kind: x.kind, queued: x.queued }));
+      _cmdHistRows = _mergeUnechoed(rows.reverse(), sess);
+    }
+    if (rc.ok) _cmdHistCounts = await rc.json();
+  } catch(e) { /* keep whatever we had; render falls back to the shared cache */ }
+  _renderCmdHistoryList();
+}
+function _cmdHistSetKind(k) { _cmdHistKind = k; _renderCmdHistoryList(); _cmdHistFetch(); }
+function _cmdHistRenderChips(items) {
+  const bar = document.getElementById('cmd-history-filter');
+  if (!bar) return;
+  // Server totals when we have them; local tally only as a pre-fetch placeholder.
+  let counts;
+  if (_cmdHistCounts) {
+    counts = { all: _cmdHistCounts.all || 0, human: _cmdHistCounts.human || 0,
+               session: _cmdHistCounts.session || 0, schedule: _cmdHistCounts.schedule || 0 };
+  } else {
+    counts = { all: items.length, human: 0, session: 0, schedule: 0 };
+    items.forEach(e => { counts[_msgKind(e)]++; });
+  }
+  const chips = [['all','All']].concat(_MSG_KIND_ORDER.map(k => [k, _MSG_KIND[k].label]));
+  bar.innerHTML = chips.map(([k, lbl]) => {
+    const on = _cmdHistKind === k;
+    const km = _MSG_KIND[k];
+    const col = km ? km.color : 'var(--accent)';
+    // 30px min-height keeps these tappable in the PWA without ballooning the row.
+    return '<button class="msg-kind-chip" onclick="_cmdHistSetKind(\u0027' + k + '\u0027)" style="'
+      + 'border:1px solid ' + (on ? col : 'var(--border)') + ';'
+      + 'background:' + (on ? (km ? km.bg : 'rgba(88,166,255,0.14)') : 'transparent') + ';'
+      + 'color:' + (on ? col : 'var(--dim)') + ';">' + lbl + ' ' + counts[k] + '</button>';
+  }).join('');
+}
 function _renderCmdHistoryList() {
   const list = document.getElementById('cmd-history-list');
   if (!list) return;
   const q = (document.getElementById('cmd-history-search')?.value || '').trim().toLowerCase();
   const sessFilter = document.getElementById('cmd-history-session-filter')?.value || '';
-  const items = _cmdHistory.slice().reverse();
+  // Server window when loaded (already kind- and session-scoped); otherwise the
+  // shared global cache, so the modal paints instantly on open.
+  const items = (_cmdHistRows || _cmdHistory).slice().reverse();
   let filtered = items;
   if (sessFilter) filtered = filtered.filter(e => (typeof e === 'string' ? '' : (e.session || '')) === sessFilter);
+  _cmdHistRenderChips(filtered);
+  if (_cmdHistKind !== 'all') filtered = filtered.filter(e => _msgKind(e) === _cmdHistKind);
   if (q) filtered = filtered.filter(e => { const t = typeof e === 'string' ? e : e.text; return t.toLowerCase().includes(q); });
   if (!filtered.length) {
+    const kLbl = (_MSG_KIND[_cmdHistKind] || {}).label;
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">'
-      + (q || sessFilter ? 'No matches.' : 'No history yet.') + '</div>';
+      + (q ? 'No matches.'
+           : kLbl ? 'No ' + kLbl.toLowerCase() + ' messages'+ (sessFilter ? ' for ' + sessFilter : '') + '.'
+                  : (sessFilter ? 'No messages for ' + sessFilter + '.' : 'No history yet.')) + '</div>';
     return;
   }
   list.innerHTML = filtered.map(e => {
@@ -31292,10 +32591,18 @@ function _renderCmdHistoryList() {
     const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
     const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
-    const tagColor = type === 'steering' ? 'var(--purple,#8957e5)' : 'var(--dim)';
-    const tagBg = type === 'steering' ? 'rgba(137,87,229,0.15)' : 'rgba(128,128,128,0.1)';
-    const tagLabel = type === 'steering' ? 'queued' : 'direct';
-    const meta = (type ? '<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:' + tagBg + ';color:' + tagColor + ';margin-right:6px;">' + tagLabel + '</span>' : '')
+    // Was: `type === 'steering' ? 'queued' : 'direct'` — which badged every
+    // session-to-session AND every scheduled message as "direct", i.e. as
+    // something you had typed. Same kind + origin the peek tab shows.
+    const kind = _msgKind(e);
+    const km = _MSG_KIND[kind] || _MSG_KIND.human;
+    const origin = typeof e === 'string' ? '' : (e.origin || '');
+    const tagSuffix = kind === 'human'
+      ? (_msgQueued(e) ? ' · queued' : ' · direct')
+      : (origin ? ' · ' + origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,28) : '');
+    const meta = '<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 6px;border-radius:3px;background:'
+      + km.bg + ';color:' + km.color + ';margin-right:6px;border-left:3px solid ' + km.color + ';">'
+      + km.label + tagSuffix + '</span>'
       + (session ? '<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">' + session.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '')
       + (ts ? '<span style="color:var(--dim);font-size:0.7rem;">' + ts + '</span>' : '');
     const locSess = (session || peekSession || '').replace(/\u0027/g, '');
@@ -31321,21 +32628,33 @@ function _renderCmdHistoryList() {
 // ── Peek Messages tab: the message history, scoped to the open session ──
 // One entry → its card HTML (same look as the Message-history modal). Kept as a
 // standalone renderer so the tab stays independent of the modal.
-// Origin taxonomy for a Messages-history item: who sent this command.
-// Legacy rows (type 'direct'/'steering', pre-origin-column) map to 'user'.
-function _msgOrigin(e) {
+// THREE kinds, matching the server's _msg_kind exactly. The stored `type`
+// column has five historical values; collapsing them here (and only here) is
+// what keeps every surface agreeing. The server now ships `kind` on each row —
+// prefer it, and fall back to deriving locally for rows cached before this
+// version or pushed optimistically by cmdHistoryAdd before the server echoes.
+function _msgKind(e) {
+  if (e && typeof e === 'object' && e.kind) return e.kind;
   const t = (typeof e === 'string' ? '' : (e.type || '')).toLowerCase();
   if (t === 'session') return 'session';
   if (t === 'schedule') return 'schedule';
-  if (t === 'system') return 'system';
-  return 'user';   // user / direct / steering / '' all = a human-entered command
+  return 'human';   // direct / steering / user / '' — all a person typing
+}
+// Queued vs direct is a DELIVERY detail of a human message, not a fourth kind:
+// same person, same authority, one just waited for the session to free up.
+function _msgQueued(e) {
+  if (e && typeof e === 'object' && typeof e.queued === 'boolean') return e.queued;
+  return (typeof e === 'string' ? '' : (e.type || '')).toLowerCase() === 'steering';
 }
 const _MSG_KIND = {
-  user:     { label: 'You',       color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
+  human:    { label: 'Human',     color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
   session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
   schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
-  system:   { label: 'System',    color: '#d29922', bg: 'rgba(210,153,34,0.15)' },
 };
+const _MSG_KIND_ORDER = ['human', 'session', 'schedule'];
+// Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
+// calling it gets the canonical kind.
+function _msgOrigin(e) { return _msgKind(e); }
 function _cmdHistItemHTML(e) {
   const text = typeof e === 'string' ? e : e.text;
   const session = typeof e === 'string' ? '' : (e.session || '');
@@ -31343,11 +32662,14 @@ function _cmdHistItemHTML(e) {
   const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
   const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
-  const kind = _msgOrigin(e);
-  const km = _MSG_KIND[kind] || _MSG_KIND.user;
-  // Badge label carries the specific origin: "Session · mvs-infra", "Scheduled · Nightly gate".
-  const originTxt = (kind === 'session' || kind === 'schedule' || kind === 'system') && origin
-    ? ' · ' + origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32) : '';
+  const kind = _msgKind(e);
+  const km = _MSG_KIND[kind] || _MSG_KIND.human;
+  // Badge carries the specific origin: "Session · mvs-infra", "Scheduled · Nightly gate".
+  // For a human message the origin is you, so instead we surface the delivery
+  // path — "Human · queued" vs plain "Human".
+  const originTxt = kind === 'human'
+    ? (_msgQueued(e) ? ' &middot; queued' : ' &middot; direct')
+    : (origin ? ' &middot; ' + origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32) : '');
   const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;border-left:3px solid ${km.color};">${km.label}${originTxt}</span>`;
   const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
@@ -31359,6 +32681,9 @@ function _cmdHistItemHTML(e) {
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
+  // Prefer the session-scoped server window; fall back to slicing the shared
+  // global cache until it lands (or if the fetch failed).
+  if (_peekMsgRows && _peekMsgRowsFor === peekSession) return _peekMsgRows.slice().reverse();
   return _cmdHistory.slice().reverse().filter(e => (typeof e === 'string' ? '' : (e.session || '')) === peekSession);
 }
 // Offline-queued sends/steers for a session that have NOT reached the server yet.
@@ -31403,23 +32728,29 @@ function _peekMessagesBadge() {
   badge.classList.toggle('has-pending', p > 0);
   _updatePendingPill();
 }
-let _peekMsgFilter = 'all';   // all | user | session | schedule | system
+// Defaults to human. Opening a session's Messages tab, the question is almost
+// always "what did I ask this session to do" — inter-session chatter and
+// scheduler fire-and-forget are an order of magnitude noisier (1463 session +
+// 753 schedule vs 2784 human across the fleet, but concentrated on a handful
+// of sessions where they bury everything you typed).
+let _peekMsgFilter = 'human';   // all | human | session | schedule
 function _peekMsgSetFilter(k) { _peekMsgFilter = k; _peekMessagesRender(); }
 function _peekMsgRenderChips(items) {
   const bar = document.getElementById('peek-messages-filter');
   if (!bar) return;
   // Count by kind so each chip shows how many of that type exist.
-  const counts = { all: items.length, user: 0, session: 0, schedule: 0, system: 0 };
-  items.forEach(e => { counts[_msgOrigin(e)]++; });
+  const counts = { all: items.length, human: 0, session: 0, schedule: 0 };
+  items.forEach(e => { counts[_msgKind(e)]++; });
+  // Every kind chip is ALWAYS shown, even at zero. Hiding empty ones made the
+  // filter row change shape as you moved between sessions, and an absent chip
+  // reads as "this kind does not exist" rather than "none here".
   const chips = [['all','All']].concat(
-    ['user','session','schedule','system']
-      .filter(k => counts[k] > 0 || _peekMsgFilter === k)
-      .map(k => [k, (_MSG_KIND[k]||{}).label || k]));
+    _MSG_KIND_ORDER.map(k => [k, (_MSG_KIND[k]||{}).label || k]));
   bar.innerHTML = chips.map(([k,lbl]) => {
     const on = _peekMsgFilter === k;
     const km = _MSG_KIND[k];
     const col = km ? km.color : 'var(--accent)';
-    return `<button onclick="_peekMsgSetFilter('${k}')" style="font-size:0.7rem;font-weight:600;padding:2px 9px;border-radius:12px;cursor:pointer;border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl}${k!=='all'?' '+counts[k]:''}</button>`;
+    return `<button class="msg-kind-chip" onclick="_peekMsgSetFilter('${k}')" style="border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl} ${counts[k]}</button>`;
   }).join('');
 }
 function _peekMessagesRender() {
@@ -31428,11 +32759,14 @@ function _peekMessagesRender() {
   const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
   let items = _peekMessagesFor();
   _peekMsgRenderChips(items);   // chips reflect the full (pre-filter) set's counts
-  if (_peekMsgFilter !== 'all') items = items.filter(e => _msgOrigin(e) === _peekMsgFilter);
+  if (_peekMsgFilter !== 'all') items = items.filter(e => _msgKind(e) === _peekMsgFilter);
   if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
   // Pending (offline-queued, NOT yet on the server) shown FIRST — clearly marked,
-  // cancellable, so the local client never hides unsent messages.
-  let pending = _pendingSendsFor(peekSession);
+  // cancellable, so the local client never hides unsent messages. These are
+  // always YOURS, so they belong to the human filter and must disappear under
+  // session/schedule — otherwise a "Scheduled" view shows a message you typed.
+  const _showPending = (_peekMsgFilter === 'all' || _peekMsgFilter === 'human');
+  let pending = _showPending ? _pendingSendsFor(peekSession) : [];
   if (q) pending = pending.filter(p => p.text.toLowerCase().includes(q));
   const pendingHTML = pending.map(p => {
     const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
@@ -31447,13 +32781,56 @@ function _peekMessagesRender() {
   const cnt = document.getElementById('peek-messages-count');
   if (cnt) cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages');
   const histHTML = items.length ? items.map(_cmdHistItemHTML).join('') : '';
+  // Empty state must name the active filter. "No messages sent to this session
+  // yet" is false when you are simply looking at the Scheduled slice of a
+  // session that has plenty of human messages.
+  const _fLbl = (_MSG_KIND[_peekMsgFilter] || {}).label;
+  const _empty = q ? 'No matches.'
+    : (_fLbl ? 'No ' + _fLbl.toLowerCase() + ' messages for this session.'
+             : 'No messages sent to this session yet.');
   list.innerHTML = (pendingHTML + histHTML)
-    || `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${q ? 'No matches.' : 'No messages sent to this session yet.'}</div>`;
+    || `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${_empty}</div>`;
   _peekMessagesBadge();
 }
+// The shared _cmdHistory cache is a GLOBAL 500-row window, and on a busy fleet
+// ~90% of it is session + schedule traffic (measured: 452 of 500). Filtering
+// that down to one session's human messages left almost nothing — the peek tab
+// for mixpeek-orchestrator showed "Human 0" while the session had plenty.
+// Fetch a SESSION-SCOPED window instead, so each session gets its own 500.
+let _peekMsgRows = null;      // server rows for peekSession, or null = not loaded
+let _peekMsgRowsFor = '';     // which session _peekMsgRows belongs to
+
+// Local entries that the server has not echoed yet (no id) must survive the
+// swap to server-scoped rows, or a message you just sent vanishes until the
+// next poll — the "sent from phone, missing on desktop" class of bug.
+function _mergeUnechoed(serverRows, session) {
+  const seen = new Set(serverRows.map(r => (r.text || '') + '|' + (r.session || '')));
+  const local = _cmdHistory.filter(e => typeof e !== 'string' && !e.id
+    && (!session || (e.session || '') === session)
+    && !seen.has((e.text || '') + '|' + (e.session || '')));
+  return serverRows.concat(local).sort((a, b) => (a.time || a.ts || 0) - (b.time || b.ts || 0));
+}
+
+async function _peekMsgFetch(session) {
+  const r = await fetch(API + '/api/history?limit=500&session=' + encodeURIComponent(session),
+                        { headers: _authHeaders() });
+  if (!r.ok) throw new Error('history ' + r.status);
+  const rows = (await r.json()).map(x => ({ text: x.text, type: x.type, session: x.session,
+    time: x.ts, id: x.id, origin: x.origin || '', kind: x.kind, queued: x.queued }));
+  return _mergeUnechoed(rows.reverse(), session);
+}
+
 async function _peekMessagesLoad() {
+  const sess = peekSession;
+  if (_peekMsgRowsFor !== sess) { _peekMsgRows = null; _peekMsgRowsFor = sess; }
   _peekMessagesRender();                       // paint from local cache instantly
-  try { await _loadCmdHistoryFromServer(); } catch(e) {}   // refresh (cross-device)
+  try {
+    const rows = await _peekMsgFetch(sess);
+    if (peekSession !== sess) return;          // user moved on mid-flight
+    _peekMsgRows = rows;
+  } catch(e) {
+    try { await _loadCmdHistoryFromServer(); } catch(e2) {}   // fall back to the shared cache
+  }
   _peekMessagesRender();
 }
 
@@ -31464,6 +32841,7 @@ async function _peekMessagesLoad() {
 let _dictRecording = false, _dictRecorder = null, _dictChunks = [], _dictStream = null;
 let _dictStartedAt = 0, _dictSub = 'history';
 let _dictItems = [], _dictWords = [], _dictTotalWords = 0, _dictCfg = null;
+let _dictCount = 0;   // history rows for peekSession — drives the tab badge without opening the tab
 
 async function _dictLoad() {
   try {
@@ -31474,6 +32852,7 @@ async function _dictLoad() {
     ]);
     _dictItems = h.items || []; _dictTotalWords = h.total_words || 0;
     _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
+    _dictCount = _dictItems.length;
   } catch(e) {}
   const tw = document.getElementById('dict-total-words');
   if (tw) tw.textContent = _dictTotalWords ? _dictTotalWords.toLocaleString() + ' words' : '';
@@ -31499,6 +32878,8 @@ function _dictRender() {
 // identically (measured). Uploads are RAW BINARY, not base64 (another 33%
 // saved), so a minute of dictation is ~120KB even on a bad connection.
 const _DICT_BITRATE = 16000;
+const _DICT_WARM_MS = 45000;   // how long the mic stays warm between takes
+let _dictWarmTimer = 0;
 let _dictAudioCtx = null, _dictAnalyser = null, _dictRafId = 0, _dictPopupOpen = false;
 
 function _dictToggleRec() { if (_dictRecording) _dictStopRec(); else _dictStartRec(); }
@@ -31524,10 +32905,18 @@ async function _dictStartRec() {
   if (_dictRecording) return;
   if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
   _dictCancelled = false;
-  try {
-    _dictStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
-  } catch(e) { showToast('Microphone access denied'); _dictClosePopup(false); return; }
+  // Reuse a still-live stream. getUserMedia costs ~200-800ms on a phone, and the
+  // popup opens BEFORE the recorder is armed — so the first word of a quick
+  // dictation was being clipped. Holding the mic briefly between takes makes a
+  // follow-up recording start on the same tap.
+  if (!_dictStream || !_dictStream.active || !(_dictStream.getAudioTracks()[0] || {}).enabled) {
+    _dictStatus('Starting mic…');
+    try {
+      _dictStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
+    } catch(e) { showToast('Microphone access denied'); _dictClosePopup(false); return; }
+  }
+  if (_dictWarmTimer) { clearTimeout(_dictWarmTimer); _dictWarmTimer = 0; }
   // Safari/iOS produce mp4; Chrome/Firefox webm/opus. Pick what's supported and
   // tell the server the real mime so Gemini decodes it.
   let mime = '';
@@ -31594,13 +32983,56 @@ function _dictStopRec() {
   _dictRecording = false;
   document.getElementById('dict-rec-btn')?.classList.remove('recording');
   try { _dictRecorder && _dictRecorder.state !== 'inactive' && _dictRecorder.stop(); } catch(e) {}
-  try { (_dictStream?.getTracks() || []).forEach(t => t.stop()); } catch(e) {}
+  // Keep the mic warm for a short window so a follow-up take is instant, then
+  // release it — an indefinitely open mic leaves the browser's recording
+  // indicator lit, which is alarming and not worth the saved millisecond.
+  if (_dictWarmTimer) clearTimeout(_dictWarmTimer);
+  _dictWarmTimer = setTimeout(() => {
+    try { (_dictStream?.getTracks() || []).forEach(t => t.stop()); } catch(e) {}
+    _dictStream = null; _dictWarmTimer = 0;
+  }, _DICT_WARM_MS);
 }
 function _dictStatus(t) {
   const el = document.getElementById('dict-rec-status'); if (el) el.textContent = t;
   const p = document.getElementById('dict-popup-status'); if (p) p.textContent = t.replace(/ — tap to stop$/, '');
 }
 function _dictKB(b) { return b < 1024 ? b + ' B' : (b/1024).toFixed(b < 102400 ? 1 : 0) + ' KB'; }
+
+// ── Dictation outbox ────────────────────────────────────────────────────────
+// Every recording is persisted BEFORE the first upload attempt and removed only
+// once it has actually been transcribed. Previously the clip was kept only when
+// the NETWORK failed — a server-side error (Gemini hiccup, quota, bad key) hit
+// `return null` and the audio was gone, which is the failure you actually hit on
+// a phone. Recording again is the one thing you can't do: the thought is spent.
+const _DICT_OUTBOX_MAX = 25;   // ring buffer; oldest fall off first
+const _DICT_KEEP_DONE  = 6;    // transcribed clips kept so a bad transcript can be re-run
+const _DICT_MAX_AUTO   = 6;    // give up auto-retrying after this many; manual Retry still works
+
+async function _dictOutbox() { try { return (await _idb.get('dict_pending')) || []; } catch(e) { return []; } }
+async function _dictOutboxSet(q) {
+  try { await _idb.set('dict_pending', q.slice(-_DICT_OUTBOX_MAX)); } catch(e) {}
+  _dictPendingBadge();
+}
+async function _dictOutboxAdd(blob, mime, ms) {
+  const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const q = await _dictOutbox();
+  q.push({ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
+           state: 'pending', attempts: 0, last: 0, error: '', text: '' });
+  await _dictOutboxSet(q);
+  return id;
+}
+async function _dictOutboxPatch(id, patch) {
+  const q = await _dictOutbox();
+  const i = q.findIndex(x => x.id === id);
+  if (i < 0) return;
+  q[i] = Object.assign(q[i], patch);
+  await _dictOutboxSet(q);
+}
+async function _dictOutboxDel(id) {
+  const q = await _dictOutbox();
+  await _dictOutboxSet(q.filter(x => x.id !== id));
+  if (_peekTab === 'dictation') _dictRender();
+}
 
 async function _dictUpload() {
   const ms = Date.now() - _dictStartedAt;
@@ -31609,73 +33041,160 @@ async function _dictUpload() {
   _dictChunks = [];
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
-  // Offline / no signal: keep the recording and send it when we're back, rather
-  // than losing what you just said.
+  const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
   if (typeof online !== 'undefined' && !online) {
-    await _dictQueueOffline(blob, mime, ms);
-    _dictStatus('Saved — will send when you\'re back online');
+    await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
+    _dictStatus('Saved — sends when you\'re back online');
     _dictClosePopup(false);
+    if (_peekTab === 'dictation') _dictRender();
     return;
   }
-  _dictStatus('Transcribing… (' + _dictKB(blob.size) + ')');
-  const okText = await _dictSend(blob, mime, ms, true);
-  if (okText !== null) _dictClosePopup(false);
+  const txt = await _dictTrySend(id, true);
+  if (txt !== null) _dictClosePopup(false);
 }
 
-// One upload attempt with a timeout; on a network failure the clip is queued
-// rather than dropped. Returns the text, or null on failure.
-async function _dictSend(blob, mime, ms, interactive) {
-  const url = API + '/api/dictate?session=' + encodeURIComponent(peekSession || '')
-    + '&dur_ms=' + ms + '&mime=' + encodeURIComponent(mime);
+// One attempt against a stored clip. Never discards audio: a failure of ANY kind
+// leaves the item in the outbox with its error, so Retry re-sends the same
+// recording instead of asking you to say it again.
+async function _dictTrySend(id, interactive) {
+  const q = await _dictOutbox();
+  const it = q.find(x => x.id === id);
+  if (!it || !it.blob) return null;
+  if (typeof online !== 'undefined' && !online) {
+    await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
+    return null;
+  }
+  await _dictOutboxPatch(id, { state: 'sending' });
+  if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
+  if (_peekTab === 'dictation') _dictRender();
+  const url = API + '/api/dictate?session=' + encodeURIComponent(it.session || peekSession || '')
+    + '&dur_ms=' + (it.ms || 0) + '&mime=' + encodeURIComponent(it.mime || 'audio/webm');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 120000);   // slow links need room
   try {
-    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime }),
-                                 body: blob, signal: ctl.signal });
+    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': it.mime || 'audio/webm' }),
+                                 body: it.blob, signal: ctl.signal });
     clearTimeout(timer);
     const d = await r.json();
-    if (d.error) { if (interactive) _dictStatus('Failed: ' + d.error); return null; }
+    if (d.error) throw new Error(d.error);
+    await _dictOutboxPatch(id, { state: 'done', text: d.text || '', error: '', last: Date.now() });
+    await _dictPruneDone();
     if (interactive) { _dictStatus('Added to the composer — review, then send'); _dictInsert(d.text); }
     if (_peekTab === 'dictation') _dictLoad();
     return d.text;
   } catch(e) {
     clearTimeout(timer);
-    await _dictQueueOffline(blob, mime, ms);
-    if (interactive) _dictStatus('No connection — saved, will retry automatically');
+    const msg = String((e && e.message) || 'failed').slice(0, 140);
+    await _dictOutboxPatch(id, { state: 'failed', attempts: (it.attempts || 0) + 1,
+                                 last: Date.now(), error: msg });
+    if (interactive) _dictStatus('Kept — tap Retry. (' + msg.slice(0, 60) + ')');
+    if (_peekTab === 'dictation') _dictRender();
     return null;
   }
 }
 
-// Pending recordings live in IndexedDB (blobs can't go in localStorage), so a
-// dictation taken with no signal survives a reload and flushes on reconnect.
-async function _dictQueueOffline(blob, mime, ms) {
-  try {
-    const q = (await _idb.get('dict_pending')) || [];
-    q.push({ blob, mime, ms, ts: Date.now(), session: peekSession || '' });
-    await _idb.set('dict_pending', q.slice(-20));
-    _dictPendingBadge();
-  } catch(e) {}
+// Transcribed clips linger briefly so a wrong transcript can be re-run on the
+// SAME audio — the "retry" that used to be impossible because we threw the
+// recording away the moment it succeeded.
+async function _dictPruneDone() {
+  const q = await _dictOutbox();
+  const done = q.filter(x => x.state === 'done');
+  if (done.length <= _DICT_KEEP_DONE) return;
+  const drop = new Set(done.slice(0, done.length - _DICT_KEEP_DONE).map(x => x.id));
+  await _dictOutboxSet(q.filter(x => !drop.has(x.id)));
 }
+
+// Exponential backoff so a hard failure (bad key, no quota) doesn't hammer the
+// endpoint on every reconnect, while a flaky link still recovers quickly.
+function _dictReady(it) {
+  if (it.state === 'done' || it.state === 'sending') return false;
+  if ((it.attempts || 0) >= _DICT_MAX_AUTO) return false;
+  const wait = Math.min(300000, 4000 * Math.pow(2, it.attempts || 0));
+  return Date.now() - (it.last || 0) > wait;
+}
+let _dictFlushing = false;
 async function _dictFlushOffline() {
+  if (_dictFlushing) return;
+  if (typeof online !== 'undefined' && !online) return;
+  _dictFlushing = true;
+  try {
+    let sent = 0;
+    for (const it of (await _dictOutbox())) {
+      if (!_dictReady(it)) continue;
+      if (await _dictTrySend(it.id, false) !== null) sent++;
+    }
+    if (sent) {
+      showToast(sent + ' queued dictation' + (sent === 1 ? '' : 's') + ' transcribed');
+      if (_peekTab === 'dictation') _dictLoad();
+    }
+  } finally { _dictFlushing = false; }
+}
+async function _dictRetry(id) { await _dictOutboxPatch(id, { attempts: 0, last: 0 }); await _dictTrySend(id, true); }
+
+// Play the stored audio back. You asked for it to feel like a recording — so the
+// clip is a thing you can hear before deciding to retry or bin it.
+async function _dictPlay(id) {
+  const it = (await _dictOutbox()).find(x => x.id === id);
+  if (!it || !it.blob) return;
+  try {
+    if (window._dictAudioEl) { try { _dictAudioEl.pause(); URL.revokeObjectURL(_dictAudioEl.src); } catch(e) {} }
+    window._dictAudioEl = new Audio(URL.createObjectURL(it.blob));
+    _dictAudioEl.play();
+  } catch(e) { showToast('Playback failed'); }
+}
+
+async function _dictPendingBadge() {
   let q = [];
   try { q = (await _idb.get('dict_pending')) || []; } catch(e) {}
-  if (!q.length || (typeof online !== 'undefined' && !online)) return;
-  const keep = [];
-  for (const item of q) {
-    const txt = await _dictSend(item.blob, item.mime, item.ms, false);
-    if (txt === null) keep.push(item);
+  const n = q.filter(x => x.state !== 'done').length;
+  const el = document.getElementById('dict-pending');
+  if (el) el.textContent = n ? n + ' pending' : '';
+  const dot = document.getElementById('dict-outbox-dot');
+  if (dot) dot.textContent = n ? String(n) : '';
+  _dictTabBadge(n);
+}
+
+// Peek tab badge: this session's dictation count, plus any clips still in the
+// outbox — the same two things the tab itself renders. Outbox is device-global
+// (a clip recorded for another session still needs sending), so it is NOT
+// scoped to peekSession; that would undercount what you see on open.
+// Mirrors _peekMessagesBadge's "n+p" format and amber has-pending style.
+function _dictTabBadge(pending) {
+  const badge = document.getElementById('peek-tab-dictation-count');
+  if (!badge) return;
+  const n = _dictCount || 0;
+  const p = pending || 0;
+  badge.textContent = p ? (n + '+' + p) : (n ? String(n) : '');
+  badge.classList.toggle('has-count', (n + p) > 0);
+  badge.classList.toggle('has-pending', p > 0);
+}
+
+// Outbox strip above the history list: every clip that hasn't landed yet, with
+// the error that stopped it and one tap to re-send the same audio.
+function _dictOutboxHTML(q) {
+  const live = q.filter(x => x.state !== 'done');
+  if (!live.length) return '';
+  let h = '<div class="dict-day">PENDING</div>';
+  for (const it of live.slice().reverse()) {
+    const secs = Math.round((it.ms || 0) / 1000);
+    const label = { sending: 'Sending…', offline: 'Waiting for connection', failed: 'Failed', pending: 'Queued' }[it.state] || it.state;
+    const err = it.error ? '<div class="dict-err">' + esc(it.error) + '</div>' : '';
+    const attempts = (it.attempts || 0) > 1 ? ' · ' + it.attempts + ' tries' : '';
+    h += '<div class="dict-item dict-item-pending">'
+      +  '<div class="dict-item-head"><span class="dict-state dict-state-' + esc(it.state) + '">' + label + '</span>'
+      +  '<span class="dict-meta">' + secs + 's · ' + _dictKB((it.blob && it.blob.size) || 0) + attempts + '</span></div>'
+      +  err
+      +  '<div class="dict-actions">'
+      +    '<button class="btn small" onclick="_dictPlay(\'' + it.id + '\')">▶ Play</button>'
+      +    '<button class="btn small primary" onclick="_dictRetry(\'' + it.id + '\')">Retry</button>'
+      +    '<button class="btn small" onclick="_dictOutboxDel(\'' + it.id + '\')">Delete</button>'
+      +  '</div></div>';
   }
-  try { await _idb.set('dict_pending', keep); } catch(e) {}
-  const sent = q.length - keep.length;
-  if (sent) { showToast(sent + ' queued dictation' + (sent===1?'':'s') + ' transcribed'); if (_peekTab === 'dictation') _dictLoad(); }
-  _dictPendingBadge();
+  return h;
 }
-async function _dictPendingBadge() {
-  let n = 0;
-  try { n = ((await _idb.get('dict_pending')) || []).length; } catch(e) {}
-  const el = document.getElementById('dict-pending'); if (el) el.textContent = n ? n + ' pending upload' + (n===1?'':'s') : '';
-}
+
 window.addEventListener('online', () => { setTimeout(_dictFlushOffline, 1500); });
+setInterval(() => { if (typeof online === 'undefined' || online) _dictFlushOffline(); }, 45000);
 
 // Put text in the composer (append, don't clobber) — never auto-send.
 function _dictInsert(text) {
@@ -31689,6 +33208,13 @@ function _dictInsert(text) {
 function _dictRenderHistory() {
   const body = document.getElementById('dict-body');
   if (!body) return;
+  // Pending clips render first and out-of-band: they are the ones needing a
+  // decision (retry / play / bin), and they must show even when history is empty.
+  _dictOutbox().then(ob => {
+    const strip = _dictOutboxHTML(ob);
+    const host = document.getElementById('dict-outbox-strip');
+    if (host) host.innerHTML = strip;
+  });
   const q = (document.getElementById('dict-search')?.value || '').trim().toLowerCase();
   const items = q ? _dictItems.filter(i => (i.text||'').toLowerCase().includes(q)) : _dictItems;
   if (!items.length) {
@@ -32927,7 +34453,10 @@ async function openFilePreview(path) {
     // evicts anything not opened in 30 days. Streaming media (video/audio) has
     // no data_url/content so it's naturally skipped — it can't live in IDB.
     const _payload = (data.data_url ? data.data_url.length : 0) + (data.content ? data.content.length : 0);
-    if (_payload > 0 && _payload <= _FILE_CACHE_MAX) _idb.setFile(path, { type: 'file', data });
+    if (_payload > 0 && _payload <= _FILE_CACHE_MAX) {
+      await _idb.setFile(path, { type: 'file', data });
+      _offlineBudgetEnforce();     // throttled FIFO trim to the server-saved cap
+    }
   } catch(e) {
     // Offline: try IDB cache
     const cached = await _idb.getFile(path);
@@ -33763,6 +35292,43 @@ const _CACHEABLE_TEXT_EXTS = new Set([
 const _CACHEABLE_IMG_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg','.bmp','.ico']);
 const _FILE_CACHE_MAX = 25 * 1024 * 1024;   // per-file offline-cache cap (protects IndexedDB)
 const _FILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // evict files not opened in 30 days
+// Byte size of a cached entry. data_url is base64 (~1 byte per char) and
+// content is text; both are close enough for a storage budget, and being
+// approximate is fine — the budget only needs to bound growth, not audit it.
+function _idbEntryBytes(r) {
+  const d = (r && r.data) || {};
+  return (d.data_url ? d.data_url.length : 0) + (d.content ? d.content.length : 0)
+       + (d.entries ? JSON.stringify(d.entries).length : 0);
+}
+// Total offline storage budget, saved SERVER-side so it follows you across
+// devices. Default 200MB: generous on a phone, far under the ~1GB a PWA can
+// claim, and small enough that a runaway cache is capped rather than eating
+// the device. Applied FIFO by last-opened.
+const _OFFLINE_MB_DEFAULT = 200;
+const _OFFLINE_MB_CHOICES = [50, 100, 200, 500, 1000];
+let _offlineMB = _OFFLINE_MB_DEFAULT;
+async function _offlineMBLoad() {
+  try {
+    const d = await (await fetch(API + '/api/prefs?key=offline_cache_mb')).json();
+    const n = parseInt(d && d.value, 10);
+    if (n > 0) _offlineMB = n;
+  } catch(e) {}
+  return _offlineMB;
+}
+async function _offlineMBSet(n) {
+  n = parseInt(n, 10);
+  if (!(n > 0)) return;
+  _offlineMB = n;
+  try {
+    await fetch(API + '/api/prefs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'offline_cache_mb', value: String(n) }) });
+  } catch(e) {}
+  // Lowering the limit must evict NOW. A cap that only applies to future writes
+  // is not a cap — the device stays full until something happens to age out.
+  const res = await _idb.trimFilesToBytes(_offlineMB * 1024 * 1024);
+  _offlineInfoRefresh();
+  showToast('Offline limit ' + n + ' MB' + (res.removed ? ' — evicted ' + res.removed + ' file(s)' : ''));
+}
 const _SKIP_CACHE_DIRS = new Set(['.git','node_modules','__pycache__','.next','.nuxt','dist','build','.venv','venv','.tox','.mypy_cache','target','vendor']);
 
 async function cacheFilesDir(rootPath, maxDepth = 2) {
@@ -34074,19 +35640,25 @@ function _encodeHashPath(p) {
 }
 function _copyFileDeeplink(path) {
   const url = location.origin + location.pathname + '#path=' + _encodeHashPath(path);
+  _copyTextWithToast(url, 'Link copied');
+}
+function _copyFilePath(path) {
+  _copyTextWithToast(path, 'Path copied');
+}
+function _copyTextWithToast(text, message) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(url).then(() => showToast('Link copied'), () => _copyFileDeeplinkFallback(url));
+    navigator.clipboard.writeText(text).then(() => showToast(message), () => _copyTextWithToastFallback(text, message));
   } else {
-    _copyFileDeeplinkFallback(url);
+    _copyTextWithToastFallback(text, message);
   }
 }
-function _copyFileDeeplinkFallback(url) {
+function _copyTextWithToastFallback(text, message) {
   const ta = document.createElement('textarea');
-  ta.value = url; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  ta.value = text; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
   document.body.appendChild(ta); ta.focus(); ta.select();
   try { document.execCommand('copy'); } catch(e) {}
   document.body.removeChild(ta);
-  showToast('Link copied');
+  showToast(message);
 }
 async function loadExplore(path) {
   const body = document.getElementById('explore-body');
@@ -35603,7 +37175,20 @@ let boardViewMode = localStorage.getItem('amux_board_view') || 'session';
 let boardOwnerFilter = localStorage.getItem('amux_board_owner') || 'human';
 let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('amux_board_collapsed') || '{}');
 let _tagGroupCollapsed = JSON.parse(localStorage.getItem('amux_status_collapsed') || '{}');
-let _collapsedCols = new Set(JSON.parse(localStorage.getItem('amux_col_collapsed') || '[]'));
+// First visit collapses the archive columns. backlog + todo are 1082 of 1553
+// items — they are the reason the ~64 in-flight cards are invisible. Collapsed
+// still shows the count and expands in one tap, and the seed is written
+// immediately so any later toggle is the user's and is never re-seeded.
+let _collapsedCols;
+{
+  const _cc = localStorage.getItem('amux_col_collapsed');
+  if (_cc === null) {
+    _collapsedCols = new Set(['backlog', 'todo']);
+    try { localStorage.setItem('amux_col_collapsed', JSON.stringify([..._collapsedCols])); } catch(e) {}
+  } else {
+    _collapsedCols = new Set(JSON.parse(_cc || '[]'));
+  }
+}
 let _boardColPages = {};  // tracks how many cards to show per column (lazy load)
 
 function _boardShowMore(colId, pageSize) {
@@ -35793,7 +37378,9 @@ function switchView(view) {
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
   const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
   const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
+  // MUST stay index-aligned with _svIds/_svNames above (19 entries). It had 18,
+  // so 'graph' ran off the end and took the '' fallback by accident.
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -35813,7 +37400,13 @@ function switchView(view) {
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
   if (view === 'sql') _sqlInit();
-  if (view === 'messages') _messagesLoad(true, (typeof peekSession !== 'undefined' && peekSession) || _lastPeekedSession);
+  // The Messages TAB is a fleet-wide view reached from the main session list —
+  // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
+  // so tapping Messages showed one session's history scoped by whichever peek
+  // you happened to open last, with no indication that a filter was applied.
+  // Per-session scoping lives on the peek's own Messages tab and on the
+  // "Message history" modal reached from inside a peek.
+  if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -36903,7 +38496,8 @@ async function fetchLogs() {
     if (!r.ok) return;
     const d = await r.json();
     const fetched = (d.events || []).map(e => ({
-      ...e, type: e.type || e.category, target: e.target || e.detail, ip: e.ip || e.actor,
+      ...e, type: e.type || e.category, target: e.target || e.detail, ip: e.ip || '',
+      actor: e.actor || '',
       status: e.level === 'error' ? 500 : (e.status || 200),
     }));
     // Merge: keep SSE-accumulated events that are newer than what the API returned,
@@ -36977,6 +38571,7 @@ function renderActivity() {
       (e.detail||'').toLowerCase().includes(q) ||
       (e.target||'').toLowerCase().includes(q) ||
       (e.session||'').toLowerCase().includes(q) ||
+      (e.actor||'').toLowerCase().includes(q) ||
       e.action.toLowerCase().includes(q) ||
       e.type.toLowerCase().includes(q)
     );
@@ -37002,6 +38597,7 @@ function renderActivity() {
       const ac = isErr ? 'var(--red)' : (_LOG_ACTION_COLOR[evt.action] || tc.color);
       const title = _evtTitle(evt);
       const meta = [];
+      if (evt.actor) meta.push('<span style="color:var(--purple,#a78bfa)" title="who did this">by ' + escHtml(evt.actor) + '</span>');
       if (evt.session) meta.push('<span style="color:var(--accent)">' + escHtml(evt.session) + '</span>');
       if (evt.ip && evt.ip !== '127.0.0.1' && evt.ip !== '::1') meta.push(escHtml(evt.ip));
       if (isErr) meta.push('<span style="color:var(--red)">HTTP ' + evt.status + '</span>');
@@ -37447,7 +39043,11 @@ async function toggleSchedEnabled(id, enabled) {
   _peekRefreshSchedIfActive();
 }
 
+let _boardViewsLoaded = false;
 async function fetchBoard() {
+  // Saved views sync via /api/prefs so a view made on the desktop is on the
+  // phone. Fetched once, not on every board poll.
+  if (!_boardViewsLoaded) { _boardViewsLoaded = true; await _boardViewsLoad(); }
   try {
     const [r, rs, rsg] = await Promise.all([
       fetch(API + '/api/board'),
@@ -37470,7 +39070,7 @@ async function fetchBoard() {
     if (itemsChanged || statusesChanged) {
       lastBoardJSON = j;
       boardItems = data;
-      localStorage.setItem('amux_board_cache', j);
+      _cacheBoardJSON(j);
       renderBoard();
     }
   } catch(e) {
@@ -37616,9 +39216,248 @@ function _beTagKeydown(e, prefix) {
   }
 }
 
+// ── Board query language (Linear/Jira-style) ───────────────────────────────
+// A query is whitespace-separated terms. `key:value` is a filter; anything else
+// is free text matched against title/desc/id/session/tags. Prefix '-' to negate.
+// Comma-separate for OR *within* a key; keys AND across:
+//     status:doing,review -session:amux is:rotting "exact phrase"
+//
+// The `is:` facets are the point of this: they are DERIVED from live session
+// state, not stored on the card. A card cannot tell you its session went dark
+// 30 days ago — the join can. Nothing here writes; a view is a question.
+const _BQ_KEYS = ['status','session','owner','type','tag','id','is','updated','created','shepherd','creator'];
+
+function _bqParse(q) {
+  const terms = [], text = [];
+  // Split on whitespace but keep "quoted phrases" intact.
+  const parts = (q || '').match(/-?(?:[a-z_]+:)?"[^"]*"|\S+/gi) || [];
+  for (let raw of parts) {
+    let neg = false;
+    if (raw[0] === '-') { neg = true; raw = raw.slice(1); }
+    const m = raw.match(/^([a-z_]+):(.*)$/i);
+    if (m && _BQ_KEYS.includes(m[1].toLowerCase())) {
+      const vals = m[2].replace(/^"|"$/g, '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (vals.length) terms.push({ key: m[1].toLowerCase(), vals, neg });
+    } else {
+      const t = raw.replace(/^"|"$/g, '').toLowerCase();
+      if (t) text.push({ t, neg });
+    }
+  }
+  return { terms, text };
+}
+
+// Duration filters: updated:>7d  created:<3d  updated:>36h
+function _bqAgeMatch(vals, epochSecs) {
+  if (!epochSecs) return false;
+  const ageDays = (Date.now() / 1000 - (epochSecs > 1e11 ? epochSecs / 1000 : epochSecs)) / 86400;
+  return vals.some(v => {
+    const m = v.match(/^([<>])(\d+)([dhw])$/);
+    if (!m) return false;
+    const n = parseInt(m[2], 10) * (m[3] === 'h' ? 1 / 24 : m[3] === 'w' ? 7 : 1);
+    return m[1] === '>' ? ageDays > n : ageDays < n;
+  });
+}
+
+// Legacy/synonym statuses. Eight distinct values were in use — including
+// `in_review` alongside `review` and `resolved` alongside `done` — and the
+// column bucketer's fallback silently filed anything it did not recognise
+// under To Do. A card reading "resolved" displayed as "To Do" is a lie, and
+// the same fallback would swallow any future stray. Aliasing at read time
+// fixes the display without mutating rows another session owns; the server
+// normalises on write so new strays cannot accumulate.
+// Only true synonyms belong here. `blocked` is NOT an alias for `doing` — a
+// mapping that asserts something false is worse than an unrecognised status.
+const _STATUS_ALIAS = { in_review: 'review', inreview: 'review', 'in review': 'review',
+                        resolved: 'done', complete: 'done', completed: 'done', closed: 'done',
+                        wip: 'doing', in_progress: 'doing', inprogress: 'doing' };
+function _statusCanon(s) {
+  const k = String(s || 'todo').trim().toLowerCase();
+  return _STATUS_ALIAS[k] || k;
+}
+
+const _BQ_CLOSED = new Set(['done', 'verified', 'discarded']);
+const _BQ_ROT_DAYS = 7;
+
+// Session state indexed by name, so every card can be judged against the
+// session that owns it in O(1) rather than a scan per card per keystroke.
+function _bqSessionIndex() {
+  const ix = {};
+  (typeof sessions !== 'undefined' ? sessions : []).forEach(s => { ix[s.name] = s; });
+  return ix;
+}
+
+function _bqIs(item, val, ix) {
+  const st = _statusCanon(item.status);
+  const sess = item.session ? ix[item.session] : null;
+  const idleDays = sess && sess.last_activity
+    ? (Date.now() / 1000 - sess.last_activity) / 86400 : Infinity;
+  switch (val) {
+    case 'open':     return !_BQ_CLOSED.has(st);
+    case 'closed':   return _BQ_CLOSED.has(st);
+    case 'active':   return st === 'doing' || st === 'review';
+    case 'stale':    return !!item.stale;
+    // Rotting = claimed in-flight by a REAL session that has not moved in a
+    // week. Deliberately excludes ownerless cards: those are is:orphan, and
+    // folding them in here made "Rotting" mostly mean "unowned", which is a
+    // different problem with a different fix.
+    case 'rotting':  return (st === 'doing' || st === 'review') && !!sess && idleDays > _BQ_ROT_DAYS;
+    case 'working':  return !!sess && sess.status === 'active';
+    case 'waiting':  return !!sess && sess.status === 'waiting';
+    case 'gated':    return !!sess && !!(sess.credit_limited || sess.rate_limited_until);
+    case 'offline':  return !!item.session && (!sess || !sess.running);
+    case 'orphan':   return !item.session || !ix[item.session];
+    case 'pinned':   return !!item.pinned;
+    case 'overdue':  return !!item.due && (item.due * (item.due > 1e11 ? 0.001 : 1)) < Date.now() / 1000;
+    case 'folded':   return ((item.desc || '').match(/New task:/g) || []).length > 0;
+    default:         return false;
+  }
+}
+
+function _bqMatch(item, ast, ix) {
+  for (const { t, neg } of ast.text) {
+    const hit = (item.title || '').toLowerCase().includes(t)
+      || (item.desc || '').toLowerCase().includes(t)
+      || (item.id || '').toLowerCase().includes(t)
+      || (item.session || '').toLowerCase().includes(t)
+      || (item.tags || []).some(x => x.toLowerCase().includes(t));
+    if (hit === neg) return false;
+  }
+  for (const { key, vals, neg } of ast.terms) {
+    let hit;
+    switch (key) {
+      // Aliased both sides, so `status:resolved` and `status:done` both find a
+      // legacy `resolved` card rather than one of them silently missing it.
+      case 'status':   hit = vals.map(_statusCanon).includes(_statusCanon(item.status)); break;
+      case 'session':  hit = vals.includes('none') ? !item.session
+                             : vals.includes((item.session || '').toLowerCase()); break;
+      case 'shepherd': hit = vals.includes((item.shepherd || '').toLowerCase()); break;
+      case 'creator':  hit = vals.includes((item.creator || '').toLowerCase()); break;
+      case 'owner':    hit = vals.includes(item.owner_type === 'agent' ? 'agent' : 'human'); break;
+      case 'type':     hit = vals.includes((item.type || 'code').toLowerCase()); break;
+      case 'tag':      hit = (item.tags || []).some(t => vals.includes(t.toLowerCase())); break;
+      case 'id':       hit = vals.includes((item.id || '').toLowerCase()); break;
+      case 'is':       hit = vals.some(v => _bqIs(item, v, ix)); break;
+      case 'updated':  hit = _bqAgeMatch(vals, item.updated); break;
+      case 'created':  hit = _bqAgeMatch(vals, item.created); break;
+      default:         hit = true;
+    }
+    if (hit === neg) return false;
+  }
+  return true;
+}
+
+function _bqFilter(items, q) {
+  const s = (q || '').trim();
+  if (!s) return items;
+  const ast = _bqParse(s);
+  if (!ast.terms.length && !ast.text.length) return items;
+  const ix = _bqSessionIndex();
+  return items.filter(i => _bqMatch(i, ast, ix));
+}
+
+// ── Saved views ────────────────────────────────────────────────────────────
+// Built-ins answer the three questions you actually have when you open the
+// board: what is moving, what is stuck on me, what has rotted. They are code,
+// not data, so they cannot be deleted or drift. User views sync via /api/prefs
+// so a view saved on the desktop is there on the phone.
+const _BOARD_BUILTIN_VIEWS = [
+  { id: '_working',  name: 'Working now', q: 'is:working is:open',        hint: 'Cards whose session is running right now' },
+  { id: '_needsyou', name: 'Needs you',   q: 'is:waiting,gated is:open',  hint: 'Session is blocked at a prompt or a model gate' },
+  { id: '_rotting',  name: 'Rotting',     q: 'is:rotting',                hint: 'Claimed in-flight, session idle 7d+' },
+  { id: '_orphan',   name: 'Unowned',     q: 'is:orphan is:open',         hint: 'Open, but no session can execute it' },
+  { id: '_mine',     name: 'Mine',        q: 'owner:human is:open',       hint: 'Your own issues, not the agent cards' },
+];
+let _boardViews = [];        // user-saved: [{id,name,q}]
+let _boardActiveView = '';   // id of the applied view, '' = none
+
+function _boardViewsLoad() {
+  return fetch(API + '/api/prefs?key=board_views')
+    .then(r => r.json())
+    .then(d => {
+      try { _boardViews = JSON.parse(d.value || '[]') || []; } catch(e) { _boardViews = []; }
+      if (!Array.isArray(_boardViews)) _boardViews = [];
+    })
+    .catch(() => { _boardViews = []; });
+}
+function _boardViewsSave() {
+  return fetch(API + '/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'board_views', value: JSON.stringify(_boardViews) }) }).catch(() => {});
+}
+function _boardApplyView(id) {
+  const v = _BOARD_BUILTIN_VIEWS.concat(_boardViews).find(x => x.id === id);
+  _boardActiveView = (_boardActiveView === id) ? '' : id;   // tap again to clear
+  const box = document.getElementById('board-search');
+  const q = _boardActiveView ? (v ? v.q : '') : '';
+  if (box) box.value = q;
+  boardSearchQuery = q;
+  renderBoard();
+}
+async function _boardSaveCurrentView() {
+  const q = ((document.getElementById('board-search') || {}).value || '').trim();
+  if (!q) { showToast('Nothing to save — type a query first'); return; }
+  // Not window.prompt(): a blocking dialog in a PWA is a dead end on iOS.
+  const ok = await showFormModal('Save view',
+    '<input id="bv-name" class="search-input" type="text" placeholder="View name" maxlength="32" style="width:100%;box-sizing:border-box">'
+    + '<div style="margin-top:8px;font-size:0.74rem;color:var(--dim);word-break:break-all"><code>' + esc(q) + '</code></div>');
+  const name = ((document.getElementById('bv-name') || {}).value || '').trim();
+  if (!ok || !name) return;
+  _boardViews.push({ id: 'v' + Date.now().toString(36), name: name.slice(0, 32), q });
+  await _boardViewsSave();
+  renderBoard();
+  showToast('View saved');
+}
+function _boardDeleteView(id, ev) {
+  if (ev) ev.stopPropagation();
+  _boardViews = _boardViews.filter(v => v.id !== id);
+  if (_boardActiveView === id) { _boardActiveView = ''; boardSearchQuery = '';
+    const b = document.getElementById('board-search'); if (b) b.value = ''; }
+  _boardViewsSave().then(renderBoard);
+}
+// Live count per view, so a chip reads "Rotting 43" and you can see the shape
+// of the fleet without applying anything.
+function _boardViewCount(q) {
+  try { return _bqFilter(boardItems.filter(i => !i.deleted), q).length; } catch(e) { return 0; }
+}
+function _boardRenderViews() {
+  const el = document.getElementById('board-views');
+  if (!el) return;
+  let h = '';
+  _BOARD_BUILTIN_VIEWS.forEach(v => {
+    const n = _boardViewCount(v.q);
+    const on = _boardActiveView === v.id;
+    h += '<button class="board-view-chip' + (on ? ' active' : '') + (n ? '' : ' empty') + '"'
+      +  ' title="' + esc(v.hint) + ' — ' + esc(v.q) + '"'
+      +  ' onclick="_boardApplyView(\'' + v.id + '\')">' + esc(v.name)
+      +  (n ? '<span class="bvc-n">' + n + '</span>' : '') + '</button>';
+  });
+  _boardViews.forEach(v => {
+    const n = _boardViewCount(v.q);
+    const on = _boardActiveView === v.id;
+    h += '<button class="board-view-chip saved' + (on ? ' active' : '') + '"'
+      +  ' title="' + esc(v.q) + '" onclick="_boardApplyView(\'' + v.id + '\')">' + esc(v.name)
+      +  (n ? '<span class="bvc-n">' + n + '</span>' : '')
+      +  '<span class="bvc-x" onclick="_boardDeleteView(\'' + v.id + '\',event)" title="Delete view">&#x2715;</span></button>';
+  });
+  h += '<button class="board-view-chip add" onclick="_boardSaveCurrentView()" title="Save the current query as a view">+ Save view</button>';
+  h += '<button class="board-view-chip add" onclick="_boardQueryHelp()" title="Query syntax">?</button>';
+  el.innerHTML = h;
+}
+function _boardQueryHelp() {
+  showFormModal('Board query syntax',
+    '<div style="font-size:0.8rem;line-height:1.6">'
+    + '<p style="margin:0 0 8px;color:var(--dim)">Terms are AND-ed. Comma-separate to OR within a key. Prefix <code>-</code> to negate. Quote phrases.</p>'
+    + '<p style="margin:0 0 4px"><b>Fields</b><br><code>status: session: owner: type: tag: id: shepherd: creator:</code></p>'
+    + '<p style="margin:0 0 4px"><b>Derived</b> (joined against live session state)<br>'
+    + '<code>is:open is:closed is:stale is:rotting is:working is:waiting is:gated is:offline is:orphan is:pinned is:overdue is:folded</code></p>'
+    + '<p style="margin:0 0 4px"><b>Age</b><br><code>updated:&gt;7d created:&lt;3d updated:&gt;36h</code></p>'
+    + '<p style="margin:8px 0 0;color:var(--dim)">Example: <code>status:doing -session:none updated:&gt;14d</code></p>'
+    + '</div>', 'Close');
+}
+
 function renderBoardFilters() {
   const el = document.getElementById('board-filters');
   if (!el) return;
+  _boardRenderViews();
   const allTags = [...new Set(boardItems.flatMap(i => i.tags || []))].sort();
   const allSessions = [...new Set(boardItems.map(i => i.session).filter(Boolean))].sort();
   let html = '';
@@ -37852,19 +39691,20 @@ function renderBoard() {
   if (boH) boH.classList.toggle('active', boardOwnerFilter === 'human');
   if (boA) boA.classList.toggle('active', boardOwnerFilter === 'agent');
 
-  let visible = boardItems.filter(i => boardOwnerFilter === 'agent' ? i.owner_type === 'agent' : i.owner_type !== 'agent');
+  // A non-empty query REPLACES the Human/Sessions toggle rather than stacking
+  // with it. Stacking made the chip counts lie: "Rotting 5" rendered 0 cards,
+  // because all 5 are agent-owned and the toggle defaults to Human. The count
+  // is computed over the same unfiltered set, so a chip that says 5 must show
+  // 5. The toggle is the browse default; the query is the filter.
+  const _qActive = !!(boardSearchQuery || '').trim();
+  let visible = _qActive ? boardItems.slice()
+    : boardItems.filter(i => boardOwnerFilter === 'agent' ? i.owner_type === 'agent' : i.owner_type !== 'agent');
   if (boardFilterTag) visible = visible.filter(i => (i.tags || []).includes(boardFilterTag));
   if (boardFilterSession) visible = visible.filter(i => i.session === boardFilterSession);
-  if (boardSearchQuery) {
-    const q = boardSearchQuery;
-    visible = visible.filter(i =>
-      (i.title || '').toLowerCase().includes(q) ||
-      (i.desc || '').toLowerCase().includes(q) ||
-      (i.id || '').toLowerCase().includes(q) ||
-      (i.session || '').toLowerCase().includes(q) ||
-      (i.tags || []).some(t => t.toLowerCase().includes(q))
-    );
-  }
+  // Structured query: key:value facets, -negation, quoted phrases, and is:
+  // facets derived from live session state. Bare words still substring-match,
+  // so the old search behaviour is a strict subset of this.
+  visible = _bqFilter(visible, boardSearchQuery);
 
   if (boardViewMode === 'session') {
     container.classList.remove('board-columns');
@@ -37879,7 +39719,7 @@ function renderBoard() {
   const cols = {};
   boardStatuses.forEach(s => { cols[s.id] = []; });
   visible.forEach(item => {
-    const s = item.status || 'todo';
+    const s = _statusCanon(item.status);
     if (cols[s] !== undefined) cols[s].push(item);
     else { cols['todo'] = cols['todo'] || []; cols['todo'].push(item); }
   });
@@ -38581,7 +40421,7 @@ async function boardDetailDelete() {
 
 function saveBoardCache() {
   lastBoardJSON = JSON.stringify(boardItems);
-  localStorage.setItem('amux_board_cache', lastBoardJSON);
+  _cacheBoardJSON(lastBoardJSON);
 }
 
 async function addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime, gate) {
@@ -40246,6 +42086,15 @@ if (_cachedInit) {
   try { sessions = JSON.parse(_cachedInit); } catch(e) {}
 }
 // Load cached board from localStorage (fast, synchronous)
+// The board payload is multi-MB (3.16MB measured) and localStorage caps around
+// 5MB. An unguarded setItem threw QuotaExceededError that propagated out and
+// killed the SSE parse and the board fetch wrapping it — observed live in the
+// console. The cache is an optimisation: a failed write must be silent, drop
+// the stale entry, and never poison the caller.
+function _cacheBoardJSON(j) {
+  try { _cacheBoardJSON(j); }
+  catch (e) { try { localStorage.removeItem('amux_board_cache'); } catch (e2) {} }
+}
 const _cachedBoard = localStorage.getItem('amux_board_cache');
 if (_cachedBoard) {
   try { boardItems = JSON.parse(_cachedBoard); lastBoardJSON = _cachedBoard; } catch(e) {}
@@ -40353,6 +42202,41 @@ const _idb = (() => {
       cur.onerror = () => resolve(removed);
     })).catch(() => 0),
     clearFiles: () => _txw('files', os => os.clear()),
+    // Total bytes held in the files store, and a FIFO trim to a byte budget.
+    // Age-based pruning alone cannot bound SIZE: one 25MB file opened yesterday
+    // survives a 30-day cutoff, and a phone can fill up long before anything
+    // ages out. Eviction is oldest-LAST-OPENED first, so the files you actually
+    // read on the phone are the ones that survive.
+    filesBytes: () => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readonly');
+      const cur = tx.objectStore('files').openCursor();
+      let total = 0;
+      cur.onsuccess = (e) => {
+        const c = e.target.result;
+        if (c) { total += _idbEntryBytes(c.value); c.continue(); } else resolve(total);
+      };
+      cur.onerror = () => resolve(total);
+    })).catch(() => 0),
+    trimFilesToBytes: (budget) => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readwrite');
+      const req = tx.objectStore('files').getAll();
+      req.onsuccess = () => {
+        const rows = (req.result || []).map(r => ({ path: r.path, ts: r.ts || 0, b: _idbEntryBytes(r) }));
+        let total = rows.reduce((a, r) => a + r.b, 0);
+        if (total <= budget) { resolve({ removed: 0, bytes: total }); return; }
+        rows.sort((a, b) => a.ts - b.ts);          // oldest-opened first
+        const tx2 = d.transaction('files', 'readwrite');
+        const os2 = tx2.objectStore('files');
+        let removed = 0;
+        for (const r of rows) {
+          if (total <= budget) break;
+          os2.delete(r.path); total -= r.b; removed++;
+        }
+        tx2.oncomplete = () => resolve({ removed, bytes: total });
+        tx2.onerror = () => resolve({ removed, bytes: total });
+      };
+      req.onerror = () => resolve({ removed: 0, bytes: 0 });
+    })).catch(() => ({ removed: 0, bytes: 0 })),
     // Paths of files (not dir listings) cached on THIS device — for the
     // "downloaded" indicator in the directory view.
     cachedFilePaths: () => open().then(d => new Promise((resolve) => {
@@ -40388,6 +42272,8 @@ const _idb = (() => {
 })();
 
 // Expire offline-cached files not opened in the last 30 days (LRU by last-open ts).
+_offlineMBLoad().then(() => _idb.trimFilesToBytes(_offlineMB * 1024 * 1024)).catch(() => {});
+_offlineCapLoad().catch(() => {});
 _idb.pruneFiles(_FILE_CACHE_TTL_MS).then(n => {
   if (n) console.log('[files] evicted ' + n + ' offline file(s) not opened in 30 days');
 });
@@ -40408,7 +42294,7 @@ if (!boardItems.length) {
       boardItems = items.filter(i => !i.deleted);
       const j = JSON.stringify(boardItems);
       lastBoardJSON = j;
-      localStorage.setItem('amux_board_cache', j);
+      _cacheBoardJSON(j);
       if (activeView === 'board') renderBoard();
       else if (activeView === 'calendar') renderCalendar();
     }
@@ -40436,7 +42322,7 @@ async function _runDeltaSync() {
       });
       const j = JSON.stringify(boardItems);
       lastBoardJSON = j;
-      localStorage.setItem('amux_board_cache', j);
+      _cacheBoardJSON(j);
       _idb.applyIssueDelta(data.issues);
     }
     if (data.statuses && data.statuses.length) {
@@ -40506,7 +42392,7 @@ function connectSSE() {
         if (j !== lastBoardJSON) {
           lastBoardJSON = j;
           boardItems = msg.payload;
-          localStorage.setItem('amux_board_cache', j);
+          _cacheBoardJSON(j);
           // Mirror to IDB for full offline durability (iOS-safe)
           _idb.applyIssueDelta(msg.payload);
           _idb.set('last_sync_ts', Math.floor(Date.now() / 1000));
@@ -40702,6 +42588,40 @@ window.addEventListener('resize', _chromeUpdateOffsets);
 window.addEventListener('orientationchange', () => setTimeout(_chromeUpdateOffsets, 100));
 
 // Register service worker for offline asset caching
+// ── Offline capability diagnostics ─────────────────────────────────────────
+let _swFailure = null;
+// Ask the server which origin can actually host a service worker, then say so
+// in plain language. Silence here is what produced "offline mode still doesn't
+// work" with no way to find out why: the PWA had been installed from an origin
+// whose self-signed cert makes SW registration impossible, so it could never
+// cache, and on a cellular connection that origin is not even reachable.
+async function _swOfferGoodOrigin() {
+  let info = null;
+  try { info = await (await fetch(API + '/api/offline-origin')).json(); } catch(e) {}
+  const here = location.origin;
+  const good = info && info.good_origin;
+  const bar = document.createElement('div');
+  bar.id = 'sw-fail-bar';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;'
+    + 'background:#7a2d2d;color:#fff;font-size:0.78rem;line-height:1.45;'
+    + 'padding:12px 14px calc(12px + env(safe-area-inset-bottom));'
+    + 'display:flex;gap:10px;align-items:flex-start;';
+  const msg = (good && good !== here)
+    ? 'Offline mode is OFF. This PWA was installed from <b>' + esc(here) + '</b>, whose '
+      + 'self-signed certificate blocks the service worker — so nothing can be cached, '
+      + 'and on cellular this address is unreachable. Open <b>' + esc(good) + '</b> and '
+      + 're-add it to your home screen.'
+    : 'Offline mode is OFF — the service worker could not install'
+      + (info && info.why ? ': ' + esc(info.why) : '.');
+  bar.innerHTML = '<div style="flex:1;min-width:0;">' + msg + '</div>'
+    + (good && good !== here
+        ? '<button onclick="location.href=' + JSON.stringify(good) + '" style="flex-shrink:0;min-height:44px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.5);background:transparent;color:#fff;font-weight:600;cursor:pointer;">Open</button>'
+        : '')
+    + '<button onclick="this.parentNode.remove()" style="flex-shrink:0;min-height:44px;min-width:44px;border:none;background:transparent;color:#fff;font-size:1.1rem;cursor:pointer;">&#215;</button>';
+  const attach = () => document.body && document.body.appendChild(bar);
+  if (document.body) attach(); else document.addEventListener('DOMContentLoaded', attach);
+}
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(reg => {
     // Store full page HTML in localStorage as fallback if iOS evicts SW cache
@@ -40726,7 +42646,22 @@ if ('serviceWorker' in navigator) {
     } catch (e) {}
     location.reload();
   });
-  }).catch(() => {});
+  }).catch(err => {
+    // NEVER swallow this. A failed registration is the difference between a
+    // working PWA and a BLANK SCREEN offline, and it used to fail silently:
+    // no SW, no cache, nothing to serve a cold offline navigation, and no
+    // indication anything was wrong.
+    //
+    // The usual cause is TLS. A browser refuses to fetch /sw.js over a
+    // self-signed certificate even though localhost/LAN counts as a secure
+    // context — so amux reached at https://localhost:8822 or a raw LAN IP can
+    // NEVER cache anything, while the same server reached at its Tailscale
+    // hostname (real Let's Encrypt cert) works fully.
+    _swFailure = { name: err && err.name, message: String(err && err.message || err) };
+    try { localStorage.setItem('amux_sw_error', JSON.stringify(_swFailure)); } catch(e) {}
+    console.warn('[amux] service worker registration FAILED — offline mode is unavailable:', err);
+    _swOfferGoodOrigin();
+  });
 
   // A PWA kept in the foreground never re-checks the SW, so it can run stale
   // code for days. Nudge an update check on every foreground/network return
@@ -40764,6 +42699,15 @@ _idb.get('drafts').then(val => {
     render();
   }
 });
+// Offline peek cache: load the index at boot so cached badges paint immediately,
+// then top up on a good link. Re-syncs are ~free (304s), so this is cheap.
+_peekIndexLoad().then(() => {
+  try { render(); } catch(e) {}
+  setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 8000);
+});
+setInterval(() => { try { _offlinePrefetch(false); } catch(e) {} }, 10 * 60 * 1000);
+window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 4000));
+
 _idb.get('offline_queue').then(val => {
   if (val && !offlineQueue.length && val.length) {
     offlineQueue = val;
@@ -41406,11 +43350,72 @@ function switchServer(idx) {
 }
 
 // ═══════ SETTINGS DROPDOWN ═══════
+// Trimming on every file write would run a full-store scan per open. Throttled
+// to once per 20s — the budget is a bound on growth, not a hard real-time gate.
+let _offlineTrimAt = 0;
+async function _offlineBudgetEnforce() {
+  const now = Date.now();
+  if (now - _offlineTrimAt < 20000) return;
+  _offlineTrimAt = now;
+  try { await _idb.trimFilesToBytes(_offlineMB * 1024 * 1024); } catch(e) {}
+  _offlineInfoRefresh();
+}
+// Byte formatting uses the shared _fmtBytes defined below.
+async function _offlineInfoRefresh() {
+  const el = document.getElementById('offline-cache-info');
+  if (!el) return;
+  const { n, kb } = _offlineCacheInfo();
+  const running = (sessions || []).filter(s => s.running).length;
+  // cacheStats() counts FILES only (not dir listings) and is the same number
+  // the purge UI reports, so the two cannot disagree. filesBytes() stays for the
+  // budget trim, which must account for dir listings too since they take space.
+  let fc = { count: 0, bytes: 0 };
+  try { fc = await _idb.cacheStats(); } catch(e) {}
+  let totalBytes = kb * 1024;
+  try { totalBytes = kb * 1024 + await _idb.filesBytes(); } catch(e) { totalBytes = kb * 1024 + fc.bytes; }
+  const budget = _offlineMB * 1048576;
+  const pct = Math.min(100, Math.round(100 * totalBytes / Math.max(1, budget)));
+  // Say what populates the file cache when it is empty, so 0 reads as "nothing
+  // opened here yet" rather than "this is broken".
+  const filesTxt = fc.count
+    ? `${fc.count} file${fc.count === 1 ? '' : 's'} · ${_fmtBytes(fc.bytes)}`
+    : 'no files yet — files you open are saved automatically';
+  el.innerHTML =
+    `<b>${n}</b> of ${running} running sessions saved (${_fmtBytes(kb * 1024)})<br>`
+    + `Files: ${filesTxt}<br>`
+    + `<span style="display:inline-block;width:100%;height:4px;background:rgba(139,148,158,0.25);border-radius:2px;margin:4px 0;">`
+    + `<span style="display:block;width:${pct}%;height:100%;background:${pct>90?'#f85149':'var(--accent)'};border-radius:2px;"></span></span>`
+    + `${_fmtBytes(totalBytes)} of ${_offlineMB} MB used (${pct}%). Oldest-opened evicted first.`;
+}
+// Settings controls for the offline caps. Both persist to /api/prefs, so the
+// limits follow you to every device instead of each phone keeping its own.
+function _offlineSettingsHTML() {
+  const mb = _OFFLINE_MB_CHOICES.map(v =>
+    `<option value="${v}"${v === _offlineMB ? ' selected' : ''}>${v >= 1000 ? (v/1000)+' GB' : v+' MB'}</option>`).join('');
+  const cap = _OFFLINE_CAP_CHOICES.map(v =>
+    `<option value="${v}"${v === _offlineCap ? ' selected' : ''}>${v} sessions</option>`).join('');
+  const sel = 'min-height:44px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);'
+            + 'border-radius:6px;color:var(--text);font-size:0.82rem;';
+  return '<div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">'
+    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:0.78rem;color:var(--dim);">`
+    + `Storage limit<select style="${sel}" onchange="_offlineMBSet(this.value)">${mb}</select></label>`
+    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:0.78rem;color:var(--dim);">`
+    + `Scrollback limit<select style="${sel}" onchange="_offlineCapSet(this.value)">${cap}</select></label>`
+    + '</div>';
+}
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
   const open = menu.classList.toggle('open');
   if (open) {
+    // Load the server-saved caps before painting, so the selects show the real
+    // values rather than defaults that then silently change under the user.
+    Promise.all([_offlineMBLoad(), _offlineCapLoad()]).then(() => {
+      const host = document.getElementById('offline-cache-settings');
+      if (host) host.innerHTML = _offlineSettingsHTML();
+      _offlineInfoRefresh();
+    }).catch(() => {});
     _renderInstanceSwitcher();
+    _loadCloudPlan();
     loadDefaultModel();
     const zd = document.getElementById('zoom-level-display');
     if (zd) zd.textContent = _zoomLevel + '%';
@@ -41966,12 +43971,26 @@ toggleSettings = function() {
 // Deep-link: #path=/some/path (or ?path= for backwards compat)
 // Hash-based routing works in PWA mode — SW never strips fragments, no iOS query-param loss
 async function _handleDeeplink(hash) {
-  // #peek=<session> — open a session's peek directly (shareable links; also
-  // lets headless/simulator test rigs land in a peek without tap automation).
+  // #peek=<session>[&tab=<tab>] — open a session's peek directly, optionally on
+  // a specific tab (shareable links; also lets headless/simulator test rigs land
+  // exactly where they need to without tap automation, which is how the PWA gets
+  // verified on a real iOS WebKit rather than a desktop approximation).
   if (hash && hash.startsWith('#peek=')) {
-    const target = decodeURIComponent(hash.slice(6));
+    const raw = hash.slice(6);
+    const amp = raw.indexOf('&');
+    const target = decodeURIComponent(amp < 0 ? raw : raw.slice(0, amp));
+    let tab = '';
+    if (amp >= 0) {
+      const m = raw.slice(amp + 1).match(/(?:^|&)tab=([^&]+)/);
+      if (m) tab = decodeURIComponent(m[1]);
+    }
     const tryOpen = (attempt) => {
-      if (typeof sessions !== 'undefined' && sessions.some(s => s.name === target)) { openPeek(target); return; }
+      if (typeof sessions !== 'undefined' && sessions.some(s => s.name === target)) {
+        openPeek(target);
+        // Let openPeek finish its own async setup before switching tabs.
+        if (tab) setTimeout(() => { try { setPeekTab(tab); } catch(e) {} }, 350);
+        return;
+      }
       if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
     };
     tryOpen(0);
@@ -43268,7 +45287,9 @@ function _playVideoUrl(url, title) {
   // MKV/AVI can't play natively — prepare a seekable MP4 server-side and play
   // that. The old live-transcode pipe (no Content-Length, no ranges) never
   // starts on iOS AVPlayer; a prepared cached mp4 streams + seeks everywhere.
-  const ext = url.split('?')[0].split('.').pop().toLowerCase();
+  // Extract extension from the path query param (url is /api/file/raw?path=..., not the filename).
+  const _vpSrcPath = (() => { try { return new URL(url, location.origin).searchParams.get('path') || url; } catch(e) { return url; } })();
+  const ext = _vpSrcPath.split('.').pop().toLowerCase();
   const needsTranscode = ['mkv', 'avi'].includes(ext);
   v._vpUrl = url;
   if (needsTranscode) {
@@ -43764,8 +45785,18 @@ let _msgsDone = false;
 async function _messagesLoad(reset, presetSession) {
   if (reset !== false) { _msgsData = []; _msgsOffset = 0; _msgsDone = false; }
   try {
-    const r = await fetch(API + '/api/history?limit=' + _MSGS_PAGE + '&offset=' + _msgsOffset);
+    // Kind-scoped at the SERVER. Filtering a mixed page client-side is what
+    // showed 48 human messages out of 6547 — the human rows never made it into
+    // the window. ?counts=1 supplies true per-kind totals for the chips, which
+    // a tally of the fetched page cannot (every unselected chip would read 0).
+    const _sf = document.getElementById('msgs-session-filter')?.value || '';
+    let _u = API + '/api/history?limit=' + _MSGS_PAGE + '&offset=' + _msgsOffset;
+    if (_msgsKind !== 'all') _u += '&kind=' + encodeURIComponent(_msgsKind);
+    if (_sf) _u += '&session=' + encodeURIComponent(_sf);
+    const r = await fetch(_u);
     const rows = await r.json();
+    fetch(API + '/api/history?counts=1' + (_sf ? '&session=' + encodeURIComponent(_sf) : ''))
+      .then(x => x.json()).then(c => { _msgsCounts = c; _msgsRenderChips(); }).catch(() => {});
     if (!Array.isArray(rows)) return;
     _msgsData = _msgsData.concat(rows);
     _msgsOffset += rows.length;
@@ -43807,26 +45838,70 @@ function _msgLocate(session, encText) {
   openPeek(session, { query: snippet });
 }
 
+// Same three kinds, same order, same chip class as the peek Messages tab and
+// the history modal — one definition so the three surfaces cannot drift.
+// Defaults to human for the same reason: on a busy fleet, inter-session and
+// scheduler traffic outnumber what you typed by roughly 3:1 and bury it.
+let _msgsKind = 'human';        // all | human | session | schedule
+let _msgsCounts = null;         // true per-kind totals from the server
+function _msgsSetKind(k) {
+  _msgsKind = k;
+  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+}
+function _msgsRenderChips() {
+  const bar = document.getElementById('msgs-kind-filter');
+  if (!bar) return;
+  const c = _msgsCounts || { all: _msgsData.length, human: 0, session: 0, schedule: 0 };
+  if (!_msgsCounts) _msgsData.forEach(m => { c[_msgKind(m)] = (c[_msgKind(m)] || 0) + 1; });
+  const chips = [['all', 'All']].concat(_MSG_KIND_ORDER.map(k => [k, _MSG_KIND[k].label]));
+  const refresh = '<button class="btn" onclick="_messagesLoad(true)" title="Refresh" '
+    + 'style="font-size:0.78rem;padding:5px 10px;min-height:44px;flex:0 0 auto;">\u21BB</button>';
+  bar.innerHTML = refresh + chips.map(([k, lbl]) => {
+    const on = _msgsKind === k;
+    const km = _MSG_KIND[k];
+    const col = km ? km.color : 'var(--accent)';
+    return '<button class="msg-kind-chip" onclick="_msgsSetKind(\'' + k + '\')" style="'
+      + 'border:1px solid ' + (on ? col : 'var(--border)') + ';'
+      + 'background:' + (on ? (km ? km.bg : 'rgba(88,166,255,0.14)') : 'transparent') + ';'
+      + 'color:' + (on ? col : 'var(--dim)') + ';">' + lbl + ' ' + (c[k] || 0) + '</button>';
+  }).join('');
+}
+
 function _messagesRender() {
   const list = document.getElementById('msgs-list');
   if (!list) return;
   const q = (document.getElementById('msgs-search')?.value || '').trim().toLowerCase();
   const sessF = document.getElementById('msgs-session-filter')?.value || '';
+  _msgsRenderChips();
   let rows = _msgsData;
   if (sessF) rows = rows.filter(m => (m.session || '') === sessF);
+  // No client-side kind filter: the fetch is already kind-scoped, so the page
+  // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
+  // handful — the same crowding that showed 48 human messages out of 6547.
+  if (_msgsKind !== 'all') rows = rows.filter(m => _msgKind(m) === _msgsKind);
   if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q) || (m.session || '').toLowerCase().includes(q));
   const count = document.getElementById('msgs-count');
   if (count) count.textContent = rows.length + ' message' + (rows.length === 1 ? '' : 's') + (_msgsDone ? '' : ' (more available)');
   const more = document.getElementById('msgs-more-btn');
   if (more) more.style.display = _msgsDone ? 'none' : '';
   if (!rows.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">' + (q || sessF ? 'No matches.' : 'No messages yet.') + '</div>';
+    const kl = (_MSG_KIND[_msgsKind] || {}).label;
+    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">'
+      + (q ? 'No matches.'
+           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (sessF ? ' for ' + esc(sessF) : '') + '.'
+                : (sessF ? 'No messages for ' + esc(sessF) + '.' : 'No messages yet.')) + '</div>';
     return;
   }
   list.innerHTML = rows.map(m => {
     const enc = encodeURIComponent(m.text || '').replace(/'/g, '%27');
     const sess = m.session || '';
-    const tag = m.type === 'steering' ? '<span class="msg-tag steering">queued</span>' : '';
+    // Was queued-only, so a session or scheduled message carried no marker at
+    // all here. Same badge the other two surfaces show.
+    const _k = _msgKind(m), _km = _MSG_KIND[_k] || _MSG_KIND.human;
+    const _sfx = _k === 'human' ? (_msgQueued(m) ? ' \u00B7 queued' : ' \u00B7 direct')
+                                : (m.origin ? ' \u00B7 ' + esc(String(m.origin).slice(0, 26)) : '');
+    const tag = '<span class="msg-tag" style="background:' + _km.bg + ';color:' + _km.color
+      + ';font-weight:600;border-left:3px solid ' + _km.color + ';">' + _km.label + _sfx + '</span>';
     return '<div class="msg-row" onclick="_msgOpenInsert(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open ' + esc(sess) + ' with this message in the composer">' +
       '<div class="msg-main">' +
         '<div class="msg-meta">' +
@@ -46480,10 +48555,14 @@ let _bwShotInFlight = false;   // debounce: skip a screenshot while one is runni
 let _bwAgentCtl = null;        // AbortController for the running agent task
 
 async function _bwInit() {
-  if (!_bwInited) {
-    _bwInited = true;
-    await _bwLoadProfiles();
-  }
+  // Reload the profile list on EVERY switch to the tab, not once per page load.
+  // The old one-shot guard set _bwInited before the fetch resolved and swallowed
+  // its failure, so a call that lost a race during startup ("Failed to fetch")
+  // left the picker permanently empty with no retry — the API had 38 profiles
+  // and the dropdown showed only "Auto profile". It is one small GET; a stale
+  // picker costs far more than re-fetching it.
+  _bwInited = true;
+  await _bwLoadProfiles();
 }
 
 async function _bwLoadProfiles() {
@@ -46773,6 +48852,39 @@ async function _bwClearInspect() {
 }
 
 // ── Save profile: register current site to a profile (deliverable #1 UI) ──
+// Create a named profile and open a REAL headed window on it to sign in.
+// Scripted login is not a general solution: recreation.gov answers
+// /api/accounts/login/v2/ with {"error":"additional challenge required"} and a
+// reCAPTCHA — many sites do. A human completing the challenge once in a real
+// window is the only thing that works, and closing the window is what flushes
+// the session to the profile for the API to reuse.
+async function _bwNewProfile() {
+  const url = (document.getElementById('bw-url').value || '').trim();
+  const suggested = (() => {
+    try { return new URL(url).hostname.replace(/^www\./,'').split('.')[0]; } catch(e) { return ''; }
+  })();
+  const ok = await showFormModal('New browser profile',
+    '<input id="bwp-name" class="bw-in" style="width:100%;box-sizing:border-box" placeholder="Profile name (e.g. recreation-gov)" value="' + esc(suggested) + '">'
+    + '<input id="bwp-url" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:8px" placeholder="Sign-in URL" value="' + esc(url) + '">'
+    + '<div style="margin-top:10px;font-size:0.76rem;color:var(--dim);line-height:1.5">'
+    + 'A real browser window opens. Sign in there — including any CAPTCHA or 2FA — then <b>close the window</b>. '
+    + 'Closing is what saves the session. The profile is then usable from the browser API.</div>', 'Open sign-in');
+  const name = (document.getElementById('bwp-name') || {}).value || '';
+  const surl = (document.getElementById('bwp-url') || {}).value || '';
+  if (!ok || !name.trim()) return;
+  try {
+    const r = await fetch('/api/browser/profile/create', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), url: surl.trim() }) });
+    const d = await r.json();
+    if (d.error) { showToast('Profile: ' + d.error); return; }
+    showToast('Signing-in window open — close it when done');
+    await _bwLoadProfiles();
+    const sel = document.getElementById('bw-profile');
+    if (sel) sel.value = d.profile;
+  } catch(e) { showToast('Could not create profile'); }
+}
+
 async function _bwSaveProfile() {
   const suggested = _bwActiveProfile || '';
   const name = prompt('Register the current site to which profile?\n(Logging in under this profile persists automatically.)', suggested);
@@ -47424,7 +49536,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.199';
+const CACHE = 'amux-v0.9.226';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -47500,18 +49612,31 @@ self.addEventListener('fetch', e => {
   // Hash fragments (#path=...) are client-side only — SW sees bare '/' regardless
   if (url.pathname === '/') {
     const canonical = new Request('/', { headers: { 'Accept': 'text/html' } });
+    // STALE-WHILE-REVALIDATE, not network-first. The shell is ~1.6MB of inline
+    // HTML/CSS/JS; network-first meant every single load blocked on that full
+    // download before rendering a pixel, even holding a byte-identical cached
+    // copy — measured transferSize 1679111 on a WARM load, which is what
+    // produced a "Loading amux..." wait on a local app.
+    //
+    // Cached shell is served IMMEDIATELY and the update is fetched in the
+    // background. Staleness is bounded: CACHE is versioned with APP_VER, so a
+    // real deploy installs a new SW, whose activate wipes the old cache and
+    // whose install re-fetches '/' fresh, then controllerchange reloads. The
+    // worst case is being one load behind within a single version.
     e.respondWith(
-      fetch(canonical).then(response => {
-        const clone = response.clone();
-        if (response.ok) caches.open(CACHE).then(c => c.put(canonical, clone));
-        return response;
-      }).catch(() =>
-        caches.open(CACHE).then(c => c.match(canonical)).then(cached =>
-          cached || new Response('Offline — please reload when connected', {
-            status: 503, headers: { 'Content-Type': 'text/plain' }
-          })
-        )
-      )
+      caches.open(CACHE).then(c => c.match(canonical).then(cached => {
+        const net = fetch(canonical).then(response => {
+          if (response.ok) c.put(canonical, response.clone());
+          return response;
+        }).catch(() => null);
+        if (cached) {
+          e.waitUntil(net);   // keep the SW alive for the background refresh
+          return cached;
+        }
+        return net.then(r => r || new Response('Offline — please reload when connected', {
+          status: 503, headers: { 'Content-Type': 'text/plain' }
+        }));
+      }))
     );
     return;
   }
@@ -48249,7 +50374,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     session  = tl.get("session", session)
                     detail   = tl.get("detail",  "")
                     _req_tl.event = None
-                _emit_http_event(etype, action, target, session, detail, self._resp_status, ip)
+                # Attribution: which principal acted. An agent session's verified
+                # header wins; a cloud human is the gateway-stamped email. Never
+                # trust body claims here (AMUX-1768 provenance principle).
+                actor = (self.headers.get("X-Amux-Session", "").strip()
+                         or self.headers.get("X-Amux-User-Email", "").strip())
+                _emit_http_event(etype, action, target, session, detail, self._resp_status, ip, actor)
 
     def _check_auth(self, method: str, path: str) -> bool:
         """Return True if request is authorized. Sends 401 and returns False if not."""
@@ -49742,6 +51872,32 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 400)
 
+        # GET /api/offline-origin — which origin can actually run a service
+        # worker. A browser refuses to fetch /sw.js over a self-signed cert, so
+        # amux reached at https://localhost:8822 or a raw LAN IP can never cache
+        # anything and goes BLANK offline; the same server at its Tailscale
+        # hostname has a real Let's Encrypt cert and works fully. The client
+        # cannot determine this itself — only the server knows which cert it is
+        # actually serving — so it asks.
+        if method == "GET" and path == "/api/offline-origin":
+            ts = ""
+            try:
+                ts = _get_tailscale_hostname()
+            except Exception:
+                ts = ""
+            good = f"https://{ts}:{_AMUX_SELF_PORT}" if ts else ""
+            return self._json({
+                "tailscale_hostname": ts,
+                "good_origin": good,
+                "trusted_cert": bool(ts),
+                "why": ("Service workers refuse to install over a self-signed certificate. "
+                        "Install the PWA from this origin so offline mode can cache."
+                        if good else
+                        "No Tailscale hostname found, so amux only has a self-signed cert. "
+                        "Service workers will not install and offline mode cannot work. "
+                        "Install Tailscale, or run `mkcert` and restart amux."),
+            })
+
         # GET /api/prefs — read all prefs (or ?key=X for one)
         if method == "GET" and path == "/api/prefs":
             key = qs.get("key", [""])[0]
@@ -49814,16 +51970,60 @@ class CCHandler(BaseHTTPRequestHandler):
                 limit = int(qs.get("limit", ["500"])[0])
                 offset = int(qs.get("offset", ["0"])[0])
                 session = qs.get("session", [""])[0]
+                # ?kind=human|session|schedule (comma-separated). Filtering is
+                # done here rather than client-side so the kind means the same
+                # thing to every consumer — the CLI, a future digest, and the
+                # dashboard all read one definition instead of re-deriving it.
+                want = [k.strip().lower() for k in (qs.get("kind", [""])[0] or "").split(",") if k.strip()]
+                want = [k for k in want if k in _MSG_KINDS]
                 db = get_db()
+                # ?counts=1 → totals per kind (respecting ?session=), ignoring
+                # limit. The UI fetches a kind-filtered WINDOW for the list but
+                # must label its chips with true totals; counting the window
+                # would make every unselected chip read 0.
+                if qs.get("counts"):
+                    if session:
+                        rows = db.execute("SELECT type, COUNT(*) c FROM cmd_history WHERE session=? GROUP BY type",
+                                          (session,)).fetchall()
+                    else:
+                        rows = db.execute("SELECT type, COUNT(*) c FROM cmd_history GROUP BY type").fetchall()
+                    out = {k: 0 for k in _MSG_KINDS}
+                    for r in rows:
+                        out[_msg_kind(r["type"])] += r["c"]
+                    out["all"] = sum(out[k] for k in _MSG_KINDS)
+                    return self._json(out)
+                # The kind filter MUST be in SQL, not applied to rows the LIMIT
+                # already returned. Filtering after the limit meant kind=human
+                # fetched the newest 500 rows and handed back the 48 that
+                # happened to be human — the exact crowding this was meant to
+                # fix, moved server-side. `human` is expressed as NOT the other
+                # two so unknown/legacy types land there, matching _msg_kind's
+                # fallback exactly.
+                where, params = [], []
                 if session:
-                    rows = db.execute(
-                        "SELECT id, text, type, session, ts, origin FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ? OFFSET ?",
-                        (session, limit, offset)).fetchall()
-                else:
-                    rows = db.execute(
-                        "SELECT id, text, type, session, ts, origin FROM cmd_history ORDER BY ts DESC LIMIT ? OFFSET ?",
-                        (limit, offset)).fetchall()
-                return self._json([dict(r) for r in rows])
+                    where.append("session=?")
+                    params.append(session)
+                if want:
+                    ors = []
+                    for k in want:
+                        if k == "human":
+                            ors.append("type NOT IN ('session','schedule')")
+                        else:
+                            ors.append("type=?")
+                            params.append(k)
+                    where.append("(" + " OR ".join(ors) + ")")
+                sql = "SELECT id, text, type, session, ts, origin FROM cmd_history"
+                if where:
+                    sql += " WHERE " + " AND ".join(where)
+                sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+                rows = db.execute(sql, tuple(params) + (limit, offset)).fetchall()
+                out = []
+                for r in rows:
+                    d = dict(r)
+                    d["kind"] = _msg_kind(d.get("type"))
+                    d["queued"] = _msg_is_queued(d.get("type"))
+                    out.append(d)
+                return self._json(out)
             if method == "POST" and path == "/api/history":
                 body = self._read_body()
                 text = body.get("text", "").strip()
@@ -51020,7 +53220,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 prefix = _prefix_from_session(session)
                 item_id = _next_issue_id(prefix)
                 now = int(time.time())
-                status = body.get("status", "todo")
+                status = _status_canon(body.get("status", "todo"))
                 due = body.get("due", "").strip() or None
                 due_time = body.get("due_time", "").strip() or None
                 # Creator attribution, AMUX-1812 recipe: the body value is a
@@ -51248,6 +53448,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 if method == "PATCH":
                     body = self._read_body()
                     now = int(time.time())
+                    # Canonicalise BEFORE anything reads it, so the one-doing cap,
+                    # the clean-tree check, the gate and the write all see the same
+                    # value. A caller sending 'in_review' or 'resolved' otherwise
+                    # slipped past every status-specific rule below and landed a row
+                    # the board could only display by silently filing it under To Do.
+                    if isinstance(body.get("status"), str):
+                        body["status"] = _status_canon(body["status"])
                     # Snapshot the prior session+status so we can detect transitions
                     prior = db.execute(
                         "SELECT session, status, owner_type FROM issues WHERE id = ?", (bid,)
@@ -52461,18 +54668,37 @@ class CCHandler(BaseHTTPRequestHandler):
                         return self._json({"error": "audio too large (max ~25MB)"}, 413)
                     mime = (body.get("mime") or "audio/webm").split(";")[0]
                     session = (body.get("session") or session).strip()[:64]
-                key, src = _dictation_key()
-                if not key:
-                    return self._json({"error": "no Gemini key configured — add your own key in the "
-                                                "Dictation tab, or set GOOGLE_API_KEY in server.env"}, 503)
                 t0 = time.time()
-                text, err = _gemini_generate(key, [
-                    {"text": _dictation_prompt(session) + "\n\nTranscribe and clean this dictation:"},
-                    {"inline_data": {"mime_type": mime, "data": b64}},
-                ])
-                if err:
-                    slog(f"[dictation] {src} key failed: {err}")
-                    return self._json({"error": err}, 502)
+                text, err, engine = "", "", ""
+                # LOCAL FIRST. ~1.1s vs ~12.5s for the Gemini round trip, works
+                # with the uplink dead, and needs no key or quota. Whisper's raw
+                # output mangles every session name, so the deterministic pass is
+                # not optional — it is what makes this path usable (0/7 -> 7/7
+                # names in the benchmark, at the same latency).
+                if _whisper_available():
+                    _raw_audio = base64.b64decode(b64)
+                    text, err = _whisper_transcribe(_raw_audio, mime)
+                    if text:
+                        text = _dictation_fix_names(text)
+                        engine = "whisper"
+                    else:
+                        slog(f"[dictation] local transcribe failed ({err}) — trying Gemini")
+                # Gemini is now the FALLBACK (and the polish path via AI-edit),
+                # not the single point of failure it used to be.
+                if not text:
+                    key, src = _dictation_key()
+                    if not key:
+                        return self._json({"error": err or "no transcription available — install a local "
+                                                    "Whisper model, add your own Gemini key in the "
+                                                    "Dictation tab, or set GOOGLE_API_KEY in server.env"}, 503)
+                    text, err = _gemini_generate(key, [
+                        {"text": _dictation_prompt(session) + "\n\nTranscribe and clean this dictation:"},
+                        {"inline_data": {"mime_type": mime, "data": b64}},
+                    ])
+                    if err:
+                        slog(f"[dictation] {src} key failed: {err}")
+                        return self._json({"error": err}, 502)
+                    engine = "gemini"
                 dur_ms = int(body.get("dur_ms") or 0)
                 words = len([w for w in text.split() if w.strip()])
                 cur = db.execute(
@@ -52480,13 +54706,24 @@ class CCHandler(BaseHTTPRequestHandler):
                     "VALUES (?,?,?,?,?,?)",
                     (session, int(time.time() * 1000), text, text, words, dur_ms))
                 db.commit()
-                slog(f"[dictation] {words}w in {time.time()-t0:.1f}s ({src} key)")
-                return self._json({"id": cur.lastrowid, "text": text, "words": words})
+                slog(f"[dictation] {words}w in {time.time()-t0:.1f}s via {engine}")
+                return self._json({"id": cur.lastrowid, "text": text, "words": words,
+                                   "engine": engine, "secs": round(time.time() - t0, 2)})
 
             # GET /api/dictation/history?session=&limit=
             if method == "GET" and path == "/api/dictation/history":
                 sess = qs.get("session", [""])[0]
                 limit = min(int(qs.get("limit", ["200"])[0]), 500)
+                # count=1 → just the number, for the peek tab badge. Pulling 200
+                # rows of transcript text to render a single integer is wasteful
+                # on a phone; this is one indexed COUNT.
+                if qs.get("count"):
+                    if sess:
+                        n = db.execute("SELECT COUNT(*) c FROM dictation_history WHERE session=?",
+                                       (sess,)).fetchone()["c"]
+                    else:
+                        n = db.execute("SELECT COUNT(*) c FROM dictation_history").fetchone()["c"]
+                    return self._json({"count": n})
                 if sess:
                     rows = db.execute(
                         "SELECT id, session, ts, text, raw_text, prev_text, ai_edited, words, dur_ms "
@@ -52577,7 +54814,10 @@ class CCHandler(BaseHTTPRequestHandler):
                 if method == "GET":
                     _k, src = _dictation_key()
                     return self._json({"configured": bool(_k), "source": src if _k else "none",
-                                       "model": _DICTATION_MODEL})
+                                       "model": _DICTATION_MODEL,
+                                       "local": _whisper_available(),
+                                       "local_model": _WHISPER_MODEL_NAME if _whisper_available() else "",
+                                       "engine": "whisper" if _whisper_available() else "gemini"})
                 if method == "POST":
                     body = self._read_body()
                     k = (body.get("key") or "").strip()
@@ -53267,6 +55507,43 @@ end tell
                 except Exception as e:
                     return self._json({"error": str(e)}, 500)
 
+            # GET /api/email/log?days=N&limit=N&session=X — the send-audit ledger
+            # (AMUX-1897, Ethan 2026-07-26: "amux logs all email use"). Reads
+            # ~/.amux/logs/email-sent.jsonl (written by _email_log on every
+            # send/reply). One API call answers "who sent X and when" — no shell
+            # forensics. session filter matches the X-Amux-Session stamp;
+            # session=unattributed returns records sent without the header.
+            if method == "GET" and path == "/api/email/log":
+                qs = parse_qs(urlparse(self.path).query)
+                days = int(qs.get("days", ["7"])[0])
+                limit = min(int(qs.get("limit", ["50"])[0]), 500)
+                sess_f = (qs.get("session", [""])[0]).strip()
+                import datetime as _dt
+                cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                          - _dt.timedelta(days=days)).isoformat()
+                out = []
+                try:
+                    with open(EMAIL_SEND_LOG) as _f:
+                        for line in _f:
+                            try:
+                                rec = json.loads(line)
+                            except Exception:
+                                continue
+                            if rec.get("ts", "") < cutoff:
+                                continue
+                            rsess = rec.get("session") or "unattributed"
+                            if sess_f and not (
+                                rsess == sess_f
+                                or (sess_f == "unattributed" and rsess == "unattributed")
+                            ):
+                                continue
+                            rec["session"] = rsess
+                            out.append(rec)
+                except FileNotFoundError:
+                    pass
+                out = out[-limit:][::-1]
+                return self._json({"count": len(out), "days": days, "log": out})
+
             # GET /api/email/search?q=...&account=...&limit=...&days=...&mailbox=...
             if method == "GET" and path == "/api/email/search":
                 qs = parse_qs(urlparse(self.path).query)
@@ -53476,6 +55753,7 @@ return output
                         "to": [a for _n, a in _eu2.getaddresses([_h.get("to", "") or ""]) if a],
                         "cc": [a for _n, a in _eu2.getaddresses([_h.get("cc", "") or ""]) if a],
                         "date": _h.get("date", ""), "account": _acct, "via": "gmail",
+                        "reply_to": _h.get("reply-to", ""),
                         "in_reply_to": _h.get("in-reply-to", ""),
                         "references": _h.get("references", ""),
                         "thread_id": _full.get("threadId", ""),
@@ -54581,19 +56859,75 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             # URL via /start or /navigate auto-loads the matching profile — a
             # caller need only pass a URL and it lands already-logged-in.
             # Also returns `chrome_profiles`: the real local Chrome sub-profiles.
-            if method == "GET" and path == "/api/browser/profiles":
+            # POST /api/browser/profile/create {"name":"...","url":"https://..."}
+            # Creates a named profile and opens a headed window on it to sign in.
+            if method == "POST" and path == "/api/browser/profile/create":
+                body = self._read_body()
+                r = _bu_profile_signin(body.get("name", ""), (body.get("url") or "").strip())
+                if r.get("error"):
+                    return self._json(r, 400)
+                host = ""
+                try:
+                    host = urlparse(body.get("url") or "").hostname or ""
+                except Exception:
+                    host = ""
+                if host:
+                    # Register the intended domain up front so auto-select can
+                    # find this profile even if the person forgets to hit Save.
+                    _bu_registry_register(r["profile"], host, (body.get("label") or "").strip())
+                return self._json(r)
+
+            # DELETE /api/browser/profile/<name> — remove a profile directory.
+            m_bp = re.match(r"^/api/browser/profile/([A-Za-z0-9._-]+)$", path)
+            if m_bp and method == "DELETE":
+                nm = m_bp.group(1)
+                if nm == "default":
+                    return self._json({"error": "refusing to delete the default profile"}, 400)
+                d = _bu_profile_dir(nm)
+                if not d.is_dir():
+                    return self._json({"error": "no such profile"}, 404)
+                try:
+                    shutil.rmtree(d)
+                except Exception as e:
+                    return self._json({"error": str(e)}, 500)
                 reg = _bu_registry_load()
-                profiles = [
-                    {"name": n,
-                     "domains": (m.get("domains") or []) if isinstance(m, dict) else [],
-                     "label": (m.get("label") or "") if isinstance(m, dict) else "",
-                     "updated": (m.get("updated") or 0) if isinstance(m, dict) else 0}
-                    for n, m in sorted(reg.items())
-                ]
+                if nm in reg:
+                    reg.pop(nm, None)
+                    _bu_registry_save(reg)
+                return self._json({"ok": True, "deleted": nm})
+
+            if method == "GET" and path == "/api/browser/profiles":
+                # A profile DIRECTORY that exists on disk IS a profile. Listing
+                # only registry entries meant the picker showed nothing while 35+
+                # real logged-in profiles sat in playwright-auth/profiles — you
+                # could not select a profile the UI refused to admit existed.
+                # The registry adds metadata (domains/label); it is not the
+                # source of truth for existence.
+                reg = _bu_registry_load()
+                names = set(reg.keys()) | set(_bu_pw_profile_dirs())
+                # Sizes are OPT-IN. Walking 38 profile directories (one is
+                # 565MB) took 2.9s per call, and the picker fetches this on
+                # every switch to the Browser tab — slow enough that the
+                # dropdown was still empty when a user looked at it. The name
+                # list is what the picker needs; sizes are for management UI.
+                want_sizes = bool(qs.get("sizes"))
+                profiles = []
+                for n in sorted(names):
+                    m = reg.get(n) if isinstance(reg.get(n), dict) else {}
+                    e = {
+                        "name": n,
+                        "domains": (m.get("domains") or []),
+                        "label": (m.get("label") or ""),
+                        "updated": (m.get("updated") or 0),
+                        "registered": n in reg,
+                    }
+                    if want_sizes:
+                        e["size_mb"] = _bu_profile_size_mb(n)
+                    profiles.append(e)
                 return self._json({
                     "profiles": profiles,
                     "registry": reg,
-                    "chrome_profiles": _bu_list_profiles(),
+                    "chrome_profiles": _bu_list_profiles_cached(),
                 })
 
             # POST /api/browser/start  {"url":"...","session":"...","profile":"...","fresh":false}
@@ -55050,6 +57384,34 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                             "history": _collapse_blank_runs(transcript) if transcript else "",
                             "live": _live_out,
                             "output": _out_compat}
+                    # `output` is the CURRENT TERMINAL FRAME — never scrollback.
+                    # That is easy to forget and expensive when you do: a
+                    # full-screen prompt (usage-credits modal, resume picker,
+                    # /model) clears the screen, so everything the session was
+                    # doing moves off-viewport and `output` collapses to the
+                    # modal. A reader following the documented `peek -> output`
+                    # recipe then sees an empty-looking session at exactly the
+                    # moment they're trying to work out why it's stuck, and
+                    # "not in the viewport" reads as "never happened" —
+                    # social-media concluded a delivered message had been
+                    # swallowed that way (2026-07-27).
+                    #
+                    # There is no reliable heuristic for "a modal cleared the
+                    # screen": in alt-screen mode EVERY session's capture is one
+                    # viewport (~35 lines), gated or not. So state the
+                    # structural fact instead of guessing at the cause — always
+                    # true, and it's the sentence that would have stopped the
+                    # bad diagnosis.
+                    _ol = len([l for l in (_out_compat or "").splitlines() if l.strip()])
+                    _hl = len([l for l in (resp["history"] or "").splitlines() if l.strip()])
+                    resp["output_lines"] = _ol
+                    resp["history_lines"] = _hl
+                    resp["output_is_viewport_only"] = True
+                    if _hl > _ol + 20:
+                        resp["hint"] = (f"`output` is only the current terminal frame ({_ol} line(s)) — "
+                                        f"a full-screen prompt can push all of a session's work "
+                                        f"off-viewport. Read `history` ({_hl} lines) for what it was "
+                                        f"actually doing.")
                     _peek_cache[name] = (now, lines, resp)
                     return self._json_etag(resp)
                 # Normal screen: show capture directly, save log in background.
@@ -55475,7 +57837,20 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 if ok:
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
-                    _summarize_task_bg(name, _orig_text)  # summarize the message, not the origin prefix
+                    # HUMAN sends only. A typed prompt IS the session's task, so
+                    # labelling it and opening a card is the intended feature. An
+                    # INTER-SESSION message is correspondence, not a task, and running
+                    # one through a 3-word labeller produced a card titled "No Personal
+                    # Posts" sitting in DOING on the recipient's own session — derived
+                    # from a message saying the OPPOSITE (media-assets reporting their
+                    # lane posts nothing personal). Nobody had asked for anything.
+                    # The asymmetry is what makes it dangerous: a garbled title on an
+                    # informational card is noise, but one that reads as a PROHIBITION
+                    # is load-bearing, because agents comply with prohibitions without
+                    # re-deriving them — and the board outlives the conversation that
+                    # would have corrected it (social-media, 2026-07-27).
+                    if not _defer_busy:
+                        _summarize_task_bg(name, _orig_text)  # the human's prompt
                     if not str(msg).startswith("queued"):   # steering enqueue emits message.queued itself
                         _emit_event(name, "message.sent",
                                     {"chars": len(text), "preview": text[:120],
@@ -55504,6 +57879,24 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 _resp = {"ok": ok, "message": msg}
                 if ok and "at a selector" in msg:
                     _resp["held_at_selector"] = True
+                # A HARD GATE (per-model credit limit) is worse than a selector:
+                # it has no reset time and no auto-resume, so the recipient will
+                # not act on this message — or anything else — until a human
+                # switches models or tops up credits. Reporting a bare "sent"
+                # there is a true statement that reads as a false success (the
+                # social-media report, 2026-07-27: message delivered at 02:11:46,
+                # gate hit 2s later, nothing ever worked it). Say so in the
+                # response so an agent sender can route around it.
+                _gate = _session_auto_actions.get(name, {})
+                if ok and _gate.get("rate_limit_credits"):
+                    _gmdl = (_gate.get("rate_limit_model_name") or "").strip()
+                    _resp["recipient_gated"] = True
+                    _resp["gate_kind"] = "credits"
+                    _resp["gate_model"] = _gmdl
+                    _gwhat = f"a {_gmdl} usage-credits gate" if _gmdl else "a usage-credits gate"
+                    _resp["message"] = (
+                        f"{msg} — WARNING: {name} is stopped at {_gwhat} and will not act "
+                        f"on this until a human switches models or tops up credits")
                 return self._json(_resp, code)
             if action == "instructions":
                 # Set the per-session standing instruction and/or apply it now.

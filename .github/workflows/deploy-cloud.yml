@@ -32,6 +32,36 @@ jobs:
           ssh -i ~/.ssh/amux_cloud root@34.121.177.76 \
             'touch /opt/amux-cloud/app/amux-server.py && echo "amux-server.py deployed"'
 
+      - name: Ensure admin emails configured (idempotent)
+        run: |
+          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 '
+            grep -q "^ADMIN_EMAILS=" /etc/amux/gateway.env || echo "ADMIN_EMAILS=ethan@mixpeek.com,esteininger21@gmail.com" >> /etc/amux/gateway.env
+            grep "^ADMIN_EMAILS=" /etc/amux/gateway.env | grep -q "hello@amux.io" || sed -i "s/^ADMIN_EMAILS=/ADMIN_EMAILS=hello@amux.io,/" /etc/amux/gateway.env
+            echo "admin emails now: $(grep ^ADMIN_EMAILS= /etc/amux/gateway.env)"'
+
+      - name: Sync gateway secrets from repo secrets (host-only, never in a container)
+        run: |
+          # Secrets live in GitHub (encrypted) and land in /etc/amux/gateway.env on
+          # the HOST. The gateway process reads them; user containers never receive
+          # them. Values are piped over stdin so they never appear in a command line
+          # or in the workflow log.
+          sync_secret() {
+            NAME="$1"; VAL="$2"
+            [ -z "$VAL" ] && { echo "$NAME: not set in repo secrets — skipped"; return; }
+            printf '%s' "$VAL" | ssh -i ~/.ssh/amux_cloud root@34.121.177.76 \
+              "read -r V; N='$NAME'; touch /etc/amux/gateway.env; chmod 600 /etc/amux/gateway.env;
+               if grep -q \"^\$N=\" /etc/amux/gateway.env; then
+                 grep -v \"^\$N=\" /etc/amux/gateway.env > /etc/amux/.ge.tmp
+                 mv /etc/amux/.ge.tmp /etc/amux/gateway.env
+                 chmod 600 /etc/amux/gateway.env
+               fi
+               printf '%s=%s\n' \"\$N\" \"\$V\" >> /etc/amux/gateway.env
+               echo \"\$N updated (\${#V} chars, value not shown)\""
+          }
+          sync_secret STRIPE_SECRET_KEY "${{ secrets.STRIPE_SECRET_KEY }}"
+          sync_secret ANTHROPIC_API_KEY "${{ secrets.ANTHROPIC_API_KEY }}"
+          sync_secret STRIPE_PLATFORM_FEE_PRICE_ID "${{ secrets.STRIPE_PLATFORM_FEE_PRICE_ID }}"
+
       - name: Deploy gateway.py
         run: |
           rsync --inplace -e "ssh -i ~/.ssh/amux_cloud" cloud/gateway/gateway.py \

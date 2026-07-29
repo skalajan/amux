@@ -26,7 +26,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best Claude Code Session Managers 2026","item":"https://amux.io/guides/best-claude-code-session-managers-2026/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best Claude Code Session Managers 2026 — 6 Tools Compared","description":"The complete guide to Claude Code session managers. Compare amux, Claude Squad, Nimbalyst, Opcode, Agent Teams, and DIY tmux across 10 dimensions.","url":"https://amux.io/guides/best-claude-code-session-managers-2026/","datePublished":"2026-06-11","dateModified":"2026-07-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/best-claude-code-session-managers-2026/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best Claude Code Session Managers 2026 — 6 Tools Compared","description":"The complete guide to Claude Code session managers. Compare amux, Claude Squad, Nimbalyst, Opcode, Agent Teams, and DIY tmux across 10 dimensions.","url":"https://amux.io/guides/best-claude-code-session-managers-2026/","datePublished":"2026-06-11","dateModified":"2026-07-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/best-claude-code-session-managers-2026/"}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best Claude Code Session Managers 2026","description":"The 6 best tools for managing parallel Claude Code sessions in 2026, ranked by features and use case fit.","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://amux.io/","description":"Open-source web-based control plane for parallel Claude Code sessions with self-healing, kanban board, mobile PWA, and inter-agent messaging."},{"@type":"ListItem","position":2,"name":"Claude Squad","url":"https://github.com/smtg-ai/claude-squad","description":"Terminal-native TUI for managing multiple Claude Code and Codex agents with git worktree isolation."},{"@type":"ListItem","position":3,"name":"Nimbalyst","url":"https://nimbalyst.com/","description":"Native macOS app for managing Claude Code and Codex sessions with a split-pane terminal UI."},{"@type":"ListItem","position":4,"name":"Opcode","url":"https://opcode.dev/","description":"Web-based multi-agent coding platform with real-time session monitoring."},{"@type":"ListItem","position":5,"name":"Claude Code Agent Teams","url":"https://docs.anthropic.com/en/docs/claude-code/agent-teams","description":"Anthropic's experimental built-in multi-agent feature for spawning coordinated sub-agents from within a Claude Code session."},{"@type":"ListItem","position":6,"name":"DIY tmux Scripts","url":"https://github.com/tmux/tmux","description":"Custom shell scripts using tmux for low-overhead, full-control Claude Code session management."}]}</script>
 
@@ -220,6 +220,8 @@
       <li><strong>Kanban board with atomic claiming</strong> — zero race conditions. Two agents can never grab the same task, even with 50 parallel sessions. Built on SQLite with no Redis dependency.</li>
       <li><strong>Messages tab — AI team communication history</strong> — a global log of every inter-session message, newest first. Click "Locate in peek" to jump to any message in the sending agent's terminal context. A Slack-like view of what your AI team said to each other.</li>
       <li><strong>Built-in scheduler, notes, CRM, and email</strong> — the full agent toolbox, not just session management.</li>
+      <li><strong>Offline scrollback cache (v0.9.200)</strong> — every running session&rsquo;s scrollback is cached locally, so you can review what all your agents were doing the last time you had internet — useful for commutes and travel. New in July 2026.</li>
+      <li><strong>Stalled agent detection (v0.9.201)</strong> — a &ldquo;stalled Nm&rdquo; badge appears on any session that stops responding; truthful error messages distinguish a blocked session from a crashed one so you know exactly what to do without SSH-ing in.</li>
       <li><strong>Conversation forking</strong> — clone an agent&rsquo;s JSONL history to a new session on a new branch for parallel exploration of a solution.</li>
       <li><strong>Quality gates for done and verified</strong> — amux board items distinguish between <em>done</em> (implemented and merged) and <em>verified</em> (confirmed working in production with CI green, deployed, and smoke-tested). An agent can't mark a task verified without acknowledging the evidence checklist — preventing false "complete" status.</li>
     </ul>
@@ -442,6 +444,15 @@ tmux ls</code></pre>
     <h3>How do I install amux?</h3>
     <p>The fastest install is via Homebrew: <code>brew install mixpeek/amux/amux</code>. PyPI: <code>pipx install amux</code>. Zero-install trial (no pip, no clone): <code>uvx amux serve</code>. For self-hosting on Linux servers, <code>./install.sh</code> from the GitHub repo works without any package manager. All paths install the same open-source package.</p>
 
+    <!-- EXP-014 -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the #1-rated open-source Claude Code session manager (315&#9733; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Self-healing watchdog, mobile PWA, offline scrollback cache, stalled agent detection, built-in kanban and CRM. Run 5&ndash;50 agents from your phone or browser. MIT licensed, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
+    </div>
+
     <!-- ─── CTA ─── -->
     <div style="background:linear-gradient(135deg,oklch(0.24 0.015 250),oklch(0.21 0.014 250));border:1px solid var(--border);border-radius:12px;padding:2rem 2.4rem;margin:3rem 0;text-align:center;">
       <h2 style="margin:0 0 0.5rem;font-size:1.4rem;">Run your AI engineering team tonight</h2>
@@ -462,6 +473,8 @@ tmux ls</code></pre>
       <li><a href="/compare/amux-vs-claude-code-agent-teams/">amux vs Claude Code Agent Teams</a></li>
       <li><a href="/guides/setting-up-yolo-mode/">Setting Up YOLO Mode for Unattended Claude Code Sessions</a></li>
       <li><a href="/guides/git-conflict-avoidance/">Git Conflict Avoidance for Parallel Agent Workflows</a></li>
+      <li><a href="/guides/voice-dictation-ai-agents/">Voice Dictation for AI Coding Agents — Steer Your Fleet by Speaking</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing AI Agents from Your Phone — amux PWA Guide</a></li>
     </ul>
 
   </main>

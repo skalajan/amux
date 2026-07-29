@@ -1,5 +1,113 @@
 [
   {
+    "hash": "d6116f61fd1655ce689a013dfc889cb49274ff5e",
+    "short": "d6116f6",
+    "title": "Messages tab now filters by kind — human, session, or schedule",
+    "date": "2026-07-28",
+    "type": "feat",
+    "tags": ["messages", "ux", "filter", "fleet"],
+    "description": "The three-kind message filter (human / session / schedule) that was already available in the peek panel is now also on the standalone Messages tab. Filter to only see messages you sent, only inter-agent relays, or only scheduled triggers — or view all three together. Useful on the Messages tab when reviewing what happened overnight across a large fleet."
+  },
+  {
+    "hash": "90c5f75cda9f541ed589b9ffd550b23687be7f91",
+    "short": "90c5f75",
+    "title": "Browser profiles — create and use named auth sessions for automation",
+    "date": "2026-07-28",
+    "type": "feat",
+    "tags": ["browser", "profiles", "automation", "authentication"],
+    "description": "The Browser tab now shows all your saved browser profiles and lets you create new ones directly from the UI. Each profile stores its own cookie jar and authentication state, so AI browser automation tasks start already logged in — no re-entering credentials on every run. Create a 'stripe' profile, a 'github-work' profile, a 'client-acme' profile, and launch different agents with different identities simultaneously. Profiles persist across server restarts in ~/.amux/browser-profiles/."
+  },
+  {
+    "hash": "b6781b578e4cb63c2e172be41fa21478ee9827e6",
+    "short": "b6781b5",
+    "title": "Copy path button in file preview — one click to copy a file's bare path",
+    "date": "2026-07-28",
+    "type": "feat",
+    "tags": ["files", "ux", "clipboard"],
+    "description": "The file preview overlay now has a dedicated 'Path' button next to 'Copy' and 'Link'. Clicking it copies the file's bare relative path to clipboard — useful when you want to reference a file in a steering message, a script, or another tool without the full deep-link URL. The underlying clipboard + toast logic was refactored into a shared helper so both Path and Link use the same fallback and toast behavior. Contributed by @Dygreens in PR #64."
+  },
+  {
+    "hash": "51d8c454b4dd9649297ad699b5c7b11fb4de39a7",
+    "short": "51d8c45",
+    "title": "MKV and HEVC video files now play in the Files tab",
+    "date": "2026-07-28",
+    "type": "fix",
+    "tags": ["files", "video", "transcoding", "media"],
+    "description": "MKV files (including HEVC/H.265 codec) were showing 'Format not supported by this browser' instead of playing. The bug was a one-liner: the video player was extracting the file extension from the API URL path (/api/file/raw) instead of from the 'path=' query parameter — so ext was always 'raw', bypassing the ffmpeg transcoding path. Fixed. MKV files now correctly route through the background MP4 prepare job with progress indicator, and fall back to live-transcode for desktop browsers when the cache is empty."
+  },
+  {
+    "hash": "aff3025febf5814899a0c94de5de452684bde02d",
+    "short": "aff3025",
+    "title": "Service worker caches the app shell — 1.6 MB saved on every reload",
+    "date": "2026-07-28",
+    "type": "perf",
+    "tags": ["performance", "offline", "pwa", "mobile"],
+    "description": "The amux dashboard's app shell (HTML, CSS, JS) was being re-fetched from the server on every page load — 1.6 MB of network traffic per visit. The service worker now caches the shell on first install and serves it from cache on subsequent loads. Result: sub-100ms dashboard loads on repeat visits, even on slow mobile connections. The service worker also now correctly installs over the self-signed TLS certificate used for localhost development."
+  },
+  {
+    "hash": "43483bddc980c82b5efe1f096b04a2c92ad11c46",
+    "short": "43483bd",
+    "title": "Fix: browser profile picker crash and localStorage quota error",
+    "date": "2026-07-28",
+    "type": "fix",
+    "tags": ["browser", "profiles", "crash", "stability"],
+    "description": "Two bugs in the browser profiles UI were fixed: (1) opening the browser tab with no profiles created caused a crash in the profile picker dropdown; (2) saving a large browser session state to localStorage was throwing a quota exceeded error, which could silently prevent profile saves. The profile picker now gracefully renders an empty state, and profile data is no longer stored in localStorage (moved to server-side storage via ~/.amux/browser-profiles/)."
+  },
+  {
+    "hash": "9f3a9b601418c96c61ecdb544fe0f8d79ef6fffb",
+    "short": "9f3a9b6",
+    "title": "Session tabs sorted by frequency — find your active sessions instantly",
+    "date": "2026-07-28",
+    "type": "feat",
+    "tags": ["sessions", "ux", "peek", "dictation"],
+    "description": "The peek panel's tab order now reflects how often you actually reach for each tab. High-frequency live tabs (Terminal, Steering, Messages, Dictation) move to the front; lower-frequency reference tabs (Transcript, Worktree, Commits) move to the back. New order: Terminal, Steering, Schedules, Messages, Dictation, Board, Notes, Cost, Transcript, Commits, Worktree. The Dictation tab also gets a badge when you're recording, so you can see which sessions are actively receiving voice input at a glance."
+  },
+  {
+    "hash": "279d8eb5c0091b47a7da386eb02e262e2197c826",
+    "short": "279d8eb",
+    "title": "Local Whisper dictation — 12× faster, works fully offline",
+    "date": "2026-07-27",
+    "type": "feat",
+    "tags": ["dictation", "offline", "mobile", "voice"],
+    "description": "amux's voice dictation now runs local Whisper transcription on-device instead of sending audio to a cloud API. The result is a 12× speed improvement (measured on 4 realistic amux dictations) and full offline capability — dictate to your agents on a plane, in a dead zone, or anywhere without internet. Deterministic session name recovery replaces the previous probabilistic match, eliminating misrouted messages. The fallback to cloud Whisper is still available for devices that prefer it."
+  },
+  {
+    "hash": "6355f152953bfa9fd7fe55e9812f75ba9d00fb9e",
+    "short": "6355f15",
+    "title": "Persistent dictation outbox — never lose a voice message again (v0.9.202)",
+    "date": "2026-07-27",
+    "type": "feat",
+    "tags": ["dictation", "reliability", "mobile", "offline"],
+    "description": "v0.9.202 fixes the most painful dictation failure: a server-side error (Gemini hiccup, quota limit, bad API key) previously caused the recorded audio to be silently discarded. Re-recording was the only option. Now, every recorded audio clip is saved to a persistent outbox before transmission. If the send fails for any reason — network drop, server error, quota — the clip stays in the outbox and you can retry the exact same take. No re-recording, no lost messages."
+  },
+  {
+    "hash": "b120b6c1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7",
+    "short": "b120b6c",
+    "title": "Stalled agent badge + truthful gated-send response (v0.9.201)",
+    "date": "2026-07-27",
+    "type": "feat",
+    "tags": ["sessions", "ux", "monitoring", "reliability"],
+    "description": "v0.9.201 adds two session health improvements. First: a 'stalled Nm' badge appears on any session card when output stops for more than N minutes, so you can spot stuck agents at a glance from the sessions list without opening the peek panel. Second: when you send a message to a session that is credit-gated (usage limit hit), the response now accurately reports 'held — session is credit-gated' instead of silently pretending the message was delivered. No more wondering whether your instruction reached the agent."
+  },
+  {
+    "hash": "a5e73c0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+    "short": "a5e73c0",
+    "title": "Offline scrollback cache — review any session without internet (v0.9.200)",
+    "date": "2026-07-26",
+    "type": "feat",
+    "tags": ["offline", "pwa", "mobile", "sessions"],
+    "description": "v0.9.200 caches every running session's scrollback in IndexedDB so you can review what your agents were doing the last time you had internet. Open the amux PWA or iOS app on a plane, subway, or anywhere offline — all session output reads from the local cache with no server needed. IndexedDB survives iOS background eviction and device lock. The cache auto-syncs the moment you reconnect. Pairs with the offline outbox (queue messages while offline, deliver on reconnect)."
+  },
+  {
+    "hash": "d95b424c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a",
+    "short": "d95b424",
+    "title": "Fix: credit-gate false positive eliminated — stalled agents unblocked (persistence gate)",
+    "date": "2026-07-26",
+    "type": "fix",
+    "tags": ["sessions", "reliability", "credit", "watchdog"],
+    "description": "Fixes a bug where sessions were silently blocked from receiving messages because a stale credit-gate flag was persisted to disk and reloaded on server restart. A session that hit a usage limit yesterday could still appear rate-limited today even after the limit reset, causing the watchdog to skip sends and auto-replies. The fix removes the persisted gate state and re-derives it from live scrollback on each restart. Agents that were silently stalled by this will resume immediately after updating."
+  },
+  {
     "hash": "21a7dce8a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9",
     "short": "21a7dce",
     "title": "Dictation: low-bandwidth mobile path — 16kbps mono opus, offline queue (v0.9.199)",

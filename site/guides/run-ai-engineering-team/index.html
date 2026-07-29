@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>How to Run an AI Engineering Team — The 2026 Guide | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to run an AI engineering team in 2026: choosing your agent runtimes, setting up a control plane, distributing tasks, enabling overnight operation, and managing everything from your phone. Complete guide with HowTo steps and FAQ.">
+  <meta name="keywords" content="how to run an AI engineering team, AI engineering team, AI agent team dashboard, manage AI agents, AI coding team, Claude Code team, agent fleet management, AI engineering team 2026, run AI agents from phone">
+  <link rel="canonical" href="https://amux.io/guides/run-ai-engineering-team/">
+  <meta property="og:title" content="How to Run an AI Engineering Team — The 2026 Guide">
+  <meta property="og:description" content="How to run an AI engineering team in 2026: choosing your agent runtimes, setting up a control plane, distributing tasks, enabling overnight operation, and managing everything from your phone.">
+  <meta property="og:url" content="https://amux.io/guides/run-ai-engineering-team/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},
+      {"@type":"ListItem","position":3,"name":"How to Run an AI Engineering Team","item":"https://amux.io/guides/run-ai-engineering-team/"}
+    ]
+  }</script>
+
+  <script type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Run an AI Engineering Team — The 2026 Guide",
+    "description": "How to run an AI engineering team in 2026: choosing your agent runtimes, setting up a control plane, distributing tasks, enabling overnight operation, and managing everything from your phone.",
+    "url": "https://amux.io/guides/run-ai-engineering-team/",
+    "datePublished": "2026-07-28",
+    "dateModified": "2026-07-28",
+    "author": {"@type":"Organization","name":"amux","url":"https://amux.io/"},
+    "publisher": {"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
+    "mainEntityOfPage": "https://amux.io/guides/run-ai-engineering-team/",
+    "keywords": "AI engineering team, run AI agents, Claude Code team, agent fleet, AI team dashboard"
+  }</script>
+
+  <script type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Run an AI Engineering Team",
+    "description": "Step-by-step guide to setting up and running a fleet of AI coding agents as an engineering team — from choosing runtimes to overnight operation and mobile monitoring.",
+    "totalTime": "PT2H",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Choose your AI agent runtime(s)",
+        "text": "Select one or more terminal AI coding agents for your team. Claude Code is the strongest for complex tasks and parallel fleets. Codex CLI offers the safest sandboxing. Antigravity CLI (formerly Gemini CLI) has the most generous free tier. Most teams start with Claude Code and add a second runtime for cost or capability diversity."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Set up an agent control plane",
+        "text": "Install a control plane like amux to launch, monitor, and coordinate your agents from a single dashboard. Run: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. The control plane gives you a web dashboard, mobile PWA, self-healing watchdog, and a shared kanban board — replacing the manual tmux juggling that breaks down past 3-4 agents."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Distribute tasks through a shared kanban board",
+        "text": "Create tasks on a shared board and let agents claim them atomically. Each agent picks up one task, works on it, and marks it done before claiming the next. This prevents agents from colliding on the same files and gives you a live view of what every agent is doing. Use the board's 'doing / todo / done' workflow: agents move cards as they work."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Enable self-healing for overnight operation",
+        "text": "Configure the self-healing watchdog to detect and recover from common failure modes automatically: context compaction (agent rewrites its own context when it fills up), crash recovery (restart on unexpected exit), stall detection (replay the last message if an agent goes silent), and credit-gate handling (pause and alert instead of losing progress when API credits run out). With self-healing enabled, you can start your agents at night and review finished work in the morning."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Monitor and manage from your phone",
+        "text": "Add the amux PWA to your iPhone or Android home screen. The mobile dashboard shows every agent's live status, lets you peek at their output, send new messages, and check the kanban board — all from your phone. The offline scrollback cache (v0.9.200) ensures you can review agent progress even without internet, so commutes and travel don't leave you blind to what your team is doing."
+      }
+    ]
+  }</script>
+
+  <script type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is an AI engineering team?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "An AI engineering team is a fleet of parallel AI coding agents — typically Claude Code, Codex CLI, or Antigravity CLI sessions — running simultaneously on different tasks or different parts of a codebase, coordinated by a shared dashboard and task board. One developer (or a small team) manages the agents: assigning tasks, reviewing outputs, handling ambiguous decisions, and steering direction. The agents handle execution: writing code, running tests, fixing bugs, and shipping features. The ratio is typically 5-20 agents per human manager, depending on task complexity and the degree of human oversight needed."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How many AI agents can one developer manage?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "In practice, 5-10 agents is the comfortable range for most developers: enough to run different features, bug fixes, or refactors in parallel without losing track of what each agent is doing. With a good control plane (real-time dashboard, kanban coordination, stall detection), experienced teams push 20-50 agents. The bottleneck is usually human review speed: each agent produces output that needs someone to look at it, merge it, or redirect it. The ceiling isn't the tooling — it's how fast you can process completions. Start with 3-5 agents and scale once you have a review rhythm."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What tools do you need to run an AI engineering team?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The core stack is: (1) a terminal AI coding agent — Claude Code, Codex CLI, or Antigravity CLI — that does the actual coding; (2) a control plane like amux that launches, monitors, self-heals, and coordinates your agent fleet; (3) a task management system — amux includes a built-in kanban board, or you can integrate with GitHub Issues, Linear, or Jira; (4) a version control workflow that supports parallel branches — typically one git branch per agent, merged via PR after review; and optionally (5) a CI/CD pipeline that agents can trigger to run tests and deploy. Most teams start with just items 1 and 2 and add the rest as they scale."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do you prevent AI agents from conflicting on the same files?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The standard approach is isolated git worktrees — each agent gets its own checked-out copy of the repository in a separate directory (git worktree add ../agent-N main), so agents can edit files simultaneously without stepping on each other. Pair this with a shared kanban board where agents claim tasks atomically: an agent picks up a task, marks it 'doing', works on it, and only then can another agent pick up a task that might touch the same area. Task granularity matters: keep tasks scoped to one feature, one file area, or one module to minimize overlap. Finally, short-lived branches and frequent PRs reduce the window for conflicts — agents that merge every 2-4 hours cause fewer conflicts than agents that accumulate changes for a week."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can AI agents run overnight unattended?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — with the right setup. The two most common failure modes for overnight runs are context exhaustion (the agent fills its context window and stops) and API rate limits or credit gates (the agent's API calls start failing). Both are solvable: modern agents like Claude Code auto-compact their context; a control plane like amux detects context compaction events and triggers a clean restart. For rate limits, amux's watchdog detects when an agent is stalled on an API response and alerts you rather than silently hanging. Teams running overnight agents typically: (1) start agents after a final task review; (2) set up alert notifications for stalls or failures; (3) review output the next morning. With self-healing in place, most 8-hour runs complete without intervention."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between an AI engineering team and traditional software engineering?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Traditional software engineering is serial at the individual level: one developer works on one task at a time, sequentially, with human cognitive limits bounding throughput. An AI engineering team is parallel at scale: one developer coordinates 5-50 agents, each working on a different task simultaneously. The developer's role shifts from implementation to direction, review, and decision-making. Quality assurance changes too: instead of writing code yourself and having colleagues review it, you review AI-generated code against specs and run automated tests. The speed curve is steep — small teams with AI agents routinely ship features in hours that used to take weeks. The constraint shifts from 'how fast can we write code' to 'how clearly can we specify what we want and how quickly can we review what we get.'"
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do you manage an AI engineering team from your phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A mobile-first control plane like amux lets you manage your entire agent fleet from an iPhone or Android PWA. The mobile dashboard shows every agent's live status and recent output, lets you send new instructions by typing or voice (via built-in Whisper dictation), and displays the kanban board so you can reassign tasks on the go. The offline scrollback cache (amux v0.9.200) means you can review what your agents were doing even when you're offline — on a plane, commuting, or in a dead zone. The key is having a dashboard that works on a 375px screen with one thumb, not a desktop tool you're trying to squint at on mobile."
+        }
+      }
+    ]
+  }</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>How to Run an AI Engineering Team</span></div>
+
+    <h1>How to Run an AI Engineering Team</h1>
+    <p class="subtitle">Running an AI engineering team means coordinating a fleet of parallel AI coding agents — each working on different tasks simultaneously — from a single dashboard. One developer managing 10-50 agents can ship more than a traditional 5-person team. This guide covers the stack, the workflow, and how to make it run overnight unattended.</p>
+    <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated July 2026 &middot; 15 min read</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Is an AI Engineering Team?</a></li>
+        <li><a href="#stack" style="color:var(--dim);text-decoration:none;">The Core Stack</a></li>
+        <li><a href="#howto" style="color:var(--dim);text-decoration:none;">How to Set One Up (5 Steps)</a></li>
+        <li><a href="#scales" style="color:var(--dim);text-decoration:none;">Team Sizes and Configurations</a></li>
+        <li><a href="#patterns" style="color:var(--dim);text-decoration:none;">Coordination Patterns</a></li>
+        <li><a href="#overnight" style="color:var(--dim);text-decoration:none;">Overnight Operation</a></li>
+        <li><a href="#mobile" style="color:var(--dim);text-decoration:none;">Managing from Your Phone</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="what">What Is an AI Engineering Team?</h2>
+
+    <p>An AI engineering team is not a metaphor. It is a literal fleet of parallel AI coding agents — separate processes, each running in its own terminal session, each working on a different task — that you direct and review from a central dashboard.</p>
+
+    <p>The human role in an AI engineering team is not writing code. It is:</p>
+    <ul>
+      <li><strong>Specifying tasks</strong> — defining what needs to be built well enough for an agent to execute it</li>
+      <li><strong>Reviewing outputs</strong> — reading diffs, running tests, deciding what to merge</li>
+      <li><strong>Making decisions</strong> — handling ambiguity, architecture questions, and anything requiring judgment that the agent escalates</li>
+      <li><strong>Steering direction</strong> — reprioritizing when something unexpected comes up, redirecting agents that go off track</li>
+    </ul>
+
+    <p>In a well-functioning AI engineering team, the developer spends most of their time in review and direction — not implementation. The agents handle the implementation in parallel. A team of 10 agents working 8 hours overnight delivers roughly the same throughput as 10 developers working a full day, minus the coordination overhead, the meetings, and the context-switching.</p>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="stack">The Core Stack</h2>
+
+    <p>Running an AI engineering team at scale requires three layers:</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Layer</th>
+          <th>What it does</th>
+          <th>Examples</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Agent runtime</strong></td>
+          <td>The actual AI coding agent that reads your codebase, writes code, runs commands</td>
+          <td><a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, Antigravity CLI (agy)</td>
+        </tr>
+        <tr>
+          <td><strong>Control plane</strong></td>
+          <td>Launches, monitors, self-heals, and coordinates agent sessions; provides the dashboard</td>
+          <td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (open source), DIY tmux scripts (manual)</td>
+        </tr>
+        <tr>
+          <td><strong>Task management</strong></td>
+          <td>Distributes work across agents; prevents collision; tracks progress</td>
+          <td>amux built-in kanban, GitHub Issues, Linear, Jira</td>
+        </tr>
+        <tr>
+          <td><strong>Version control workflow</strong></td>
+          <td>Isolates agent work in separate branches or worktrees; merges via PR after review</td>
+          <td>Git worktrees (one per agent), feature branches</td>
+        </tr>
+        <tr>
+          <td><strong>CI/CD integration (optional)</strong></td>
+          <td>Runs tests and deploys automatically when agents commit; closes the feedback loop</td>
+          <td>GitHub Actions, GitLab CI, CircleCI</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>For most teams, the minimum viable stack is an agent runtime plus a control plane. The task management and version control workflow scale with team size — for 2-3 agents, manual coordination is fine; for 10+ agents, you need a proper system.</p>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="howto">How to Set Up an AI Engineering Team (5 Steps)</h2>
+
+    <h3>Step 1 — Choose your agent runtime(s)</h3>
+
+    <p>The agent runtime is the most important decision because it determines code quality, cost, and capability ceiling.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Runtime</th>
+          <th>Best for</th>
+          <th>Cost</th>
+          <th>Parallel-friendly?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a></td>
+          <td>Complex tasks, highest code quality, deepest tooling (hooks, MCP, subagents)</td>
+          <td>$20/mo Pro or API pay-as-you-go</td>
+          <td>Yes — purpose-built for CLI parallel spawning</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a></td>
+          <td>Maximum sandboxing, fastest execution (Rust-native), security-sensitive work</td>
+          <td>OpenAI API (pay-per-token)</td>
+          <td>Yes — also works via cloud Automations API</td>
+        </tr>
+        <tr>
+          <td>Antigravity CLI (agy)</td>
+          <td>Cost-free experimentation, 1M token context, multimodal inputs</td>
+          <td>Free (1,000 req/day with Google account)</td>
+          <td>Yes — runs as a CLI process, spawnable in tmux</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>Most teams start with Claude Code. The Opus and Sonnet models consistently lead SWE-bench benchmarks, and the tooling ecosystem (hooks, MCP servers, CLAUDE.md files for per-project context) is the most mature for fleet work. Add a second runtime later for cost optimization or specialized tasks.</p>
+
+    <h3>Step 2 — Set up a control plane</h3>
+
+    <p>The control plane is what transforms a collection of terminal sessions into an actual team. Without it, you're manually watching tmux windows and hoping nothing crashes. With it, you have a real-time view of every agent, automatic crash recovery, and a shared task board.</p>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (315★, MIT licensed, single Python file):</p>
+
+    <pre><code><span class="dim"># Install amux</span>
+git clone https://github.com/mixpeek/amux
+cd amux && ./install.sh
+
+<span class="dim"># Register your project and start 5 agents</span>
+amux register myproject --dir ~/Dev/myproject --yolo
+amux scale myproject --count 5
+
+<span class="dim"># Open the web dashboard</span>
+amux serve  <span class="dim"># → https://localhost:8822</span></code></pre>
+
+    <p>Once the control plane is running, you get: a web dashboard showing all agents and their live output, a mobile PWA so you can check in from your phone, a shared kanban board for task distribution, and a watchdog that detects stalls and crashes and recovers automatically.</p>
+
+    <h3>Step 3 — Distribute tasks through a shared board</h3>
+
+    <p>Task distribution is the coordination problem. Without it, agents collide on the same files, duplicate work, or do nothing after finishing their first task.</p>
+
+    <p>The pattern that works at scale is <strong>atomic task claiming</strong>:</p>
+    <ol>
+      <li>Create all tasks on the board in <code>todo</code> state before starting agents</li>
+      <li>Each agent's first action when starting a new task: move it to <code>doing</code></li>
+      <li>No other agent can claim a <code>doing</code> task</li>
+      <li>When the agent finishes, it moves the task to <code>done</code> and picks up the next <code>todo</code></li>
+    </ol>
+
+    <p>This eliminates collisions without requiring agents to communicate with each other. The board is the coordination primitive.</p>
+
+    <p>For file-level isolation, use <strong>git worktrees</strong>:</p>
+
+    <pre><code><span class="dim"># Give each agent its own checkout</span>
+git worktree add ../agent-1 main
+git worktree add ../agent-2 main
+<span class="dim"># Each agent works in its own directory, no file conflicts</span></code></pre>
+
+    <h3>Step 4 — Enable self-healing for overnight operation</h3>
+
+    <p>The two main failure modes for long-running agents are context exhaustion and API stalls. Both need to be handled automatically, because you won't be watching.</p>
+
+    <ul>
+      <li><strong>Context compaction</strong>: Claude Code auto-compacts when the context window fills. amux's watchdog detects the compaction event and ensures the agent continues cleanly rather than hanging mid-task.</li>
+      <li><strong>Crash recovery</strong>: The watchdog restarts crashed sessions and replays the last message so the agent picks up where it left off.</li>
+      <li><strong>Stall detection</strong>: If an agent stops responding for too long (typically a credit gate or network issue), amux surfaces a "stalled Nm" badge and sends an alert rather than silently hanging.</li>
+      <li><strong>Credit gate handling</strong>: When Anthropic's usage limits are hit, amux pauses the agent and alerts you via push notification — it does not retry in a loop that burns tokens after the gate.</li>
+    </ul>
+
+    <h3>Step 5 — Monitor from your phone</h3>
+
+    <p>Add the amux PWA to your iPhone home screen (Safari → Share → Add to Home Screen). The mobile dashboard gives you everything you need to stay on top of your team without being at a desk:</p>
+
+    <ul>
+      <li>Live status badge for every agent (running / stalled / done)</li>
+      <li>Peek at any agent's recent output with a tap</li>
+      <li>Send instructions by typing or voice (Whisper dictation, works offline)</li>
+      <li>Review the kanban board, move cards, reassign tasks</li>
+      <li>Offline scrollback — cached scrollback survives backgrounding and dead zones</li>
+    </ul>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="scales">Team Sizes and Configurations</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Scale</th>
+          <th>Agents</th>
+          <th>Coordination</th>
+          <th>Human overhead</th>
+          <th>Best use case</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Starter</strong></td>
+          <td>2-4</td>
+          <td>Manual task assignment, watch live</td>
+          <td>High (still watching)</td>
+          <td>Learning the workflow, small feature sets</td>
+        </tr>
+        <tr>
+          <td><strong>Solo team</strong></td>
+          <td>5-10</td>
+          <td>Shared kanban, worktrees, daily review</td>
+          <td>Medium (morning + evening check-in)</td>
+          <td>Solo founder, indie hacker, 1-person startup</td>
+        </tr>
+        <tr>
+          <td><strong>Small team</strong></td>
+          <td>10-30</td>
+          <td>Atomic task claiming, worktrees, CI gates</td>
+          <td>Low (manage by exception)</td>
+          <td>Small startup, agency, AI-first engineering team</td>
+        </tr>
+        <tr>
+          <td><strong>Fleet</strong></td>
+          <td>30-50+</td>
+          <td>Full automation, structured specs, agent-to-agent delegation</td>
+          <td>Very low (exception-driven)</td>
+          <td>Large refactors, parallel security audits, test generation at scale</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="patterns">Coordination Patterns</h2>
+
+    <p>Three coordination patterns account for most AI engineering team workflows:</p>
+
+    <h3>Pattern 1 — Parallel independent tasks</h3>
+    <p>Each agent works on a completely independent task: different features, different modules, different bug fixes. No coordination needed beyond the task board. This is the simplest pattern and the easiest to start with. Works best when tasks don't share files.</p>
+
+    <h3>Pattern 2 — Hierarchical delegation</h3>
+    <p>One "coordinator" agent breaks down a large task into sub-tasks and assigns them to specialist agents. The coordinator monitors sub-task completion and integrates the outputs. Requires more setup (the coordinator agent needs a clear spec for how to delegate) but enables tackling tasks too large for one agent.</p>
+
+    <h3>Pattern 3 — Pipeline (sequential stages)</h3>
+    <p>Agents work in a pipeline: Agent A generates specs → Agent B implements from specs → Agent C writes tests → Agent D reviews and fixes test failures. Each stage triggers the next via the task board. Useful for workflows where quality gates between stages reduce rework.</p>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="overnight">Overnight Operation</h2>
+
+    <p>The most powerful use of an AI engineering team is overnight operation: you set tasks at the end of your day, agents work through the night, and you review finished work in the morning.</p>
+
+    <p>The checklist for reliable overnight runs:</p>
+
+    <ul>
+      <li><strong>Task clarity:</strong> Each task must be fully self-contained — specs, file locations, acceptance criteria. Agents that need to ask a clarifying question will stall.</li>
+      <li><strong>Worktree isolation:</strong> Use one git worktree per agent. Merges happen in the morning after your review.</li>
+      <li><strong>Watchdog active:</strong> Confirm the self-healing watchdog is running before you sleep. In amux, this is on by default.</li>
+      <li><strong>Notifications set up:</strong> Configure push alerts for stalls or failures so you can check in if something breaks — but also trust the watchdog to handle most recoveries automatically.</li>
+      <li><strong>Small tasks:</strong> Tasks that take 2-4 hours complete reliably overnight. Tasks that take 8+ hours are more likely to hit a context limit or edge case that needs human judgment. Break large tasks down.</li>
+      <li><strong>Review gates:</strong> If your CI is set up, failed tests automatically flag the task for review. Agents that pass tests can have their branches auto-merged if you trust the CI signal.</li>
+    </ul>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="mobile">Managing from Your Phone</h2>
+
+    <p>Being able to check in on your AI engineering team from anywhere — without needing to be at a desk — changes how you run overnight work. Instead of batching all review to morning, you can:</p>
+
+    <ul>
+      <li>Glance at agent status on the commute to work</li>
+      <li>Redirect a stalled agent from a coffee shop</li>
+      <li>Queue new tasks during a flight (offline, with cached board data)</li>
+      <li>Dictate new instructions on a walk (voice-to-agent via Whisper)</li>
+      <li>Approve a PR from your couch</li>
+    </ul>
+
+    <p>The <a href="/guides/mobile-management-pwa/">amux mobile dashboard</a> is designed for one-handed use on a 375px screen. Every core action — peek, send, move a card, check status — works with one tap. The <a href="/guides/ai-agent-offline-review/">offline scrollback cache</a> means you're never flying blind: your agents' recent output is always available locally, even without internet.</p>
+
+    <!-- EXP-014 GitHub CTA -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source control plane for AI engineering teams (315★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Launch, monitor, and self-heal your Claude Code, Codex, or Antigravity CLI fleet. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT licensed, single Python file, zero external dependencies.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">What is an AI engineering team?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>An AI engineering team is a fleet of parallel AI coding agents — typically Claude Code, Codex CLI, or Antigravity CLI sessions — running simultaneously on different tasks or different parts of a codebase, coordinated by a shared dashboard and task board. One developer (or a small team) manages the agents: assigning tasks, reviewing outputs, and making judgment calls. The agents handle execution in parallel. The ratio is typically 5-20 agents per human manager, depending on task complexity.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How many AI agents can one developer manage?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>5-10 agents is the comfortable starting range. With a good control plane (real-time dashboard, kanban coordination, stall detection), experienced teams push 20-50. The bottleneck is human review speed — each agent produces output that needs someone to look at, merge, or redirect. Start with 3-5 agents and scale once you have a review rhythm.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">What tools do you need to run an AI engineering team?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>The core stack: (1) a terminal AI coding agent like Claude Code, Codex CLI, or Antigravity CLI; (2) a control plane like amux for launch, monitoring, and self-healing; (3) git worktrees for file isolation between agents; (4) a task board (amux includes one built in) for coordination. CI/CD integration is optional but closes the feedback loop. Start with just items 1 and 2.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How do you prevent agents from conflicting on the same files?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>Use isolated git worktrees — each agent gets its own checked-out copy of the repo in a separate directory (<code>git worktree add ../agent-N main</code>). Pair with a shared kanban board where agents claim tasks atomically: an agent marks a task "doing" before starting, preventing others from picking the same work. Keep task granularity small — one feature or one module per task — to minimize the window for overlap.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">Can AI agents run overnight unattended?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>Yes, with the right setup. The main failure modes are context exhaustion (Claude Code auto-compacts; amux watchdog ensures a clean restart) and API stalls (amux detects stalls and alerts you rather than hanging). Use small, self-contained tasks (2-4 hour scope), enable the watchdog, and set up push notifications for failures. Most 8-hour runs complete without intervention when the self-healing stack is in place.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">What is the difference between an AI engineering team and using AI in an IDE?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>IDE AI (Cursor, Windsurf, GitHub Copilot) is collaborative: the AI assists one developer working interactively. An AI engineering team is parallel and autonomous: multiple agents work independently on separate tasks while the human reviews outputs and manages direction. IDE AI speeds up individual execution; AI teams shift the human role entirely from implementation to direction and review. Both have a place — many developers use IDEs for interactive work and agent teams for batch execution.</p>
+      </div>
+    </details>
+
+    <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
+      <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How do you manage an AI engineering team from your phone?</summary>
+      <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+        <p>Add the amux PWA to your iPhone home screen (Safari → Share → Add to Home Screen). The mobile dashboard shows every agent's live status, lets you peek at output, send instructions by voice or text, and manage the kanban board. The offline scrollback cache (v0.9.200) means you can review agent progress even without internet. Voice dictation via local Whisper (v0.9.202) lets you send instructions hands-free while commuting.</p>
+      </div>
+    </details>
+
+    <h2>Related Guides</h2>
+    <ul>
+      <li><a href="/guides/getting-started/">Getting Started with amux</a> — install amux and launch your first agent fleet</li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents in Parallel</a> — scaling beyond 10 agents: coordination, worktrees, and review cadence</li>
+      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> — reliable unattended operation with self-healing and watchdog alerts</li>
+      <li><a href="/guides/mobile-management-pwa/">Managing Your Agent Fleet from Mobile</a> — iOS and Android PWA setup and workflow</li>
+      <li><a href="/guides/self-healing-configuration/">Self-Healing Agent Configuration</a> — watchdog setup, stall detection, crash recovery</li>
+      <li><a href="/guides/team-workflow-setup/">Team Workflow Setup</a> — multi-person teams using a shared amux instance</li>
+      <li><a href="/guides/voice-dictation-ai-agents/">Voice Dictation for AI Agents</a> — dictate to your fleet using Whisper on iOS or desktop</li>
+      <li><a href="/blog/best-terminal-ai-coding-agents-2026/">Best Terminal AI Coding Agents in 2026</a> — full comparison of Claude Code, Codex CLI, Antigravity CLI, Aider, and more</li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
