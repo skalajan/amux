@@ -110,9 +110,16 @@ launchctl bootout gui/$(id -u)/com.amux.telegram
 | `/mute` · `/unmute` | stop / resume forwarding replies into the current topic |
 | `/type <text>` | raw-inject text into the session's tmux pane, bypassing steering |
 | `/keys <key> [key...]` | send raw key names (e.g. `Enter`, `C-c`, `Tab`, `Up`, `Down`, `Escape`), bypassing steering |
+| `//<cmd> [args]` | forward a slash command to the mapped session's topic, e.g. `//ralph fix X` → the session receives `/ralph fix X` |
 
 Anything else prints a short help. A plain (non-command) message inside a session's
-topic is injected into that session.
+topic is injected into that session — this is also how oh-my-claudecode keyword
+triggers (`ralph`, `ultrawork`, `autopilot`, ...) work: just send them as plain text.
+`//` is for explicitly launching a **slash command** (a real Claude Code `/command`
+or an OMC skill like `/oh-my-claudecode:plan`) — the sidecar strips exactly one
+leading `/` and forwards the rest verbatim, e.g. `//oh-my-claudecode:plan X` →
+`/oh-my-claudecode:plan X`. A single leading `/` is always parsed as a sidecar bot
+command from the table above, never forwarded.
 
 **`/type` and `/keys` bypass turn-boundary steering on purpose.** Every other
 inbound message (and command) is delivered through `/api/chat`, which queues at

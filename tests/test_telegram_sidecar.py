@@ -332,6 +332,46 @@ assert rec.calls[1] == ("POST", "/api/sessions/sessA/keys", {"keys": "Enter"}), 
 print("payload ok — raw_send body {'text','record_history':True}; send_key body {'keys':<one key>}")
 
 
+# ── 13. "//" slash-command pass-through ─────────────────────────────────────────
+# "//ralph fix  double  spaces" -> forwards "/ralph fix  double  spaces" verbatim
+# (internal spacing preserved, no whitespace-collapsing parse) via the SAME chat
+# pipeline as a plain message: same session, same idempotent id derivation.
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+u = owner_msg(30, "//ralph fix  double  spaces", topic_id=100)
+bot.handle_update(u)
+assert ma.posted == [("sessA", "/ralph fix  double  spaces", "telegram", "tg-30")], ma.posted
+bot.offset.advance_to(u["update_id"])
+print("// ok — pass-through forwards with exactly one leading slash stripped, spacing preserved")
+
+# bare "//" alone -> usage hint, no forward (not even an empty command)
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(31, "//", topic_id=100))
+assert ma.posted == [], "bare // must not forward"
+assert any("usage:" in t for (_c, t, _tid) in mt.sent), mt.sent
+print("// ok — bare // replies a usage hint, forwards nothing")
+
+# single "/" (e.g. "/ralph") is NOT the pass-through — it is an unknown bot command
+# and hits the help path, never the session.
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(32, "/ralph fix tests", topic_id=100))
+assert ma.posted == [], "single-slash command must never reach amux as a pass-through"
+assert any("commands:" in t for (_c, t, _tid) in mt.sent), mt.sent
+print("// ok — single-slash /ralph still parses as an (unknown) bot command, not pass-through")
+
+# non-owner "//x" ignored entirely, same gate as everything else
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(33, "//ralph fix tests", topic_id=100, from_id=999))
+assert ma.posted == [], "non-owner // pass-through must never reach amux"
+print("// ok — non-owner // message ignored")
+
+# unmapped topic -> same "no session mapped" behavior as plain text there
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessA": 100}})
+bot.handle_update(owner_msg(34, "//ralph fix tests", topic_id=777))
+assert ma.posted == [], "unmapped topic must not forward"
+assert any("No session is mapped" in t for (_c, t, _tid) in mt.sent), mt.sent
+print("// ok — unmapped topic behaves like plain text (no session mapped reply)")
+
+
 print("\nALL TELEGRAM-SIDECAR CHECKS PASSED")
 
 

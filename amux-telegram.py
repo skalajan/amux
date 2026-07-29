@@ -607,12 +607,26 @@ class Bot:
         text = message_text(update)
         if not text:
             return True
-        cmd, args = parse_command(text)
-        if cmd:
-            self.handle_command(update, cmd, args)
-            return True
-        # Plain owner message in a session topic -> inject into that session.
         topic_id = message_topic_id(update)
+        if text.startswith("//"):
+            # "//" pass-through: forward a Claude Code slash command / OMC skill into
+            # the mapped session by stripping exactly ONE leading slash (text[1:] —
+            # never a whitespace-collapsing split, so internal spacing survives) and
+            # riding the SAME chat pipeline as a plain message below. This check runs
+            # BEFORE parse_command() so a single leading "/" still parses as a
+            # sidecar bot command, never this path.
+            forwarded = text[1:]
+            if not forwarded[1:].strip():
+                self._reply(topic_id, "usage: //<command> [args] (e.g. //ralph fix X)")
+                return True
+            text = forwarded
+        else:
+            cmd, args = parse_command(text)
+            if cmd:
+                self.handle_command(update, cmd, args)
+                return True
+        # Plain owner message (or a "//" pass-through, above) in a session topic ->
+        # inject into that session.
         session = self.topics.session_for_topic(topic_id)
         if not session:
             self._reply(topic_id, "No session is mapped to this topic. "
@@ -763,6 +777,7 @@ class Bot:
                 "/mute · /unmute — stop/resume forwarding in this topic\n"
                 "/type <text> — raw-inject text into the pane (owner-only)\n"
                 "/keys <key> [key...] — send raw keys, e.g. Enter, C-c, Tab (owner-only)\n"
+                "//<cmd> — forward a slash command to the session (e.g. //ralph fix X)\n"
                 "⚠️ /type and /keys bypass turn-boundary steering — they can interrupt "
                 "a live turn, so use them only for dialogs/logins steering can't reach.")
 
