@@ -382,11 +382,25 @@ class TelegramClient:
                            "allowed_updates": ["message"]},
                           timeout=timeout + 10)
 
+    # Telegram caps sendMessage at 4096 UTF-16 code units; stay under it with
+    # margin and send long texts as ordered chunks (a >4096 reply otherwise
+    # 400s forever and wedges the topic's in-order forward queue).
+    _MSG_CHUNK = 3900
+
     def send_message(self, chat_id, text, topic_id=None):
-        params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        params = {"chat_id": chat_id, "disable_web_page_preview": True}
         if topic_id is not None:
             params["message_thread_id"] = int(topic_id)
-        return self._call("sendMessage", params, timeout=20)
+        text = text or ""
+        res = None
+        for i in range(0, max(len(text), 1), self._MSG_CHUNK):
+            chunk = text[i:i + self._MSG_CHUNK]
+            if len(text) > self._MSG_CHUNK:
+                part = i // self._MSG_CHUNK + 1
+                total = (len(text) + self._MSG_CHUNK - 1) // self._MSG_CHUNK
+                chunk = f"[{part}/{total}] " + chunk
+            res = self._call("sendMessage", dict(params, text=chunk), timeout=20)
+        return res
 
     def create_forum_topic(self, chat_id, name):
         res = self._call("createForumTopic",
