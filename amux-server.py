@@ -7068,6 +7068,9 @@ CREATE TABLE IF NOT EXISTS chat_replies (
     id         TEXT UNIQUE NOT NULL,               -- stable: conversation_id + ':' + turn_index
     session    TEXT NOT NULL,
     text       TEXT NOT NULL,
+    summary    TEXT,                               -- see docs/reply-summary.md; NULL until a "⌁"
+                                                     -- marker is parsed at capture time or the
+                                                     -- background Haiku worker fills it in later
     turn_ts    INTEGER NOT NULL,
     created_ts INTEGER NOT NULL
 );
@@ -7171,10 +7174,51 @@ def _chat_iso_to_epoch(ts) -> int:
         return 0
 
 
+# AMUX-LOCAL:session-chat — reply-summary marker parser (docs/reply-summary.md).
+# The marker convention (shared via ~/.claude/common.md "Reply Summary Marker") asks
+# the main model to end a substantive reply with a final standalone line "⌁ <one
+# sentence>". This is the ONE parser for that contract — pure + deterministic, so a
+# chat_replies rebuild (DELETE + replay) re-derives the same summary from the same
+# transcript text every time (no drift).
+_CHAT_SUMMARY_MARKER = "⌁"
+_CHAT_SUMMARY_MAX_CHARS = 300
+
+
+def _chat_parse_summary_marker(text: str) -> tuple:
+    """PURE: split a turn's full reply text into (clean_text, summary). `summary`
+    is the marker sentence (capped to _CHAT_SUMMARY_MAX_CHARS) when the LAST
+    non-empty line starts with the "⌁" glyph (any amount of whitespace after it —
+    "⌁ foo", "⌁foo", "⌁   foo" all match); `clean_text` has that line removed so
+    the marker never leaks into the stored/rendered reply body. Returns
+    (text, None) unchanged when no marker line is present, or when stripping it
+    would leave nothing (never store an empty reply)."""
+    lines = text.split("\n")
+    last_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last_idx = i
+            break
+    if last_idx is None:
+        return text, None
+    candidate = lines[last_idx].strip()
+    if not candidate.startswith(_CHAT_SUMMARY_MARKER):
+        return text, None
+    summary = candidate[len(_CHAT_SUMMARY_MARKER):].strip()
+    if not summary:
+        return text, None
+    clean_text = "\n".join(lines[:last_idx] + lines[last_idx + 1:]).rstrip()
+    if not clean_text:
+        return text, summary[:_CHAT_SUMMARY_MAX_CHARS]
+    return clean_text, summary[:_CHAT_SUMMARY_MAX_CHARS]
+# /AMUX-LOCAL:session-chat
+
+
 def _chat_extract_turns(rows, conversation_id: str = "", since_index: int = 0) -> list:
     """PURE projection helper (AST-loadable / harness-driven like _steer_try_deliver —
     no I/O): a conversation's JSONL rows in file order -> the list of top-level
-    assistant reply turns to surface, as {id, turn_index, text, turn_ts} dicts.
+    assistant reply turns to surface, as {id, turn_index, text, summary, turn_ts} dicts.
+    `summary` (AMUX-LOCAL:session-chat) is the parsed "⌁" marker sentence, or None
+    (see _chat_parse_summary_marker / docs/reply-summary.md).
 
     A 'turn' is ONE completed, user-visible assistant reply: an assistant message
     with stop_reason == 'end_turn' carrying >=1 non-empty text block. Intermediate
@@ -7219,10 +7263,12 @@ def _chat_extract_turns(rows, conversation_id: str = "", since_index: int = 0) -
         idx += 1
         if idx <= since_index:
             continue
+        clean_text, summary = _chat_parse_summary_marker(text)  # AMUX-LOCAL:session-chat
         turns.append({
             "id": (conversation_id + ":" + str(idx)) if conversation_id else str(idx),
             "turn_index": idx,
-            "text": text,
+            "text": clean_text,
+            "summary": summary,  # AMUX-LOCAL:session-chat — see docs/reply-summary.md
             "turn_ts": _chat_iso_to_epoch(e.get("timestamp")),
         })
     return turns
@@ -7283,9 +7329,9 @@ def _chat_populate_replies(name: str) -> list:
             now = int(time.time())
             for t in turns:   # already ascending turn_index
                 cur = db.execute(
-                    "INSERT OR IGNORE INTO chat_replies(id, session, text, turn_ts, created_ts) "
-                    "VALUES(?,?,?,?,?)",
-                    (t["id"], name, t["text"], t["turn_ts"], now),
+                    "INSERT OR IGNORE INTO chat_replies(id, session, text, summary, turn_ts, created_ts) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (t["id"], name, t["text"], t.get("summary"), t["turn_ts"], now),
                 )
                 if cur.rowcount:
                     new.append(t)
@@ -7414,7 +7460,7 @@ def _chat_build_thread(session: str, since_seq: int = 0, limit: int = 500) -> di
         if r:
             since_ts = int(r["turn_ts"] or 0)
     reps = db.execute(
-        "SELECT rowid_seq, id, text, turn_ts FROM chat_replies WHERE session=? AND rowid_seq>? "
+        "SELECT rowid_seq, id, text, summary, turn_ts FROM chat_replies WHERE session=? AND rowid_seq>? "
         "ORDER BY rowid_seq ASC LIMIT ?", (session, since_seq, limit)).fetchall()
     if since_seq > 0:
         msgs = db.execute(
@@ -7429,12 +7475,13 @@ def _chat_build_thread(session: str, since_seq: int = 0, limit: int = 500) -> di
     for m in msgs:
         items.append({
             "id": m["id"], "role": m["role"], "origin": m["origin"], "text": m["text"],
-            "ts": int(m["created_ts"] or 0), "seq": None,
+            "ts": int(m["created_ts"] or 0), "seq": None, "summary": None,
             "delivery": _chat_delivery_status(m["steer_id"]) if m["role"] == "owner" else "",
         })
     for r in reps:
         items.append({
             "id": r["id"], "role": "session", "origin": "session", "text": r["text"],
+            "summary": r["summary"] if r["summary"] else None,  # AMUX-LOCAL:session-chat
             "ts": int(r["turn_ts"] or 0), "seq": r["rowid_seq"], "delivery": "",
         })
     items.sort(key=lambda x: (x["ts"], x["seq"] if x["seq"] is not None else -1))
@@ -7442,6 +7489,167 @@ def _chat_build_thread(session: str, since_seq: int = 0, limit: int = 500) -> di
                      (session,)).fetchone()
     cursor = int(cur["m"]) if cur and cur["m"] is not None else since_seq
     return {"session": session, "thread": items, "cursor": cursor}
+
+
+# ── Haiku reply-summary worker (docs/reply-summary.md degradation tier 2) ────
+# Turns that never self-report a "⌁" marker (see _chat_parse_summary_marker)
+# still get a short summary so the chat UI can collapse them: a background
+# daemon sweeps chat_replies for long, unsummarized rows and asks a cheap model
+# to compress them, one at a time. ANY failure just leaves summary NULL — the
+# UI degrades to client-side truncation (chat.js) — never blocks capture or
+# delivery of the underlying reply.
+AMUX_SUMMARY_MODEL = os.environ.get("AMUX_SUMMARY_MODEL", "haiku")
+AMUX_SUMMARY_TIMEOUT = float(os.environ.get("AMUX_SUMMARY_TIMEOUT", "90") or 90)
+AMUX_SUMMARY_DISABLE = os.environ.get("AMUX_SUMMARY_DISABLE", "").strip() == "1"
+_CHAT_SUMMARY_MIN_CHARS = 600     # below this, chat.js truncates client-side — not worth an AI call
+_CHAT_SUMMARY_MAX_AGE = 3600      # don't bother summarizing turns older than this (stale backlog)
+_CHAT_SUMMARY_RETRY_COOLDOWN = 600  # in-memory backoff after a failed attempt (never persisted)
+_chat_summary_failed: dict = {}   # rowid_seq -> earliest retry unix ts (bounds a busy-loop on a
+                                  # row whose summarize() keeps failing; reset on server restart)
+
+_CHAT_SUMMARY_PROMPT = (
+    "The following text is a reply from an AI coding agent in a dev session. "
+    "Summarize it into a SHORT chat message (one sentence, same language as the "
+    "text): what was done, the outcome, and whether anything blocks or needs the "
+    "owner's decision/attention. No implementation details, no code, no headings, "
+    "no markdown formatting — write it as a plain text message to a person."
+)
+
+# Priority order mirrors amux-telegram.py's Summarizer (same empirically-verified
+# env discipline — this server runs under the SAME kind of minimal launchd env,
+# see sidecars/com.amux.serve.plist: only HOME+PATH are set, so macOS Keychain's
+# `claude` auth additionally needs USER/LOGNAME, resolved explicitly below).
+_CHAT_SUMMARY_CONFIG_DIR_CANDIDATES = ("~/.claude-personal-2", "~/.claude-personal", "~/.claude")
+
+
+def _chat_pick_summary_config_dir() -> str:
+    for c in _CHAT_SUMMARY_CONFIG_DIR_CANDIDATES:
+        d = os.path.expanduser(c)
+        try:
+            with open(os.path.join(d, ".claude.json"), encoding="utf-8") as f:
+                if json.loads(f.read()).get("oauthAccount"):
+                    return d
+        except (OSError, ValueError):
+            continue
+    return os.path.expanduser("~/.claude")
+
+
+def _chat_summary_env(claude_bin: str) -> dict:
+    """Own env for the summarizer subprocess (never trust os.environ under the
+    server's minimal LaunchAgent env — see module docstring above)."""
+    home = os.path.expanduser("~")
+    user = ""
+    for key in ("USER", "LOGNAME"):
+        v = os.environ.get(key)
+        if v:
+            user = v
+            break
+    if not user:
+        try:
+            import pwd
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except Exception:
+            user = ""
+    claude_dir = (os.path.dirname(claude_bin) if os.path.isabs(claude_bin)
+                  else os.path.join(home, ".local", "bin"))
+    env = {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "PATH": f"{claude_dir}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "CLAUDE_CONFIG_DIR": _chat_pick_summary_config_dir(),
+    }
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        env["TMPDIR"] = tmpdir
+    return env
+
+
+def _chat_summarize_text(text: str) -> str | None:
+    """One-shot `claude -p --model <AMUX_SUMMARY_MODEL>` call that compresses a
+    long reply into a short summary. Returns None on ANY failure (timeout,
+    missing binary, non-zero exit, empty output) — never raises, logs at INFO
+    without the reply content."""
+    if AMUX_SUMMARY_DISABLE:
+        return None
+    claude_bin = _resolve_claude_bin()
+    if not claude_bin:
+        return None
+    stdin_text = text if len(text) <= 12000 else (text[:8000] + "\n…\n" + text[-4000:])
+    try:
+        r = subprocess.run(
+            [claude_bin, "-p", _CHAT_SUMMARY_PROMPT, "--model", AMUX_SUMMARY_MODEL],
+            input=stdin_text, capture_output=True, text=True,
+            timeout=AMUX_SUMMARY_TIMEOUT, env=_chat_summary_env(claude_bin))
+    except subprocess.TimeoutExpired:
+        slog(f"[chat-summary] timed out after {AMUX_SUMMARY_TIMEOUT}s")
+        return None
+    except OSError as e:
+        slog(f"[chat-summary] failed to start: {e}")
+        return None
+    if r.returncode != 0:
+        slog(f"[chat-summary] exited {r.returncode}")
+        return None
+    out = (r.stdout or "").strip()
+    return out[:_CHAT_SUMMARY_MAX_CHARS] if out else None
+
+
+def _chat_summary_tick() -> None:
+    """One sweep: pick the oldest unsummarized, long-enough, not-too-stale
+    chat_replies row (skipping any still in its post-failure cooldown) and
+    summarize it. Single-flight by construction — called only from the
+    dedicated worker loop below, never concurrently."""
+    try:
+        db = get_db()
+        cutoff = int(time.time()) - _CHAT_SUMMARY_MAX_AGE
+        rows = db.execute(
+            "SELECT rowid_seq, session, text FROM chat_replies "
+            "WHERE summary IS NULL AND length(text) > ? AND created_ts > ? "
+            "ORDER BY rowid_seq ASC LIMIT 25",
+            (_CHAT_SUMMARY_MIN_CHARS, cutoff)).fetchall()
+    except Exception:
+        return
+    now = time.time()
+    target = None
+    for row in rows:
+        retry_at = _chat_summary_failed.get(row["rowid_seq"])
+        if retry_at is None or now >= retry_at:
+            target = row
+            break
+    if target is None:
+        return
+    summary = _chat_summarize_text(target["text"])
+    if not summary:
+        _chat_summary_failed[target["rowid_seq"]] = now + _CHAT_SUMMARY_RETRY_COOLDOWN
+        if len(_chat_summary_failed) > 500:  # bound growth from a burst of failures
+            for k in sorted(_chat_summary_failed, key=_chat_summary_failed.get)[:200]:
+                _chat_summary_failed.pop(k, None)
+        return
+    try:
+        db.execute("UPDATE chat_replies SET summary=? WHERE rowid_seq=?",
+                   (summary, target["rowid_seq"]))
+        db.commit()
+        # "summary" (not "reply") — an already-delivered row's rowid_seq doesn't
+        # change on this UPDATE, so an incremental /api/chat poll would never see
+        # it; the dashboard treats this kind as a signal to refetch from cursor 0.
+        _chat_notify(target["session"], "summary")
+        slog(f"[chat-summary] filled rowid_seq={target['rowid_seq']} session={target['session']}")
+    except Exception:
+        pass
+
+
+def _chat_summary_worker_loop() -> None:
+    """Dedicated daemon thread — sleeps between ticks so summarization is
+    naturally single-flight and throttled (no overlapping subprocess calls)."""
+    if AMUX_SUMMARY_DISABLE:
+        slog("[chat-summary] worker disabled via AMUX_SUMMARY_DISABLE=1")
+        return
+    while True:
+        time.sleep(5)
+        try:
+            _chat_summary_tick()
+        except Exception:
+            pass
 # /AMUX-LOCAL:session-chat
 
 
@@ -8319,6 +8527,9 @@ def _init_db():
         # Guard tag must survive restarts: without it a restored commit-nudge
         # delivered as a REAL message (own turn, no revalidation/folding).
         "ALTER TABLE steering_queue ADD COLUMN guard TEXT",
+        # AMUX-LOCAL:session-chat — reply-summary marker cache (docs/reply-summary.md)
+        "ALTER TABLE chat_replies ADD COLUMN summary TEXT",
+        # /AMUX-LOCAL:session-chat
     ]:
         try:
             db.execute(migration)
@@ -42485,7 +42696,22 @@ function _chatOnSSE(payload) {
   // A `chat` event names which sessions changed; refetch the open thread if hit.
   try { window.dispatchEvent(new CustomEvent('amux:chat', { detail: payload })); } catch (e) {}
   if (!_chatActiveSession) return;
-  if (!payload.length || payload.some(p => p && p.session === _chatActiveSession)) _chatPoll();
+  var hit = false, hasSummary = false;
+  for (var i = 0; i < payload.length; i++) {
+    var p = payload[i];
+    if (!p || p.session !== _chatActiveSession) continue;
+    hit = true;
+    if (p.kind === 'summary') hasSummary = true;
+  }
+  if (!payload.length || hit) {
+    // AMUX-LOCAL:session-chat — a `summary` update fills in an ALREADY-delivered
+    // row (the Haiku worker's late-arriving fill-in); its rowid_seq is unchanged,
+    // so an incremental (since=_chatCursor) poll would never surface it. Reset
+    // the cursor to force a full refetch; _mergeThread's dedup-by-id then updates
+    // that bubble in place instead of duplicating it.
+    if (hasSummary) _chatCursor = 0;
+    _chatPoll();
+  }
 }
 function _chatPoll() {
   // Polling-fallback + refetch path: pull the open thread incrementally by cursor.
@@ -59862,6 +60088,9 @@ def main():
     threading.Thread(target=_watch_notes_dir, daemon=True).start()
     # Install the commit-stamping hook into all existing session repos
     threading.Thread(target=_install_hooks_all_sessions, daemon=True).start()
+    # AMUX-LOCAL:session-chat — background Haiku reply-summary worker (docs/reply-summary.md)
+    threading.Thread(target=_chat_summary_worker_loop, daemon=True).start()
+    # /AMUX-LOCAL:session-chat
 
     # Resume sessions that were running before a reboot/crash — runs in
     # background so the server is already accepting requests while sessions spin up.
