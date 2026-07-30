@@ -30,15 +30,17 @@ _spec.loader.exec_module(tg)
 # ── mock network clients ───────────────────────────────────────────────────────
 class MockTelegram:
     def __init__(self):
-        self.sent = []            # (chat_id, text, topic_id)
+        self.sent = []            # (chat_id, text, topic_id) — legacy 3-tuple view
+        self.silent = []          # disable_notification flag, aligned index-wise with self.sent
         self.created = []         # names
         self._next_topic = 1000
 
     def get_me(self):
         return {"id": 1, "username": "amux_test_bot"}
 
-    def send_message(self, chat_id, text, topic_id=None):
+    def send_message(self, chat_id, text, topic_id=None, disable_notification=False):
         self.sent.append((chat_id, text, topic_id))
+        self.silent.append(bool(disable_notification))
         return {"message_id": len(self.sent)}
 
     def create_forum_topic(self, chat_id, name):
@@ -692,6 +694,199 @@ assert capped.startswith("A" * 8000) and capped.endswith("B" * 4000)
 assert len(capped) == 8000 + len("\n…\n") + 4000
 assert tg._cap_stdin("short text") == "short text"
 print("cap_stdin ok — oversized input capped to first 8k + elision + last 4k; short input untouched")
+
+
+# ── 25. TelegramClient payload: disable_notification omitted when ringing ──────
+# (docs/telegram-chat.md "Notifications") — a normal (ringing) send must NOT carry
+# the key at all, only a silent send sets it to True. Chunked long messages must
+# carry the SAME flag on every chunk.
+class _TgRecordingCall:
+    def __init__(self):
+        self.calls = []  # (method, params-dict) — params is the exact body sendMessage posts
+
+    def __call__(self, method, params, timeout):
+        self.calls.append((method, dict(params)))
+        return {"message_id": len(self.calls)}
+
+
+tg_client = tg.TelegramClient("https://api.telegram.org", "tok")
+tg_rec = _TgRecordingCall()
+tg_client._call = tg_rec
+
+tg_client.send_message(-100, "hi", topic_id=5)
+assert "disable_notification" not in tg_rec.calls[-1][1], tg_rec.calls[-1]
+
+tg_client.send_message(-100, "hi", topic_id=5, disable_notification=True)
+assert tg_rec.calls[-1][1].get("disable_notification") is True, tg_rec.calls[-1]
+print("payload ok — disable_notification omitted when ringing, present+True when silent")
+
+n_before = len(tg_rec.calls)
+tg_client.send_message(-100, "X" * 9000, topic_id=5, disable_notification=True)
+chunk_calls = tg_rec.calls[n_before:]
+assert len(chunk_calls) == 3, f"9000 chars / 3900-char chunks should split into 3 sends: {len(chunk_calls)}"
+assert all(c[1].get("disable_notification") is True for c in chunk_calls), chunk_calls
+print("payload ok — chunked long message: ALL chunks share the silent notification flag")
+
+
+# ── 26. Notifications: origin-aware ring/silent routing ────────────────────────
+# (docs/telegram-chat.md "Notifications") — a forwarded reply/system row rings
+# only when the most recent preceding role=owner item's origin is exactly
+# "telegram"; everything else (dashboard/other-session origin, no preceding
+# owner message, system rows) is sent with disable_notification=True.
+def owner_item(iid, origin, text, ts):
+    return {"id": iid, "role": "owner", "origin": origin, "text": text, "ts": ts, "seq": None}
+
+
+def reply_item(iid, text, ts, seq):
+    return {"id": iid, "role": "session", "text": text, "ts": ts, "seq": seq}
+
+
+# telegram-origin owner msg -> following reply rings
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessN": 900}},
+                            outbound_state={"sessN": {"last_seq": 0, "seen": []}})
+ma.threads["sessN"] = {"cursor": 1, "thread": [
+    owner_item("o1", "telegram", "hi", 10),
+    reply_item("R:1", "reply to telegram", 20, 1),
+]}
+bot.forward_session("sessN")
+assert [t for (_c, t, _tid) in mt.sent] == ["reply to telegram"]
+assert mt.silent == [False], "reply to a telegram-origin owner message must RING"
+print("notify ok — telegram-origin owner msg -> following reply rings")
+
+# dashboard-origin owner msg -> following reply silent
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessO": 901}},
+                            outbound_state={"sessO": {"last_seq": 0, "seen": []}})
+ma.threads["sessO"] = {"cursor": 1, "thread": [
+    owner_item("o1", "dashboard", "hi", 10),
+    reply_item("R:1", "reply to dashboard", 20, 1),
+]}
+bot.forward_session("sessO")
+assert mt.silent == [True], "reply to a dashboard-origin owner message must be SILENT"
+print("notify ok — dashboard-origin owner msg -> following reply silent")
+
+# no preceding owner message at all -> silent (also covers "unknown/gap")
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessP": 902}},
+                            outbound_state={"sessP": {"last_seq": 0, "seen": []}})
+ma.threads["sessP"] = {"cursor": 1, "thread": [
+    reply_item("R:1", "autonomous continuation", 20, 1),
+]}
+bot.forward_session("sessP")
+assert mt.silent == [True], "reply with no preceding owner message must be SILENT"
+assert bot.outbound.governing_origin("sessP") is None, \
+    "unknown/gap governing origin must stay None, never inferred"
+print("notify ok — no preceding owner message / unknown gap -> silent")
+
+# interleaved: tg-owner, reply(ring), dashboard-owner, reply(silent), tg-owner, reply(ring)
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessQ": 903}},
+                            outbound_state={"sessQ": {"last_seq": 0, "seen": []}})
+ma.threads["sessQ"] = {"cursor": 3, "thread": [
+    owner_item("o1", "telegram", "one", 10),
+    reply_item("R:1", "first", 20, 1),
+    owner_item("o2", "dashboard", "two", 30),
+    reply_item("R:2", "second", 40, 2),
+    owner_item("o3", "telegram", "three", 50),
+    reply_item("R:3", "third", 60, 3),
+]}
+bot.forward_session("sessQ")
+assert [t for (_c, t, _tid) in mt.sent] == ["first", "second", "third"], mt.sent
+assert mt.silent == [False, True, False], mt.silent
+print("notify ok — interleaved owner origins: each reply rings/silences per its OWN preceding owner")
+
+# system rows follow the SAME origin rule as replies
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessV": 908}},
+                            outbound_state={"sessV": {"last_seq": 0, "seen": []}})
+ma.threads["sessV"] = {"cursor": 0, "thread": [
+    owner_item("o1", "telegram", "hi", 10),
+    {"id": "sys-1", "role": "system", "text": "usage limit", "ts": 20, "seq": None},
+]}
+bot.forward_session("sessV")
+assert [t for (_c, t, _tid) in mt.sent] == ["⚙️ [sessV] usage limit"]
+assert mt.silent == [False], "a system row following a telegram-origin owner message must ring"
+
+bot2, mt2, ma2, off2 = make_bot(topics_state={"topics": {"sessW": 909}},
+                                outbound_state={"sessW": {"last_seq": 0, "seen": []}})
+ma2.threads["sessW"] = {"cursor": 0, "thread": [
+    {"id": "sys-1", "role": "system", "text": "usage limit", "ts": 20, "seq": None},
+]}
+bot2.forward_session("sessW")
+assert mt2.silent == [True], "a system row with no preceding owner message must be silent"
+print("notify ok — system-origin rows follow the same origin rule as replies")
+
+# notification flag composes with smart-mode summarization (orthogonal per docs)
+def mock_summarize_notify(text):
+    return "shrnuti"
+
+
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessU": 907}},
+                            outbound_state={"sessU": {"last_seq": 0, "seen": []}},
+                            summarizer=mock_summarize_notify)
+ma.threads["sessU"] = {"cursor": 1, "thread": [
+    owner_item("o1", "telegram", "hi", 10),
+    {"id": "S:1", "role": "session", "text": LONG_REPLY, "ts": 20, "seq": 1},
+]}
+bot.forward_session("sessU")
+assert [t for (_c, t, _tid) in mt.sent] == [tg.SMART_PREFIX + "shrnuti" + tg.SMART_SUFFIX]
+assert mt.silent == [False], "smart-mode summarized reply must still ring per the origin rule"
+print("notify ok — notification flag composes with smart/brief/full display modes")
+
+# origin state persists across a simulated restart (state file reload)
+td_o = tempfile.mkdtemp()
+op = os.path.join(td_o, "out.json")
+ot1 = tg.OutboundTracker(op, {})
+ot1.observe_owner("sessR", "telegram")
+ot1.save()
+ot2 = tg.OutboundTracker.load(op)
+assert ot2.governing_origin("sessR") == "telegram", "governing origin must persist across a reload"
+print("notify ok — governing origin persists across a simulated restart (state file reload)")
+
+
+# ── 27. /ring on|off: force-silence override, independent of command acks ──────
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessS": 904}},
+                            outbound_state={"sessS": {"last_seq": 0, "seen": []}})
+bot.handle_update(owner_msg(60, "/ring off", topic_id=904))
+assert bot.topics.is_ring_off("sessS")
+assert [t for (_c, t, _tid) in mt.sent][-1] == "ring off for sessS", mt.sent
+assert mt.silent[-1] is False, "the /ring off ACK itself must still ring (command response)"
+
+ma.threads["sessS"] = {"cursor": 1, "thread": [
+    owner_item("o1", "telegram", "hi", 10),
+    reply_item("R:1", "reply", 20, 1),
+]}
+bot.forward_session("sessS")
+assert mt.silent[-1] is True, "/ring off must force silent even for a telegram-origin reply"
+
+bot.handle_update(owner_msg(61, "/ring on", topic_id=904))
+assert not bot.topics.is_ring_off("sessS")
+ma.threads["sessS"]["thread"].append(owner_item("o2", "telegram", "again", 30))
+ma.threads["sessS"]["thread"].append(reply_item("R:2", "reply2", 40, 2))
+bot.forward_session("sessS")
+assert mt.silent[-1] is False, "/ring on must restore the origin rule (telegram -> ring)"
+print("ring ok — /ring off forces silent unconditionally; /ring on restores the origin rule")
+
+reloaded_ring = tg.TopicStore.load(bot.topics.path)
+assert not reloaded_ring.is_ring_off("sessS"), "ring state must persist to disk (reflects the last /ring on)"
+
+# invalid/missing arg -> usage hint, no state change
+bot2, mt2, ma2, off2 = make_bot(topics_state={"topics": {"sessS2": 905}})
+bot2.handle_update(owner_msg(62, "/ring", topic_id=905))
+assert [t for (_c, t, _tid) in mt2.sent][-1] == "usage: /ring on|off"
+assert not bot2.topics.is_ring_off("sessS2")
+bot2.handle_update(owner_msg(63, "/ring loud", topic_id=905))
+assert [t for (_c, t, _tid) in mt2.sent][-1] == "usage: /ring on|off"
+assert not bot2.topics.is_ring_off("sessS2"), "invalid /ring argument must not change stored state"
+
+# unmapped topic -> refuses, same pattern as /mode /last etc.
+bot3, mt3, ma3, off3 = make_bot()
+bot3.handle_update(owner_msg(64, "/ring off", topic_id=999))
+assert any("mapped session topic" in t for (_c, t, _tid) in mt3.sent), mt3.sent
+print("ring ok — invalid/missing arg gives a usage hint; unmapped topic refuses; state persists")
+
+# command responses always ring, even with /ring off already set for the topic
+bot, mt, ma, off = make_bot(topics_state={"topics": {"sessT": 906}})
+bot.topics.set_ring_off("sessT", True)
+bot.handle_update(owner_msg(70, "/sessions", topic_id=906))
+assert mt.silent[-1] is False, "command responses must always ring, independent of /ring off"
+print("ring ok — command responses always ring, independent of /ring off")
 
 
 print("\nALL TELEGRAM-SIDECAR CHECKS PASSED")

@@ -212,6 +212,11 @@ class TopicStore:
         # hand-edited file are dropped rather than raising.
         self._modes = {str(k): v for k, v in (state.get("modes") or {}).items()
                        if v in VALID_MODES}
+        # session -> /ring off (force disable_notification on EVERY forward for
+        # this topic, regardless of governing origin). This is a full
+        # mute-of-sound, distinct from /mute's content suppression. Absent ->
+        # "on" (the origin rule in Bot.forward_session governs, the default).
+        self._ring_off = set(str(s) for s in (state.get("ring_off") or []))
 
     @classmethod
     def load(cls, path=TOPICS_PATH):
@@ -223,7 +228,7 @@ class TopicStore:
 
     def to_dict(self):
         return {"topics": dict(self._topics), "muted": sorted(self._muted),
-                "modes": dict(self._modes)}
+                "modes": dict(self._modes), "ring_off": sorted(self._ring_off)}
 
     def save(self):
         _atomic_write_0600(self.path, json.dumps(self.to_dict(), indent=2))
@@ -261,6 +266,16 @@ class TopicStore:
             raise ValueError(f"invalid mode: {mode!r} (want one of {VALID_MODES})")
         self._modes[str(session)] = mode
 
+    def is_ring_off(self, session):
+        return str(session) in self._ring_off
+
+    def set_ring_off(self, session, off):
+        session = str(session)
+        if off:
+            self._ring_off.add(session)
+        else:
+            self._ring_off.discard(session)
+
 
 # ── pure logic: inbound long-poll offset (persisted) ───────────────────────────
 class OffsetStore:
@@ -292,13 +307,25 @@ class OffsetStore:
         _atomic_write_0600(self.path, str(self.value))
 
 
+# ── pure logic: transcript order for a merged thread item ──────────────────────
+def _thread_order_key(item):
+    """Sort key for a merged /api/chat thread item: (ts, then seq). Owner/system
+    rows carry seq=None (sorted before a same-ts reply row, seq >= 0). Shared by
+    OutboundTracker.select, sorted_session_replies, and Bot.forward_session's
+    notification-routing walk so all three agree on "transcript order"."""
+    return (item.get("ts") or 0, item.get("seq") if item.get("seq") is not None else -1)
+
+
 # ── pure logic: outbound cursor + stable-id dedup (persisted) ──────────────────
 class OutboundTracker:
     """Per-session outbound forwarding state: a rowid_seq high-water cursor (fetch
-    optimization) AND the set of stable reply ids already forwarded (the real
-    exactly-once key). Dedup-by-id makes forwarding rebuild-safe: if a cache rebuild
-    renumbers rowid_seq below our cursor we refetch from 0 (no stall) and the seen-id
-    set prevents re-flooding (C-crit-2)."""
+    optimization), the set of stable reply ids already forwarded (the real
+    exactly-once key), AND the origin of the most recently observed owner-role
+    item (docs/telegram-chat.md "Notifications" — the 'governing origin' used to
+    decide whether a forwarded reply rings or is sent silently). Dedup-by-id makes
+    forwarding rebuild-safe: if a cache rebuild renumbers rowid_seq below our
+    cursor we refetch from 0 (no stall) and the seen-id set prevents re-flooding
+    (C-crit-2)."""
 
     SEEN_CAP = 2000
 
@@ -309,6 +336,7 @@ class OutboundTracker:
             self._state[str(sess)] = {
                 "last_seq": int(st.get("last_seq", 0)),
                 "seen": list(st.get("seen", [])),
+                "last_owner_origin": st.get("last_owner_origin"),
             }
 
     @classmethod
@@ -331,6 +359,30 @@ class OutboundTracker:
     def fetch_since(self, session):
         return int(self._state.get(str(session), {}).get("last_seq", 0))
 
+    def _seen_set(self, session):
+        return set(self._state.get(str(session), {}).get("seen", []))
+
+    def is_seen(self, session, item_id):
+        return item_id in self._seen_set(session)
+
+    def governing_origin(self, session):
+        """The persisted origin of the most recent owner-role item observed for
+        `session` (any forward_session walk, not just forwarded rows), or None if
+        never observed (fresh state / a gap in the incremental window — e.g. an
+        owner row whose created_ts ties the window's since-cutoff is excluded by
+        amux-server.py's `created_ts>since_ts` filter and is never seen again).
+        Callers must treat None as "not telegram" — fail-quiet, never fail-ring."""
+        return self._state.get(str(session), {}).get("last_owner_origin")
+
+    def observe_owner(self, session, origin):
+        """Record the origin of an owner-role item as this session's new
+        governing origin. Persisted (not just in-memory) so a sidecar restart
+        doesn't lose an origin that has since scrolled out of the incremental
+        /api/chat window (the window only grows once a reply is forwarded)."""
+        st = self._state.setdefault(
+            str(session), {"last_seq": 0, "seen": [], "last_owner_origin": None})
+        st["last_owner_origin"] = origin or None
+
     def refetch_from(self, session, reported_cursor):
         """Given the cursor (max rowid_seq) the server just reported, return the
         `since` to (re)fetch with. If the server's max is BELOW our high-water, the
@@ -345,16 +397,15 @@ class OutboundTracker:
         """Pure: the ordered list of thread items to forward — role in
         {session, system}, not already forwarded — sorted in transcript order
         (ts, then seq)."""
-        st = self._state.get(str(session), {})
-        seen = set(st.get("seen", []))
+        seen = self._seen_set(session)
         cand = [it for it in thread
                 if it.get("role") in ("session", "system") and it.get("id") not in seen]
-        cand.sort(key=lambda x: (x.get("ts") or 0,
-                                 x.get("seq") if x.get("seq") is not None else -1))
+        cand.sort(key=_thread_order_key)
         return cand
 
     def mark_sent(self, session, item):
-        st = self._state.setdefault(str(session), {"last_seq": 0, "seen": []})
+        st = self._state.setdefault(
+            str(session), {"last_seq": 0, "seen": [], "last_owner_origin": None})
         iid = item.get("id")
         if iid and iid not in st["seen"]:
             st["seen"].append(iid)
@@ -366,8 +417,12 @@ class OutboundTracker:
 
     def seed_baseline(self, session, thread, reported_cursor):
         """First time we see a session: mark all existing forwardable items as seen
-        WITHOUT forwarding (no history flood on startup), and adopt the cursor."""
-        st = self._state.setdefault(str(session), {"last_seq": 0, "seen": []})
+        WITHOUT forwarding (no history flood on startup), and adopt the cursor.
+        Deliberately does NOT seed last_owner_origin from pre-existing history —
+        a freshly-onboarded session starts with an unknown governing origin (the
+        documented fail-quiet default), same as any other gap."""
+        st = self._state.setdefault(
+            str(session), {"last_seq": 0, "seen": [], "last_owner_origin": None})
         for it in self.select(session, thread):
             self.mark_sent(session, it)
         if reported_cursor is not None:
@@ -431,10 +486,16 @@ class TelegramClient:
     # 400s forever and wedges the topic's in-order forward queue).
     _MSG_CHUNK = 3900
 
-    def send_message(self, chat_id, text, topic_id=None):
+    def send_message(self, chat_id, text, topic_id=None, disable_notification=False):
+        """disable_notification is only included in the request when True — a
+        ringing (default) send omits the key entirely rather than sending it
+        as False. `params` is built once and reused for every chunk below, so a
+        long, silently-forwarded reply stays silent across ALL of its chunks."""
         params = {"chat_id": chat_id, "disable_web_page_preview": True}
         if topic_id is not None:
             params["message_thread_id"] = int(topic_id)
+        if disable_notification:
+            params["disable_notification"] = True
         text = text or ""
         res = None
         for i in range(0, max(len(text), 1), self._MSG_CHUNK):
@@ -768,8 +829,7 @@ def sorted_session_replies(thread):
     """role=='session' items from a merged thread, sorted in transcript order
     (ts, then seq) — used by /last to index from the most recent (index -n)."""
     items = [it for it in thread if it.get("role") == "session"]
-    items.sort(key=lambda x: (x.get("ts") or 0,
-                              x.get("seq") if x.get("seq") is not None else -1))
+    items.sort(key=_thread_order_key)
     return items
 
 
@@ -850,6 +910,8 @@ class Bot:
                 self._cmd_mute(topic_id, True)
             elif cmd == "/unmute":
                 self._cmd_mute(topic_id, False)
+            elif cmd == "/ring":
+                self._cmd_ring(topic_id, args)
             elif cmd == "/type":
                 self._cmd_type(update, topic_id)
             elif cmd == "/keys":
@@ -933,6 +995,25 @@ class Bot:
         self._save_topics()
         self._reply(topic_id, f"{'muted' if mute else 'unmuted'} {session}")
 
+    def _cmd_ring(self, topic_id, args):
+        """/ring off forces disable_notification on EVERY forwarded reply for
+        this topic regardless of governing origin — a full mute-of-sound,
+        distinct from /mute's content suppression (the reply still arrives,
+        just silently). /ring on restores the origin rule (docs/telegram-chat.md
+        "Notifications"). Command responses (this ack included) always ring —
+        only the outbound reply-forward path in forward_session reads this flag."""
+        session = self.topics.session_for_topic(topic_id)
+        if not session:
+            self._reply(topic_id, "Run /ring inside a mapped session topic.")
+            return
+        val = args[0].strip().lower() if args else ""
+        if val not in ("on", "off"):
+            self._reply(topic_id, "usage: /ring on|off")
+            return
+        self.topics.set_ring_off(session, val == "off")
+        self._save_topics()
+        self._reply(topic_id, f"ring {val} for {session}")
+
     def _cmd_type(self, update, topic_id):
         """Raw-inject text into the session's tmux pane, DELIBERATELY bypassing
         the /api/chat steering path (that queues until a turn boundary, which
@@ -1013,6 +1094,8 @@ class Bot:
                 "/wake <session> — resume a session\n"
                 "/create <session> [dir] — create a session\n"
                 "/mute · /unmute — stop/resume forwarding in this topic\n"
+                "/ring on|off — force-silence every forward regardless of origin "
+                "(on restores the default: ring only for replies to a Telegram-originated message)\n"
                 "/mode [smart|brief|full] — show or set this topic's reply display mode\n"
                 "/last [n] — full text of the n-th most recent reply (default 1)\n"
                 "/type <text> — raw-inject text into the pane (owner-only)\n"
@@ -1055,7 +1138,21 @@ class Bot:
     # ── outbound ─────────────────────────────────────────────────────────────
     def forward_session(self, session):
         """Forward any new session-reply / system rows for one session to its topic.
-        Exactly-once via stable-id dedup; transcript order; rebuild-safe cursor."""
+        Exactly-once via stable-id dedup; transcript order; rebuild-safe cursor.
+
+        Notification routing (docs/telegram-chat.md "Notifications"): walks the
+        FULL merged thread — owner rows included, not just the forwardable ones —
+        in transcript order. Every owner row updates the session's persisted
+        "governing origin"; every forwardable session/system row rings only when
+        the CURRENT governing origin is exactly "telegram" (i.e. it answers a
+        Telegram-originated owner message). Everything else — dashboard/other-
+        session origin, no preceding owner message at all, system rows — is sent
+        with disable_notification=True. /ring off forces silent unconditionally,
+        overriding the origin rule. Owner rows are walked on every poll (never
+        marked "seen") because amux-server.py's incremental window for them is
+        ts-based (created_ts > since_ts of the last forwarded reply), not
+        id-based — the same row legitimately reappears until a later reply
+        forwards past it; re-observing it is idempotent."""
         if self.topics.is_muted(session):
             return
         first_time = not self.outbound.known(session)
@@ -1073,12 +1170,24 @@ class Bot:
             self.outbound.seed_baseline(session, thread, cursor)
             self._save_outbound()
             return
-        for item in self.outbound.select(session, thread):
+        ring_off = self.topics.is_ring_off(session)
+        for item in sorted(thread, key=_thread_order_key):
             if self.topics.is_muted(session):
                 break
+            role = item.get("role")
+            if role == "owner":
+                self.outbound.observe_owner(session, item.get("origin"))
+                self._save_outbound()
+                continue
+            if role not in ("session", "system"):
+                continue
+            if self.outbound.is_seen(session, item.get("id")):
+                continue
             tid = self._ensure_topic(session)
+            silent = ring_off or self.outbound.governing_origin(session) != "telegram"
             try:
-                self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid)
+                self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid,
+                                     disable_notification=silent)
             except TelegramError as e:
                 log.warning("forward to %s failed: %s — retry next poll", session, e)
                 break  # leave item un-marked; retried next poll

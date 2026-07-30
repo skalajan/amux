@@ -113,6 +113,7 @@ launchctl bootout gui/$(id -u)/com.amux.telegram
 | `/wake <session>` | resume a session and ensure it has a topic |
 | `/create <session> [dir]` | create a session and ensure it has a topic |
 | `/mute` · `/unmute` | stop / resume forwarding replies into the current topic |
+| `/ring on\|off` | force-silence every forward regardless of origin (`off`), or restore the origin rule (`on`, default) — see [Notifications](#notifications) |
 | `/mode [smart\|brief\|full]` | show or set this topic's reply display mode (see below) |
 | `/last [n]` | send the full, unsummarized text of the n-th most recent reply (default 1) |
 | `/type <text>` | raw-inject text into the session's tmux pane, bypassing steering |
@@ -193,6 +194,54 @@ authenticates as; if unset, it auto-picks the first of `~/.claude-personal-2`,
 account (same account-routing convention `amux-server.py` uses — see
 `MODIFICATIONS.md`).
 
+## Notifications
+
+Every session reply forwarded to Telegram is still delivered — full transcript,
+nothing dropped — but it only **rings** your phone when it's the direct answer
+to something *you* typed in Telegram. Everything else is sent with Telegram's
+`disable_notification: true`: it lands silently in the topic (visible, but no
+sound/vibration), so working from the dashboard or CLI doesn't page your phone
+for every reply.
+
+**The rule.** For each forwarded reply/system row, the sidecar looks at the
+most recent owner-role chat item that precedes it in transcript order (its
+`origin`, one of `dashboard` / `telegram` / another session's name / `system`):
+
+| governing origin | forwarded row |
+|---|---|
+| `telegram` | **rings** (normal `sendMessage`) |
+| anything else, or none found | **silent** (`disable_notification: true`) |
+
+This covers autonomous session output with no preceding owner message, replies
+to something typed in the dashboard or another session, and system rows
+(usage-limit notices, etc.) — all silent unless the owner's last word to that
+session was a Telegram message. A long silent reply's chunks (>4096 chars) all
+share the same flag — never a mix of silent + ringing chunks from one reply.
+
+**`/ring on|off`** overrides the rule per-topic: `/ring off` forces every
+forward silent regardless of origin (a full mute-of-sound — unlike `/mute`,
+content still arrives); `/ring on` (default) restores the rule above. Direct
+command responses (`/sessions`, `/peek`, `/last`, `/mode` confirmations, `//`
+pass-through acks, error messages) always ring — you just typed into Telegram,
+so the ack is inherently Telegram-initiated. Only the outbound reply-forward
+path reads `/ring`.
+
+**Fail-quiet default.** The governing origin is tracked per-session and
+persisted in `telegram-outbound.json` as the sidecar walks each poll's merged
+thread, so a sidecar restart doesn't lose it. If it's ever unknown — a brand
+new session, or a gap where no owner row is visible in the current fetch —
+the reply is **silent**, never rings on an unverified guess.
+
+*Why a gap can happen.* `amux-server.py`'s incremental `GET /api/chat?since=`
+window is time-based for owner/system rows (`created_ts` strictly greater than
+the timestamp of the last-forwarded reply), while the reply cursor itself is
+id-based. An owner message whose second-granularity timestamp ties that cutoff
+is excluded from every future incremental fetch for that session — it's simply
+never seen again. Persisting the governing origin as soon as an owner row IS
+observed (rather than re-deriving it from whatever the current poll happens to
+return) is what makes the routing correct across that edge case and across
+restarts, instead of silently misclassifying a reply that should have rung.
+
 ### Remote re-login (expired Claude session)
 
 When a session's Claude Code login has expired and it's stuck at an OAuth
@@ -206,9 +255,9 @@ prompt, drive the re-login from your phone:
 ## State files (`~/.amux/`, all 0600, never in git)
 
 - `telegram.env` — your config (above).
-- `telegram-topics.json` — session ⇄ topic map + muted set + per-topic mode overrides (`/mode`).
+- `telegram-topics.json` — session ⇄ topic map + muted set + per-topic mode overrides (`/mode`) + `/ring off` set.
 - `telegram-offset` — inbound long-poll offset (advanced only after a durable amux ack).
-- `telegram-outbound.json` — per-session outbound cursor + forwarded stable-ids (dedup).
+- `telegram-outbound.json` — per-session outbound cursor + forwarded stable-ids (dedup) + the persisted governing owner origin (see [Notifications](#notifications)).
 
 ## Notes
 
