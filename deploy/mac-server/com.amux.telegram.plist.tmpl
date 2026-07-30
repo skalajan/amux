@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  amux-telegram sidecar LaunchAgent — templated copy of sidecars/com.amux.telegram.plist
+  for mac-server (placeholders @@HOME@@ / @@CHECKOUT@@ / @@PYTHON@@ substituted
+  by deploy/mac-server/install.sh). Requires ~/.amux/telegram.env (0600) to
+  already exist with a SEPARATE bot's credentials — see docs/telegram-chat.md
+  and the "Per-host identity" section of docs/mac-server-deploy.md — the
+  sidecar refuses to start without it, so install this AFTER that file exists.
+
+  Mirrors com.amux.serve: KeepAlive so the sidecar survives crashes and amux's
+  own os.execv self-restarts (connection drops are normal — the sidecar
+  reconnects with backoff).
+
+  Manual install (what install.sh automates):
+    cp com.amux.telegram.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.telegram.plist
+    launchctl enable  gui/$(id -u)/com.amux.telegram
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amux.telegram</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@PYTHON@@</string>
+        <string>@@CHECKOUT@@/amux-telegram.py</string>
+    </array>
+
+    <!-- Run from the repo so amux-telegram.py resolves relative paths. -->
+    <key>WorkingDirectory</key>
+    <string>@@CHECKOUT@@</string>
+
+    <!-- launchd starts with a minimal PATH; put /usr/local/bin first for python3. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>@@HOME@@</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep the sidecar up across crashes, logout, and amux self-restarts. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>@@HOME@@/.amux/logs/telegram.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@HOME@@/.amux/logs/telegram.err.log</string>
+</dict>
+</plist>

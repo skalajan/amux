@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Auto-update runner LaunchAgent (Decision 1A + 2A in
+  .omc/plans/mac-server-deploy.md) — runs deploy/mac-server/amux-pull-update.sh
+  on a StartInterval cadence directly from the checkout (never a copy
+  elsewhere — a pull that changes the script itself must take effect next
+  cadence). Rendered by deploy/mac-server/install.sh (placeholders @@HOME@@ /
+  @@CHECKOUT@@ / @@CADENCE_SECONDS@@ substituted).
+
+  *** DO NOT bootstrap/enable this LaunchAgent until deploy/mac-server/
+  pull-reconcile-allowlist.txt has been populated from OBSERVED
+  `git status --porcelain` output on THIS host across at least one full
+  cadence window (Phase 3.b) — the seed candidates alone are insufficient.
+  install.sh renders this file but deliberately never bootstraps it; see
+  docs/mac-server-deploy.md "Auto-update" section for the manual
+  launchctl bootstrap command to run once P3.b is done. ***
+
+  Deliberately NO KeepAlive here: this is a periodic one-shot job (StartInterval),
+  not a persistent daemon — KeepAlive would fight the interval and relaunch it
+  immediately after every exit instead of waiting for the next cadence.
+
+  Manual install (once P3.b is satisfied):
+    cp com.amux.pull-update.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.pull-update.plist
+    launchctl enable  gui/$(id -u)/com.amux.pull-update
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amux.pull-update</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@@CHECKOUT@@/deploy/mac-server/amux-pull-update.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@@CHECKOUT@@</string>
+
+    <!-- launchd starts with a minimal PATH; put /usr/local/bin first for
+         git/curl/python3. HOME is required for ~/.amux/write_token and
+         ~/.amux/telegram.env lookups (best-effort alerting) and for git to
+         find any configured credential helper. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>@@HOME@@</string>
+    </dict>
+
+    <!-- Cadence — plan default 5 min (300s), tunable. A docs-only change
+         should land within one cadence. -->
+    <key>StartInterval</key>
+    <integer>@@CADENCE_SECONDS@@</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>@@HOME@@/.amux/logs/pull-update.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@HOME@@/.amux/logs/pull-update.err.log</string>
+</dict>
+</plist>

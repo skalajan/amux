@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Boot-time session starter — templated copy of sidecars/com.amux.start-all.plist
+  for mac-server (placeholder @@HOME@@ substituted by deploy/mac-server/install.sh).
+  One-shot at login: waits for the amux server (com.amux.serve) to come up,
+  then POSTs /start for every registered-but-not-running session via the
+  localhost API. Sessions idle >30 min hibernate again on their own — this
+  only guarantees the fleet is reachable right after a reboot.
+
+  All via the server's localhost API: launchd bash has no Full Disk Access, so
+  it cannot exec the amux CLI directly. The server process (FDA-granted
+  @@PYTHON@@) does the actual starting.
+
+  Register the mac-server fleet (Phase 6) BEFORE installing this — it starts
+  whatever is already registered in THIS host's ~/.amux/sessions, not brain's.
+
+  Manual install (what install.sh automates):
+    cp com.amux.start-all.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.start-all.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amux.start-all</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>for i in $(seq 1 30); do curl -sk -o /dev/null https://localhost:8822/api/sessions &amp;&amp; break; sleep 2; done; TOK=$(cat "$HOME/.amux/write_token"); curl -sk https://localhost:8822/api/sessions | /usr/bin/python3 -c '
+import json,sys
+print("\n".join(s["name"] for s in json.load(sys.stdin) if not s.get("running")))
+' | while read -r s; do [ -n "$s" ] &amp;&amp; curl -sk -o /dev/null -X POST -H "X-Amux-Write-Token: $TOK" "https://localhost:8822/api/sessions/$s/start"; echo "started $s"; sleep 1; done</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>@@HOME@@</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>@@HOME@@/.amux/logs/start-all.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@HOME@@/.amux/logs/start-all.log</string>
+</dict>
+</plist>

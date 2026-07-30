@@ -1,0 +1,25 @@
+# amux mac-server pull-update — reconcile allowlist
+#
+# Tracked pathspecs (git pathspec syntax, one per line) that are EXPECTED to go
+# dirty on the running host as steady-state operation (not exceptional). Before
+# every cadence, amux-pull-update.sh hard-resets exactly these tracked paths to
+# HEAD (`git checkout HEAD -- <pathspec>`, fed one pattern at a time via
+# --pathspec-from-file — never a shell-expanded glob) so `git pull --ff-only`
+# can land even while the host's own runtime keeps touching them. Any tracked
+# dirt OUTSIDE this list aborts the pull and raises a loud local alert instead
+# of being silently reset — see docs/mac-server-deploy.md "Auto-update" section
+# and .omc/plans/mac-server-deploy.md (Decision D1).
+#
+# Blank lines and lines starting with # are stripped by amux-pull-update.sh
+# before any pattern reaches git (git's own --pathspec-from-file rejects blank
+# lines outright and has no comment syntax of its own — verified empirically;
+# this file's comments are a convenience layer on top, not passed through raw).
+#
+# ── SEED CANDIDATES ONLY — pending P3.b evidence ────────────────────────────
+# Do NOT enable com.amux.pull-update until these are confirmed (or replaced) by
+# OBSERVED `git status --porcelain` output collected on the actual mac-server
+# host across at least one full cadence window (see Phase 3.b in the plan).
+# The two lines below are carried over from dirt observed on mac-brain at plan
+# time — they are a starting hypothesis, not verified evidence for mac-server.
+.claude/commands/*.md
+.claude/settings.json
