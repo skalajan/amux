@@ -470,7 +470,7 @@ cmd_start() {
     [[ "${AMUX_NO_REMOTE_CONTROL:-}" == "1" ]] || [[ "$cmd" == *"--remote-control"* ]] || cmd="$cmd --remote-control"
     # Default model: override per-session with --model on amux register,
     # or globally with $AMUX_DEFAULT_MODEL.
-    local default_model="${AMUX_DEFAULT_MODEL:-claude-opus-4-8[1m]}"
+    local default_model="${AMUX_DEFAULT_MODEL:-claude-opus-5[1m]}"
     [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model $(printf '%q' "$default_model")"
   fi
 
