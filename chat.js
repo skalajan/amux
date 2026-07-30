@@ -26,6 +26,12 @@
   var _items = new Map();          // id -> thread item (dedup key = stable id)
   var _shellBuilt = false;
   var _renderTimer = 0;
+  // Bug-2 (poll-flood): the inline `_chatOnSSE` now only dispatches the raw,
+  // fleet-wide `chat` SSE payload here. We throttle SSE-driven refetches of the
+  // OPEN thread to at most one GET /api/chat per CHAT_POLL_THROTTLE_MS.
+  var CHAT_POLL_THROTTLE_MS = 2000;
+  var _pollTimer = 0;
+  var _pollPending = false;
   // Reply-summary collapse (docs/reply-summary.md): a session bubble collapses to
   // its `summary` (server-parsed "⌁" marker or the background Haiku fill-in) when
   // present, else to a client-side truncation for long unmarked replies. Expand
@@ -163,6 +169,23 @@
     _scheduleRender();
   }
 
+  function _scheduleSSEPoll() {
+    // Trailing-edge throttle: fire at most one poll per CHAT_POLL_THROTTLE_MS even
+    // under a sustained fleet-wide `chat` burst. On the first hit we arm a timer;
+    // when it fires we poll (if anything was pending) and re-arm a cooldown, so a
+    // continuous burst still refreshes every window and a quiet window stops it —
+    // never a poll-per-event flood.
+    _pollPending = true;
+    if (_pollTimer) return;
+    var fire = function () {
+      if (!_pollPending) { _pollTimer = 0; return; }
+      _pollPending = false;
+      if (window._chatActiveSession && window._chatPoll) window._chatPoll();
+      _pollTimer = setTimeout(fire, CHAT_POLL_THROTTLE_MS);
+    };
+    _pollTimer = setTimeout(fire, CHAT_POLL_THROTTLE_MS);
+  }
+
   function _send() {
     var panel = _panel();
     if (!panel) return;
@@ -260,8 +283,28 @@
   // The B1 plumbing dispatches this with the merged thread (SSE + polling both
   // route here); merge-by-id dedups overlapping SSE/poll deliveries.
   window.addEventListener('amux:chat-thread', function (e) { _mergeThread(e.detail); });
-  // Keep the composer enabled/disabled state fresh as session status changes.
-  window.addEventListener('amux:chat', function () { _syncComposer(); });
+  // `chat` SSE events are fleet-wide. This handler owns the Bug-2 poll-flood fix:
+  //   (a) ignore events whose session != the open chat session (zero polls when
+  //       nothing relevant arrives),
+  //   (b) trailing-edge debounce refetches to <=1 per CHAT_POLL_THROTTLE_MS,
+  //   (c) a `summary` update resets the cursor so the throttled full refetch
+  //       surfaces the in-place fill-in of an already-delivered row.
+  window.addEventListener('amux:chat', function (e) {
+    _syncComposer();
+    var payload = (e && e.detail) || [];
+    var open = window._chatActiveSession || '';
+    if (!open || !Array.isArray(payload)) return;
+    var hit = false, hasSummary = false;
+    for (var i = 0; i < payload.length; i++) {
+      var p = payload[i];
+      if (!p || p.session !== open) continue;
+      hit = true;
+      if (p.kind === 'summary') hasSummary = true;
+    }
+    if (!hit) return;
+    if (hasSummary) window._chatCursor = 0;
+    _scheduleSSEPoll();
+  });
 
   window._chatTabOpen = _open;
   window._chatTabClose = _close;

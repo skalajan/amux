@@ -244,6 +244,52 @@ assert delivery("sd") == "delivered", "history steer_id -> delivered"
 assert delivery("gone") == "delivered", "pruned steer_id (had one) -> treated delivered"
 print("delivery ok — status derived from steering_queue/history join, no stored column")
 
+
+# ── GET-triggered throttled populate (Bug-1 freshness hook, pure part) ─────────
+# AST-load _chat_populate_replies_throttled into an isolated namespace with a fake
+# clock + a counting stub for _chat_populate_replies, exercising ONLY the per-
+# session throttle gate (run once per session per window) with no DB/filesystem.
+import threading as _threading
+class _FakeClock:
+    def __init__(self): self.t = 1000.0
+    def monotonic(self): return self.t
+_clk = _FakeClock()
+_calls = []
+tns: dict = {
+    "time": _clk,
+    "threading": _threading,
+    "_chat_populate_replies": lambda name: _calls.append(name),
+}
+_throttle_state = {"_chat_get_populate_last", "_chat_get_populate_lock",
+                   "_CHAT_GET_POPULATE_THROTTLE"}
+for node in tree.body:
+    _name = None
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+        _name = node.targets[0].id
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):  # e.g. `x: dict = {}`
+        _name = node.target.id
+    if _name in _throttle_state:
+        exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), tns)
+    if isinstance(node, ast.FunctionDef) and node.name == "_chat_populate_replies_throttled":
+        exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), tns)
+throttled = tns["_chat_populate_replies_throttled"]
+W = tns["_CHAT_GET_POPULATE_THROTTLE"]
+assert callable(throttled), "_chat_populate_replies_throttled not extracted from amux-server.py"
+assert isinstance(W, (int, float)) and W > 0, "_CHAT_GET_POPULATE_THROTTLE must be a positive window"
+throttled("A")
+assert _calls == ["A"], "first GET populate for a session must run"
+_clk.t += W / 2
+throttled("A")
+assert _calls == ["A"], "second call within the window must be throttled (skipped)"
+throttled("B")
+assert _calls == ["A", "B"], "throttle is per-session, not global"
+_clk.t += W + 0.01
+throttled("A")
+assert _calls == ["A", "B", "A"], "call after the window elapses must run again"
+throttled("")
+assert _calls == ["A", "B", "A"], "empty session name is a no-op"
+print("get-throttle ok — GET-triggered populate runs once per session per window, per-session, no-ops on empty")
+
 print("\nALL CHAT-CORE CHECKS PASSED")
 
 

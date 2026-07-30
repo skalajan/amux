@@ -5835,6 +5835,13 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
                         idem="d:" + m["id"], source="steering")
         _push_alert("steering_delivered", name,
                     f"{len(batch)} steering message{'s' if len(batch) > 1 else ''} delivered to '{name}'")
+        # AMUX-LOCAL:session-chat — Bug-1: a delivered steer starts a turn; schedule
+        # deferred populate attempts to capture the resulting reply promptly.
+        try:
+            _chat_schedule_post_delivery_populate(name)
+        except Exception:
+            pass
+        # /AMUX-LOCAL:session-chat
     else:
         with _steering_lock:
             for m in batch:
@@ -7341,6 +7348,61 @@ def _chat_populate_replies(name: str) -> list:
     if new:
         _chat_notify(name, "reply")
     return new
+
+
+# ── GET-triggered freshness hook (Bug-1: reply-capture latency) ──────────────
+# _chat_populate_replies only ran from the monitor idle-transition (2s samples
+# miss fast turns) and SSE-connect reconcile (dashboard holds SSE ~5min, so no
+# reconcile for minutes). A reply could therefore sit uncaptured for minutes.
+# These two hooks close that window WITHOUT a new busy loop, both funnelling
+# through the SAME single-writer _chat_populate_replies (under _chat_replies_lock
+# — single-writer invariant preserved):
+#   1. every GET /api/chat?session=X populates X first, per-session throttled;
+#   2. every delivered steer schedules a few populate attempts (a delivery
+#      guarantees a turn is starting — capture its reply soon after it ends).
+_chat_get_populate_last: dict = {}    # session -> monotonic ts of last GET-triggered populate
+_chat_get_populate_lock = threading.Lock()
+_CHAT_GET_POPULATE_THROTTLE = 4.0     # at most one GET-triggered populate per session per this many secs
+
+def _chat_populate_replies_throttled(name: str) -> None:
+    """Per-session throttled populate for the GET /api/chat freshness hook.
+    Runs synchronously (so the SAME response reflects any just-captured reply),
+    but at most once per session per _CHAT_GET_POPULATE_THROTTLE seconds so the
+    dashboard poll + Telegram sidecar outbound loop can't storm the transcript
+    read. The write still holds the single _chat_replies_lock."""
+    if not name:
+        return
+    now = time.monotonic()
+    with _chat_get_populate_lock:
+        last = _chat_get_populate_last.get(name, 0.0)
+        if last and (now - last) < _CHAT_GET_POPULATE_THROTTLE:
+            return
+        _chat_get_populate_last[name] = now
+    try:
+        _chat_populate_replies(name)
+    except Exception:
+        pass
+
+
+def _chat_schedule_post_delivery_populate(name: str) -> None:
+    """A delivered steer means the session is about to run a turn. Fire a few
+    deferred populate attempts (~+5s/+15s/+30s) on one short-lived daemon thread
+    so the resulting reply is captured promptly instead of waiting for a lucky
+    2s idle-sample or an SSE reconnect. Each attempt funnels through the single
+    writer, so it stays race-safe; no busy loop."""
+    if not name:
+        return
+    def _run():
+        for delay in (5, 10, 15):     # cumulative ~5s / 15s / 30s after delivery
+            time.sleep(delay)
+            try:
+                _chat_populate_replies(name)
+            except Exception:
+                pass
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        pass
 
 
 _chat_reconcile_lock = threading.Lock()
@@ -42693,25 +42755,12 @@ function connectSSE() {
 var _chatActiveSession = window._chatActiveSession || '';
 var _chatCursor = 0;
 function _chatOnSSE(payload) {
-  // A `chat` event names which sessions changed; refetch the open thread if hit.
+  // Hand the raw `chat` payload to the chat client (chat.js `amux:chat` listener),
+  // which owns the session-filtered, trailing-edge debounced refetch (Bug-2 poll-
+  // flood fix). Keeping only the dispatch here also shrinks the in-file footprint
+  // per extend-via-sidecar. `chat` events are fleet-wide; the client decides
+  // whether the OPEN session was hit before ever fetching.
   try { window.dispatchEvent(new CustomEvent('amux:chat', { detail: payload })); } catch (e) {}
-  if (!_chatActiveSession) return;
-  var hit = false, hasSummary = false;
-  for (var i = 0; i < payload.length; i++) {
-    var p = payload[i];
-    if (!p || p.session !== _chatActiveSession) continue;
-    hit = true;
-    if (p.kind === 'summary') hasSummary = true;
-  }
-  if (!payload.length || hit) {
-    // AMUX-LOCAL:session-chat — a `summary` update fills in an ALREADY-delivered
-    // row (the Haiku worker's late-arriving fill-in); its rowid_seq is unchanged,
-    // so an incremental (since=_chatCursor) poll would never surface it. Reset
-    // the cursor to force a full refetch; _mergeThread's dedup-by-id then updates
-    // that bubble in place instead of duplicating it.
-    if (hasSummary) _chatCursor = 0;
-    _chatPoll();
-  }
 }
 function _chatPoll() {
   // Polling-fallback + refetch path: pull the open thread incrementally by cursor.
@@ -50724,6 +50773,10 @@ class CCHandler(BaseHTTPRequestHandler):
                     since = int(qs.get("since", ["0"])[0] or 0)
                 except Exception:
                     since = 0
+                # Bug-1 freshness hook: capture any just-finished reply for THIS
+                # session before building the thread, per-session throttled. Fixes
+                # freshness for BOTH the dashboard poll and the Telegram sidecar.
+                _chat_populate_replies_throttled(session)
                 return self._json(_chat_build_thread(session, since))
             return self._json({"error": "method not allowed"}, 405)
         # /AMUX-LOCAL:session-chat
