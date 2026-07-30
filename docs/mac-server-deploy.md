@@ -374,3 +374,7 @@ this deploy.
 - [`reply-summary.md`](reply-summary.md) — the `⌁` marker convention and its degradation chain.
 - [`upstream-sync.md`](upstream-sync.md) — the (mac-brain-only) weekly upstream merge SOP; not run on mac-server.
 - `.omc/plans/mac-server-deploy.md` — full design record: decision drivers, rejected alternatives, the D1 divergence-handling analysis.
+
+## Deployment log
+
+- **2026-07-30** — mac-server deployed (P3-P6): core + telegram (@amux_server_bot, "Amux Server" group) + fleet (amux-helper, diy-tracker, better-life, domacnost) + pull-update enabled. P3.b evidence: checkout stayed clean across a 2h window (server restarts + 4 session boots) — seed allowlist retained as defensive no-op. FDA granted to /usr/local/bin/python3 (sessions live in ~/Desktop/Projects). Kit fix during rollout: plist PATH needed /opt/homebrew/bin + ~/.local/bin (4992db9); tmux installed via brew.
