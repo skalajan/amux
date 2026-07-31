@@ -7303,6 +7303,67 @@ def _chat_notify(session: str, kind: str) -> None:
 _chat_replies_lock = threading.Lock()
 _CHAT_JSONL_MAX_BYTES = 64_000_000   # full-read cap for stable global turn indexing
 
+# AMUX-10: live-conv-id fallback cache. Fresh sessions started WITHOUT
+# --session-id/--resume never get the graceful-stop rename that records
+# cc_conversation_id in meta, so _session_jsonl_path's meta path can't resolve
+# their transcript; the same is true when the transcript lives under a non-default
+# config home (mac-server: ~/.claude-personal), which _session_jsonl_path_uncached
+# does not scan. We resolve the conv id from the running process argv / newest
+# jsonl across ALL config homes via _live_conv_id, but that runs ps/tmux, so cache
+# the result in-memory per session (NOT persisted to meta — a wrong guess from a
+# shared-dir newest-jsonl must self-correct next poll, never cement into resume).
+_chat_conv_fallback_cache: dict = {}   # session -> (conv_id, monotonic_ts)
+_CHAT_CONV_FALLBACK_TTL = 30.0         # re-verify via _live_conv_id at most this often
+
+def _chat_live_conv_path(name: str):
+    """AMUX-10 fallback: resolve a session's transcript path from its LIVE
+    conversation id (running-process argv, else newest jsonl across all config
+    homes) when the meta-based _session_jsonl_path can't. Cached in-memory (see
+    _chat_conv_fallback_cache) so ps/tmux runs at most once per _CHAT_CONV_FALLBACK_TTL
+    per session. Returns a Path or None; on miss caches nothing (retry next poll)."""
+    try:
+        wd = _session_work_dir(name)
+    except Exception:
+        wd = ""
+    if not wd:
+        return None
+    now = time.monotonic()
+    cached = _chat_conv_fallback_cache.get(name)
+    if cached and (now - cached[1]) < _CHAT_CONV_FALLBACK_TTL:
+        conv_id = cached[0]
+    else:
+        try:
+            conv_id = (_live_conv_id(name, wd) or "").strip()
+        except Exception:
+            conv_id = ""
+        if conv_id:
+            _chat_conv_fallback_cache[name] = (conv_id, now)
+        else:
+            _chat_conv_fallback_cache.pop(name, None)
+    if not conv_id:
+        return None
+    try:
+        for home in _claude_config_homes():
+            cand = home / "projects" / _project_name(wd) / f"{conv_id}.jsonl"
+            if cand.is_file():
+                return cand
+    except Exception:
+        pass
+    return None
+
+def _chat_resolve_jsonl_path(name: str):
+    """Transcript path for chat capture (AMUX-10). Primary: the meta-based
+    _session_jsonl_path (cheap + stable). Fallback: _chat_live_conv_path, which
+    resolves fresh sessions (no recorded cc_conversation_id) and transcripts under
+    non-default config homes that the primary path misses. Returns a Path or None."""
+    try:
+        path = _session_jsonl_path(name)
+    except Exception:
+        path = None
+    if path and path.exists():
+        return path
+    return _chat_live_conv_path(name)
+
 def _chat_populate_replies(name: str) -> list:
     """SINGLE-WRITER (C-new-1): materialize new transcript reply turns for a
     session into chat_replies, under _chat_replies_lock, inserting strictly in
@@ -7310,10 +7371,7 @@ def _chat_populate_replies(name: str) -> list:
     (INSERT OR IGNORE on the stable id). BOTH the monitor idle-hook and the SSE
     reconciliation path funnel through here (never insert independently). Returns
     the newly-inserted turn dicts."""
-    try:
-        path = _session_jsonl_path(name)
-    except Exception:
-        path = None
+    path = _chat_resolve_jsonl_path(name)   # AMUX-10: meta path, else live-conv-id fallback
     if not path or not path.exists():
         return []
     conv = path.stem

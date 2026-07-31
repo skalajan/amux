@@ -290,6 +290,91 @@ throttled("")
 assert _calls == ["A", "B", "A"], "empty session name is a no-op"
 print("get-throttle ok — GET-triggered populate runs once per session per window, per-session, no-ops on empty")
 
+
+# ── AMUX-10: live-conv-id fallback path resolution ────────────────────────────
+# AST-load _chat_live_conv_path + _chat_resolve_jsonl_path into an isolated
+# namespace with mocked dependencies (no server / filesystem). Verifies:
+#   - meta path preferred when present (fallback / _live_conv_id never called)
+#   - fallback resolves the transcript via _live_conv_id when the meta path yields
+#     nothing (fresh session, or transcript under a non-default config home)
+#   - neither resolves → returns None without crashing
+#   - the conv id is cached so _live_conv_id (ps/tmux) runs at most once per TTL
+class _FakePath:
+    def __init__(self, exists=True): self._exists = exists
+    def __truediv__(self, other): return self       # ignore path joins
+    def is_file(self): return self._exists
+    def exists(self): return self._exists
+
+class _F10Clock:
+    def __init__(self): self.t = 5000.0
+    def monotonic(self): return self.t
+
+_f10 = {"live_calls": 0, "live_ret": "conv-xyz", "primary": None, "file_exists": True}
+_f10clk = _F10Clock()
+def _fake_live_conv_id(name, wd=""):
+    _f10["live_calls"] += 1
+    return _f10["live_ret"]
+
+fns: dict = {
+    "time": _f10clk,
+    "_session_work_dir": lambda name: "/work/dir",
+    "_session_jsonl_path": lambda name: _f10["primary"],
+    "_live_conv_id": _fake_live_conv_id,
+    "_claude_config_homes": lambda: [_FakePath(_f10["file_exists"])],
+    "_project_name": lambda wd: "proj",
+}
+_f10_state = {"_chat_conv_fallback_cache", "_CHAT_CONV_FALLBACK_TTL"}
+for node in tree.body:
+    _name = None
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+        _name = node.targets[0].id
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        _name = node.target.id
+    if _name in _f10_state:
+        exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), fns)
+    if isinstance(node, ast.FunctionDef) and node.name in ("_chat_live_conv_path", "_chat_resolve_jsonl_path"):
+        exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), fns)
+resolve = fns["_chat_resolve_jsonl_path"]
+TTL = fns["_CHAT_CONV_FALLBACK_TTL"]
+assert callable(resolve), "_chat_resolve_jsonl_path not extracted from amux-server.py"
+assert isinstance(TTL, (int, float)) and TTL > 0, "_CHAT_CONV_FALLBACK_TTL must be a positive window"
+
+# meta path preferred: primary resolves → fallback (_live_conv_id) never runs
+_f10["live_calls"] = 0
+_f10["primary"] = _FakePath(True)
+_p = resolve("S1")
+assert _p is _f10["primary"], "meta-resolved path must be returned as-is"
+assert _f10["live_calls"] == 0, "fallback must NOT run when the meta path resolves"
+
+# fallback resolves when meta path yields nothing (fresh session / other home)
+fns["_chat_conv_fallback_cache"].clear()
+_f10["live_calls"] = 0
+_f10["primary"] = None
+_f10["live_ret"] = "conv-xyz"
+_f10["file_exists"] = True
+_p = resolve("S2")
+assert _p is not None and _p.is_file(), "fallback must resolve the live-conv transcript path"
+assert _f10["live_calls"] == 1, "fallback must consult _live_conv_id once"
+
+# caching: second resolve within TTL reuses the cached id (no extra _live_conv_id)
+_p = resolve("S2")
+assert _p is not None, "cached fallback still resolves a path"
+assert _f10["live_calls"] == 1, "within-TTL resolve must reuse the cached conv id (no re-run)"
+# past the TTL it re-verifies via _live_conv_id
+_f10clk.t += TTL + 1
+_p = resolve("S2")
+assert _f10["live_calls"] == 2, "past-TTL resolve must re-run _live_conv_id"
+
+# neither resolves → None, no crash, nothing cached
+fns["_chat_conv_fallback_cache"].clear()
+_f10["live_calls"] = 0
+_f10["primary"] = None
+_f10["live_ret"] = ""      # _live_conv_id can't determine the conversation
+_p = resolve("S3")
+assert _p is None, "with neither meta nor live conv id, resolution must be None (live-only)"
+assert "S3" not in fns["_chat_conv_fallback_cache"], "a miss must not cache a bogus id (retry next poll)"
+print("amux-10 fallback ok — meta path primary; live-conv-id fallback resolves fresh/other-home sessions, cached per TTL, safe on total miss")
+
 print("\nALL CHAT-CORE CHECKS PASSED")
 
 
