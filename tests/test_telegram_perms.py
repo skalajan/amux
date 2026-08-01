@@ -84,8 +84,45 @@ assert tg.classify_prompt(BUSY)["kind"] == "none", tg.classify_prompt(BUSY)
 # a free-text open question (no menu) -> open-ended
 OPEN_Q = "I need the staging DB password before I can continue. What is it?"
 assert tg.classify_prompt(OPEN_Q)["kind"] == "open", tg.classify_prompt(OPEN_Q)
+
+# ── AUTHORITATIVE A.0 live captures (Claude Code v2.1.220, 2026-08-01) ──────────
+# These real captures OVERRIDE any assumed prompt shape. The sudo ask-rule prompt
+# FIRES under --dangerously-skip-permissions and is a 2-option (Yes/No) menu — so
+# Allow="1", Deny=Escape, and NO Always button (option "2" here = No/Deny).
+A0_SUDO_ASK = (
+    " Bash command\n"
+    "   sudo -n true\n"
+    "   Check if sudo can run without password prompt\n"
+    " Permission rule Bash(sudo *) requires confirmation for this command.\n"
+    " /permissions to update rules\n"
+    " Do you want to proceed?\n"
+    " ❯ 1. Yes\n"
+    "   2. No\n"
+    " Esc to cancel · Tab to amend · ctrl+e to explain")
+assert tg.classify_prompt(A0_SUDO_ASK) == {"kind": "menu", "options": 2, "always": False}, \
+    tg.classify_prompt(A0_SUDO_ASK)
+
+# AskUserQuestion carries "Esc to cancel" AND a ❯-menu but NO permission chrome —
+# it must classify open-ended (peek-only), never menu-answerable. This is the
+# regression guard for "esc-to-cancel + menu is not a permission prompt".
+A0_ASK_USER = (
+    " ☐ Color preference\n"
+    "Which color do you prefer?\n"
+    "❯ 1. Red\n"
+    "     A warm, bold color\n"
+    "  2. Blue\n"
+    "     A cool, calm color\n"
+    "  3. Green\n"
+    "     A natural, refreshing color\n"
+    "  4. Type something.\n"
+    "────\n"
+    "  5. Chat about this\n"
+    "Enter to select · ↑/↓ to navigate · Esc to cancel")
+assert tg.classify_prompt(A0_ASK_USER) == {"kind": "open", "options": 0, "always": False}, \
+    tg.classify_prompt(A0_ASK_USER)
 print("classifier ok — 3-opt menu(+always), 2-opt menu(no always), MCP allow-to, "
-      "AskUserQuestion=open, rate-limit/busy=none, free-text question=open")
+      "AskUserQuestion=open, rate-limit/busy=none, free-text question=open; "
+      "A.0 live captures: sudo ask-rule=2-opt menu, AskUserQuestion(esc+menu)=open")
 
 
 # ── 2. fingerprint stability + distinctness ─────────────────────────────────────

@@ -962,8 +962,18 @@ def _prompt_option_numbers(text):
 
 
 def _has_perm_chrome(text):
+    # Permission-specific chrome ONLY. "Esc to cancel" + a ❯-menu is deliberately
+    # NOT sufficient: the A.0 live capture confirmed AskUserQuestion also renders
+    # "Esc to cancel" under a ❯-menu, so these markers must be unique to a
+    # permission gate (all absent from AskUserQuestion): the proceed question,
+    # the "Permission rule … requires confirmation" banner amux emits under
+    # bypass, the /permissions hint, the "don't ask again" option, and an MCP
+    # "Allow X to Y" header.
     low = (text or "").lower()
     return ("do you want to proceed" in low
+            or "permission rule" in low
+            or "requires confirmation" in low
+            or "/permissions" in low
             or "don't ask again" in low
             or "dont ask again" in low
             or bool(_ALLOW_TO_RE.search(text or "")))
