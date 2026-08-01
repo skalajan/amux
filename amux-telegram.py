@@ -26,9 +26,12 @@ injected so it can be mocked. The hyphenated filename intentionally blocks a rev
 
 Setup: see docs/telegram-chat.md.  Config: ~/.amux/telegram.env (0600).
 """
+import hashlib
 import json
 import logging
 import os
+import re
+import socket
 import ssl
 import stat
 import subprocess
@@ -48,6 +51,15 @@ WRITE_TOKEN_PATH = os.path.join(AMUX_DIR, "write_token")
 TOPICS_PATH = os.path.join(AMUX_DIR, "telegram-topics.json")
 OFFSET_PATH = os.path.join(AMUX_DIR, "telegram-offset")
 OUTBOUND_PATH = os.path.join(AMUX_DIR, "telegram-outbound.json")
+PROMPTS_PATH = os.path.join(AMUX_DIR, "telegram-prompts.json")
+
+# Permission-prompt notify (plan .omc/plans/telegram-permissions.md Phase B).
+# Only ping once a session has been CONTINUOUSLY "waiting" this long — a debounce
+# longer than the server's yolo auto-responder cooldown, so recognized/auto-
+# answerable prompts self-clear and never reach Jan (plan B.2).
+PERM_GRACE_SECS = float(os.environ.get("TG_PERM_GRACE_SECS", "10") or 10)
+PERM_PEEK_LINES = 40
+PERM_PROMPT_MAX_CHARS = 1500
 
 DEFAULT_TG_API_BASE = "https://api.telegram.org"
 DEFAULT_AMUX_BASE = "https://localhost:8822"
@@ -140,6 +152,7 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
         "summary_model": (get("TG_SUMMARY_MODEL") or "haiku").strip(),
         "summary_timeout": float(get("TG_SUMMARY_TIMEOUT", "90") or 90),
         "summary_config_dir": (get("TG_SUMMARY_CONFIG_DIR") or "").strip() or None,
+        "machine_label": (get("TG_MACHINE_LABEL") or "").strip() or None,
     }
 
 
@@ -165,6 +178,22 @@ def is_owner(update, owner_id):
 
 def message_text(update):
     return (update_message(update).get("text") or "").strip()
+
+
+def callback_query(update):
+    """The callback_query payload of an inline-button tap, or {} for a
+    non-callback update."""
+    return update.get("callback_query") or {}
+
+
+def is_callback_owner(update, owner_id):
+    """Owner gate for a callback_query — the tapping user is callback_query.from,
+    NOT message.from (which is the bot that posted the buttons)."""
+    frm = callback_query(update).get("from") or {}
+    try:
+        return int(frm.get("id")) == int(owner_id)
+    except (TypeError, ValueError):
+        return False
 
 
 def message_topic_id(update):
@@ -275,6 +304,54 @@ class TopicStore:
             self._ring_off.add(session)
         else:
             self._ring_off.discard(session)
+
+
+# ── pure logic: pending permission prompt per session (persisted) ──────────────
+class PromptStore:
+    """Per-session pending permission-prompt state (plan B.5): one dict per
+    session — {fp, message_id, ts, kind, body, answered}. fp is the dedup key:
+    while the live prompt's fp matches the stored fp we never re-notify. The
+    `answered` flag records that a callback resolved this prompt in place (the
+    Telegram message already shows "✅ Allowed …"), so the outbound loop's
+    leave-waiting cleanup clears state WITHOUT overwriting that edit. Persisted
+    (atomic 0600) so a sidecar restart doesn't re-notify an already-seen prompt."""
+
+    def __init__(self, path=PROMPTS_PATH, state=None):
+        self.path = path
+        self._pending = {str(k): dict(v) for k, v in (state or {}).items()}
+
+    @classmethod
+    def load(cls, path=PROMPTS_PATH):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return cls(path, json.load(f))
+        except (OSError, ValueError):
+            return cls(path, {})
+
+    def to_dict(self):
+        return self._pending
+
+    def save(self):
+        _atomic_write_0600(self.path, json.dumps(self._pending))
+
+    def get(self, session):
+        return self._pending.get(str(session))
+
+    def pending_sessions(self):
+        return list(self._pending.keys())
+
+    def set(self, session, fp, message_id, ts, kind, body=""):
+        self._pending[str(session)] = {"fp": fp, "message_id": message_id,
+                                       "ts": ts, "kind": kind, "body": body,
+                                       "answered": False}
+
+    def mark_answered(self, session):
+        p = self._pending.get(str(session))
+        if p:
+            p["answered"] = True
+
+    def clear(self, session):
+        return self._pending.pop(str(session), None)
 
 
 # ── pure logic: inbound long-poll offset (persisted) ───────────────────────────
@@ -476,9 +553,11 @@ class TelegramClient:
 
     def get_updates(self, offset, timeout):
         # long-poll: server holds up to `timeout` s; give urllib a bit more headroom.
+        # callback_query is included so inline permission-button taps are delivered
+        # on the SAME monotonic offset as messages (plan B.4).
         return self._call("getUpdates",
                           {"offset": offset, "timeout": timeout,
-                           "allowed_updates": ["message"]},
+                           "allowed_updates": ["message", "callback_query"]},
                           timeout=timeout + 10)
 
     # Telegram caps sendMessage at 4096 UTF-16 code units; stay under it with
@@ -486,11 +565,15 @@ class TelegramClient:
     # 400s forever and wedges the topic's in-order forward queue).
     _MSG_CHUNK = 3900
 
-    def send_message(self, chat_id, text, topic_id=None, disable_notification=False):
+    def send_message(self, chat_id, text, topic_id=None, disable_notification=False,
+                     reply_markup=None):
         """disable_notification is only included in the request when True — a
         ringing (default) send omits the key entirely rather than sending it
         as False. `params` is built once and reused for every chunk below, so a
-        long, silently-forwarded reply stays silent across ALL of its chunks."""
+        long, silently-forwarded reply stays silent across ALL of its chunks.
+        reply_markup (an inline keyboard) is attached to the LAST chunk only, so
+        a multi-chunk message shows its buttons under the final part. Returns the
+        last chunk's result (its message_id identifies the button-bearing send)."""
         params = {"chat_id": chat_id, "disable_web_page_preview": True}
         if topic_id is not None:
             params["message_thread_id"] = int(topic_id)
@@ -498,14 +581,38 @@ class TelegramClient:
             params["disable_notification"] = True
         text = text or ""
         res = None
-        for i in range(0, max(len(text), 1), self._MSG_CHUNK):
+        starts = list(range(0, max(len(text), 1), self._MSG_CHUNK))
+        for idx, i in enumerate(starts):
             chunk = text[i:i + self._MSG_CHUNK]
             if len(text) > self._MSG_CHUNK:
                 part = i // self._MSG_CHUNK + 1
                 total = (len(text) + self._MSG_CHUNK - 1) // self._MSG_CHUNK
                 chunk = f"[{part}/{total}] " + chunk
-            res = self._call("sendMessage", dict(params, text=chunk), timeout=20)
+            p = dict(params, text=chunk)
+            if reply_markup is not None and idx == len(starts) - 1:
+                p["reply_markup"] = reply_markup
+            res = self._call("sendMessage", p, timeout=20)
         return res
+
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        """Rewrite a previously-sent message. Omitting reply_markup drops any
+        inline keyboard (how a resolved/answered prompt loses its buttons)."""
+        p = {"chat_id": chat_id, "message_id": int(message_id), "text": text,
+             "disable_web_page_preview": True}
+        if reply_markup is not None:
+            p["reply_markup"] = reply_markup
+        return self._call("editMessageText", p, timeout=20)
+
+    def answer_callback(self, callback_id, text="", show_alert=False):
+        """Acknowledge an inline-button tap (Telegram shows `text` as a toast;
+        capped ~200 chars). Must be called within seconds or Telegram re-shows a
+        spinner on the button."""
+        p = {"callback_query_id": callback_id}
+        if text:
+            p["text"] = text[:200]
+        if show_alert:
+            p["show_alert"] = True
+        return self._call("answerCallbackQuery", p, timeout=20)
 
     def create_forum_topic(self, chat_id, name):
         res = self._call("createForumTopic",
@@ -833,9 +940,173 @@ def sorted_session_replies(thread):
     return items
 
 
+# ── pure logic: permission-prompt classification + fingerprint (plan B.1/B.4) ──
+# A peeked pane of a session amux already reports as status=="waiting" is one of:
+#   menu  — a `❯ N.` selector AND permission safety-chrome ("Do you want to
+#           proceed", "don't ask again", an MCP "Allow X to Y") → Allow/Always/Deny.
+#   open  — a menu without permission chrome (AskUserQuestion / plan approval) OR
+#           a free-text question (trailing "?") → notify text-only, no menu buttons.
+#   none  — no prompt signal, or a rate-limit menu (must NEVER get permission
+#           buttons — a rate-limited session is labelled "limit", not "waiting",
+#           but we defend here too).
+_MENU_SELECTOR_RE = re.compile(r"❯\s*\d+\s*\.")
+_MENU_OPTION_RE = re.compile(r"(?m)^\s*(?:❯\s*)?(\d+)\s*\.\s+\S")
+_ALLOW_TO_RE = re.compile(r"\ballow\b.+?\bto\b", re.I)
+_PROMPT_RATE_LIMIT_MARKERS = (
+    "usage limit", "rate limit", "approaching your", "resets at", "reset at",
+    "upgrade to", "out of credits", "credit balance", "usage will reset")
+
+
+def _prompt_option_numbers(text):
+    return sorted({int(m.group(1)) for m in _MENU_OPTION_RE.finditer(text or "")})
+
+
+def _has_perm_chrome(text):
+    low = (text or "").lower()
+    return ("do you want to proceed" in low
+            or "don't ask again" in low
+            or "dont ask again" in low
+            or bool(_ALLOW_TO_RE.search(text or "")))
+
+
+def classify_prompt(text):
+    """Classify a waiting session's peeked pane text. Returns
+    {"kind": "menu"|"open"|"none", "options": <int>, "always": <bool>}.
+    `always` is True ONLY for a confirmed 3-option menu (an option numbered 3
+    present) — on a 2-option prompt sending "2" selects the DENY choice, so an
+    Always button there would be a mis-tap hazard (plan B.4)."""
+    text = text or ""
+    low = text.lower()
+    if any(m in low for m in _PROMPT_RATE_LIMIT_MARKERS):
+        return {"kind": "none", "options": 0, "always": False}
+    has_menu = bool(_MENU_SELECTOR_RE.search(text))
+    if has_menu and _has_perm_chrome(text):
+        opts = _prompt_option_numbers(text)
+        return {"kind": "menu", "options": len(opts), "always": 3 in opts}
+    if has_menu:
+        return {"kind": "open", "options": 0, "always": False}
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return {"kind": "open" if line.strip().endswith("?") else "none",
+                    "options": 0, "always": False}
+    return {"kind": "none", "options": 0, "always": False}
+
+
+# fp = short hash of the prompt text with volatile bits (ANSI, clock timestamps,
+# elapsed spinners, whitespace) normalized out, so the SAME prompt hashes stable
+# across polls while a DISTINCT prompt hashes differently (the staleness guard).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_CLOCK_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm])?\b")
+_ELAPSED_RE = re.compile(r"\(\s*\d+(?:\.\d+)?\s*[smh]\b[^)]*\)")
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_prompt(text):
+    t = _ANSI_RE.sub("", text or "")
+    t = _ELAPSED_RE.sub("", t)
+    t = _CLOCK_RE.sub("", t)
+    return _WS_RE.sub(" ", t).strip()
+
+
+def prompt_fingerprint(text):
+    return hashlib.sha256(normalize_prompt(text).encode("utf-8")).hexdigest()[:8]
+
+
+def build_callback_data(action, session, fp):
+    """`perm:<action>:<session>:<fp>`. Telegram caps callback_data at 64 bytes;
+    amux session names are short so this stays well under it."""
+    return f"perm:{action}:{session}:{fp}"
+
+
+def parse_callback_data(data):
+    """Inverse of build_callback_data → (action, session, fp), or None if the
+    payload isn't a well-formed perm callback. fp is split off the tail first so
+    a session name containing ':' still round-trips."""
+    if not data or not data.startswith("perm:"):
+        return None
+    head, sep, fp = data.rpartition(":")
+    if not sep or not fp:
+        return None
+    prefix, _, rest = head.partition(":")
+    if prefix != "perm":
+        return None
+    action, _, session = rest.partition(":")
+    if action not in ("allow", "always", "deny", "peek") or not session:
+        return None
+    return (action, session, fp)
+
+
+def build_perm_keyboard(session, fp, shape):
+    """Inline keyboard for a menu prompt: [✅ Allow] (+[✅ Always] on a 3-option
+    menu) / [⛔ Deny] [👁 Peek]."""
+    row1 = [{"text": "✅ Allow", "callback_data": build_callback_data("allow", session, fp)}]
+    if shape.get("always"):
+        row1.append({"text": "✅ Always",
+                     "callback_data": build_callback_data("always", session, fp)})
+    row2 = [{"text": "⛔ Deny", "callback_data": build_callback_data("deny", session, fp)},
+            {"text": "👁 Peek", "callback_data": build_callback_data("peek", session, fp)}]
+    return {"inline_keyboard": [row1, row2]}
+
+
+def build_peek_keyboard(session, fp):
+    """Peek-only keyboard for an open-ended prompt (no menu answer to inject)."""
+    return {"inline_keyboard": [[
+        {"text": "👁 Peek", "callback_data": build_callback_data("peek", session, fp)}]]}
+
+
+def trim_prompt_text(text, max_lines=25, max_chars=PERM_PROMPT_MAX_CHARS):
+    """The last few non-empty lines of a peek, capped — the relevant prompt tail
+    for the notify body."""
+    lines = (text or "").splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines[-max_lines:])[:max_chars]
+
+
+# ── pure logic: continuous-waiting grace-window tracker (plan B.2) ──────────────
+class WaitingTracker:
+    """Per-session timer of how long a session has been CONTINUOUSLY "waiting".
+    observe(session, label, now) is called once per poll with the session's
+    current status label; due(session, now, grace) is True once it has been
+    waiting ≥ grace seconds without interruption. Any non-"waiting" label resets
+    the timer; re-entering "waiting" starts a fresh window. In-memory only (the
+    persisted dedup lives in PromptStore)."""
+
+    def __init__(self):
+        self._since = {}   # session -> ts it most recently entered "waiting"
+
+    def observe(self, session, label, now):
+        if label == "waiting":
+            self._since.setdefault(str(session), now)
+        else:
+            self._since.pop(str(session), None)
+
+    def waiting_since(self, session):
+        return self._since.get(str(session))
+
+    def elapsed(self, session, now):
+        since = self._since.get(str(session))
+        return None if since is None else now - since
+
+    def due(self, session, now, grace):
+        el = self.elapsed(session, now)
+        return el is not None and el >= grace
+
+    def clear(self, session):
+        self._since.pop(str(session), None)
+
+
+def _short_hostname():
+    try:
+        return socket.gethostname().split(".")[0]
+    except Exception:
+        return "?"
+
+
 # ── the bot (orchestration; network via injected clients) ──────────────────────
 class Bot:
-    def __init__(self, config, telegram, amux, topics, offset, outbound, summarizer=None):
+    def __init__(self, config, telegram, amux, topics, offset, outbound, summarizer=None,
+                 prompts=None):
         self.cfg = config
         self.default_mode = config.get("default_mode", "smart")
         self.summarizer = summarizer  # callable(text) -> str|None; None disables smart mode
@@ -844,6 +1115,11 @@ class Bot:
         self.topics = topics
         self.offset = offset
         self.outbound = outbound
+        # Permission-prompt notify state (plan Phase B). prompts persists the
+        # per-session pending prompt; waiting is the in-memory grace-window timer.
+        self.prompts = prompts if prompts is not None else PromptStore(PROMPTS_PATH, {})
+        self.waiting = WaitingTracker()
+        self.machine = config.get("machine_label") or _short_hostname()
         self.chat_id = config.get("chat_id")
         self.owner_id = config["owner_id"]
         self._stop = threading.Event()
@@ -894,6 +1170,143 @@ class Bot:
         else:
             log.info("owner -> %s: %r", session, text[:80])
         return True
+
+    # ── inbound: permission-prompt callbacks (plan B.4) ──────────────────────────
+    def handle_callback(self, update):
+        """Handle one inline-button tap. Self-contained — NEVER raises back into
+        the offset loop (the loop advances the offset for callbacks regardless).
+        Ordering is binding: the amux injection is the LAST fallible step, and
+        everything after a successful injection is catch-all guarded so a
+        post-inject failure can't cause a re-tap to double-inject (plan B.4.5)."""
+        cq = callback_query(update)
+        cb_id = cq.get("id")
+        if not is_callback_owner(update, self.owner_id):
+            log.warning("ignoring non-owner callback from id=%s",
+                        (cq.get("from") or {}).get("id"))
+            self._safe_answer(cb_id, "Not authorized")
+            return
+        parsed = parse_callback_data(cq.get("data") or "")
+        if parsed is None:
+            self._safe_answer(cb_id, "Unrecognized action")
+            return
+        action, session, fp = parsed
+        message_id = (cq.get("message") or {}).get("message_id")
+        if action == "peek":
+            self._callback_peek(cb_id, session)
+            return
+        # Idempotency guard (first double-inject guard): a re-tap of an
+        # already-answered prompt is a no-op even while the session is still
+        # briefly waiting on the same (now-answered) pane before Claude advances.
+        pending = self.prompts.get(session)
+        if pending and pending.get("answered") and pending.get("fp") == fp:
+            self._safe_answer(cb_id, "Already resolved")
+            return
+        # Freshness re-check (second double-inject guard): re-fetch status + peek;
+        # a stale tap (session left waiting, or the prompt changed → fp mismatch)
+        # resolves WITHOUT injecting.
+        if not self._prompt_is_fresh(session, fp):
+            self._safe_answer(cb_id, "Already resolved")
+            self._edit_message(message_id, self._answered_body(session, message_id,
+                                                               "✔️ Resolved elsewhere"))
+            return
+        # Inject (LAST fallible op). A failure here (e.g. session killed) resolves
+        # the tap cleanly and leaves no half-written state.
+        try:
+            self._perm_inject(session, action)
+        except AmuxError as e:
+            log.warning("permission inject %s for %s failed: %s", action, session, e)
+            self.waiting.clear(session)
+            self.prompts.clear(session)
+            self._save_prompts()
+            self._safe_answer(cb_id, "Session no longer running")
+            self._edit_message(message_id, self._answered_body(
+                session, message_id, "⚠️ Session no longer running"))
+            return
+        # Injection succeeded — nothing below may raise into the offset loop.
+        self._finalize_callback(cb_id, session, message_id, action)
+
+    def _perm_inject(self, session, action):
+        """Allow → send "1"; Always → send "2" (3-option menu only); Deny →
+        Escape. Digits go via /send (proven by the server's yolo auto-responder,
+        whose key allow-list has no digits); Escape is an allow-listed /keys."""
+        if action == "allow":
+            self.amux.raw_send(session, "1")
+        elif action == "always":
+            self.amux.raw_send(session, "2")
+        elif action == "deny":
+            self.amux.send_key(session, "Escape")
+
+    def _finalize_callback(self, cb_id, session, message_id, action):
+        """Post-injection wrap-up. Fully catch-all guarded (plan B.4.5). Keeps the
+        pending entry (same fp) but marks it answered so the outbound loop neither
+        re-notifies this prompt nor overwrites this "✅ …" edit when the session
+        later leaves waiting."""
+        stamp = time.strftime("%H:%M")
+        label = {"allow": "✅ Allowed", "always": "✅ Always-allowed",
+                 "deny": "⛔ Denied"}.get(action, action)
+        pending = self.prompts.get(session)
+        try:
+            if pending:
+                self.prompts.mark_answered(session)
+                self._save_prompts()
+            self.waiting.clear(session)
+        except Exception as e:
+            log.warning("post-inject state update for %s failed: %s", session, e)
+        self._safe_answer(cb_id, f"{label} {stamp}")
+        body = (pending or {}).get("body") or f"🔐 {session}"
+        self._edit_message(message_id, f"{body}\n\n{label} at {stamp}")
+
+    def _prompt_is_fresh(self, session, fp):
+        """True iff the session is STILL waiting AND the live prompt's fingerprint
+        still matches `fp`. Any failure / mismatch → not fresh (fail-closed: no
+        injection on doubt)."""
+        try:
+            rows = self.amux.list_sessions()
+        except AmuxError:
+            return False
+        row = next((s for s in rows if s.get("name") == session), None)
+        if row is None or session_status_label(row) != "waiting":
+            return False
+        try:
+            text = self.amux.peek(session, lines=PERM_PEEK_LINES)
+        except AmuxError:
+            return False
+        return prompt_fingerprint(text) == fp
+
+    def _callback_peek(self, cb_id, session):
+        """Peek button: no state change — toast an ack and post the current pane
+        tail into the session topic (answerCallbackQuery text is too short for it)."""
+        try:
+            out = self.amux.peek(session, lines=PERM_PEEK_LINES)
+            tail = "\n".join(out.splitlines()[-15:]) or "(empty)"
+        except AmuxError as e:
+            tail = f"peek failed: {e}"
+        self._safe_answer(cb_id, "Peek sent to topic")
+        tid = self.topics.topic_for_session(session)
+        if tid is not None:
+            self._reply(tid, f"peek {session}:\n{tail[:3500]}")
+
+    def _answered_body(self, session, message_id, note):
+        pending = self.prompts.get(session)
+        body = (pending or {}).get("body") if pending and pending.get("message_id") == message_id \
+            else None
+        return f"{body or ('🔐 ' + str(session))}\n\n{note}"
+
+    def _safe_answer(self, cb_id, text):
+        if not cb_id:
+            return
+        try:
+            self.tg.answer_callback(cb_id, text)
+        except TelegramError as e:
+            log.info("answerCallbackQuery failed: %s", e)
+
+    def _edit_message(self, message_id, text):
+        if not message_id:
+            return
+        try:
+            self.tg.edit_message_text(self.chat_id, message_id, text)
+        except TelegramError as e:
+            log.info("editMessageText failed: %s", e)
 
     def handle_command(self, update, cmd, args):
         topic_id = message_topic_id(update)
@@ -1122,6 +1535,17 @@ class Bot:
                 backoff = min(60.0, backoff * 2)
                 continue
             for u in updates or []:
+                if "callback_query" in u:
+                    # Callbacks are at-most-once by design (plan B.4): a dropped
+                    # tap is recoverable (Jan re-taps; the fp re-check makes the
+                    # retry safe), so a callback error must NEVER stall the shared
+                    # offset the way an un-acked message does. Advance regardless.
+                    try:
+                        self.handle_callback(u)
+                    except Exception as e:  # handle_callback is self-contained; belt-and-braces
+                        log.exception("callback %s crashed: %s", u.get("update_id"), e)
+                    self.offset.advance_to(u["update_id"])
+                    continue
                 try:
                     self.handle_update(u)
                 except AmuxError as e:
@@ -1231,6 +1655,104 @@ class Bot:
             return brief_truncate(text)
         return SMART_PREFIX + summary + SMART_SUFFIX
 
+    # ── outbound: permission-prompt detection + notify (plan B.1/B.2/B.3/B.5) ────
+    def _check_permission_prompts(self, sessions):
+        """Once per poll: drive each session's continuous-waiting timer, notify
+        when the grace window elapses on a fresh prompt, and clean up pending
+        state when a session leaves waiting or disappears entirely."""
+        now = time.time()
+        live = set()
+        for s in sessions:
+            if s.get("archived"):
+                continue
+            name = s.get("name")
+            if not name:
+                continue
+            live.add(name)
+            label = session_status_label(s)
+            self.waiting.observe(name, label, now)
+            if label != "waiting":
+                self._resolve_pending(name, "resolved")
+                continue
+            if self.waiting.due(name, now, PERM_GRACE_SECS):
+                self._maybe_notify_prompt(name, now)
+        # A session that vanished from the list (killed/missing) is treated as
+        # resolved — its prompt is no longer answerable.
+        for name in self.prompts.pending_sessions():
+            if name not in live:
+                self.waiting.clear(name)
+                self._resolve_pending(name, "gone")
+
+    def _maybe_notify_prompt(self, session, now):
+        """Peek + classify a due waiting session; notify on a new fingerprint,
+        supersede the old message on a changed one, no-op while the fp is
+        unchanged (dedup). Honors /mute (suppresses entirely)."""
+        if self.topics.is_muted(session):
+            return
+        try:
+            text = self.amux.peek(session, lines=PERM_PEEK_LINES)
+        except AmuxError as e:
+            log.warning("peek %s for permission notify failed: %s", session, e)
+            return
+        shape = classify_prompt(text)
+        if shape["kind"] == "none":
+            return
+        fp = prompt_fingerprint(text)
+        pending = self.prompts.get(session)
+        if pending and pending.get("fp") == fp:
+            return  # same prompt still standing — already notified
+        if pending and not pending.get("answered"):
+            self._edit_superseded(pending)
+        body = self._format_prompt_notify(session, text, shape)
+        msg_id = self._send_prompt_notify(session, body, shape, fp)
+        if msg_id is not None:
+            self.prompts.set(session, fp, msg_id, now, shape["kind"], body=body)
+            self._save_prompts()
+
+    def _format_prompt_notify(self, session, text, shape):
+        if shape["kind"] == "menu":
+            header = f"🔐 {session} @ {self.machine} — permission decision"
+            hint = ""
+        else:
+            header = f"❓ {session} @ {self.machine} — waiting on you"
+            hint = "\n\nReply with /type <text> to answer."
+        return f"{header}\n\n{trim_prompt_text(text)}{hint}"
+
+    def _send_prompt_notify(self, session, body, shape, fp):
+        """Send the notify to the session topic. RINGS unconditionally (a
+        permission decision is actionable — plan B.3, overrides /ring off; /mute
+        is already honored upstream). Returns the message_id or None."""
+        tid = self._ensure_topic(session)
+        kb = build_perm_keyboard(session, fp, shape) if shape["kind"] == "menu" \
+            else build_peek_keyboard(session, fp)
+        try:
+            res = self.tg.send_message(self.chat_id, body, tid,
+                                       disable_notification=False, reply_markup=kb)
+        except TelegramError as e:
+            log.warning("permission notify for %s failed: %s", session, e)
+            return None
+        return (res or {}).get("message_id")
+
+    def _resolve_pending(self, session, reason):
+        """Clear a pending prompt whose session left waiting / disappeared. If it
+        was answered via a callback the message already shows the outcome — leave
+        it; otherwise annotate it as resolved."""
+        pending = self.prompts.get(session)
+        if not pending:
+            return
+        self.prompts.clear(session)
+        self._save_prompts()
+        if pending.get("answered"):
+            return
+        note = {"gone": "✔️ Session ended — prompt no longer active.",
+                "resolved": "✔️ Resolved (session continued)."}.get(reason, "✔️ Resolved.")
+        self._edit_message(pending.get("message_id"),
+                           f"{pending.get('body') or ('🔐 ' + str(session))}\n\n{note}")
+
+    def _edit_superseded(self, pending):
+        self._edit_message(pending.get("message_id"),
+                           f"{pending.get('body') or '🔐'}\n\n♻️ Superseded by a newer prompt.")
+
     def outbound_loop(self):
         backoff = self.cfg["poll_secs"]
         while not self._stop.is_set():
@@ -1253,6 +1775,10 @@ class Bot:
                     log.warning("forward %s failed: %s", s.get("name"), e)
                 except Exception as e:
                     log.exception("forward %s crashed: %s", s.get("name"), e)
+            try:
+                self._check_permission_prompts(sessions)
+            except Exception as e:
+                log.exception("permission-prompt check crashed: %s", e)
             self._sleep(self.cfg["poll_secs"])
 
     # ── persistence (guarded) ────────────────────────────────────────────────
@@ -1263,6 +1789,10 @@ class Bot:
     def _save_outbound(self):
         with self._save_lock:
             self.outbound.save()
+
+    def _save_prompts(self):
+        with self._save_lock:
+            self.prompts.save()
 
     def _sleep(self, secs):
         self._stop.wait(secs)
@@ -1299,9 +1829,11 @@ def build_bot(config):
     topics = TopicStore.load()
     offset = OffsetStore.load()
     outbound = OutboundTracker.load()
+    prompts = PromptStore.load()
     summarizer = Summarizer(model=config["summary_model"], timeout=config["summary_timeout"],
                             config_dir=config.get("summary_config_dir"))
-    return Bot(config, telegram, amux, topics, offset, outbound, summarizer=summarizer.summarize)
+    return Bot(config, telegram, amux, topics, offset, outbound,
+               summarizer=summarizer.summarize, prompts=prompts)
 
 
 def main():
