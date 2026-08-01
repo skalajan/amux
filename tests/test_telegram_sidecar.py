@@ -111,12 +111,13 @@ def make_bot(topics_state=None, outbound_state=None, offset=0, chat_id="-100999"
     topics = tg.TopicStore(os.path.join(td, "topics.json"), topics_state or {})
     outbound = tg.OutboundTracker(os.path.join(td, "out.json"), outbound_state or {})
     off = tg.OffsetStore(os.path.join(td, "offset"), offset)
+    live = tg.LiveStore(os.path.join(td, "live.json"), {})
     cfg = {"owner_id": 42, "chat_id": chat_id, "amux_base": "x", "tg_api_base": "y",
            "write_token": "wt", "poll_secs": 0.01, "long_poll_secs": 1}
     if default_mode:
         cfg["default_mode"] = default_mode
     mt, ma = MockTelegram(), MockAmux()
-    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=summarizer)
+    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=summarizer, live=live)
     return bot, mt, ma, off
 
 

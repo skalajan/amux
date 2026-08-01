@@ -52,6 +52,7 @@ TOPICS_PATH = os.path.join(AMUX_DIR, "telegram-topics.json")
 OFFSET_PATH = os.path.join(AMUX_DIR, "telegram-offset")
 OUTBOUND_PATH = os.path.join(AMUX_DIR, "telegram-outbound.json")
 PROMPTS_PATH = os.path.join(AMUX_DIR, "telegram-prompts.json")
+LIVE_PATH = os.path.join(AMUX_DIR, "telegram-live.json")
 
 # Permission-prompt notify (plan .omc/plans/telegram-permissions.md Phase B).
 # Only ping once a session has been CONTINUOUSLY "waiting" this long — a debounce
@@ -153,6 +154,13 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
         "summary_timeout": float(get("TG_SUMMARY_TIMEOUT", "90") or 90),
         "summary_config_dir": (get("TG_SUMMARY_CONFIG_DIR") or "").strip() or None,
         "machine_label": (get("TG_MACHINE_LABEL") or "").strip() or None,
+        # Silent/invisible updates + presence layer (plan
+        # .omc/plans/telegram-silent-updates.md, M1).
+        "final_settle_secs": float(get("TG_FINAL_SETTLE_SECS", "4") or 4),
+        "presence": (get("TG_PRESENCE", "1") or "1").strip().lower()
+                    not in ("0", "false", "no", "off"),
+        "presence_react": (get("TG_PRESENCE_REACT", "0") or "0").strip().lower()
+                          in ("1", "true", "yes", "on"),
     }
 
 
@@ -352,6 +360,62 @@ class PromptStore:
 
     def clear(self, session):
         return self._pending.pop(str(session), None)
+
+
+# ── pure logic: per-session rolling "live box" + presence surface (persisted) ──
+class LiveStore:
+    """Per-session state for the silent rolling live box + presence header (plan
+    .omc/plans/telegram-silent-updates.md, Option B / r4 presence). One dict per
+    session:
+      * message_id          — the live box's Telegram message id (edited in place,
+                              invisible; created once with a single silent send).
+      * text_hash           — hash of the box's current text; skips no-op edits so
+                              an unchanged render never hits `400 not-modified`.
+      * candidate_reply_id  — the newest not-yet-promoted session reply id; the
+                              promotion tail keys off THIS (Hazard 1), never the
+                              per-row loop.
+      * rung_reply_id       — the reply id already rung / written as a settled
+                              final; blocks re-ringing across polls + restarts.
+      * read_ts / done_ts   — HH:MM stamps for the '👀 přečteno' / '✅ hotovo'
+                              header states (fixed at event time so the header
+                              string is stable across polls -> text_hash skips).
+      * idle_phase          — 'read' | 'done': which header to show while idle.
+      * body                — the last rendered body text, so a header-only poll
+                              (status change, no new reply) re-renders header+body
+                              without re-summarizing.
+    Persisted (atomic 0600) so a sidecar restart keeps editing the same box
+    (no re-create badge) and never re-rings an already-settled final."""
+
+    _FIELDS = ("message_id", "text_hash", "candidate_reply_id", "rung_reply_id",
+               "read_ts", "done_ts", "idle_phase", "body")
+
+    def __init__(self, path=LIVE_PATH, state=None):
+        self.path = path
+        self._live = {str(k): dict(v) for k, v in (state or {}).items()}
+
+    @classmethod
+    def load(cls, path=LIVE_PATH):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return cls(path, json.load(f))
+        except (OSError, ValueError):
+            return cls(path, {})
+
+    def to_dict(self):
+        return self._live
+
+    def save(self):
+        _atomic_write_0600(self.path, json.dumps(self._live))
+
+    def get(self, session):
+        return self._live.get(str(session))
+
+    def set_fields(self, session, **kw):
+        d = self._live.setdefault(str(session),
+                                  {k: None for k in self._FIELDS})
+        for k, v in kw.items():
+            d[k] = v
+        return d
 
 
 # ── pure logic: inbound long-poll offset (persisted) ───────────────────────────
@@ -613,6 +677,27 @@ class TelegramClient:
         if show_alert:
             p["show_alert"] = True
         return self._call("answerCallbackQuery", p, timeout=20)
+
+    def send_chat_action(self, chat_id, action, topic_id=None):
+        """A chat action ('typing') for the presence layer. Guaranteed silent —
+        a chat action never notifies or badges. Auto-expires in <=5s (or when the
+        bot next sends to the chat), so it must be re-sent to persist. Since Bot
+        API 6.3 message_thread_id scopes it to a forum topic."""
+        p = {"chat_id": chat_id, "action": action}
+        if topic_id is not None:
+            p["message_thread_id"] = int(topic_id)
+        return self._call("sendChatAction", p, timeout=15)
+
+    def set_message_reaction(self, chat_id, message_id, emoji):
+        """React to a message (Bot API 7.0). Used ONLY for the opt-in 👀
+        read-receipt (TG_PRESENCE_REACT=1). NOT guaranteed silent: a reaction to
+        the owner's own message can ding depending on his client's
+        Notifications->Reactions setting — hence opt-in, off by default. Pass an
+        empty emoji to clear reactions."""
+        reaction = [{"type": "emoji", "emoji": emoji}] if emoji else []
+        return self._call("setMessageReaction",
+                          {"chat_id": chat_id, "message_id": int(message_id),
+                           "reaction": reaction}, timeout=15)
 
     def create_forum_topic(self, chat_id, name):
         res = self._call("createForumTopic",
@@ -905,6 +990,103 @@ def session_status_label(s):
     return "idle"
 
 
+# ── pure logic: silent-updates routing + presence predicates (plan M1) ─────────
+def route_reply(is_final, origin_is_telegram, ring_off):
+    """Option B decision core (plan .omc/plans/telegram-silent-updates.md). Given
+    a session reply's finality, whether its governing origin is telegram, and the
+    topic's /ring-off flag, return the routing action:
+
+      * "suppress" — no Telegram footprint at all (dashboard + /last hold it).
+      * "ring"     — a fresh, ringing sendMessage (disable_notification=False).
+      * "live"     — a silent edit into the rolling live box.
+
+    The finality gate PRECEDES ring_off: a non-final reply always suppresses,
+    regardless of origin or /ring off. Only a FINAL reply can ring (telegram
+    origin, ring on) or land silently in the live box (origin-muted, or ring
+    off). /mute is handled upstream (is_muted) before routing is consulted."""
+    if not is_final:
+        return "suppress"
+    if origin_is_telegram and not ring_off:
+        return "ring"
+    return "live"
+
+
+def should_type(status_label, origin_is_telegram):
+    """The typing indicator (sendChatAction) fires ONLY while a session is
+    actively working on a turn whose governing origin is telegram — i.e. Jan
+    launched this from the phone and is waiting for THIS answer. Desk-origin
+    active sessions get no typing (he's at the dashboard)."""
+    return status_label == "active" and bool(origin_is_telegram)
+
+
+def elapsed_bucket(secs):
+    """Coarsen an elapsed-seconds count to 30s buckets so the status header
+    ('▶ pracuje (2m)') changes at most every 30s instead of every ~2s poll —
+    the text_hash guard then skips the intervening no-op edits."""
+    secs = int(secs or 0)
+    if secs < 0:
+        secs = 0
+    bucket = (secs // 30) * 30
+    if bucket < 60:
+        return f"{bucket}s"
+    return f"{bucket // 60}m"
+
+
+def _text_hash(text):
+    """Short stable hash of a live-box render — drives the no-op-edit skip."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+# Live box: an edit can't be chunked, so hard-trim the body to <=3900 chars
+# (independent of the topic's /mode — Hazard 3) with a /last hint. Typing is
+# re-sent every ~4s (sendChatAction auto-expires in <=5s).
+LIVE_BODY_MAX = 3900
+LIVE_TRIM_HINT = "\n… (/last = celý výpis)"
+TYPING_INTERVAL_SECS = 4.0
+
+
+def live_trim(text):
+    """Hard-cap a live-box body at LIVE_BODY_MAX chars with a /last hint. An edit
+    is a single message (never chunked), so anything longer is truncated, full
+    text still reachable via /last (Hazard 3)."""
+    text = text or ""
+    if len(text) <= LIVE_BODY_MAX:
+        return text
+    return text[:LIVE_BODY_MAX - len(LIVE_TRIM_HINT)].rstrip() + LIVE_TRIM_HINT
+
+
+# ── pure logic: continuous-idle settle tracker (finality) — plan M1 ────────────
+class FinalityTracker:
+    """Per-session timer of how long a session has been CONTINUOUSLY reported
+    'idle' — the sole in-code signal a run has concluded (plan: a reply row
+    carries no finality flag). Mirrors WaitingTracker exactly but for the 'idle'
+    label: observe(session, label, now) once per poll; settled(session, now,
+    settle) is True once it has been idle >= settle seconds without interruption.
+    Any non-'idle' label (active/waiting/limit) resets the timer, so an
+    autonomous loop whose idle gaps stay below `settle` never settles (no
+    false-ring). In-memory only (rung_reply_id in LiveStore is the durable
+    double-ring guard across restarts)."""
+
+    def __init__(self):
+        self._idle_since = {}   # session -> ts it most recently entered "idle"
+
+    def observe(self, session, label, now):
+        if label == "idle":
+            self._idle_since.setdefault(str(session), now)
+        else:
+            self._idle_since.pop(str(session), None)
+
+    def idle_since(self, session):
+        return self._idle_since.get(str(session))
+
+    def settled(self, session, now, settle):
+        since = self._idle_since.get(str(session))
+        return since is not None and (now - since) >= settle
+
+    def clear(self, session):
+        self._idle_since.pop(str(session), None)
+
+
 # ── pure logic: format an outbound item for Telegram ───────────────────────────
 def format_item(session, item):
     role = item.get("role")
@@ -1121,7 +1303,7 @@ def _short_hostname():
 # ── the bot (orchestration; network via injected clients) ──────────────────────
 class Bot:
     def __init__(self, config, telegram, amux, topics, offset, outbound, summarizer=None,
-                 prompts=None):
+                 prompts=None, live=None):
         self.cfg = config
         self.default_mode = config.get("default_mode", "smart")
         self.summarizer = summarizer  # callable(text) -> str|None; None disables smart mode
@@ -1134,6 +1316,15 @@ class Bot:
         # per-session pending prompt; waiting is the in-memory grace-window timer.
         self.prompts = prompts if prompts is not None else PromptStore(PROMPTS_PATH, {})
         self.waiting = WaitingTracker()
+        # Silent-updates + presence state (plan M1). live persists the rolling
+        # live box / presence surface; finality is the in-memory idle-settle
+        # timer; the small dicts are per-poll presence bookkeeping (in-memory,
+        # self-healing on restart).
+        self.live = live if live is not None else LiveStore(LIVE_PATH, {})
+        self.finality = FinalityTracker()
+        self._candidate_items = {}   # session -> newest unpromoted reply item
+        self._active_since = {}      # session -> ts it most recently went active
+        self._last_typing = {}       # session -> ts of last sendChatAction
         self.machine = config.get("machine_label") or _short_hostname()
         self.chat_id = config.get("chat_id")
         self.owner_id = config["owner_id"]
@@ -1184,6 +1375,10 @@ class Bot:
             log.info("re-delivered update %s -> %s (deduped)", update["update_id"], session)
         else:
             log.info("owner -> %s: %r", session, text[:80])
+            # Presence (plan M1): a durable inject is the read-receipt trigger.
+            # Create the live box once (silent) and show '👀 přečteno'. Guarded
+            # against a re-delivery (deduped) so a re-fetch never re-creates.
+            self._on_inject(session, (update_message(update).get("message_id")))
         return True
 
     # ── inbound: permission-prompt callbacks (plan B.4) ──────────────────────────
@@ -1575,22 +1770,27 @@ class Bot:
                 self.offset.advance_to(u["update_id"])
 
     # ── outbound ─────────────────────────────────────────────────────────────
-    def forward_session(self, session):
-        """Forward any new session-reply / system rows for one session to its topic.
+    def forward_session(self, session, status_label=None):
+        """Ingest new session-reply / system rows for one session and route them.
         Exactly-once via stable-id dedup; transcript order; rebuild-safe cursor.
 
-        Notification routing (docs/telegram-chat.md "Notifications"): walks the
-        FULL merged thread — owner rows included, not just the forwardable ones —
-        in transcript order. Every owner row updates the session's persisted
-        "governing origin"; every forwardable session/system row rings only when
-        the CURRENT governing origin is exactly "telegram" (i.e. it answers a
-        Telegram-originated owner message). Everything else — dashboard/other-
-        session origin, no preceding owner message at all, system rows — is sent
-        with disable_notification=True. /ring off forces silent unconditionally,
-        overriding the origin rule. Owner rows are walked on every poll (never
-        marked "seen") because amux-server.py's incremental window for them is
-        ts-based (created_ts > since_ts of the last forwarded reply), not
-        id-based — the same row legitimately reappears until a later reply
+        Two routing regimes, selected by `status_label`:
+
+        * `status_label is None` (legacy / unit-test path, and a defensive fallback
+          when the session status is somehow unknown): every forwardable
+          session/system row is sent immediately, ringing per the governing-origin
+          rule (docs/telegram-chat.md "Notifications") — the pre-finality behavior.
+        * `status_label` provided (the outbound loop always passes it): silent-
+          updates Option B (plan .omc/plans/telegram-silent-updates.md). SYSTEM
+          rows keep the legacy immediate origin-routed path (explicitly out of
+          scope — alerts/pings still ring). SESSION reply rows are NOT sent here:
+          each new one is deduped and recorded as the promotion candidate; the
+          separate presence/promotion tail (`_presence_tail`, run EVERY poll —
+          Hazard 1) decides suppress/live/ring once finality settles.
+
+        Owner rows are walked on every poll (never marked "seen") to keep the
+        governing origin current — amux-server.py's incremental window for them is
+        ts-based, so the same row legitimately reappears until a later reply
         forwards past it; re-observing it is idempotent."""
         if self.topics.is_muted(session):
             return
@@ -1610,6 +1810,7 @@ class Bot:
             self._save_outbound()
             return
         ring_off = self.topics.is_ring_off(session)
+        newest_reply = None
         for item in sorted(thread, key=_thread_order_key):
             if self.topics.is_muted(session):
                 break
@@ -1622,6 +1823,13 @@ class Bot:
                 continue
             if self.outbound.is_seen(session, item.get("id")):
                 continue
+            if role == "session" and status_label is not None:
+                # Option B: defer the send — dedup now, promote later via the tail.
+                self.outbound.mark_sent(session, item)
+                self._save_outbound()
+                newest_reply = item
+                continue
+            # Legacy path (status unknown) + all system rows: immediate send.
             tid = self._ensure_topic(session)
             silent = ring_off or self.outbound.governing_origin(session) != "telegram"
             try:
@@ -1632,6 +1840,10 @@ class Bot:
                 break  # leave item un-marked; retried next poll
             self.outbound.mark_sent(session, item)
             self._save_outbound()
+        if status_label is not None:
+            if newest_reply is not None:
+                self._record_candidate(session, newest_reply)
+            self._presence_tail(session, status_label, time.time())
 
     def _render_outbound(self, session, item):
         """Render one outbound item per the session's display mode. System
@@ -1669,6 +1881,243 @@ class Bot:
         if not summary:
             return brief_truncate(text)
         return SMART_PREFIX + summary + SMART_SUFFIX
+
+    # ── silent updates + presence (plan .omc/plans/telegram-silent-updates.md, M1) ─
+    def _presence_on(self):
+        return bool(self.cfg.get("presence", True))
+
+    def _presence_react(self):
+        return bool(self.cfg.get("presence_react", False))
+
+    def _settle_secs(self):
+        return float(self.cfg.get("final_settle_secs", 4.0))
+
+    def _save_live(self):
+        with self._save_lock:
+            self.live.save()
+
+    def _on_inject(self, session, in_message_id):
+        """Presence read-receipt on a durable telegram-origin inject (E1/E2).
+        Best-effort — never raises into handle_update. Creates the live box once
+        (silent, guarded by the persisted message_id so a re-inject never
+        re-creates), stamps '👀 přečteno', and — only when TG_PRESENCE_REACT=1 —
+        adds the opt-in 👀 reaction to Jan's own message."""
+        if not self._presence_on():
+            return
+        try:
+            now = time.time()
+            hhmm = time.strftime("%H:%M", time.localtime(now))
+            # New inbound turn: reset the idle-phase to read, drop any stale
+            # active-elapsed clock so the header shows 👀, not a stale ✅/▶.
+            self.live.set_fields(session, read_ts=hhmm, idle_phase="read")
+            self._active_since.pop(session, None)
+            if not (self.live.get(session) or {}).get("message_id"):
+                self._live_create(session, self._live_render(session, None, "idle", now))
+            else:
+                self._save_live()
+            if self._presence_react() and in_message_id:
+                try:
+                    self.tg.set_message_reaction(self.chat_id, in_message_id, "👀")
+                except TelegramError as e:
+                    log.info("presence reaction for %s failed (cosmetic): %s", session, e)
+        except Exception as e:  # presence is best-effort; never break the inject
+            log.info("presence on-inject for %s failed: %s", session, e)
+
+    def _record_candidate(self, session, item):
+        """Stash the newest unpromoted reply (in-memory for rendering, id
+        persisted) so the promotion tail — which fires on a LATER, row-less poll
+        once finality settles — knows what to promote (Hazard 1)."""
+        self._candidate_items[session] = item
+        self.live.set_fields(session, candidate_reply_id=item.get("id"))
+        self._save_live()
+
+    def _presence_tail(self, session, status_label, now):
+        """Runs EVERY poll for a non-muted, known session (Hazard 1). Drives the
+        idle-settle timer, promotes a settled candidate (ring or silent live
+        edit), refreshes the status header (the ONE allowed live-box edit per
+        poll), and re-sends the typing indicator for a telegram-origin active
+        turn. Fully best-effort — a Telegram error skips this poll, retried next."""
+        if self.topics.is_muted(session):
+            return
+        try:
+            self.finality.observe(session, status_label, now)
+            self._track_active(session, status_label, now)
+            settled = self.finality.settled(session, now, self._settle_secs())
+            live = self.live.get(session) or {}
+            cand = live.get("candidate_reply_id")
+            rung = live.get("rung_reply_id")
+            did_edit = False
+            if cand and cand != rung and settled:
+                did_edit = self._promote_final(session, status_label, now, cand)
+            # Status header — the single allowed live-box edit per poll — only if
+            # a promotion didn't already spend it, and a box exists.
+            if (self._presence_on() and not did_edit
+                    and (self.live.get(session) or {}).get("message_id")):
+                self._live_edit(session, self._live_render(session, None, status_label, now))
+            # Typing indicator (telegram-origin active turns only).
+            if self._presence_on() and should_type(
+                    status_label, self.outbound.governing_origin(session) == "telegram"):
+                self._maybe_type(session, now)
+        except TelegramError as e:
+            log.info("presence tail for %s skipped (%s) — retry next poll", session, e)
+        except Exception as e:
+            log.warning("presence tail for %s crashed: %s", session, e)
+
+    def _promote_final(self, session, status_label, now, cand):
+        """Promote a settled final candidate. Returns True iff it consumed the
+        poll's live-box edit. Ring only for (telegram-origin ∧ ¬ring_off); else a
+        silent live-box edit (origin-muted / ring-off final)."""
+        origin_tg = self.outbound.governing_origin(session) == "telegram"
+        ring_off = self.topics.is_ring_off(session)
+        route = route_reply(True, origin_tg, ring_off)
+        item = self._candidate_items.get(session) or self._refetch_reply(session, cand)
+        if item is None:
+            return False
+        if route == "ring":
+            return self._ring_final(session, item, cand, now)
+        # "live": silent edit into the box (create if missing), mark rung.
+        self._live_edit(session, self._live_render(session, item, status_label, now))
+        self.live.set_fields(session, rung_reply_id=cand, idle_phase="done",
+                             done_ts=time.strftime("%H:%M", time.localtime(now)))
+        self._save_live()
+        return True
+
+    def _ring_final(self, session, item, cand, now):
+        """Fresh ringing sendMessage for a telegram-origin final (the only case
+        that produces a new/unread Telegram message). Then flip the live box (if
+        any) to a settled breadcrumb so its silent content doesn't sit stale
+        above the real answer that landed below (ordering, edge 3)."""
+        tid = self._ensure_topic(session)
+        try:
+            self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid,
+                                 disable_notification=False)
+        except TelegramError as e:
+            log.warning("final ring for %s failed: %s — retry next poll", session, e)
+            return False
+        self.live.set_fields(session, rung_reply_id=cand, idle_phase="done",
+                             done_ts=time.strftime("%H:%M", time.localtime(now)))
+        self._save_live()
+        if (self.live.get(session) or {}).get("message_id"):
+            self._live_edit(session, self._live_breadcrumb(session, now))
+            return True
+        return False
+
+    def _refetch_reply(self, session, reply_id):
+        """Locate a reply item by stable id (used when the in-memory candidate was
+        lost to a restart). Best-effort — returns None on any failure."""
+        try:
+            data = self.amux.get_chat(session, 0)
+        except AmuxError:
+            return None
+        for it in data.get("thread", []):
+            if it.get("role") == "session" and it.get("id") == reply_id:
+                return it
+        return None
+
+    def _live_create(self, session, text):
+        """Send the one silent creation message for a session's live box and
+        persist its id (R1: one no-sound badge per session, ever)."""
+        tid = self._ensure_topic(session)
+        try:
+            res = self.tg.send_message(self.chat_id, text, tid, disable_notification=True)
+        except TelegramError as e:
+            log.warning("live-box create for %s failed: %s", session, e)
+            return False
+        self.live.set_fields(session, message_id=(res or {}).get("message_id"),
+                             text_hash=_text_hash(text))
+        self._save_live()
+        return True
+
+    def _live_edit(self, session, text):
+        """Edit the live box to `text`, hash-guarded (skips a no-op edit, dodging
+        `400 not-modified`). Its own wrapper (Hazard 2): a 'message to edit not
+        found' recreates the box ONCE; any other error (429/5xx) is skipped and
+        retried next poll (the ~2s poll cadence is the backoff). No box yet ->
+        create. Returns True iff the box now reflects `text`."""
+        live = self.live.get(session) or {}
+        mid = live.get("message_id")
+        if not mid:
+            return self._live_create(session, text)
+        if live.get("text_hash") == _text_hash(text):
+            return True   # unchanged — skip the edit entirely
+        try:
+            self.tg.edit_message_text(self.chat_id, mid, text)
+        except TelegramError as e:
+            low = str(e).lower()
+            if "message to edit not found" in low or "message can't be edited" in low:
+                self.live.set_fields(session, message_id=None)
+                return self._live_create(session, text)   # recreate once
+            log.info("live-box edit for %s skipped (%s) — retry next poll", session, e)
+            return False
+        self.live.set_fields(session, text_hash=_text_hash(text))
+        self._save_live()
+        return True
+
+    def _live_render(self, session, item, status_label, now):
+        """The live box's full text = status header (presence on) + trimmed body.
+        `item` None -> header-only refresh reusing the last stored body (N-a: a
+        box created on inject with no reply yet renders the header alone, never an
+        empty edit). Body is hard-trimmed to <=3900 regardless of /mode (Hazard 3)."""
+        live = self.live.get(session) or {}
+        if item is not None:
+            body = live_trim(self._render_outbound(session, item))
+            if body != live.get("body"):
+                self.live.set_fields(session, body=body)
+        else:
+            body = live.get("body") or ""
+        if not self._presence_on():
+            return body
+        header = self._presence_header_line(session, status_label, now)
+        if not body:
+            return header
+        return f"{header}\n\n{body}"
+
+    def _live_breadcrumb(self, session, now):
+        live = self.live.get(session) or {}
+        done = live.get("done_ts") or time.strftime("%H:%M", time.localtime(now))
+        head = f"✅ hotovo {done}" if self._presence_on() else "✅"
+        return f"{head}\n≡ viz odpověď níže"
+
+    def _presence_header_line(self, session, status_label, now):
+        """The status header's first line. States: ▶ pracuje (elapsed, 30s-bucketed)
+        · ⏳ čeká na rozhodnutí · ⛔ limit · ✅ hotovo HH:MM · 👀 přečteno HH:MM.
+        HH:MM stamps are fixed at event time (stored) so the string is stable
+        across polls and the text_hash guard skips the intervening edits."""
+        live = self.live.get(session) or {}
+        if status_label == "active":
+            return f"▶ pracuje ({elapsed_bucket(self._active_elapsed(session, now))})"
+        if status_label == "waiting":
+            return "⏳ čeká na rozhodnutí"
+        if status_label == "limit":
+            return "⛔ limit"
+        # idle
+        if live.get("idle_phase") == "done":
+            return f"✅ hotovo {live.get('done_ts') or ''}".rstrip()
+        if live.get("idle_phase") == "read" or live.get("read_ts"):
+            return f"👀 přečteno {live.get('read_ts') or ''}".rstrip()
+        return "✅ hotovo"
+
+    def _track_active(self, session, status_label, now):
+        if status_label == "active":
+            self._active_since.setdefault(session, now)
+        else:
+            self._active_since.pop(session, None)
+
+    def _active_elapsed(self, session, now):
+        since = self._active_since.get(session)
+        return 0 if since is None else max(0, now - since)
+
+    def _maybe_type(self, session, now):
+        if now - self._last_typing.get(session, 0) < TYPING_INTERVAL_SECS:
+            return
+        tid = self.topics.topic_for_session(session)
+        if tid is None:
+            return
+        try:
+            self.tg.send_chat_action(self.chat_id, "typing", tid)
+        except TelegramError as e:
+            log.info("typing action for %s failed (cosmetic): %s", session, e)
+        self._last_typing[session] = now
 
     # ── outbound: permission-prompt detection + notify (plan B.1/B.2/B.3/B.5) ────
     def _check_permission_prompts(self, sessions):
@@ -1785,7 +2234,7 @@ class Bot:
                 if s.get("archived"):
                     continue
                 try:
-                    self.forward_session(s.get("name"))
+                    self.forward_session(s.get("name"), status_label=session_status_label(s))
                 except AmuxError as e:
                     log.warning("forward %s failed: %s", s.get("name"), e)
                 except Exception as e:
@@ -1845,10 +2294,11 @@ def build_bot(config):
     offset = OffsetStore.load()
     outbound = OutboundTracker.load()
     prompts = PromptStore.load()
+    live = LiveStore.load()
     summarizer = Summarizer(model=config["summary_model"], timeout=config["summary_timeout"],
                             config_dir=config.get("summary_config_dir"))
     return Bot(config, telegram, amux, topics, offset, outbound,
-               summarizer=summarizer.summarize, prompts=prompts)
+               summarizer=summarizer.summarize, prompts=prompts, live=live)
 
 
 def main():
