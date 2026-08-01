@@ -299,6 +299,10 @@ print("get-throttle ok — GET-triggered populate runs once per session per wind
 #     nothing (fresh session, or transcript under a non-default config home)
 #   - neither resolves → returns None without crashing
 #   - the conv id is cached so _live_conv_id (ps/tmux) runs at most once per TTL
+#   - a DEAD slot never guesses: _live_conv_id's "newest jsonl in the work dir"
+#     step would otherwise hand a slot with no live Claude whatever conversation
+#     last touched its CC_DIR — including a bare `claude` CLI amux does not own,
+#     whose reply then lands in the slot's chat AND goes out to Telegram
 class _FakePath:
     def __init__(self, exists=True): self._exists = exists
     def __truediv__(self, other): return self       # ignore path joins
@@ -309,17 +313,27 @@ class _F10Clock:
     def __init__(self): self.t = 5000.0
     def monotonic(self): return self.t
 
-_f10 = {"live_calls": 0, "live_ret": "conv-xyz", "primary": None, "file_exists": True}
+_f10 = {"live_calls": 0, "live_ret": "conv-xyz", "primary": None, "file_exists": True,
+        "alive": True, "argv_calls": 0, "guess_calls": 0, "guess_ret": None, "owned": ""}
 _f10clk = _F10Clock()
 def _fake_live_conv_id(name, wd=""):
+    # amux-server calls this twice with different intent: no work dir = argv only
+    # (authoritative), with a work dir = the newest-jsonl guess. Count them apart so
+    # the sticky-ownership tests can assert the guess never ran.
     _f10["live_calls"] += 1
+    if wd:
+        _f10["guess_calls"] += 1
+        return _f10["live_ret"] if _f10["guess_ret"] is None else _f10["guess_ret"]
+    _f10["argv_calls"] += 1
     return _f10["live_ret"]
 
 fns: dict = {
     "time": _f10clk,
     "_session_work_dir": lambda name: "/work/dir",
     "_session_jsonl_path": lambda name: _f10["primary"],
+    "is_running": lambda name: _f10["alive"],
     "_live_conv_id": _fake_live_conv_id,
+    "_chat_owned_conv": lambda name: _f10["owned"],
     "_claude_config_homes": lambda: [_FakePath(_f10["file_exists"])],
     "_project_name": lambda wd: "proj",
 }
@@ -332,7 +346,7 @@ for node in tree.body:
         _name = node.target.id
     if _name in _f10_state:
         exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), fns)
-    if isinstance(node, ast.FunctionDef) and node.name in ("_chat_live_conv_path", "_chat_resolve_jsonl_path"):
+    if isinstance(node, ast.FunctionDef) and node.name in ("_chat_live_conv_path", "_chat_resolve_jsonl_path", "_chat_conv_jsonl"):
         exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), fns)
 resolve = fns["_chat_resolve_jsonl_path"]
 TTL = fns["_CHAT_CONV_FALLBACK_TTL"]
@@ -373,7 +387,73 @@ _f10["live_ret"] = ""      # _live_conv_id can't determine the conversation
 _p = resolve("S3")
 assert _p is None, "with neither meta nor live conv id, resolution must be None (live-only)"
 assert "S3" not in fns["_chat_conv_fallback_cache"], "a miss must not cache a bogus id (retry next poll)"
-print("amux-10 fallback ok — meta path primary; live-conv-id fallback resolves fresh/other-home sessions, cached per TTL, safe on total miss")
+
+# dead slot must NOT guess: no live Claude → _live_conv_id (and its newest-jsonl
+# step) never runs, so a neighbouring bare CLI session sharing the work dir can't
+# be adopted and leaked to chat/Telegram. Regression: `amux-helper`, 2026-08-01.
+fns["_chat_conv_fallback_cache"].clear()
+_f10["live_calls"] = 0
+_f10["primary"] = None
+_f10["live_ret"] = "conv-belonging-to-someone-else"
+_f10["file_exists"] = True
+_f10["alive"] = False
+_p = resolve("S4")
+assert _p is None, "a slot with no live Claude must resolve to None, never a guessed transcript"
+assert _f10["live_calls"] == 0, "dead slot must not even consult _live_conv_id (no newest-jsonl guess)"
+assert "S4" not in fns["_chat_conv_fallback_cache"], "dead slot must leave nothing cached"
+
+# the liveness gate is TTL-bounded, not a per-call cost: once alive and cached,
+# a within-TTL resolve must not re-run is_running or _live_conv_id
+_f10["alive"] = True
+_alive_calls = {"n": 0}
+def _counting_is_running(name):
+    _alive_calls["n"] += 1
+    return _f10["alive"]
+fns["is_running"] = _counting_is_running
+_f10["live_ret"] = "conv-xyz"
+_p = resolve("S5")
+assert _p is not None, "a live slot still resolves via the fallback"
+assert _alive_calls["n"] == 1, "liveness must be checked on the cache-miss path"
+_p = resolve("S5")
+assert _alive_calls["n"] == 1, "within-TTL resolve must not re-run is_running (TTL-bounded, not per-call)"
+fns["is_running"] = lambda name: _f10["alive"]
+
+# STICKY OWNERSHIP: a live slot with no argv id must reuse the conversation it
+# already owns instead of re-running the newest-jsonl guess, which in a shared work
+# dir resolves to whichever Claude wrote last. Regression: `amux-helper` (live, argv
+# carries no --session-id/--resume, meta has no cc_conversation_id) captured 10 turns
+# belonging to bare CLI sessions sharing ~/Desktop/Projects/amux, 2026-08-01.
+fns["_chat_conv_fallback_cache"].clear()
+_f10.update(live_calls=0, argv_calls=0, guess_calls=0, alive=True, primary=None,
+            file_exists=True, live_ret="", guess_ret="conv-stolen-from-neighbour",
+            owned="conv-established")
+_p = resolve("S6")
+assert _p is not None, "a slot with established history must still resolve a transcript"
+assert _f10["argv_calls"] == 1, "argv stays the first, authoritative source"
+assert _f10["guess_calls"] == 0, "sticky ownership must SKIP the newest-jsonl guess entirely"
+assert fns["_chat_conv_fallback_cache"]["S6"][0] == "conv-established", \
+    "the owned conversation must be what gets cached, not the neighbour's"
+
+# argv still outranks stickiness: when amux launched the session itself, the
+# authoritative id wins even if the slot's history points somewhere else
+fns["_chat_conv_fallback_cache"].clear()
+_f10.update(live_calls=0, argv_calls=0, guess_calls=0, live_ret="conv-from-argv",
+            owned="conv-established")
+_p = resolve("S7")
+assert fns["_chat_conv_fallback_cache"]["S7"][0] == "conv-from-argv", \
+    "an argv-supplied conv id must override the sticky owned one"
+assert _f10["guess_calls"] == 0, "argv hit must not fall through to the guess"
+
+# stickiness releases when the owned transcript is gone from disk, so a slot whose
+# conversation was deleted can still re-resolve rather than resolving to nothing
+fns["_chat_conv_fallback_cache"].clear()
+_f10.update(live_calls=0, argv_calls=0, guess_calls=0, live_ret="",
+            guess_ret="", owned="conv-established", file_exists=False)
+_p = resolve("S8")
+assert _f10["guess_calls"] == 1, "a vanished owned transcript must release the pin and re-guess"
+assert _p is None, "and with nothing resolvable the result is None, not a stale path"
+_f10.update(guess_ret=None, file_exists=True, owned="")
+print("amux-10 fallback ok — meta path primary; live-conv-id fallback resolves fresh/other-home sessions, cached per TTL, safe on total miss; DEAD slots never guess, and a LIVE slot sticks to the conversation it owns (argv still wins, pin releases if the transcript is gone)")
 
 print("\nALL CHAT-CORE CHECKS PASSED")
 

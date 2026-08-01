@@ -7303,6 +7303,7 @@ def _chat_notify(session: str, kind: str) -> None:
 _chat_replies_lock = threading.Lock()
 _CHAT_JSONL_MAX_BYTES = 64_000_000   # full-read cap for stable global turn indexing
 
+# AMUX-LOCAL:session-chat
 # AMUX-10: live-conv-id fallback cache. Fresh sessions started WITHOUT
 # --session-id/--resume never get the graceful-stop rename that records
 # cc_conversation_id in meta, so _session_jsonl_path's meta path can't resolve
@@ -7315,12 +7316,68 @@ _CHAT_JSONL_MAX_BYTES = 64_000_000   # full-read cap for stable global turn inde
 _chat_conv_fallback_cache: dict = {}   # session -> (conv_id, monotonic_ts)
 _CHAT_CONV_FALLBACK_TTL = 30.0         # re-verify via _live_conv_id at most this often
 
+def _chat_conv_jsonl(wd: str, conv_id: str):
+    """Path of `conv_id`'s transcript under whichever config home holds it, else
+    None. Config homes are scanned because a transcript may live outside CLAUDE_HOME
+    (mac-server: ~/.claude-personal)."""
+    if not conv_id:
+        return None
+    try:
+        for home in _claude_config_homes():
+            cand = home / "projects" / _project_name(wd) / f"{conv_id}.jsonl"
+            if cand.is_file():
+                return cand
+    except Exception:
+        pass
+    return None
+
+def _chat_owned_conv(name: str) -> str:
+    """The conversation this slot has ESTABLISHED chat history for — the conv id
+    backing the most chat_replies rows (ties broken by most recent). '' when the
+    slot has captured nothing yet. Row count, NOT recency, is the discriminator:
+    a stolen turn contributes exactly one row while the slot's real conversation
+    accumulates hundreds, so 'most rows' survives a leak that 'most recent' would
+    hand right back to the thief."""
+    try:
+        row = get_db().execute(
+            "SELECT substr(id, 1, instr(id, ':') - 1) AS conv, COUNT(*) AS n, "
+            "MAX(created_ts) AS t FROM chat_replies WHERE session=? AND instr(id, ':')>1 "
+            "GROUP BY conv ORDER BY n DESC, t DESC LIMIT 1", (name,)).fetchone()
+    except Exception:
+        return ""
+    return (row["conv"] or "").strip() if row else ""
+
 def _chat_live_conv_path(name: str):
     """AMUX-10 fallback: resolve a session's transcript path from its LIVE
-    conversation id (running-process argv, else newest jsonl across all config
-    homes) when the meta-based _session_jsonl_path can't. Cached in-memory (see
-    _chat_conv_fallback_cache) so ps/tmux runs at most once per _CHAT_CONV_FALLBACK_TTL
-    per session. Returns a Path or None; on miss caches nothing (retry next poll)."""
+    conversation id when the meta-based _session_jsonl_path can't. Cached in-memory
+    (see _chat_conv_fallback_cache) so ps/tmux runs at most once per
+    _CHAT_CONV_FALLBACK_TTL per session. Returns a Path or None; on miss caches
+    nothing (retry next poll).
+
+    Resolution order, most authoritative first:
+      1. `is_running` gate — a slot with no live Claude has no current transcript,
+         so it must never guess at all.
+      2. argv (`_live_conv_id(name)`, no work dir ⇒ argv only) — definitive whenever
+         amux launched the session itself with --session-id/--resume.
+      3. STICKY: the conversation this slot already owns (`_chat_owned_conv`), if its
+         transcript still exists.
+      4. Only with none of the above: `_live_conv_id(name, wd)`, whose step 2 is
+         "newest jsonl in the work dir".
+
+    Steps 1 and 3 exist because step 4 is racy by construction: in a work dir shared
+    with any other Claude session it resolves to whichever conversation was written
+    last — including a bare `claude` CLI amux does not own. The stolen turn is then
+    written to the slot's chat_replies AND pushed to Telegram. Both slots with
+    CC_DIR ~/Desktop/Projects/amux were affected on 2026-08-01: `--help` (dead, all
+    7 of its rows stolen — fixed by step 1) and `amux-helper` (live, no argv id and
+    no meta id because it resumes a conversation born 2026-07-16, 10 rows stolen
+    beside its own 92 — fixed by step 3).
+
+    Residual: a brand-new slot with no argv id and no history still relies on step 4,
+    and once step 3 has something to hold onto it holds on — a slot that starts a
+    genuinely new conversation without an argv id stays pinned to the old one while
+    that transcript exists. Pinned-but-stale beats stealing a neighbour's replies,
+    and passing --session-id at launch removes the guess entirely."""
     try:
         wd = _session_work_dir(name)
     except Exception:
@@ -7332,24 +7389,34 @@ def _chat_live_conv_path(name: str):
     if cached and (now - cached[1]) < _CHAT_CONV_FALLBACK_TTL:
         conv_id = cached[0]
     else:
+        # The whole ladder sits INSIDE the cache-miss branch so it stays TTL-bounded
+        # like the _live_conv_id call it guards. For a dead slot it is also cheaper
+        # than what it replaces: one `tmux list-sessions` instead of list-panes +
+        # pgrep + ps-per-pid + a work-dir scan.
         try:
-            conv_id = (_live_conv_id(name, wd) or "").strip()
+            alive = is_running(name)
         except Exception:
-            conv_id = ""
+            alive = False
+        conv_id = ""
+        if alive:
+            try:
+                conv_id = (_live_conv_id(name) or "").strip()   # argv only (no wd)
+            except Exception:
+                conv_id = ""
+            if not conv_id:
+                owned = _chat_owned_conv(name)
+                if _chat_conv_jsonl(wd, owned) is not None:
+                    conv_id = owned
+            if not conv_id:
+                try:
+                    conv_id = (_live_conv_id(name, wd) or "").strip()
+                except Exception:
+                    conv_id = ""
         if conv_id:
             _chat_conv_fallback_cache[name] = (conv_id, now)
         else:
             _chat_conv_fallback_cache.pop(name, None)
-    if not conv_id:
-        return None
-    try:
-        for home in _claude_config_homes():
-            cand = home / "projects" / _project_name(wd) / f"{conv_id}.jsonl"
-            if cand.is_file():
-                return cand
-    except Exception:
-        pass
-    return None
+    return _chat_conv_jsonl(wd, conv_id)
 
 def _chat_resolve_jsonl_path(name: str):
     """Transcript path for chat capture (AMUX-10). Primary: the meta-based
@@ -7363,6 +7430,7 @@ def _chat_resolve_jsonl_path(name: str):
     if path and path.exists():
         return path
     return _chat_live_conv_path(name)
+# /AMUX-LOCAL:session-chat
 
 def _chat_populate_replies(name: str) -> list:
     """SINGLE-WRITER (C-new-1): materialize new transcript reply turns for a
