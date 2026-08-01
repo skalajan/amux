@@ -4106,6 +4106,45 @@ _YOLO_PROMPTS = [
 _YOLO_COOLDOWN = 6  # seconds between auto-responses per session
 _yolo_last_responded: dict = {}
 
+# AMUX-LOCAL:yolo-guardrail
+# Never auto-answer an explicit permission-rule confirmation for a destructive
+# command. When Claude Code renders "Permission rule <rule> requires confirmation
+# for this command." under --dangerously-skip-permissions, the user configured
+# that ask-rule deliberately; auto-sending "1" would silently approve exactly the
+# command they asked to be prompted for. We stand down and leave the session
+# `waiting` so a human decides (the Telegram sidecar notifies).
+# keep in sync with permissions.ask in ~/.claude*/settings.json (both machines)
+_YOLO_GUARD_DESTRUCTIVE = re.compile(
+    r'\bsudo\s'                       # sudo *
+    r'|\brm\s+-\w*[rf]\w*[rf]'        # rm -rf / -fr / -Rf … (recursive+force combo)
+    r'|\bgit\s+push\s+-{1,2}f'        # git push -f / --force
+    r'|\bdd\s+if='                    # dd if=*
+    r'|\bmkfs'                        # mkfs*
+    r'|\bgit\s+clean\s+-\w*[fx]\w*[dx]',  # git clean -fdx / -xfd
+    re.IGNORECASE,
+)
+_yolo_guard_logged: dict = {}
+
+
+def _yolo_is_guarded_prompt(clean: str) -> bool:
+    """True if the pane shows a permission confirmation we must NOT auto-answer.
+
+    Primary (authoritative) signal: Claude Code's explicit ask-rule chrome
+    ("Permission rule … requires confirmation for this command.") — its presence
+    means an `ask` rule fired, which the user opted into deliberately.
+    Secondary belt: a destructive command inside a "Do you want to proceed?"
+    prompt, in case the ask-rule line is absent. Bash prefix/word-boundary
+    matching is best-effort (compound commands and flag permutations can dodge
+    it) — this is a catastrophe net, not a security boundary.
+    """
+    low = clean.lower()
+    if 'permission rule' in low and 'requires confirmation' in low:
+        return True
+    if 'do you want to proceed' in low and _YOLO_GUARD_DESTRUCTIVE.search(clean):
+        return True
+    return False
+# /AMUX-LOCAL:yolo-guardrail
+
 
 def _yolo_auto_respond():
     """Check yolo sessions for known blocking prompts and auto-answer them."""
@@ -4141,6 +4180,19 @@ def _yolo_auto_respond():
             if not raw:
                 continue
             clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b[^a-zA-Z]*[a-zA-Z]', '', raw)
+            # AMUX-LOCAL:yolo-guardrail
+            if _yolo_is_guarded_prompt(clean):
+                # Destructive permission-rule confirmation pending: stand down so
+                # the session stays `waiting` for a human decision instead of
+                # auto-approving. Fail-closed by design (a hung session beats an
+                # unconfirmed rm -rf ~). Throttle the log to the yolo cooldown.
+                if now - _yolo_guard_logged.get(name, 0) > _YOLO_COOLDOWN:
+                    slog(f"[yolo-guardrail] session={name} destructive permission "
+                         f"prompt detected — not auto-answering; left waiting")
+                    _yolo_guard_logged[name] = now
+                    _posthog_emit("yolo_guardrail_skipped", {"session": name}, distinct_id=name)
+                continue
+            # /AMUX-LOCAL:yolo-guardrail
             for i, (pattern, response) in enumerate(_YOLO_PROMPTS):
                 if pattern.search(clean):
                     send_text(name, response)
