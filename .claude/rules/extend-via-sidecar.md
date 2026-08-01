@@ -19,18 +19,17 @@ Therefore, before adding a feature, prefer this order:
    **split the bulk into referenced files** and keep only a tiny inline footprint
    — see "When an in-file change is unavoidable" below for the required checklist.
 
-**Planned template — the session chat tab** ([`../../docs/session-chat.md`](../../docs/session-chat.md)):
+**Shipped template — the session chat tab** ([`../../docs/session-chat.md`](../../docs/session-chat.md)):
 a crucial, first-class dashboard tab that a sidecar/iframe couldn't deliver
-cleanly. This is documented as a **Phase 0 design/audit only — it is NOT yet
-implemented.** `chat.js`, `chat.css`, and `amux_chat.py` **do not exist** in
-this repo; agents must not expect to find or edit them. The design resolves
-the clause-3 way: feature code would live in those referenced files (upstream
-has none → conflict-immune), with a planned ~20-line inline footprint
-sentinel-marked per the convention below (`# AMUX-LOCAL:session-chat` …
-`# /AMUX-LOCAL:session-chat`, never `# ── … ──`) and the Python module wired
-via `amux_chat.init(ctx)` dependency injection. Treat this as the template for
-any future "must be in-file" feature — split first, inline minimally, sentinel
-it — once/if it is actually built.
+cleanly — **implemented 2026-07-31.** `chat.js` and `chat.css` exist at repo
+root (upstream has no such files → conflict-immune); the inline footprint plus
+the Python chat core in `amux-server.py` are sentinel-marked per the convention
+below (`# AMUX-LOCAL:session-chat` … `# /AMUX-LOCAL:session-chat`, never
+`# ── … ──`) and registered in the Local Delta Registry (`session-chat` row).
+Deviation from the original design: `amux_chat.py` was never created — the
+Python side went inline inside the sentinel fences rather than a DI module.
+Treat this as the executed template for any future "must be in-file" feature —
+split what you can into referenced files, inline minimally, sentinel it.
 
 Why: upstream tracks only `amux-server.py` and `skills/` — new files under
 `docs/`, `.claude/`, or a sidecar at repo root are never touched by the updater
