@@ -984,8 +984,12 @@ def classify_prompt(text):
     {"kind": "menu"|"open"|"none", "options": <int>, "always": <bool>}.
     `always` is True ONLY for a confirmed 3-option menu (an option numbered 3
     present) — on a 2-option prompt sending "2" selects the DENY choice, so an
-    Always button there would be a mis-tap hazard (plan B.4)."""
-    text = text or ""
+    Always button there would be a mis-tap hazard (plan B.4).
+
+    The peek endpoint returns the pane WITH ANSI color escapes (tmux capture -e),
+    which land between the ❯ selector, option digits, and footer words — every
+    marker regex missed until they are stripped (live miss, 2026-08-01)."""
+    text = _ANSI_RE.sub("", text or "")
     low = text.lower()
     if any(m in low for m in _PROMPT_RATE_LIMIT_MARKERS):
         return {"kind": "none", "options": 0, "always": False}
@@ -1066,8 +1070,9 @@ def build_peek_keyboard(session, fp):
 
 def trim_prompt_text(text, max_lines=25, max_chars=PERM_PROMPT_MAX_CHARS):
     """The last few non-empty lines of a peek, capped — the relevant prompt tail
-    for the notify body."""
-    lines = (text or "").splitlines()
+    for the notify body. ANSI-stripped: the raw peek carries color escapes that
+    would render as garbage in a Telegram message."""
+    lines = _ANSI_RE.sub("", text or "").splitlines()
     while lines and not lines[-1].strip():
         lines.pop()
     return "\n".join(lines[-max_lines:])[:max_chars]

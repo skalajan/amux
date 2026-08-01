@@ -125,6 +125,18 @@ print("classifier ok — 3-opt menu(+always), 2-opt menu(no always), MCP allow-t
       "A.0 live captures: sudo ask-rule=2-opt menu, AskUserQuestion(esc+menu)=open")
 
 
+# ── A.0b live RAW peek (WITH ANSI escapes, as /peek actually returns it) ────────
+# The peek endpoint returns tmux capture -e output: color escapes sit between the
+# ❯ selector, the option digits, and every footer word. classify_prompt must
+# strip ANSI first or every marker regex misses (live miss, 2026-08-01).
+A0_ANSI_RAW = ";241meffort\x1b[39m \x1b[38;5;241m·\x1b[39m \x1b[38;5;241mClaude\x1b[39m \x1b[38;5;241mMax\x1b[39m\n\x1b[38;5;174m \x1b[39m \x1b[38;5;174m▘▘\x1b[39m \x1b[38;5;174m▝▝\x1b[39m    \x1b[38;5;241m~/amux-test\x1b[39m\n\n\x1b[38;5;248m\x1b[48;5;255m❯ \x1b[38;5;16mRun exactly this bash command and nothing else: sudo -n true\x1b[39m\n\n\x1b[38;5;16m\x1b[49m⏺\x1b[39m I'll run exactly that command.\n\n\x1b[38;5;241m⏺\x1b[39m \x1b[1mBash\x1b[0m(sudo -n true)\n\x1b[38;5;241m  ⎿ \xa0Waiting…\x1b[39m\n\n\x1b[38;5;105m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\x1b[39m \x1b[1m\x1b[38;5;105mBash command\x1b[0m\n\n   sudo -n true\n   \x1b[38;5;241mCheck passwordless sudo availability\x1b[39m\n\n Permission rule \x1b[1mBash(sudo *)\x1b[0m requires confirmation for this command.\n \x1b[38;5;241m/permissions to update rules\x1b[39m\n\n Do you want to proceed?\n \x1b[38;5;105m❯\x1b[39m \x1b[38;5;241m1.\x1b[39m \x1b[38;5;105mYes\x1b[39m\n   \x1b[38;5;241m2.\x1b[39m No\n\n \x1b[38;5;241mEsc\x1b[39m \x1b[38;5;241mto\x1b[39m \x1b[38;5;241mcancel\x1b[39m \x1b[38;5;241m·\x1b[39m \x1b[38;5;241mTab\x1b[39m \x1b[38;5;241mto\x1b[39m \x1b[38;5;241mamend\x1b[39m \x1b[38;5;241m·\x1b[39m \x1b[38;5;241mctrl+e\x1b[39m \x1b[38;5;241mto\x1b[39m \x1b[38;5;241mexplain\x1b[39m"
+_c = tg.classify_prompt(A0_ANSI_RAW)
+assert _c == {"kind": "menu", "options": 2, "always": False}, _c
+assert "\x1b" not in tg.trim_prompt_text(A0_ANSI_RAW), "notify body must be ANSI-clean"
+assert tg.prompt_fingerprint(A0_ANSI_RAW) == tg.prompt_fingerprint(
+    tg._ANSI_RE.sub("", A0_ANSI_RAW)), "fp identical with/without ANSI"
+print("ansi raw peek ok — classifier/trim/fp all ANSI-proof")
+
 # ── 2. fingerprint stability + distinctness ─────────────────────────────────────
 BASE = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
 ANSI = ("\x1b[38;5;239mDo you want to proceed?\x1b[0m\n"
