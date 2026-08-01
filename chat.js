@@ -39,6 +39,21 @@
   var CHAT_COLLAPSE_CHARS = 600;
   var _expanded = new Set();       // message ids the user has manually expanded
 
+  // ── Presence layer (plan .omc/plans/telegram-silent-updates.md, M2) ─────────
+  // Web renderer of the client-agnostic presence model M1 (amux-telegram.py)
+  // renders on Telegram. The web has no badge/ring cost, so this is purely
+  // additive UX: a delivery tick on owner bubbles, a typing-dots tail bubble
+  // while the viewed session works, and a session-state chip in the tab header —
+  // all derived from the `sessions` global (SSE-updated) + the `delivery` field
+  // already on /api/chat owner rows. Zero server change (see M2 §, sse-realtime).
+  var FINAL_SETTLE_MS = 4000;      // idle-settle debounce, lockstep with M1 TG_FINAL_SETTLE_SECS
+  var PRESENCE_TICK_MS = 1000;     // re-derive chip/dots each second while the tab is open
+  var _presenceTimer = 0;
+  var _idleSince = 0;              // ms ts the viewed session most recently entered idle (0 = not idle)
+  var _seenWorking = false;        // observed a non-idle label since the tab opened (arms the settle debounce)
+  var _chipState = '';             // last-rendered chip state key ('' = hidden)
+  var _thinking = false;          // typing-dots visible?
+
   function _panel() { return document.getElementById('peek-chat-panel'); }
 
   function _isCollapsible(item) {
@@ -56,6 +71,57 @@
     try {
       return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch (e) { return ''; }
+  }
+
+  // ── pure presence logic (no DOM, no globals — AST-extractable for tests) ────
+  // Map an /api/sessions row to the client-agnostic label, in lockstep with M1's
+  // session_status_label (amux-telegram.py): rate/credit flags → 'limit', else
+  // active/waiting/idle passthrough. A stopped/unknown session yields '' so the
+  // chip hides rather than falsely reading 'idle → hotovo'.
+  function chatLabel(s) {
+    if (!s) return '';
+    if (s.rate_limit_banner || s.rate_limited_until || s.credit_limited) return 'limit';
+    var st = s.status || '';
+    if (st === 'active' || st === 'waiting' || st === 'idle') return st;
+    return '';
+  }
+
+  // Owner-bubble delivery tick from the server's `delivery` field (queued/
+  // pending → single grey ✓, delivered → ✓✓, '' → nothing). The server emits
+  // 'pending' for a still-queued steer and 'delivered' once consumed; 'queued'
+  // is accepted as a synonym for forward-compat with the plan's naming.
+  function deliveryTick(delivery, failed, pending) {
+    if (failed) return { cls: 'failed', glyph: '✕', title: 'failed' };
+    var d = delivery || (pending ? 'pending' : '');
+    if (d === 'delivered') return { cls: 'delivered', glyph: '✓✓', title: 'delivered' };
+    if (d === 'queued' || d === 'pending') return { cls: 'pending', glyph: '✓', title: 'queued' };
+    return null;
+  }
+
+  // Derive the visible presence (chip state + whether the thinking dots show)
+  // from the label plus the idle-settle debounce. A just-idle session is held in
+  // the working presentation until it has been continuously idle >= settleMs
+  // (mirrors M1's FinalityTracker) so the chip doesn't flip to ✅ / drop the dots
+  // in the brief gap between two steered turns. `seenWorking` gates the debounce
+  // so a tab opened on an already-idle session settles immediately (no fake
+  // "thinking" flash). Returns { chip, thinking }.
+  function presenceState(label, idleSince, seenWorking, now, settleMs) {
+    if (label === 'active') return { chip: 'active', thinking: true };
+    if (label === 'waiting') return { chip: 'waiting', thinking: false };
+    if (label === 'limit') return { chip: 'limit', thinking: false };
+    if (label === 'idle') {
+      var settled = !seenWorking || (idleSince && (now - idleSince) >= settleMs);
+      return settled ? { chip: 'idle', thinking: false } : { chip: 'active', thinking: true };
+    }
+    return { chip: '', thinking: false };
+  }
+
+  function _fmtDur(secs) {
+    secs = Math.max(0, Math.floor(secs || 0));
+    if (secs < 60) return secs + 's';
+    var m = Math.floor(secs / 60);
+    if (m < 60) return m + 'm';
+    return Math.floor(m / 60) + 'h' + (m % 60 ? (m % 60) + 'm' : '');
   }
 
   function _bodyHtml(item) {
@@ -82,12 +148,10 @@
       metaBits.push('<span class="chat-origin ' + esc(origin) + '">' + esc(origin) + '</span>');
     }
     if (role === 'owner') {
-      var dl = item._failed ? 'failed' : (item.delivery || (item._pending ? 'pending' : ''));
-      if (dl) {
-        var label = dl === 'delivered' ? '✓ delivered'
-                  : dl === 'pending' ? '• sending'
-                  : dl === 'failed' ? '✕ failed' : dl;
-        metaBits.push('<span class="chat-delivery ' + esc(dl) + '">' + esc(label) + '</span>');
+      var tick = deliveryTick(item.delivery, item._failed, item._pending);
+      if (tick) {
+        metaBits.push('<span class="chat-delivery ' + tick.cls + '" title="' + tick.title + '">' +
+                      tick.glyph + '</span>');
       }
     }
     var t = _fmtTime(item.ts);
@@ -129,6 +193,7 @@
     }
     if (atBottom) thread.scrollTop = thread.scrollHeight;
     _syncComposer();
+    _renderPresence();
   }
 
   function _scheduleRender() {
@@ -156,6 +221,93 @@
         ? ('Session is ' + status + ' — wake it to send messages.')
         : 'Session is not running — wake it to send messages.';
     }
+  }
+
+  // ── Presence rendering (chip + typing dots) ─────────────────────────────────
+  var CHIP_TEXT = {
+    active:  '▶ pracuje',
+    waiting: '⏳ čeká na rozhodnutí',
+    idle:    '✅ hotovo',
+    limit:   '⛔ limit'
+  };
+
+  function _observePresence(label, nowMs) {
+    // Drive the idle-settle debounce state (mirrors M1's FinalityTracker.observe).
+    if (label === 'idle') {
+      if (!_idleSince) _idleSince = nowMs;
+    } else {
+      _idleSince = 0;
+      if (label === 'active' || label === 'waiting' || label === 'limit') _seenWorking = true;
+    }
+  }
+
+  function _computePresence() {
+    // Read the viewed session straight off the SSE-updated `sessions` global
+    // (same path _sessionStatus/_syncComposer already use), fold in the settle
+    // debounce, and cache the resulting chip state + dots flag.
+    var name = window._chatActiveSession || '';
+    var s = name ? sessions.find(function (x) { return x && x.name === name; }) : null;
+    var label = chatLabel(s);
+    var nowMs = Date.now();
+    _observePresence(label, nowMs);
+    var p = presenceState(label, _idleSince, _seenWorking, nowMs, FINAL_SETTLE_MS);
+    _thinking = p.thinking;
+    var text = CHIP_TEXT[p.chip] || '';
+    // Waiting shows how long it has been blocking on a decision (web-only extra —
+    // no rate cost; M1's Telegram header omits it to spare edit churn).
+    if (p.chip === 'waiting' && s && s.waiting_since) {
+      text += ' (' + _fmtDur(nowMs / 1000 - s.waiting_since) + ')';
+    }
+    _chipState = p.chip;
+    return text;
+  }
+
+  function _renderChip() {
+    var panel = _panel();
+    if (!panel) return;
+    var chip = panel.querySelector('.chat-chip');
+    if (!chip) return;
+    var text = _computePresence();
+    if (!_chipState) { chip.style.display = 'none'; return; }
+    chip.style.display = '';
+    chip.className = 'chat-chip ' + _chipState;
+    chip.textContent = text;
+  }
+
+  function _applyTyping() {
+    // Keep a single typing-dots bubble as the thread's last child while the
+    // viewed session is working (thinking). Kept out of _render()'s innerHTML
+    // rebuild so ticker-driven toggles don't reflow the whole thread.
+    var panel = _panel();
+    if (!panel) return;
+    var thread = panel.querySelector('.chat-thread');
+    if (!thread) return;
+    var existing = thread.querySelector('.chat-typing');
+    if (_thinking) {
+      if (!existing) {
+        var atBottom = (thread.scrollHeight - thread.scrollTop - thread.clientHeight) < 60;
+        var el = document.createElement('div');
+        el.className = 'chat-msg session chat-typing';
+        el.innerHTML = '<div class="chat-bubble"><span class="dot"></span>' +
+                       '<span class="dot"></span><span class="dot"></span></div>';
+        thread.appendChild(el);
+        if (atBottom) thread.scrollTop = thread.scrollHeight;
+      } else if (thread.lastElementChild !== existing) {
+        thread.appendChild(existing);   // keep it pinned to the tail after a re-render
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
+  function _renderPresence() { _renderChip(); _applyTyping(); }
+
+  function _startPresence() {
+    if (_presenceTimer) return;
+    _presenceTimer = setInterval(_renderPresence, PRESENCE_TICK_MS);
+  }
+  function _stopPresence() {
+    if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = 0; }
   }
 
   function _mergeThread(detail) {
@@ -218,6 +370,7 @@
     if (!panel) return;
     panel.innerHTML =
       '<div class="chat-wrap">' +
+        '<div class="chat-header"><span class="chat-chip" style="display:none;"></span></div>' +
         '<div class="chat-thread"></div>' +
         '<div class="chat-composer">' +
           '<textarea class="chat-input" rows="1" placeholder="Message this session…" ' +
@@ -269,16 +422,18 @@
     if (!_shellBuilt) _buildShell();
     _items.clear();
     _expanded.clear();
+    _idleSince = 0; _seenWorking = false; _chipState = ''; _thinking = false;
     window._chatActiveSession = session;
     window._chatCursor = 0;               // reset the B1 cursor -> next poll is a full load
     _render();
+    _startPresence();                     // 1s ticker: chip + dots track the settle debounce live
     _chatPoll();                          // initial full load + reconnect backfill (B1)
     var panel = _panel();
     var input = panel && panel.querySelector('.chat-input');
     if (input) { try { input.focus(); } catch (e) {} }
   }
 
-  function _close() { window._chatActiveSession = ''; }
+  function _close() { _stopPresence(); window._chatActiveSession = ''; }
 
   // The B1 plumbing dispatches this with the merged thread (SSE + polling both
   // route here); merge-by-id dedups overlapping SSE/poll deliveries.

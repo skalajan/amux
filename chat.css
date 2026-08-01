@@ -72,9 +72,42 @@
 .chat-origin.dashboard { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .chat-origin.telegram  { color: var(--cyan);   border-color: color-mix(in srgb, var(--cyan) 40%, var(--border)); }
 .chat-origin.system    { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, var(--border)); }
-.chat-delivery.pending   { color: var(--yellow); }
+/* Delivery ticks (M2 presence): single grey ✓ = queued/sending, green ✓✓ =
+ * consumed by the session, red ✕ = failed. Letter-spacing tightens the ✓✓ pair. */
+.chat-delivery { letter-spacing: -1px; font-weight: 700; }
+.chat-delivery.pending   { color: var(--dim); }
 .chat-delivery.delivered { color: var(--green); }
-.chat-delivery.failed    { color: var(--red); }
+.chat-delivery.failed    { color: var(--red); letter-spacing: normal; }
+
+/* ── Presence layer (plan M2) ─────────────────────────────────────────────────
+ * Session-state chip in the tab header + a typing-dots tail bubble while the
+ * viewed session works. Display-only (chip is not interactive → no 44px rule);
+ * both fit the 375px mobile breakpoint without overflow. */
+.chat-header {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  min-height: 0; padding: 7px 12px; border-bottom: 1px solid var(--border);
+}
+.chat-chip {
+  display: inline-flex; align-items: center; max-width: 100%;
+  font-size: 0.72rem; font-weight: 600; line-height: 1.2;
+  padding: 3px 10px; border-radius: 9999px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid var(--border); color: var(--dim); background: var(--bg);
+}
+.chat-chip.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.chat-chip.waiting { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, var(--border)); }
+.chat-chip.idle { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+.chat-chip.limit { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+
+.chat-typing .chat-bubble { display: inline-flex; align-items: center; gap: 5px; padding: 10px 14px; }
+.chat-typing .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--dim);
+  animation: chat-blink 1.4s infinite both;
+}
+.chat-typing .dot:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .chat-typing .dot { animation: none; opacity: 0.6; } }
 
 /* Composer pinned at the bottom; safe-area inset for iOS PWA (viewport-fit=cover). */
 .chat-composer {
@@ -118,4 +151,5 @@
   .chat-msg { max-width: 92%; }
   .chat-thread { padding: 10px 8px 6px; gap: 8px; }
   .chat-bubble { font-size: 0.88rem; }
+  .chat-header { padding: 6px 8px; }
 }
