@@ -5,6 +5,14 @@ set -e
 ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 
+# amux-staged-guard — blocks committing another session's WIP out of this
+# shared checkout. It lives beside this hook and is a no-op when absent, so the
+# call is unconditional here on purpose: it was previously hand-added to the
+# INSTALLED copy only, which left re-running install-hooks.sh one command away
+# from silently disabling it while the guard file sat there looking installed.
+g="$(dirname -- "$0")/amux-staged-guard"
+if [ -x "$g" ]; then "$g" || exit 1; fi
+
 # ── 1. Security scan (runs on every commit) ─────────────────────────────────
 
 BLOCKED_FILES=(
@@ -53,8 +61,27 @@ ADDED_LINES=$(git diff --cached --diff-filter=ACM -U0 2>/dev/null \
 
 if [ -n "$ADDED_LINES" ]; then
   for pattern in "${SECRET_PATTERNS[@]}"; do
-    matches=$(echo "$ADDED_LINES" | grep -E "$pattern" || true)
-    if [ -n "$matches" ]; then
+    # -e is REQUIRED: the private-key pattern starts with "-----", which grep
+    # reads as options no matter how it is quoted. Without it that pattern died
+    # with "grep: unrecognized option", the error went to stderr, `|| true`
+    # swallowed the status, and the hook printed "Security scan passed" — so the
+    # one check guarding against committing a private key had never once run.
+    # Assign inside `if`: this script runs under `set -e`, and grep exits 1 on a
+    # clean file, so a bare assignment would abort the hook — silently, mid-scan,
+    # with a non-zero status git reports as a blocked commit and no reason why.
+    if matches=$(echo "$ADDED_LINES" | grep -E -e "$pattern" 2>&1); then
+      status=0
+    else
+      status=$?
+    fi
+    # grep: 0 = matched, 1 = no match, >1 = the pattern never ran. Treat that
+    # last case as a failure instead of a pass — a scan that cannot report a
+    # problem is worse than no scan, because the "passed" line gets trusted.
+    if [ "$status" -gt 1 ]; then
+      echo "✗ SECRET SCAN BROKEN: pattern '$pattern' did not run (grep exit $status)"
+      echo "$matches" | head -2 | sed 's/^/    /'
+      SECRETS_FOUND=1
+    elif [ "$status" -eq 0 ]; then
       echo "✗ SECRET DETECTED matching pattern: $pattern"
       echo "$matches" | head -5 | sed 's/^/    /'
       SECRETS_FOUND=1

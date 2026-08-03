@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs GitHub Copilot — Agent Fleet vs IDE Completion Assistant</title>
+  <title>amux vs GitHub Copilot 2026 — Agent Fleet vs IDE Completion Assistant</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs GitHub Copilot: parallel coding agent fleet with web dashboard vs IDE-integrated AI completion and chat. Different layers of the stack, often used together.">
-  <meta name="keywords" content="amux vs github copilot, copilot alternative, claude code vs copilot, AI coding agent vs IDE assistant, open source copilot alternative">
+  <meta name="description" content="amux vs GitHub Copilot 2026: parallel autonomous coding fleet vs IDE-integrated AI completion assistant. Different layers of the stack — most power developers use both.">
+  <meta name="keywords" content="amux vs github copilot, github copilot alternative, claude code vs copilot, copilot workspace alternative, open source copilot alternative, AI coding agent vs IDE assistant">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-github-copilot/">
-  <meta property="og:title" content="amux vs GitHub Copilot — Agent Fleet vs IDE Completion Assistant">
-  <meta property="og:description" content="Compare amux (parallel coding fleet, open source) with GitHub Copilot (IDE-integrated AI assistant). Different layers of the stack — most developers use both.">
+  <meta property="og:title" content="amux vs GitHub Copilot 2026 — Agent Fleet vs IDE Completion Assistant">
+  <meta property="og:description" content="Compare amux (parallel autonomous coding fleet, open source) with GitHub Copilot (IDE-integrated AI assistant). Different layers of the stack — most power developers run both.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-github-copilot/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,7 +22,8 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs GitHub Copilot","item":"https://amux.io/compare/amux-vs-github-copilot/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"GitHub Copilot is Microsoft's AI coding assistant with ~1.8 million paid users. It lives inside your IDE — VS Code, JetBrains, Neovim — providing inline completions, a chat interface, and Copilot Workspace for multi-file agentic tasks. Powered by OpenAI GPT-4o/4.5 and GitHub's code-specialized models. Pricing: $10/month individual, $19/month business."}},{"@type":"Question","name":"What is the main difference between amux and GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"They operate at different layers of the stack. Copilot is an IDE companion — it helps you write code faster by suggesting completions and answering questions while you're in your editor. amux is an execution fleet — it autonomously runs 10-50 Claude Code sessions in parallel on tasks you've queued, overnight, without you being present. Copilot augments your coding session; amux replaces entire coding sessions with automated runs."}},{"@type":"Question","name":"Is amux a GitHub Copilot alternative?","acceptedAnswer":{"@type":"Answer","text":"Not exactly — they solve different problems. If you want inline completions as you type in VS Code, amux doesn't do that. If you want to run 20 parallel coding tasks overnight and wake up to pull requests, Copilot doesn't do that. Most high-output developers use both: Copilot for interactive IDE work during the day, amux for unattended batch runs at night."}},{"@type":"Question","name":"Does GitHub Copilot support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Limited. Copilot Workspace can run agentic tasks but is single-session. amux runs 10-50 Claude Code sessions simultaneously, each claiming tasks from a shared kanban board via atomic SQLite compare-and-swap, with a self-healing watchdog for overnight unattended operation."}},{"@type":"Question","name":"Which is more cost-effective?","acceptedAnswer":{"@type":"Answer","text":"Depends on usage. Copilot Individual at $10/month makes every coding session faster — excellent ROI for active developers. amux itself is free; you pay only for Claude API tokens. For batch automated work (overnight runs, parallel refactors, test generation at scale), amux on API tokens is typically more cost-effective than scaling up Copilot plans."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs GitHub Copilot 2026","description":"Detailed comparison of amux (parallel autonomous coding fleet) and GitHub Copilot (IDE AI assistant). Covers use cases, feature table, cost breakdown, and decision guide.","url":"https://amux.io/compare/amux-vs-github-copilot/","datePublished":"2026-01-15","dateModified":"2026-07-30","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"GitHub Copilot is Microsoft's AI coding assistant with over 1.8 million paid users. It lives inside your IDE — VS Code, JetBrains, Neovim, Xcode, Eclipse — providing inline completions, a chat interface, and Copilot Workspace for multi-file autonomous tasks. Powered by OpenAI GPT-4o/4.5 plus GitHub's code-specialized models. Pricing: $10/month individual, $19/month business, $39/month enterprise."}},{"@type":"Question","name":"What is the main difference between amux and GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"They operate at different layers of the stack. Copilot is an IDE companion — it helps you write code faster by suggesting completions and answering questions while you are in your editor. amux is an execution fleet — it autonomously runs 10 to 50 Claude Code sessions in parallel on tasks you have queued, overnight, without you being present. Copilot augments your active coding session; amux replaces entire coding sessions with automated parallel runs."}},{"@type":"Question","name":"Is amux a GitHub Copilot alternative?","acceptedAnswer":{"@type":"Answer","text":"Not exactly — they solve fundamentally different problems. If you want inline completions as you type in VS Code, amux does not do that. If you want to run 20 parallel coding tasks overnight and wake up to pull requests, Copilot does not do that. Most high-output developers use both: Copilot for interactive IDE work during the day, amux for unattended batch runs while they sleep."}},{"@type":"Question","name":"Does GitHub Copilot support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Limited parallelism. Copilot Workspace can run agentic multi-file tasks but is single-session per user. amux runs 10 to 50 Claude Code sessions simultaneously, each claiming tasks from a shared kanban board via atomic SQLite compare-and-swap, with a self-healing watchdog for overnight unattended operation. Multiple sessions watch the same board and never double-claim the same task."}},{"@type":"Question","name":"Which is more cost-effective for batch coding work?","acceptedAnswer":{"@type":"Answer","text":"amux is typically more cost-effective for batch work. amux itself is free and open source; you pay only for Claude API tokens (roughly $5 to $20 per session-hour depending on the task). Copilot at $10 to $39/month is flat-rate and excellent value for interactive use, but does not support unattended parallel execution. For running 20 tasks overnight in parallel, amux on API tokens is the only option."}},{"@type":"Question","name":"Can I use amux and GitHub Copilot together?","acceptedAnswer":{"@type":"Answer","text":"Yes — this is the recommended setup for high-output developers. Use Copilot in VS Code for interactive sessions where you are actively writing and reviewing code. Use amux for queued batch work: test generation, refactoring, bug-fix sweeps, documentation — tasks you define but do not want to execute manually. amux runs overnight while you sleep; Copilot helps during active hours."}},{"@type":"Question","name":"What is Copilot Workspace and how does it compare to amux?","acceptedAnswer":{"@type":"Answer","text":"Copilot Workspace is GitHub's agentic feature that can plan and implement multi-file changes from a task description. It is single-threaded (one task at a time per user), requires you to review and approve each step, and lives inside the GitHub web UI. amux runs tens of sessions in parallel, unattended, overnight, from a web dashboard or iOS app. They serve different jobs: Copilot Workspace for interactive supervised changes, amux for large-scale parallel unsupervised runs."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -37,85 +38,174 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
     </nav>
   </header>
+
+  <div class="top-cta-bar">
+    <span>Run 20 coding tasks in parallel overnight — open source, free to self-host.</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub →</a>
+  </div>
+
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs GitHub Copilot</span></div>
 
     <h1>amux vs GitHub Copilot</h1>
-    <p class="subtitle">IDE completion assistant vs. parallel autonomous coding fleet — different layers of the stack, most developers use both.</p>
+    <p class="subtitle">IDE completion assistant vs. parallel autonomous coding fleet — different layers of the stack. Most power developers run both.</p>
+    <p class="freshness-stamp">Updated July 2026</p>
 
-    <p><strong>GitHub Copilot</strong> (Microsoft/GitHub) is the world's most widely used AI coding assistant with ~1.8 million paid users. It lives inside your IDE — VS Code, JetBrains, Neovim — providing inline completions, a chat interface, and Copilot Workspace for multi-file agentic tasks. Powered by OpenAI GPT-4o/4.5 and GitHub's code-specialized models. Pricing: $10/month individual, $19/month business.</p>
+    <p><strong>GitHub Copilot</strong> (Microsoft/GitHub) is the world's most widely used AI coding assistant with over 1.8 million paid users. It lives inside your IDE — VS Code, JetBrains, Neovim, Xcode, Eclipse — providing inline completions, a chat interface, and Copilot Workspace for autonomous multi-file tasks. Powered by OpenAI GPT-4o/4.5 and GitHub's code-specialized models. Pricing ranges from $10/month individual to $39/month enterprise.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It launches, monitors, and self-heals dozens of Claude Code sessions simultaneously from a web dashboard or mobile app. Built-in kanban board, CRM, Gmail API, browser automation, scheduler, and skills. Single Python file, MIT + Commons Clause licensed, zero external dependencies.</p>
+    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It launches, monitors, and self-heals dozens of Claude Code sessions simultaneously from a web dashboard or iOS app. Built-in kanban board, browser automation, scheduler, and skills. Single Python file, MIT + Commons Clause licensed, zero external dependencies. Free to self-host.</p>
 
     <h2>Different layers of the stack</h2>
 
-    <p>This is the key point: amux and Copilot are not substitutes. They operate at different layers.</p>
+    <p>This is the essential point: amux and Copilot are not substitutes. They solve fundamentally different problems at different layers of the development workflow.</p>
 
-    <p><strong>Copilot</strong> is an IDE companion. It watches what you're typing, suggests the next line or block, answers questions in chat, and can make targeted multi-file edits via Copilot Workspace. You are present; you review every suggestion; you stay in control of the keyboard. It makes your active coding sessions faster.</p>
+    <p><strong>Copilot</strong> is an IDE companion. It watches what you are typing, suggests the next line or block, answers questions in chat, and can make targeted multi-file edits via Copilot Workspace. You are present; you review every suggestion; you stay in control of the keyboard. It makes your active coding sessions faster.</p>
 
-    <p><strong>amux</strong> is an execution fleet. You queue 20 tasks before you go to sleep. 10 Claude Code sessions claim tasks from the shared board and run in parallel overnight — writing tests, fixing bugs, refactoring modules, generating documentation. You wake up to pull requests. No IDE open. No keyboard. Just results.</p>
+    <p><strong>amux</strong> is an execution fleet. You queue 20 tasks before you go to sleep. Ten Claude Code sessions claim tasks from the shared board and run in parallel overnight — writing tests, fixing bugs, refactoring modules, generating documentation. You wake up to pull requests. No IDE open. No keyboard. Just results.</p>
+
+    <p>Copilot answers the question: "How do I write this code faster right now?" amux answers: "How do I execute this backlog without doing it myself?"</p>
 
     <h2>Feature comparison</h2>
 
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Feature</th><th>amux</th><th>GitHub Copilot</th></tr></thead>
       <tbody>
         <tr><td>Interaction model</td><td>Autonomous fleet — unattended async execution</td><td>IDE companion — inline, synchronous, interactive</td></tr>
-        <tr><td>Parallel agents</td><td>Unlimited (10–50+ typical)</td><td>Single Copilot Workspace per session</td></tr>
-        <tr><td>Overnight operation</td><td>Built-in — self-healing watchdog, YOLO mode</td><td>IDE must be open and active</td></tr>
+        <tr><td>Parallel agents</td><td>Unlimited (10–50+ typical)</td><td>Single Copilot Workspace per user</td></tr>
+        <tr><td>Overnight operation</td><td>Built-in — self-healing watchdog, YOLO mode, 529 error detection</td><td>IDE must remain open and active</td></tr>
         <tr><td>Mobile management</td><td>Native iOS app + installable PWA</td><td>None</td></tr>
-        <tr><td>Task coordination</td><td>Kanban board with atomic SQLite claiming</td><td>GitHub Issues integration (Copilot Workspace)</td></tr>
-        <tr><td>Self-healing</td><td>Auto-compact, crash restart, auto-respond to prompts</td><td>Not applicable — synchronous interaction</td></tr>
+        <tr><td>Task coordination</td><td>Kanban board with atomic SQLite claiming — no double-claiming</td><td>GitHub Issues integration (Copilot Workspace)</td></tr>
+        <tr><td>Self-healing</td><td>Auto-compact, crash restart, stuck-prompt detection, API error flagging</td><td>Not applicable — synchronous interaction</td></tr>
         <tr><td>IDE integration</td><td>None (terminal + web dashboard)</td><td>Deep — VS Code, JetBrains, Vim, Xcode, Eclipse</td></tr>
         <tr><td>Inline completions</td><td>No</td><td>Yes — core feature</td></tr>
-        <tr><td>Model</td><td>Claude Code (Anthropic)</td><td>GPT-4o/4.5 + GitHub fine-tunes</td></tr>
+        <tr><td>Chat interface</td><td>No (Claude Code handles it in the terminal)</td><td>Yes — Copilot Chat in IDE</td></tr>
+        <tr><td>PR review</td><td>No</td><td>Yes — Copilot for PRs</td></tr>
+        <tr><td>Model</td><td>Claude Code (Anthropic Sonnet/Opus)</td><td>GPT-4o/4.5 + GitHub fine-tunes</td></tr>
         <tr><td>Open source</td><td>Yes (MIT + Commons Clause)</td><td>No</td></tr>
-        <tr><td>Cost</td><td>Free + Claude API tokens</td><td>$10/mo individual, $19/mo business</td></tr>
-        <tr><td>Users</td><td>—</td><td>~1.8 million paid (2026)</td></tr>
+        <tr><td>Self-hostable</td><td>Yes — single Python file, runs on any Linux/Mac</td><td>No — SaaS only</td></tr>
+        <tr><td>Cost</td><td>Free + Claude API tokens (~$5–$20/session-hour)</td><td>$10/mo individual · $19/mo business · $39/mo enterprise</td></tr>
+        <tr><td>Paid user count (2026)</td><td>—</td><td>~1.8 million</td></tr>
       </tbody>
     </table>
+    </div>
 
     <h2>The throughput question</h2>
 
-    <p>If you have 20 independent coding tasks and a Copilot subscription, you work through them one at a time — manually, with Copilot suggesting code as you type. At 30 minutes each, that's 10 hours of active coding. With amux running 10 parallel agents from the same task list overnight, all 20 complete in roughly 1 hour of wall-clock time — while you sleep.</p>
+    <p>If you have 20 independent coding tasks and a Copilot subscription, you work through them one at a time — manually, with Copilot suggesting code as you type. At 30 minutes each, that is 10 hours of active coding time. With amux running 10 parallel Claude Code sessions from the same task list overnight, all 20 tasks complete in roughly 1 hour of wall-clock time — while you sleep.</p>
 
-    <p>Copilot makes you faster during active sessions. amux multiplies the number of sessions you can run in parallel. For teams with a steady backlog of well-defined coding tasks, both tools together — Copilot for interactive work, amux for batch overnight runs — is the high-leverage combination.</p>
+    <p>The math compounds further when the tasks are well-defined: test generation, adding type annotations, fixing lint errors, translating code between frameworks, writing documentation. These are tasks where an experienced developer spends most of their time executing rather than thinking. amux executes them in parallel at machine speed.</p>
+
+    <p>Copilot makes each individual session faster. amux eliminates the need to have most sessions at all.</p>
+
+    <h2>Copilot Workspace vs amux fleet</h2>
+
+    <p>Copilot Workspace (2025+) is GitHub's most agent-like feature: give it a GitHub Issue and it generates a plan, writes code across multiple files, and proposes a PR. It is genuinely useful for supervised agentic work inside the GitHub ecosystem.</p>
+
+    <p>The key differences from amux:</p>
+    <ul>
+      <li><strong>Single-threaded.</strong> One Workspace task per user at a time. amux runs 10–50 simultaneous sessions claiming from the same queue.</li>
+      <li><strong>Supervised.</strong> Copilot Workspace shows you each step and asks for confirmation. amux's YOLO mode runs unattended — it handles stuck prompts, context exhaustion, and API errors without you.</li>
+      <li><strong>GitHub-anchored.</strong> Workspace works best when your task is a GitHub Issue. amux is model-agnostic on the task side — your kanban lives in amux's SQLite, not in GitHub.</li>
+      <li><strong>No fleet observability.</strong> Workspace does not show you a dashboard of running agent sessions, token spend per session, or live output. amux does.</li>
+    </ul>
+
+    <h2>Cost breakdown</h2>
+
+    <p>Copilot Individual at $10/month is a flat fee for unlimited interactive use — excellent value for developers who write code actively every day. The ROI is immediate: even a modest speed improvement on 8 hours/day of coding easily justifies $10/month.</p>
+
+    <p>amux pricing works differently: the software is free, and you pay only for Claude API tokens consumed by your sessions. Rough estimates for typical tasks:</p>
+
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Task type</th><th>Approx. token cost</th><th>Sessions × time</th></tr></thead>
+      <tbody>
+        <tr><td>Write tests for one module</td><td>$0.50–$2.00</td><td>1 session × 15–30 min</td></tr>
+        <tr><td>Refactor 5 files</td><td>$1.00–$4.00</td><td>1 session × 30–60 min</td></tr>
+        <tr><td>Fix 20 lint errors across a codebase</td><td>$8.00–$20.00</td><td>10 sessions × 30 min</td></tr>
+        <tr><td>Generate docs for an entire API</td><td>$5.00–$15.00</td><td>5 sessions × 45 min</td></tr>
+        <tr><td>Nightly test suite expansion</td><td>$10.00–$30.00</td><td>10–20 sessions × 60 min</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>For high-frequency batch work, both tools running concurrently cost $10–$50/month total — Copilot for the daytime interactive sessions, amux tokens for overnight batch runs. That is a modest total investment for a developer who wants to function like a small team.</p>
+
+    <h2>Why not both?</h2>
+
+    <p>The most common setup among developers who adopt amux: they already have Copilot and keep it. The tools are genuinely complementary.</p>
+
+    <ul>
+      <li><strong>Copilot in VS Code during the day</strong> — inline completions, chat for questions, Workspace for supervised agentic edits.</li>
+      <li><strong>amux overnight</strong> — queue 15 tasks before dinner, check the dashboard from your phone, wake up with the results committed.</li>
+    </ul>
+
+    <p>The only reason to drop Copilot when adopting amux would be budget, not feature overlap. They do not compete for the same workflow.</p>
 
     <h2>Where Copilot is the better fit</h2>
 
     <ul>
-      <li><strong>Active, interactive coding.</strong> Inline completions while you type, context-aware suggestions, immediate feedback — Copilot's core value is in the interactive loop. amux doesn't touch this.</li>
-      <li><strong>You live in your IDE.</strong> If VS Code or JetBrains is your primary environment, Copilot integrates natively. amux is terminal + web dashboard.</li>
-      <li><strong>Flat-rate economics.</strong> $10/month for unlimited interactive use is excellent value for active developers. amux on API tokens scales with usage.</li>
-      <li><strong>GitHub ecosystem integration.</strong> Copilot Workspace connects to GitHub Issues and PRs natively — the right choice if your workflow centers on GitHub.</li>
+      <li><strong>Active, interactive coding.</strong> Inline completions while you type, context-aware suggestions, immediate feedback — Copilot's core value is in the real-time interactive loop. amux does not touch this.</li>
+      <li><strong>You live in your IDE.</strong> If VS Code or JetBrains is your primary environment, Copilot integrates natively into your existing workflow without context switching.</li>
+      <li><strong>Flat-rate economics.</strong> $10/month for unlimited interactive use is excellent ROI for active developers. You know the cost up front.</li>
+      <li><strong>GitHub-native workflows.</strong> Copilot for PRs, Copilot Chat in GitHub.com, and Copilot Workspace all connect to GitHub Issues and PRs natively — the right choice if your project lives entirely in GitHub.</li>
+      <li><strong>Broad IDE support.</strong> VS Code, JetBrains, Neovim, Xcode, Eclipse — Copilot meets you in the editor you already use.</li>
     </ul>
 
     <h2>Where amux is the better fit</h2>
 
     <ul>
-      <li><strong>Batch, parallel, unattended work.</strong> 20 tasks overnight, no keyboard, wake up to results — this is amux's core use case.</li>
-      <li><strong>Fleet observability.</strong> Monitor token spend, peek into any session's output, steer running agents from your phone. Copilot has no fleet management.</li>
-      <li><strong>Self-healing for overnight runs.</strong> The watchdog handles context exhaustion, crashes, and stuck prompts automatically — Copilot requires you to be present.</li>
-      <li><strong>Multi-session team coordination.</strong> Multiple developers sharing one amux server, each with their own sessions, coordinated via the shared board.</li>
+      <li><strong>Batch, parallel, unattended work.</strong> 20 tasks overnight, no keyboard, wake up to results — this is amux's core use case. Nothing in Copilot's feature set covers this.</li>
+      <li><strong>Fleet observability.</strong> Monitor token spend, peek into any running session's output, steer running agents from your iOS app. Copilot has no fleet management or cross-session visibility.</li>
+      <li><strong>Self-healing for overnight runs.</strong> The watchdog handles context exhaustion, crashes, stuck prompts, and API capacity errors (529s) automatically. Copilot requires you to be present.</li>
+      <li><strong>Multi-model flexibility.</strong> amux runs Claude Code (Anthropic) and can be extended to Codex CLI, Gemini CLI, or any terminal-based coding agent. Copilot is locked to GitHub's model selection.</li>
+      <li><strong>Team task coordination.</strong> Multiple developers sharing one amux server, each with their own sessions, coordinated via the shared kanban board. Tasks are atomically claimed — no two sessions work on the same item.</li>
+      <li><strong>Open source and self-hostable.</strong> Full code visibility, no data sent to a third-party SaaS platform, deployable on your own infrastructure.</li>
     </ul>
+
+    <h2>Decision guide</h2>
+
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>I want to…</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td>Get inline code suggestions while I type in VS Code</td><td>GitHub Copilot</td></tr>
+        <tr><td>Ask my IDE a question about a function I'm looking at</td><td>GitHub Copilot Chat</td></tr>
+        <tr><td>Have an agent implement a GitHub Issue end-to-end, supervised</td><td>Copilot Workspace</td></tr>
+        <tr><td>Run 20 coding tasks in parallel overnight while I sleep</td><td>amux</td></tr>
+        <tr><td>Monitor 10 parallel agent sessions from my phone</td><td>amux iOS app</td></tr>
+        <tr><td>Auto-restart agents that hit context limits or API errors</td><td>amux self-healing</td></tr>
+        <tr><td>Coordinate a backlog of tasks across multiple developers</td><td>amux kanban board</td></tr>
+        <tr><td>Run agents that control a browser for web automation tasks</td><td>amux browser profiles</td></tr>
+        <tr><td>Write tests, docs, or refactors on an entire codebase at once</td><td>amux parallel fleet</td></tr>
+        <tr><td>Keep my existing editor workflow and add AI assistance</td><td>GitHub Copilot</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h2>Quick start</h2>
+
+    <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+
+    <p>Add tasks to the kanban board, open the dashboard on your laptop or phone, and watch sessions claim and run them in parallel. The watchdog restarts any session that stalls.</p>
 
     <h2>See also</h2>
     <ul>
       <li><a href="/guides/getting-started/">Getting started with amux</a></li>
       <li><a href="/guides/ai-coding-agents-overnight/">Running agents overnight</a></li>
+      <li><a href="/guides/claude-code-headless/">Claude Code headless mode</a></li>
       <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
-      <li><a href="/compare/amux-vs-aider/">amux vs Aider</a></li>
+      <li><a href="/compare/amux-vs-devin/">amux vs Devin</a></li>
       <li><a href="/compare/amux-vs-cline/">amux vs Cline</a></li>
     </ul>
 
     <div class="cta-box">
-      <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, Python 3 + tmux.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <h3>Run a parallel coding fleet tonight</h3>
+      <p>Open source, Python 3 + tmux. Runs on any Mac or Linux machine. Free to self-host.</p>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★ <span id="cta-stars"></span></a>
     </div>
   </main>
   <footer class="sub-footer">
@@ -163,6 +253,6 @@ amux serve  # → https://localhost:8822</code></pre>
       </div>
     </div>
   </footer>
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');var el2=document.getElementById('cta-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count;if(el2&&d.stargazers_count) el2.textContent=d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

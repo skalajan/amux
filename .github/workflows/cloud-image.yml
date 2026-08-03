@@ -1,0 +1,79 @@
+name: Cloud image — build & push
+
+# The per-user container image had no build pipeline: it was pushed by hand, so
+# a broken Claude install sat in ghcr.io/mixpeek/amux:latest indefinitely. This
+# builds it reproducibly and the Dockerfile's `claude --version` step fails the
+# build rather than shipping a workspace that cannot run an agent.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud/docker/Dockerfile'
+      - 'amux-server.py'
+  workflow_dispatch:
+    inputs:
+      redeploy:
+        description: 'Recreate running containers on the new image (yes/no)'
+        required: false
+        default: 'no'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: cloud/docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/mixpeek/amux:latest
+            ghcr.io/mixpeek/amux:${{ github.sha }}
+
+  redeploy:
+    needs: build
+    if: inputs.redeploy == 'yes'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
+          chmod 600 ~/.ssh/amux_cloud
+          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Pull new image and recreate running containers
+        run: |
+          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' <<'ENDSSH'
+            set -e
+            # the image now carries Chrome; reclaim old layers first or the
+            # host runs out of space mid-extract
+            docker image prune -af >/dev/null 2>&1 || true
+            docker pull ghcr.io/mixpeek/amux:latest
+            for d in /var/amux/users/*/; do
+              id=$(basename "$d")
+              docker ps --format '{{.Names}}' | grep -qx "amux-user-${id}" || continue
+              echo "recreating $id"
+              ( cd "$d" && docker compose up -d --force-recreate 2>&1 | tail -2 )
+            done
+            echo "verifying claude in each running container:"
+            for c in $(docker ps --filter name=amux-user- --format '{{.Names}}'); do
+              v=$(docker exec "$c" claude --version 2>&1 | head -1)
+              echo "  $c: $v"
+            done
+          ENDSSH

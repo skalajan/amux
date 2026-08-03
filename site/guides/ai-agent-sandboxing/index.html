@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-13",
-    "dateModified":"2026-07-21",
+    "dateModified":"2026-07-30",
     "mainEntityOfPage":"https://amux.io/guides/ai-agent-sandboxing/"
   }</script>
   <script type="application/ld+json">{
@@ -155,6 +155,14 @@
 
     <h1>AI Agent Sandboxing in 2026: How to Run Coding Agents Without Risking Your System</h1>
     <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated July 2026.</em></p>
+
+    <!-- EXP-018: top-of-page CTA on high-traffic guides with low CVR -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px;font-size:.9rem">
+        <strong>Running agents in parallel and need to coordinate their work?</strong> <span style="color:var(--muted)">amux gives each agent its own isolated tmux session with configurable filesystem access — security and coordination built in, not bolted on.</span>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    </div>
 
     <!-- EXP-007 -->
     <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">

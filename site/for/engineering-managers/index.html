@@ -45,7 +45,7 @@
     "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and self-healing overnight runs.",
     "url": "https://amux.io/for/engineering-managers/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-07-09",
+    "dateModified": "2026-08-02",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -105,6 +105,30 @@
           "@type": "Answer",
           "text": "amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow — when the conversation gets too long — triggers automatic compaction: the agent summarizes earlier context and continues without losing the thread of work. You can queue overnight runs before leaving the office and review completed pull requests the next morning."
         }
+      },
+      {
+        "@type": "Question",
+        "name": "How does the amux Trends view help engineering managers?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Trends groups all agent activity across your fleet by theme — what was worked on, by which sessions, and what's done vs. blocked on you. Instead of reviewing individual terminal outputs, you get a thematic summary in under 60 seconds from your phone. It's the fastest way to answer 'what did we ship this week?' without a status meeting."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the amux Review dashboard?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The Review tab is a rolling 7-day fleet synthesis: total messages, total token spend, per-epic card counts by status (todo/doing/done/verified), and a blockers-first section. It gives engineering managers a complete picture of team output without requiring agents to write status reports. Available on mobile — reviewable in under 60 seconds at the start of standup."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is 'Unblock everything' in amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Unblock everything is a Focus mode in the Review tab that surfaces every needs-you board card across all sessions into a single scrollable list. Each entry shows the context the agent recorded when it flagged the blocker, plus a Nudge button to respond directly — no navigating to individual sessions. Clear a morning's worth of blockers from your phone before your team's standup begins."
+        }
       }
     ]
   }
@@ -127,7 +151,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Engineering Managers</span></div>
 
     <h1>Give Your Dev Team AI Teammates</h1>
-    <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated July 2026.</p>
+    <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated August 2026.</p>
 
     <p>Engineering managers use amux to multiply team velocity without adding headcount. Instead of each developer working on one task at a time, amux lets every engineer run 3–5 parallel AI agent sessions — tackling the backlog, writing tests, fixing bugs, and drafting docs simultaneously. <strong>amux is the open-source control plane that makes running an AI-augmented engineering team possible at the team level, not just the individual level.</strong></p>
 
@@ -339,8 +363,29 @@ amux serve  # → https://localhost:8822</code></pre>
     <h3>What happens when an agent crashes or runs out of context overnight?</h3>
     <p>amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow triggers automatic compaction — the agent summarizes earlier context and continues without losing the thread of work. Queue overnight runs before leaving the office. Review completed pull requests at standup.</p>
 
+    <h2>Trends view: understand what your AI team accomplished by theme</h2>
+    <p>Engineering managers spend too much time asking "what did we actually ship this sprint?" The amux Trends view answers that across your entire AI agent fleet — automatically. It groups all agent activity into themes (authentication work, API changes, test coverage, bug fixes) and shows counts of queued, in-progress, done, and blocked-on-you cards per theme, with evidence links.</p>
+    <p>No more reading 40 terminal outputs to write a status update. Open Trends, take a screenshot, paste it into the standup. Under 60 seconds from your phone.</p>
+
+    <h2>Review dashboard: weekly synthesis across your entire AI engineering team</h2>
+    <p>The Review tab gives engineering managers a rolling 7-day view of what every AI session worked on: total messages processed, token spend with cost estimate, per-epic card counts broken out by status, and a blockers section. It's the diff between "I deployed 12 agents on Monday" and "here's what those 12 agents accomplished, what's still open, and what's waiting on me."</p>
+    <p>The <strong>Unblock everything</strong> button surfaces every needs-you card across all sessions in one scrollable list. Each blocker shows the context the agent recorded when it stalled, plus a Nudge button to respond. Clear a morning's worth of blockers in under 10 minutes without opening a single individual session.</p>
+
+    <h2>Fleet org chart: visualize your AI engineering team at a glance</h2>
+    <p>The Fleet org chart projects all live sessions as a live visual org chart, grouped by department prefix (backend-*, frontend-*, infra-*, etc.). Each node shows session status and the card it's currently working on. Click any node to open that session's terminal and board context directly. Engineering managers using amux report this as the fastest way to answer "who's doing what right now" without a standup.</p>
+
+    <h3>How does the amux Trends view help engineering managers?</h3>
+    <p>Trends groups all agent activity across your fleet by theme — what was worked on, by which sessions, and what's done vs. blocked on you. Instead of reviewing individual terminal outputs, you get a thematic summary in under 60 seconds from your phone. It's the fastest way to answer "what did we ship this week?" without a status meeting.</p>
+
+    <h3>What is the amux Review dashboard?</h3>
+    <p>The Review tab is a rolling 7-day fleet synthesis: total messages, total token spend, per-epic card counts by status (todo/doing/done/verified), and a blockers-first section. It gives engineering managers a complete picture of team output without requiring agents to write status reports. Available on mobile — reviewable in under 60 seconds at the start of standup.</p>
+
+    <h3>What is "Unblock everything" in amux?</h3>
+    <p>Unblock everything is a Focus mode in the Review tab that surfaces every needs-you board card across all sessions into a single scrollable list. Each entry shows the context the agent recorded when it flagged the blocker, plus a Nudge button to respond directly — no navigating to individual sessions. Clear a morning's worth of blockers from your phone before your team's standup begins.</p>
+
     <h2>Related Resources</h2>
     <ul>
+      <li><a href="/guides/ai-agent-team-review/">How to Review What Your AI Agents Did — Weekly Review Guide</a></li>
       <li><a href="/guides/team-workflow-setup/">How to Run an AI Engineering Team — Team Setup Guide</a></li>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents in Parallel — Performance Tuning</a></li>
       <li><a href="/guides/scaling-to-50-agents/">Scaling to 50 Agents — Multi-Instance Coordination</a></li>

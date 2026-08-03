@@ -2,6 +2,50 @@
 
 Single-file project: everything lives in `amux-server.py` (Python server + inline HTML/CSS/JS dashboard).
 
+## The ethos — read before building anything
+
+**The harness gets better as the models get better. Get out of the model's way.**
+
+Every new feature or enhancement gets gut-checked against
+[`.claude/rules/ethos.md`](.claude/rules/ethos.md) before you build it and again before
+you call it done. Eight questions, each one there because it was violated in this repo
+and cost something real: capability that never reached a session, model calls spent on
+string manipulation, gates that could not be satisfied honestly, instruments that could
+not express the discriminator, automation that accumulated instead of deciding, an audit
+trail that was claimed but not implemented, checks that could not fail, and an agent
+deciding something that was the user's to decide.
+
+The question underneath all of them: when the next model is meaningfully better than
+this one, does this feature get better with it, or does it become the ceiling?
+
+The bottom of that file is a **Known deviations** ledger — live places where amux
+still fights the ethos, each with a status and an exit condition. Check it before
+touching state detection, auto-answers, helper-model calls, observation caps, or
+auto-compact; move the deviation toward its exit rather than deepening it.
+
+## You are dogfooding — fix it at the root
+
+You run *inside* amux. Every rough edge you hit while working is a rough edge a user
+hits, and you are the one person positioned to see it from the inside. So when
+something in amux gets in your way — a peek that hides output, a board mutation that
+bounces silently, a browser profile that saves to one place and loads from another, an
+error message that sends you chasing the wrong cause — **treat it as a product defect
+and fix it at its root**, not as an obstacle to route around in your own task.
+
+- Do not paper over it with a workaround in your script, a manual step, or a note to
+  yourself. If you needed the workaround, so will a user who has no idea it exists.
+- Fix the source, not the symptom: the generator rather than the generated file, the
+  API rather than the one caller, the instrument that could not express the failure
+  rather than the one conclusion it misled you into.
+- Instrumentation counts as product. If a failure was hard to diagnose because output
+  was truncated, logs went to `/dev/null`, or a check could not fail, that is itself the
+  bug worth fixing — the next person debugging it is a user.
+- Then leave the comment explaining *why*, so the fix does not get undone by someone who
+  only sees the shape of the code.
+
+The bar: after you are done, could someone hit the same problem again? If yes, you fixed
+your task, not the platform.
+
 ## Structure
 
 - `amux-server.py` — the server + dashboard (single file)

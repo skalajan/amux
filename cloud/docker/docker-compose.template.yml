@@ -36,7 +36,15 @@ services:
   watchdog:
     image: ghcr.io/mixpeek/amux:latest
     container_name: amux-watchdog-${USER_ID}
-    restart: unless-stopped
+    # on-failure:5, NOT unless-stopped. A sidecar that fails instantly under
+    # unless-stopped is a self-DoS on the shared daemon: this one exited 1 on
+    # every start, was restarted with no backoff 4318 times, and the
+    # task-create/delete churn saturated dockerd until the whole HOST went dark
+    # — docker ps timing out, sshd starved, every tenant's workspace 503
+    # (AC-162/AC-163). Capping it means a broken watchdog degrades its own
+    # workspace's monitoring and then STOPS, loudly, instead of taking the box
+    # down with it. A dead sidecar is a bug; a dead host is an outage.
+    restart: on-failure:5
     volumes:
       - amux-data:/root/.amux
       - /opt/amux-cloud/app/amux-server.py:/app/amux-server.py:ro

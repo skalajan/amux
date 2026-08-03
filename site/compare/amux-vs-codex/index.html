@@ -39,7 +39,7 @@
     "headline": "amux vs OpenAI Codex (2026): Local Agent Fleet vs Cloud Coding Agent",
     "description": "amux vs OpenAI Codex compared: local multi-runtime agent fleet with phone management vs Codex cloud agent running in isolated containers.",
     "datePublished": "2026-07-10",
-    "dateModified": "2026-07-10",
+    "dateModified": "2026-08-02",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
   }
@@ -121,7 +121,7 @@
       </a>
     </div>
 
-    <p><strong>amux</strong> is an open-source control plane that runs your AI engineering team on your own machine — dozens of parallel Claude Code, Codex CLI, or Gemini CLI sessions, monitored from your phone, with self-healing and built-in tools (kanban, CRM, email, scheduler). <strong>OpenAI Codex</strong> refers to two related products: the open-source Codex CLI (a terminal coding agent using GPT-4o/o3) and the proprietary Codex cloud agent (async tasks in isolated containers). The most common comparison is between amux's local fleet and Codex's cloud agent — and the answer often isn't "choose one." Updated July 2026.</p>
+    <p><strong>amux</strong> is an open-source control plane that runs your AI engineering team on your own machine — dozens of parallel Claude Code, Codex CLI, or Gemini CLI sessions, monitored from your phone, with self-healing and built-in tools (kanban, CRM, email, scheduler). <strong>OpenAI Codex</strong> refers to two related products: the open-source Codex CLI (a terminal coding agent using GPT-4o/o3) and the proprietary Codex cloud agent (async tasks in isolated containers). The most common comparison is between amux's local fleet and Codex's cloud agent — and the answer often isn't "choose one." Updated August 2026.</p>
 
     <h2>Quick comparison</h2>
 
@@ -177,6 +177,7 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
       <li><strong>Self-healing matters</strong> — the amux watchdog auto-compacts context, restarts crashed agents, and replays the last message automatically. Agents run overnight without you.</li>
       <li><strong>Open source and self-hosted is required</strong> — amux is a single Python file, zero external dependencies, MIT + Commons Clause. Deploy it on any Linux/macOS box.</li>
       <li><strong>You want built-in ops tools</strong> — kanban board, CRM, Gmail integration, browser automation, and scheduler are included at no extra cost.</li>
+      <li><strong>You need team-level review and observability</strong> — the Trends view shows what your AI engineering team accomplished grouped by theme; the Review dashboard surfaces blockers-first synthesis; the Fleet org chart visualizes all sessions by department. None of this exists in Codex cloud.</li>
     </ul>
 
     <h2>Execution model comparison</h2>
@@ -201,7 +202,7 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
         <tr><td>Where agents run</td><td>Your machine (tmux sessions)</td><td>OpenAI cloud containers</td></tr>
         <tr><td>State persistence</td><td>Local filesystem, your database</td><td>Per-task sandbox (ephemeral)</td></tr>
         <tr><td>Fault tolerance</td><td>Watchdog: auto-compact, restart, replay</td><td>Cloud SLA, retry managed by OpenAI</td></tr>
-        <tr><td>Observability</td><td>Live streaming in dashboard + phone</td><td>Task logs in OpenAI platform</td></tr>
+        <tr><td>Observability</td><td>Live streaming, Trends view, Review dashboard, Fleet org chart</td><td>Task logs in OpenAI platform</td></tr>
         <tr><td>Output destination</td><td>Local files, your Git remote, your tools</td><td>Container output, GitHub PRs</td></tr>
       </tbody>
     </table>
@@ -231,6 +232,11 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
     <details>
       <summary>Is amux open source?</summary>
       <p>Yes. amux is MIT + Commons Clause, a single Python file, zero external dependencies. The Codex CLI is also open source (MIT). The Codex cloud agent platform is proprietary.</p>
+    </details>
+
+    <details>
+      <summary>How do I see what all my Codex and Claude Code sessions accomplished this week?</summary>
+      <p>The amux Trends view groups activity across all sessions — regardless of runtime — by theme. It answers what was done, by whom, what's still in progress, and what needs your attention, without reading individual terminal outputs. The Review dashboard adds blockers-first synthesis and per-epic progress. Codex cloud has task-level logs but no cross-task fleet review.</p>
     </details>
 
     <h2>See also</h2>

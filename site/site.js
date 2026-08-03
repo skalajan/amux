@@ -38,6 +38,7 @@
     person_profiles: 'identified_only',
     capture_pageview: true,
     capture_pageleave: true,
+    enable_heatmaps: true,
   });
   // EXP-008: register initial theme preference as a super property
   posthog.register({ theme_preference: theme });

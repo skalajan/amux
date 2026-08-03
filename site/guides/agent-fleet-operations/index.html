@@ -42,7 +42,7 @@
     "description": "How to operate a fleet of AI coding agents with amux — bulk continue all idle sessions, inspect subagent transcripts, load historical output, and monitor from your phone. Fleet operations guide for 10-50 parallel Claude Code, Codex, or Gemini CLI agents.",
     "url": "https://amux.io/guides/agent-fleet-operations/",
     "datePublished": "2026-07-11",
-    "dateModified": "2026-07-11",
+    "dateModified": "2026-08-02",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "image": "https://amux.io/og-image.png",
@@ -157,7 +157,15 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Fleet Operations</span></div>
 
     <h1>AI Agent Fleet Operations — Bulk Actions, Real-Time Monitoring &amp; Fleet-Level Visibility</h1>
-    <p class="subtitle">Updated July 2026 — bulk continue, subagent monitoring, scrollback, and responsive mobile peek</p>
+    <p class="subtitle"><span class="updated-badge">August 2026</span> — Trends view, Review dashboard, Fleet org chart, bulk continue, subagent monitoring</p>
+
+    <!-- EXP-018: top-of-page CTA — same green/teal format as EXP-015 WIN -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <p style="margin:0;font-size:0.95rem"><strong>Running 10+ AI coding agents in parallel?</strong> amux gives you fleet-level Trends view, Review dashboard, 'Unblock everything' triage, Fleet org chart, and self-healing — all from a shared dashboard or your phone. Open source, single Python file.</p>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:#10b981;color:#fff;padding:10px 18px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    </div>
 
     <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>Quick answer:</strong> amux provides three fleet operation primitives — the <strong>bulk-actions modal</strong> for fleet-wide commands (including "Continue all idle sessions"), the <strong>peek panel</strong> for per-agent deep inspection including subagent transcripts and historical scrollback, and the <strong>session list</strong> for at-a-glance health via color-coded status dots. You can wake up, inspect, or redirect a fleet of 10–50 agents from a single dashboard tab or your phone — without touching a terminal.
@@ -303,6 +311,35 @@ done
 
     <p>This full check typically takes under 2 minutes from bed before you're out of the house. See <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a> for the full mobile setup guide.</p>
 
+    <h2>Trends view: understand what your fleet accomplished by theme</h2>
+
+    <p>Once you're running more than 3–4 agents in parallel, the per-session view becomes too granular to answer the real question: <em>what did my AI team actually accomplish this week?</em> The Trends view, in the Messages tab, answers this at the right altitude.</p>
+
+    <p>Trends groups every prompt you sent across all sessions into themes — one row per theme with counts of cards in each status (queued, doing, done, needs-you). Expanding any theme shows the individual board cards and messages, each with a direct link to the session or card so you can verify that "done" means actually done.</p>
+
+    <p>For fleet operators, the most important column is <strong>Needs you</strong>. A zero across all themes means the fleet is unblocked and self-sufficient. Any non-zero count means there's a specific decision only you can make — and clicking through takes you directly to the blocked card or session.</p>
+
+    <p>See the full <a href="/guides/ai-agent-team-review/">AI agent team review guide</a> for a step-by-step walkthrough of the Trends view alongside the Review dashboard and 'Unblock everything' mode.</p>
+
+    <h2>Review dashboard: weekly synthesis across your entire fleet</h2>
+
+    <p>The Review tab in the amux dashboard shows a weekly synthesis without any prompting, without asking any agent to generate a report, and without leaving the dashboard. It reads from the board and message history over a rolling 7-day window and shows:</p>
+
+    <ul>
+      <li><strong>Total tasks</strong> — how many board cards moved through the queue this week</li>
+      <li><strong>Total tokens</strong> — fleet-wide token consumption with cost estimate</li>
+      <li><strong>Per-epic breakdown</strong> — for each active epic, how many cards are in todo / doing / done / verified</li>
+      <li><strong>Blockers</strong> — every card currently in needs-you status, with a Nudge button to respond directly</li>
+    </ul>
+
+    <p><strong>'Unblock everything'</strong> is the key workflow within the Review tab. Clicking it surfaces every needs-you card across all sessions into a single focus view. For each blocked card you get the context the agent recorded when it flagged the blocker, plus a Nudge button to respond without navigating away. A morning triage of 8 blocked cards takes 5–10 minutes instead of 25.</p>
+
+    <h2>Fleet org chart: visualize your AI team at a glance</h2>
+
+    <p>The Graph tab has a Notes / Fleet switch. The Fleet view projects all live sessions as a live org chart — each session appears as a node grouped by its name prefix (so <code>backend-api</code>, <code>backend-auth</code>, and <code>backend-migrations</code> all appear under "backend"). Each node shows the session's current status and the board card it's working on. Clicking any node opens that session's peek panel directly.</p>
+
+    <p>The color palette uses a validated 8-slot assignment that passes contrast, chroma, and color-vision-deficiency checks — department colors are distinguishable under protanopia and deuteranopia. Layout positions persist across refreshes so you can arrange the chart to reflect your team's actual structure.</p>
+
     <h2>Fleet operations: with amux vs. without it</h2>
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
@@ -374,6 +411,15 @@ done
     <h3>What does the status dot color mean?</h3>
     <p><span style="color:#22c55e">Green</span> = actively working. <span style="color:#eab308">Yellow</span> = idle or waiting for input (needs attention or just finished). <span style="color:#ef4444">Red</span> = crashed or errored. The self-healing watchdog auto-restarts red sessions if configured. For yellow sessions, use "Continue all idle sessions" from the bulk-actions modal.</p>
 
+    <h3>How do I see what my AI team accomplished this week?</h3>
+    <p>Open the Review tab. It shows a weekly synthesis across all sessions: total tasks, total tokens, per-epic card breakdown, and blockers. Generated automatically from the board — no prompting required. For a theme-based view, open the Messages tab and switch to Trends. See the <a href="/guides/ai-agent-team-review/">AI agent team review guide</a> for a full walkthrough.</p>
+
+    <h3>What is 'Unblock everything'?</h3>
+    <p>'Unblock everything' is a Focus mode in the Review tab that surfaces every card in needs-you status across all sessions into a single list. Each card shows the blocker context the agent recorded, plus a Nudge button to respond directly without navigating to the session. Use it first thing in the morning to clear blockers before agents start their day.</p>
+
+    <h3>Can I see a visual org chart of my AI team?</h3>
+    <p>Yes. Open the Graph tab and switch from "Notes" to "Fleet." All running sessions appear as nodes grouped by their name prefix (department). Each node shows the session's status and current card. Click any node to open the session's peek panel directly. Node positions persist across refreshes.</p>
+
     <div class="cta-box">
       <h3>Run an AI engineering team from one dashboard</h3>
       <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. MIT licensed, single Python file, zero external dependencies.</p>
@@ -397,6 +443,7 @@ amux serve  # → https://localhost:8822</code></pre>
       <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>
       <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a></li>
       <li><a href="/guides/detached-agent-sessions/">Run Claude Code in the background — amux start --detach</a></li>
+      <li><a href="/guides/ai-agent-team-review/">How to review what your AI engineering team did — Trends view &amp; Review dashboard</a></li>
     </ul>
   </main>
 

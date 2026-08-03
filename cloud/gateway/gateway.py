@@ -25,6 +25,7 @@ STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRO_PRICE_ID     = os.environ.get("STRIPE_PRO_PRICE_ID", "")      # monthly
 STRIPE_ANNUAL_PRICE_ID  = os.environ.get("STRIPE_ANNUAL_PRICE_ID", "")   # annual
 STRIPE_PLATFORM_FEE_PRICE_ID = os.environ.get("STRIPE_PLATFORM_FEE_PRICE_ID", "")  # one-time onboarding fee
+STRIPE_PLATFORM_PRICE_ID = os.environ.get("STRIPE_PLATFORM_PRICE_ID", "")          # $5k/mo platform plan (the only plan shown)
 TRIAL_DAYS              = int(os.environ.get("TRIAL_DAYS", "7"))
 TRIAL_BUDGET_USD        = float(os.environ.get("TRIAL_BUDGET_USD", "5"))  # default spend cap for provisioned trials
 REFERRAL_BONUS_DAYS     = int(os.environ.get("REFERRAL_BONUS_DAYS", "7"))
@@ -448,17 +449,14 @@ _UPGRADE_HTML = """<!DOCTYPE html>
     <h1>Your free trial has ended</h1>
     <p>Subscribe to keep using your workspace. All your sessions and data are safe.</p>
     <div class="plans">
-      <div class="plan">
-        <h3>Pro Monthly</h3>
-        <div class="price">$20/month</div>
-        <div class="features">Unlimited sessions &middot; No idle timeout &middot; Team workspaces</div>
-        <button class="btn" onclick="checkout('monthly')">Subscribe monthly</button>
-      </div>
       <div class="plan featured">
-        <h3>Pro Annual <span class="save">save 17%</span></h3>
-        <div class="price">$200/year ($16.67/mo)</div>
-        <div class="features">Unlimited sessions &middot; No idle timeout &middot; Team workspaces</div>
-        <button class="btn" onclick="checkout('annual')">Subscribe annually</button>
+        <h3>amux Platform</h3>
+        <div class="price">$5,000/month</div>
+        <div class="features">
+          Production-grade sessions &middot; Dedicated isolated machine<br>
+          Support &amp; maintenance &middot; Ongoing workflow creation and teaching
+        </div>
+        <button class="btn" onclick="checkout('platform')">Talk to us &amp; get started</button>
       </div>
     </div>
     <div id="error"></div>
@@ -538,9 +536,12 @@ _BUDGET_HTML = """<!DOCTYPE html>
         <li>Ongoing workflow creation, tuning, and teaching</li>
       </ul>
     </div>
-    <button class="btn" onclick="checkout('monthly')">Upgrade — platform fee + monthly</button>
-    <button class="btn alt" onclick="checkout('annual')">Upgrade — platform fee + annual (save 17%)</button>
-    <div class="fee-note">One-time onboarding platform fee, then the subscription. Cancel the subscription anytime.</div>
+    <div class="meter" style="margin-bottom:18px;">
+      <div class="nums">$5,000/month</div>
+      <div class="lbl">amux Platform</div>
+    </div>
+    <button class="btn" onclick="checkout('platform')">Talk to us &amp; get started</button>
+    <div class="fee-note">Includes a one-time implementation &amp; enablement engagement.</div>
     <div id="error"></div>
     <div class="logout"><a href="/api/cloud-logout">Log out</a></div>
   </div>
@@ -1040,11 +1041,19 @@ def _refresh_org_spend(db, org_id, port):
     if not isinstance(data, dict):
         return None
     spend = float(data.get("total_cost") or 0)
+    # MONOTONIC: never lower a recorded spend. Two meters feed this column — the
+    # proxy (exact, per request) and this transcript rollup (approximate, and 0
+    # when Claude's JSONL is not where the ledger looks). A plain assignment let
+    # the poller erase real proxy-metered spend back to $0, which silently
+    # disabled the budget cap. Taking the max means neither source can undo the
+    # other, and enforcement only ever cares about crossing the threshold.
     with _db_lock:
-        db.execute("UPDATE orgs SET spend_usd=?, spend_checked_at=? WHERE id=?",
-                   (spend, int(time.time()), org_id))
+        db.execute(
+            "UPDATE orgs SET spend_usd = MAX(COALESCE(spend_usd, 0), ?), spend_checked_at=? WHERE id=?",
+            (spend, int(time.time()), org_id))
         db.commit()
-    return spend
+        row = db.execute("SELECT spend_usd FROM orgs WHERE id=?", (org_id,)).fetchone()
+    return float(row["spend_usd"] or 0) if row else spend
 
 def _stop_org_sessions(port):
     """Stop every session in a container. Budget enforcement must halt token burn
@@ -1176,8 +1185,15 @@ def _handle_anthropic_proxy(handler, path, qs):
     url = "https://api.anthropic.com/" + upstream
     if qs:
         url += "?" + qs
-    skip = {"host", "content-length", "authorization", "x-api-key", "cookie", "connection"}
+    # accept-encoding is dropped so upstream replies uncompressed. We rewrite the
+    # response headers (stripping content-encoding), so forwarding a gzip request
+    # produced compressed bytes labelled as plain JSON — the client then failed
+    # with "API Error: Failed to parse JSON". Requesting identity keeps the body
+    # and the headers we emit consistent.
+    skip = {"host", "content-length", "authorization", "x-api-key", "cookie",
+            "connection", "accept-encoding"}
     fwd = {k: v for k, v in handler.headers.items() if k.lower() not in skip}
+    fwd["accept-encoding"] = "identity"
     fwd["x-api-key"] = ANTHROPIC_API_KEY
     fwd.setdefault("anthropic-version", "2023-06-01")
     req = urllib.request.Request(url, data=body, method=handler.command, headers=fwd)
@@ -1350,6 +1366,12 @@ def _write_proxy_env(user_id):
 
 
 def start_container(user_id, port):
+    # AMUX_AUTOSTART_SESSIONS lives in the IMAGE (cloud/docker/Dockerfile), not
+    # here. A per-container write in this function reaches only containers the
+    # gateway itself starts, and the deploy path never calls it —
+    # deploy-cloud.yml runs `docker compose up -d --no-recreate` directly. That
+    # is why the first live test found every session still down on a container
+    # that already had the autostart code.
     _write_compose(user_id, port)
     _restore_user_files(user_id)
     # Preferred path: route through our proxy so no key lands in the container.
@@ -2226,8 +2248,38 @@ class Handler(BaseHTTPRequestHandler):
                             print(f"[referral] {email} referred by {referrer['id']} via code {ref_cookie}", flush=True)
                         except sqlite3.IntegrityError:
                             pass  # already referred
+            # ── Auto-accept a pending invite addressed to this email ──────────
+            # Clerk's ticket flow does not reliably land the user on
+            # /invite/<token> after signup (verified: Clerk marked the
+            # invitation accepted while our org invite stayed unused, so the
+            # user got a personal workspace instead of the one provisioned for
+            # them). Matching on the invited address makes acceptance
+            # independent of wherever Clerk chooses to redirect. Only invites
+            # explicitly issued to this exact address are ever accepted.
+            auto_org = None
+            if email:
+                inv = db.execute(
+                    "SELECT token, org_id, role FROM org_invites "
+                    "WHERE lower(email)=? AND used_at IS NULL AND expires_at > ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (email.strip().lower(), now)).fetchone()
+                if inv:
+                    try:
+                        with _db_lock:
+                            db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
+                                       (now, user_id, inv["token"]))
+                            db.execute(
+                                "INSERT OR IGNORE INTO org_memberships (org_id, user_id, role, joined_at) "
+                                "VALUES (?,?,?,?)",
+                                (inv["org_id"], user_id, inv["role"] or "member", now))
+                            db.commit()
+                        auto_org = inv["org_id"]
+                        print(f"[invite] auto-accepted {email} into {auto_org} at login", flush=True)
+                    except Exception as e:
+                        print(f"[invite] auto-accept failed for {email}: {e}", flush=True)
+
             cookie_val = _make_cookie(user_id)
-            resp_body = json.dumps({"ok": True}).encode()
+            resp_body = json.dumps({"ok": True, "org_id": auto_org}).encode()
             sec = self._secure_cookie_flags()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2235,6 +2287,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie",
                 f"amux_session={cookie_val}; HttpOnly{sec}; SameSite=Lax; "
                 f"Max-Age={COOKIE_MAX_AGE}; Path=/")
+            if auto_org:
+                self.send_header("Set-Cookie",
+                    f"amux_org={auto_org}; HttpOnly{sec}; SameSite=Lax; Path=/")
             if ref_cookie:
                 self.send_header("Set-Cookie",
                     f"amux_ref=; Path=/; Max-Age=0; HttpOnly{sec}; SameSite=Lax")
@@ -2671,7 +2726,20 @@ class Handler(BaseHTTPRequestHandler):
             target_org = body.get("org_id", "") or _active_org_id()
             if not _has_role(target_org, "owner", "admin"):
                 return self._json({"error": "must be owner or admin to manage billing"}, 403)
-            price_id = STRIPE_ANNUAL_PRICE_ID if billing == "annual" and STRIPE_ANNUAL_PRICE_ID else STRIPE_PRO_PRICE_ID
+            # The UI now offers only the $5k platform plan, but monthly/annual
+            # stay wired so existing links and any backend flow keep working.
+            # STRIPE_PLATFORM_PRICE_ID MUST point at the real $5k price — if it
+            # is unset we refuse rather than quietly charging the $20 plan to
+            # someone who was shown $5,000.
+            if billing == "platform":
+                if not STRIPE_PLATFORM_PRICE_ID:
+                    return self._json({"error": "The $5,000 platform plan is not configured yet — "
+                                                "please contact hello@amux.io and we'll get you set up."}, 503)
+                price_id = STRIPE_PLATFORM_PRICE_ID
+            elif billing == "annual" and STRIPE_ANNUAL_PRICE_ID:
+                price_id = STRIPE_ANNUAL_PRICE_ID
+            else:
+                price_id = STRIPE_PRO_PRICE_ID
             import stripe
             stripe.api_key = STRIPE_SECRET_KEY
             base = self._base_url()
@@ -2964,7 +3032,11 @@ class Handler(BaseHTTPRequestHandler):
             budget = float(budget) if budget is not None else None
             org_name = (body.get("name") or "").strip() or f"{invitee} (trial)"
             notify = body.get("notify", True)
-            prov_key = (body.get("api_key") or ANTHROPIC_API_KEY or "").strip() or None
+            # Only store an EXPLICITLY supplied per-org key. The house key must
+            # never be copied into an org row — provisioned workspaces reach
+            # Anthropic through the gateway proxy, which keeps the real key on
+            # the host where a trial user with shell access cannot read it.
+            prov_key = (body.get("api_key") or "").strip() or None
             org_id = "org_" + _sec.token_hex(8)
             trial_end = now + trial_days * 86400
             with _db_lock:
@@ -3004,6 +3076,11 @@ class Handler(BaseHTTPRequestHandler):
                 "clerk_invitation_sent": bool(sent),
                 "clerk_detail": "" if sent else clerk_detail,
                 "api_key_provisioned": bool(prov_key),
+                # How this workspace will talk to Claude. "proxy" = gateway holds
+                # the key; "org_key" = an explicit per-org key was supplied;
+                # "none" = the user must bring their own (house key unset).
+                "claude_auth": ("org_key" if prov_key
+                                else ("proxy" if ANTHROPIC_API_KEY else "none")),
             }, 201)
 
         # ── Admin: list all orgs with trial/budget/spend state ────────────────
@@ -3023,6 +3100,20 @@ class Handler(BaseHTTPRequestHandler):
                 d["members"] = [dict(m) for m in db.execute(
                     "SELECT m.user_id, m.role, u.email FROM org_memberships m "
                     "LEFT JOIN users u ON u.id = m.user_id WHERE m.org_id=?", (r["id"],)).fetchall()]
+                # Who is this workspace FOR. owner_email cannot answer that: an
+                # admin-provisioned org is owned by the acting admin, so every
+                # prospect workspace reads ethan@mixpeek.com and the one field
+                # that distinguishes them sat in org_invites, which no endpoint
+                # returned. A session trying to map orgs to prospects had to
+                # hand-write SQL through /admin/query to find it.
+                # invite_email is the OLDEST invite — the address the workspace
+                # was provisioned for. Later invites are usually teammates added
+                # afterwards, so newest-first would name the wrong person.
+                invites = [dict(i) for i in db.execute(
+                    "SELECT email, role, created_at FROM org_invites WHERE org_id=? "
+                    "ORDER BY created_at ASC", (r["id"],)).fetchall()]
+                d["invites"] = invites
+                d["invite_email"] = invites[0]["email"] if invites else None
                 out.append(d)
             return self._json({"orgs": out, "count": len(out)})
 
@@ -3054,6 +3145,39 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute(f"UPDATE orgs SET {','.join(updates)} WHERE id=?", (*params, oid))
                 db.commit()
             return self._json({"ok": True})
+
+        # ── Admin: re-apply Claude auth to a RUNNING container ────────────────
+        # Proxy env is written at container start, so an org booted before the
+        # house key existed sits at Claude's login prompt forever. This rewrites
+        # server.env and reloads the in-container server so it takes effect
+        # without destroying the workspace.
+        _adm_auth_m = re.match(r"^/api/gateway/admin/orgs/([^/]+)/refresh-auth$", path)
+        if _adm_auth_m and self.command == "POST":
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            oid = _adm_auth_m.group(1)
+            org_row = db.execute("SELECT id FROM orgs WHERE id=?", (oid,)).fetchone()
+            if not org_row:
+                return self._json({"error": "org not found"}, 404)
+            wrote = _write_proxy_env(oid)
+            reloaded = False
+            if wrote:
+                # server.env is read into the process environment at startup, and
+                # amux-server.py is bind-mounted read-only so it cannot be touched
+                # from inside. Restart the container so the new credentials reach
+                # the process — and therefore the tmux panes agents run in.
+                r = subprocess.run(["docker", "restart", f"amux-user-{oid}"],
+                                   capture_output=True, timeout=90)
+                reloaded = r.returncode == 0
+                if reloaded:
+                    for _ in range(30):
+                        time.sleep(2)
+                        if container_healthy(oid):
+                            break
+            return self._json({"ok": True, "proxy_env_written": wrote,
+                               "server_reloaded": reloaded,
+                               "mode": "proxy" if wrote else ("org_key" if _resolve_api_key(db, oid) else "none"),
+                               "note": "restart sessions so agents inherit the new environment"})
 
         # ── Admin: force a spend refresh (and enforce) for one org ────────────
         _adm_spend_m = re.match(r"^/api/gateway/admin/orgs/([^/]+)/refresh-spend$", path)

@@ -1,11 +1,307 @@
 [
   {
+    "hash": "0e8a29be2405562079267a70fa11fd564f12446f",
+    "short": "0e8a29b",
+    "title": "Rate-limit recovery — parked sessions no longer receive stray keypresses every 15s",
+    "date": "2026-08-02",
+    "type": "fix",
+    "tags": [
+      "rate-limit",
+      "sessions",
+      "stability",
+      "dashboard"
+    ],
+    "description": "The rate-limit scanner was re-pressing '1' every 15 seconds into sessions that had already dismissed the rate-limit menu and were parked waiting. This caused spurious input into idle sessions and could interfere with agents in a paused state. The scanner now correctly detects already-parked sessions and stops sending keystrokes once the menu is dismissed."
+  },
+  {
+    "hash": "4babfb3aea76d5234478d035c79442cc749617b1",
+    "short": "4babfb3",
+    "title": "Trends view — see what your AI team accomplished, grouped into themes",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "trends",
+      "messages",
+      "dashboard",
+      "team"
+    ],
+    "description": "The Messages tab's Trends view now answers what/who/status/needs-you per theme — no more scrolling through individual messages to understand what your AI team worked on. Each theme row shows counts of tasks queued, in progress, done, and blocked on you, with evidence links to the underlying board cards and sessions. This replaces the flat message log with a team-level view of actual work."
+  },
+  {
+    "hash": "29dfc3967c558522819a67e5493aa110712e09cf",
+    "short": "29dfc39",
+    "title": "Session tab customizer — hide, show, and reorder tabs in the peek panel",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "customization",
+      "dashboard",
+      "ux"
+    ],
+    "description": "Every tab in the session peek panel (Messages, Board, Files, Costs, and more) can now be hidden, shown, or reordered — using the same drag-and-drop customizer as the main dashboard tab bar. Only the Terminal tab is fixed. Your layout persists across sessions. If you never use the Costs tab or always want Messages first, set it once and forget it."
+  },
+  {
+    "hash": "32ac1a644036fbe80b1628961e285e49b363092f",
+    "short": "32ac1a6",
+    "title": "Unblock everything — one-screen triage of every blocker across all sessions",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "review",
+      "blockers",
+      "focus",
+      "dashboard"
+    ],
+    "description": "A new Focus mode in the Review tab surfaces every card in needs-you status across all sessions into a single scrollable list. Each blocked card shows the context the agent recorded when it flagged the blocker, plus a Nudge button to respond directly — no navigating to the session. Clear a full morning's worth of blockers in under 10 minutes without opening a single individual session."
+  },
+  {
+    "hash": "251e56bb51844ea557f82eaf94bbe57d2b66302e",
+    "short": "251e56b",
+    "title": "Review command center — blockers-first synthesis with live session data and drill-down",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "review",
+      "dashboard",
+      "team",
+      "synthesis"
+    ],
+    "description": "The Review tab is now an interactive command center: blockers surface first (cards waiting for you, sorted by age), followed by per-session status and per-epic progress. All data pulls live from the board and session state — no manual reporting from agents required. Click any blocker to drill into the card or session directly from the review interface."
+  },
+  {
+    "hash": "7fb97f84e9ee6ed5d13882fa2d40e3ea2cb7221c",
+    "short": "7fb97f8",
+    "title": "Review dashboard tab — weekly synthesis, totals, epic digest, and per-lane table",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "review",
+      "weekly",
+      "dashboard",
+      "epics"
+    ],
+    "description": "A dedicated Review tab now appears in the main dashboard. It shows a rolling 7-day synthesis across your entire AI team: total messages processed, total tokens spent with cost estimate, per-epic card counts broken out by status (todo/doing/done/verified), and a blockers section. Generated automatically from the board and message history — no prompt needed, readable in under 60 seconds from your phone."
+  },
+  {
+    "hash": "24e6c69033265e2d0b143bc00f82471047b80cf3",
+    "short": "24e6c69",
+    "title": "Fleet org chart — see your AI team as a live org chart grouped by department",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "fleet",
+      "graph",
+      "team",
+      "dashboard"
+    ],
+    "description": "The Graph tab now has a Notes / Fleet switch. Fleet view projects all live sessions as an org chart, grouped into departments by name prefix (backend-*, frontend-* etc.). Each node shows the session's live status dot and the board card it's currently working on. Click any node to open that session's peek panel. Department colors use a validated palette that passes contrast and color-vision-deficiency checks. Node layout persists across refreshes."
+  },
+  {
+    "hash": "eeaf4e09bbda3bedb6edb6353c3493e22b59990c",
+    "short": "eeaf4e0",
+    "title": "Model badge updates instantly after /model switch — no more stale SONNET after switching to Opus",
+    "date": "2026-08-01",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "model",
+      "badge",
+      "sessions"
+    ],
+    "description": "Running /model opus in a session wrote only user-type entries in the JSONL transcript — no assistant turn with a model field — so the session's model badge kept showing the previous model until the next actual response came in. For idle sessions, the badge was wrong indefinitely. The fix reads /model command entries in the same backward scan, so the badge updates the moment you switch, not after the next response."
+  },
+  {
+    "hash": "cee2e62986a34d41a69afb738cdb58e941987ab8",
+    "short": "cee2e62",
+    "title": "Workspace file browser — read any file or directory in a session's workspace from the dashboard",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "files",
+      "workspace",
+      "api",
+      "dashboard"
+    ],
+    "description": "Two new endpoints — GET /api/fs/read and /api/fs/list — let you read any file or list any directory inside a session's registered workspace directly from the amux dashboard or API. Browse source files, check generated outputs, read logs, or inspect CLAUDE.md configuration without leaving the dashboard or opening a terminal. The endpoints respect the workspace root, so agents cannot traverse outside their registered directory."
+  },
+  {
+    "hash": "34cca015a64bd801b521e7bf8208d52d37c5572d",
+    "short": "34cca01",
+    "title": "Burst view — see exactly what work was done in response to a message",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "board",
+      "visibility",
+      "workflow"
+    ],
+    "description": "The Messages tab now shows which board card(s) were created or updated in response to each message you sent — a direct answer to 'what happened to what I asked.' Cards spawned by a prompt appear inline next to the message in a burst view. This closes the loop between instruction and outcome: instead of hunting through board history, you see the causal chain from your words to the agent's work in one place."
+  },
+  {
+    "hash": "25ccf95996fc8d952179e6317f6a9b817408c0c0",
+    "short": "25ccf95",
+    "title": "Full board audit trail — every card edit now records before-values and is readable via API",
+    "date": "2026-08-01",
+    "type": "feat",
+    "tags": [
+      "board",
+      "audit",
+      "history",
+      "transparency"
+    ],
+    "description": "Every PATCH to a board card now stores the before-values alongside the change, creating an immutable audit trail in amux.db. Read a card's full edit history via GET /api/board/<id>/history — see every status transition, description update, and dependency change with timestamps and the session that made it. Useful for post-mortems, verifying that a gate was honestly satisfied, and reconstructing what a card looked like at any point in time."
+  },
+  {
+    "hash": "0ae5070fd87434ea90d27ba50e50e7b61b00cbb5",
+    "short": "0ae5070",
+    "title": "Autostart env write fixed — workspace settings now persist across container restarts",
+    "date": "2026-08-01",
+    "type": "fix",
+    "tags": [
+      "deploy",
+      "cloud",
+      "config",
+      "reliability"
+    ],
+    "description": "The autostart configuration write was silently failing on every workspace creation in cloud environments — meaning workspaces appeared set up but did not auto-launch on container restart. The write path is now correct and verified. Workspaces configured to autostart will reliably start their sessions after any restart, deploy, or container eviction."
+  },
+  {
+    "hash": "38c66bd45ec15aa6c21a3bd4f26973ae22754ccf",
+    "short": "38c66bd",
+    "title": "Autonomy capture marker moved to append-only log — spurious card annotations no longer re-arm themselves",
+    "date": "2026-08-01",
+    "type": "fix",
+    "tags": [
+      "autonomy",
+      "board",
+      "reliability",
+      "agents"
+    ],
+    "description": "When an agent annotated a card it had already processed, the in-memory capture marker was being reset, causing the same card to be re-annotated on the next autonomy tick — creating duplicate cards and noisy board state. The marker now lives in the append-only session log, so it survives restarts and cannot be reset by a card mutation. Agents that previously created duplicate board cards in burst mode will no longer do so."
+  },
+  {
+    "hash": "20ae941ccc4dc7fbf9c363ca7af7545f3329adbe",
+    "short": "20ae941",
+    "title": "Mobile kanban board — column snap, swipe between columns, live peek on tap",
+    "date": "2026-07-31",
+    "type": "feat",
+    "tags": [
+      "mobile",
+      "board",
+      "kanban",
+      "ios"
+    ],
+    "description": "The amux kanban board now works fully on mobile: columns snap-scroll horizontally, tapping a card opens a full peek of its details and history, stub columns stay visible so you always see all four states, and offscreen cards are virtualized for smooth scrolling on large boards. Manage your AI engineering team sprint from your phone — no laptop required."
+  },
+  {
+    "hash": "7a3bfa5bec6c2fd70eb67e22cbe7f1a09cbc1e89",
+    "short": "7a3bfa5",
+    "title": "Board cards now support task dependencies and reviewer assignments",
+    "date": "2026-07-31",
+    "type": "feat",
+    "tags": [
+      "board",
+      "dependencies",
+      "workflow",
+      "teams"
+    ],
+    "description": "Cards on the amux board now carry depends_on and reviewer graph edges, and the session loop traverses them. A card with depends_on waits for its dependency to reach done before becoming claimable. A card with a reviewer set gates its own completion on that reviewer's sign-off. Use depends_on to sequence agent work and reviewer to require a human check before a card closes."
+  },
+  {
+    "hash": "4b0b1ed461b1976e6b2eb6f6bb952274a5651d78",
+    "short": "4b0b1ed",
+    "title": "Every incoming prompt automatically decomposes into one board card per task",
+    "date": "2026-07-31",
+    "type": "feat",
+    "tags": [
+      "board",
+      "autonomy",
+      "task-management",
+      "automation"
+    ],
+    "description": "When a session receives a prompt that contains more than one distinct task, amux now creates one board card per unit of work rather than folding everything into a single card. Each card can be honestly done or not done, gated and tracked independently. Sessions that previously accumulated 450+ tasks in one journal card will now decompose incoming work into real, actionable cards."
+  },
+  {
+    "hash": "2033fdb4fb62fa5c40d9f81c24ecc2747c037a65",
+    "short": "2033fdb",
+    "title": "Board card API fixed — GET /api/board/<id> now returns the card that exists",
+    "date": "2026-07-31",
+    "type": "fix",
+    "tags": [
+      "board",
+      "api",
+      "bug"
+    ],
+    "description": "GET /api/board/<id> was answering 'not found' for every card, including cards that clearly existed. The lookup was matching on the wrong column. Any integration that fetches individual cards by ID — the iOS app, session loops, external tooling — was broken. This is now fixed and the endpoint returns the correct card data."
+  },
+  {
+    "hash": "48c10b23b84cbdb8699266f26d18f44653385950",
+    "short": "48c10b2",
+    "title": "Gmail reconnect works again — a fresh OAuth grant clears the negative cache",
+    "date": "2026-07-31",
+    "type": "fix",
+    "tags": [
+      "gmail",
+      "oauth",
+      "reliability"
+    ],
+    "description": "When a Gmail account hit invalid_grant (token expired or revoked), amux was caching the error and blocking subsequent OAuth attempts even after a fresh grant was issued. Re-authorizing a Gmail account now clears the negative cache immediately, so the new token is used on the next send. Affected users who were stuck in a loop of re-authenticating without success should now find reconnection works on the first attempt."
+  },
+  {
+    "hash": "456d1614ea1e26d50608c40d20e14f09b654f80d",
+    "short": "456d161",
+    "title": "Ping button in the connection modal measures real round-trip latency to your amux server",
+    "date": "2026-07-30",
+    "type": "feat",
+    "tags": [
+      "ui",
+      "network",
+      "diagnostics"
+    ],
+    "description": "The connection modal now has a ping button that sends 5 real HTTP requests to your amux server and reports the median round-trip time in milliseconds. Use it to verify you are connected to the right server instance, diagnose slow dashboard updates, or check latency on a mobile or remote connection. The ping bypasses the ETag/304 cache so each request is a real round trip."
+  },
+  {
+    "hash": "5d4afba0e8c2b4d1a9f6e3c7d2b8f4a1e0c9d5b2",
+    "short": "5d4afba",
+    "title": "Sessions now detect transient API errors (529/5xx) and show a blocked state",
+    "date": "2026-07-29",
+    "type": "feat",
+    "tags": [
+      "sessions",
+      "reliability",
+      "overnight",
+      "api-errors"
+    ],
+    "description": "When Claude Code hits a 529 (Anthropic at capacity) or any 5xx API error, amux now detects it from the session output and marks the session as blocked — surfacing it visibly on the dashboard instead of leaving it in an ambiguous state. Previously, a 529 overnight would silently stall the agent with no indication in the fleet view. Now blocked sessions are highlighted and can be retried or steered from the dashboard. A follow-up fix (4fa6140) corrected the detection logic after the initial implementation — the scanner now anchors on lines that begin with 'API Error: 5xx' rather than just containing the string, to avoid false positives on sessions that reference the error in prose."
+  },
+  {
+    "hash": "cbd334f3781f6ab4d6bb229281c3618b0474310b",
+    "short": "cbd334f",
+    "title": "Board polling now uses ETag/304 — 3.4MB saved per unchanged poll",
+    "date": "2026-07-29",
+    "type": "fix",
+    "tags": [
+      "performance",
+      "board",
+      "mobile",
+      "network"
+    ],
+    "description": "The board polling endpoint now returns an ETag header and handles conditional GET requests with If-None-Match. When the board has not changed since the last poll, the server returns 304 Not Modified with an empty body instead of the full board JSON. In practice this saves approximately 3.4MB per poll cycle when nothing has changed — which is most of the time, especially overnight when agents are working and the board is stable. Significant for mobile users and anyone on a metered connection."
+  },
+  {
     "hash": "d6116f61fd1655ce689a013dfc889cb49274ff5e",
     "short": "d6116f6",
     "title": "Messages tab now filters by kind — human, session, or schedule",
     "date": "2026-07-28",
     "type": "feat",
-    "tags": ["messages", "ux", "filter", "fleet"],
+    "tags": [
+      "messages",
+      "ux",
+      "filter",
+      "fleet"
+    ],
     "description": "The three-kind message filter (human / session / schedule) that was already available in the peek panel is now also on the standalone Messages tab. Filter to only see messages you sent, only inter-agent relays, or only scheduled triggers — or view all three together. Useful on the Messages tab when reviewing what happened overnight across a large fleet."
   },
   {
@@ -14,7 +310,12 @@
     "title": "Browser profiles — create and use named auth sessions for automation",
     "date": "2026-07-28",
     "type": "feat",
-    "tags": ["browser", "profiles", "automation", "authentication"],
+    "tags": [
+      "browser",
+      "profiles",
+      "automation",
+      "authentication"
+    ],
     "description": "The Browser tab now shows all your saved browser profiles and lets you create new ones directly from the UI. Each profile stores its own cookie jar and authentication state, so AI browser automation tasks start already logged in — no re-entering credentials on every run. Create a 'stripe' profile, a 'github-work' profile, a 'client-acme' profile, and launch different agents with different identities simultaneously. Profiles persist across server restarts in ~/.amux/browser-profiles/."
   },
   {
@@ -23,7 +324,11 @@
     "title": "Copy path button in file preview — one click to copy a file's bare path",
     "date": "2026-07-28",
     "type": "feat",
-    "tags": ["files", "ux", "clipboard"],
+    "tags": [
+      "files",
+      "ux",
+      "clipboard"
+    ],
     "description": "The file preview overlay now has a dedicated 'Path' button next to 'Copy' and 'Link'. Clicking it copies the file's bare relative path to clipboard — useful when you want to reference a file in a steering message, a script, or another tool without the full deep-link URL. The underlying clipboard + toast logic was refactored into a shared helper so both Path and Link use the same fallback and toast behavior. Contributed by @Dygreens in PR #64."
   },
   {
@@ -32,7 +337,12 @@
     "title": "MKV and HEVC video files now play in the Files tab",
     "date": "2026-07-28",
     "type": "fix",
-    "tags": ["files", "video", "transcoding", "media"],
+    "tags": [
+      "files",
+      "video",
+      "transcoding",
+      "media"
+    ],
     "description": "MKV files (including HEVC/H.265 codec) were showing 'Format not supported by this browser' instead of playing. The bug was a one-liner: the video player was extracting the file extension from the API URL path (/api/file/raw) instead of from the 'path=' query parameter — so ext was always 'raw', bypassing the ffmpeg transcoding path. Fixed. MKV files now correctly route through the background MP4 prepare job with progress indicator, and fall back to live-transcode for desktop browsers when the cache is empty."
   },
   {
@@ -41,7 +351,12 @@
     "title": "Service worker caches the app shell — 1.6 MB saved on every reload",
     "date": "2026-07-28",
     "type": "perf",
-    "tags": ["performance", "offline", "pwa", "mobile"],
+    "tags": [
+      "performance",
+      "offline",
+      "pwa",
+      "mobile"
+    ],
     "description": "The amux dashboard's app shell (HTML, CSS, JS) was being re-fetched from the server on every page load — 1.6 MB of network traffic per visit. The service worker now caches the shell on first install and serves it from cache on subsequent loads. Result: sub-100ms dashboard loads on repeat visits, even on slow mobile connections. The service worker also now correctly installs over the self-signed TLS certificate used for localhost development."
   },
   {
@@ -50,7 +365,12 @@
     "title": "Fix: browser profile picker crash and localStorage quota error",
     "date": "2026-07-28",
     "type": "fix",
-    "tags": ["browser", "profiles", "crash", "stability"],
+    "tags": [
+      "browser",
+      "profiles",
+      "crash",
+      "stability"
+    ],
     "description": "Two bugs in the browser profiles UI were fixed: (1) opening the browser tab with no profiles created caused a crash in the profile picker dropdown; (2) saving a large browser session state to localStorage was throwing a quota exceeded error, which could silently prevent profile saves. The profile picker now gracefully renders an empty state, and profile data is no longer stored in localStorage (moved to server-side storage via ~/.amux/browser-profiles/)."
   },
   {
@@ -59,7 +379,12 @@
     "title": "Session tabs sorted by frequency — find your active sessions instantly",
     "date": "2026-07-28",
     "type": "feat",
-    "tags": ["sessions", "ux", "peek", "dictation"],
+    "tags": [
+      "sessions",
+      "ux",
+      "peek",
+      "dictation"
+    ],
     "description": "The peek panel's tab order now reflects how often you actually reach for each tab. High-frequency live tabs (Terminal, Steering, Messages, Dictation) move to the front; lower-frequency reference tabs (Transcript, Worktree, Commits) move to the back. New order: Terminal, Steering, Schedules, Messages, Dictation, Board, Notes, Cost, Transcript, Commits, Worktree. The Dictation tab also gets a badge when you're recording, so you can see which sessions are actively receiving voice input at a glance."
   },
   {
@@ -68,7 +393,12 @@
     "title": "Local Whisper dictation — 12× faster, works fully offline",
     "date": "2026-07-27",
     "type": "feat",
-    "tags": ["dictation", "offline", "mobile", "voice"],
+    "tags": [
+      "dictation",
+      "offline",
+      "mobile",
+      "voice"
+    ],
     "description": "amux's voice dictation now runs local Whisper transcription on-device instead of sending audio to a cloud API. The result is a 12× speed improvement (measured on 4 realistic amux dictations) and full offline capability — dictate to your agents on a plane, in a dead zone, or anywhere without internet. Deterministic session name recovery replaces the previous probabilistic match, eliminating misrouted messages. The fallback to cloud Whisper is still available for devices that prefer it."
   },
   {
@@ -77,7 +407,12 @@
     "title": "Persistent dictation outbox — never lose a voice message again (v0.9.202)",
     "date": "2026-07-27",
     "type": "feat",
-    "tags": ["dictation", "reliability", "mobile", "offline"],
+    "tags": [
+      "dictation",
+      "reliability",
+      "mobile",
+      "offline"
+    ],
     "description": "v0.9.202 fixes the most painful dictation failure: a server-side error (Gemini hiccup, quota limit, bad API key) previously caused the recorded audio to be silently discarded. Re-recording was the only option. Now, every recorded audio clip is saved to a persistent outbox before transmission. If the send fails for any reason — network drop, server error, quota — the clip stays in the outbox and you can retry the exact same take. No re-recording, no lost messages."
   },
   {
@@ -86,7 +421,12 @@
     "title": "Stalled agent badge + truthful gated-send response (v0.9.201)",
     "date": "2026-07-27",
     "type": "feat",
-    "tags": ["sessions", "ux", "monitoring", "reliability"],
+    "tags": [
+      "sessions",
+      "ux",
+      "monitoring",
+      "reliability"
+    ],
     "description": "v0.9.201 adds two session health improvements. First: a 'stalled Nm' badge appears on any session card when output stops for more than N minutes, so you can spot stuck agents at a glance from the sessions list without opening the peek panel. Second: when you send a message to a session that is credit-gated (usage limit hit), the response now accurately reports 'held — session is credit-gated' instead of silently pretending the message was delivered. No more wondering whether your instruction reached the agent."
   },
   {
@@ -95,7 +435,12 @@
     "title": "Offline scrollback cache — review any session without internet (v0.9.200)",
     "date": "2026-07-26",
     "type": "feat",
-    "tags": ["offline", "pwa", "mobile", "sessions"],
+    "tags": [
+      "offline",
+      "pwa",
+      "mobile",
+      "sessions"
+    ],
     "description": "v0.9.200 caches every running session's scrollback in IndexedDB so you can review what your agents were doing the last time you had internet. Open the amux PWA or iOS app on a plane, subway, or anywhere offline — all session output reads from the local cache with no server needed. IndexedDB survives iOS background eviction and device lock. The cache auto-syncs the moment you reconnect. Pairs with the offline outbox (queue messages while offline, deliver on reconnect)."
   },
   {
@@ -104,7 +449,12 @@
     "title": "Fix: credit-gate false positive eliminated — stalled agents unblocked (persistence gate)",
     "date": "2026-07-26",
     "type": "fix",
-    "tags": ["sessions", "reliability", "credit", "watchdog"],
+    "tags": [
+      "sessions",
+      "reliability",
+      "credit",
+      "watchdog"
+    ],
     "description": "Fixes a bug where sessions were silently blocked from receiving messages because a stale credit-gate flag was persisted to disk and reloaded on server restart. A session that hit a usage limit yesterday could still appear rate-limited today even after the limit reset, causing the watchdog to skip sends and auto-replies. The fix removes the persisted gate state and re-derives it from live scrollback on each restart. Agents that were silently stalled by this will resume immediately after updating."
   },
   {

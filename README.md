@@ -233,6 +233,33 @@ Agents get the full API reference in their global memory, so plain-English orche
 
 ---
 
+## Configuration
+
+All server configuration lives in one file: `~/.amux/server.env` — plain
+`KEY=value` lines, loaded at startup via `os.environ.setdefault` (so
+process-level env always wins) and inherited across the server's auto-restarts.
+After editing it, `touch amux-server.py` to trigger a live reload.
+
+**[`server.env.example`](server.env.example)** in the repo root documents every
+supported variable with its built-in default, grouped by concern:
+
+| Group | What it covers |
+|-------|----------------|
+| Core server | port, auth tokens, reload debounce, tmux pane geometry |
+| Autonomy & board guards | commit/push/staged guards, WIP limits, task guard |
+| Rate limits & auto-resume | fleet-wide behavior when a model hits its cap |
+| Helper model | the one knob for every internal model one-shot |
+| Context & memory caps | payload bounds that should grow with model windows |
+| Calendar, email, alerts | iCal/S3 feed, Gmail bridge, owner push/SMS |
+| Voice, browser, tunnel | dictation/TTS, managed browser, amux cloud tunnel |
+| Providers & passthrough | Anthropic keys, and keys forwarded to every session |
+| Integrations | PostHog, GCP/Mongo/Qdrant/Render cost surfacing, CRM |
+
+Two rules worth keeping: never commit your real `server.env` anywhere (several
+values are secrets, and the iCal S3 key is a capability URL), and don't set the
+per-session variables the server manages itself (`AMUX_SESSION`, `AMUX_URL`,
+`AMUX_HOME`) — they are stamped per process at launch.
+
 ## CLI
 
 ```bash

@@ -62,40 +62,11 @@ CC_MEMORY = CC_HOME / "memory"
 CC_BOARD_DIR = CC_HOME / "board"
 CC_UPLOADS = CC_HOME / "uploads"
 CC_BLOCKED_SESSIONS = CC_HOME / "blocked-sessions.txt"
-CC_NOTES = Path(os.environ.get("AMUX_NOTES_DIR", "")) if os.environ.get("AMUX_NOTES_DIR") else CC_HOME / "notes"
-CC_NOTES_PINS = CC_HOME / "notes" / ".pins.json"
-CC_NOTES_TRASH = CC_HOME / "notes" / ".trash"
 CC_MAP = CC_HOME / "map.json"
 CC_NOTIFICATIONS = CC_HOME / "notifications.json"
 CC_HABITS = CC_HOME / "habits.json"
 CC_TRANSCRIPTS = CC_HOME / "transcripts"  # per-session JSONL backups
 
-# The served client version (the JS `const APP_VER` below) parsed once at boot —
-# pushed in SSE pings so long-lived clients detect they're stale and self-reload.
-try:
-    _APP_VER_PY = (re.search(r"const APP_VER = '([0-9.]+)'",
-                             open(__file__, encoding="utf-8", errors="replace").read()) or [None]).group(1)
-except Exception:
-    _APP_VER_PY = ""
-CC_GMAIL = CC_HOME / "gmail-tokens"        # per-account Gmail OAuth tokens
-CC_BRANDING = CC_HOME / "branding"         # white-label assets (icon, logo)
-CC_JOURNAL_MEDIA = CC_HOME / "journal-media"  # journal photo/media files
-CC_CHANNELS = CC_HOME / "channels"            # pairwise session-to-session message threads (jsonl)
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
-def _safe_note_path(note_rel: str, base: Path = None) -> Path | None:
-    """Resolve a note relative path and verify it stays within the notes directory.
-    Returns the resolved Path if safe, or None if traversal detected."""
-    if base is None:
-        base = CC_NOTES
-    if not note_rel or note_rel.startswith("/"):
-        return None
-    candidate = (base / note_rel).resolve()
-    try:
-        candidate.relative_to(base.resolve())
-    except ValueError:
-        return None  # traversal detected
-    return candidate
 
 def _path_is_within(path: Path, base: Path) -> bool:
     """Return True when path resolves inside base, not just under a string prefix."""
@@ -146,6 +117,29 @@ def _is_path_allowed(p: Path) -> bool:
     except ValueError:
         pass
     return True
+# The MCP registry every session is launched against. Deliberately at the USER
+# level, not in the repo: the repo copy is a shipped default, and a registry you
+# edit from the UI must not produce repo diffs or leak server URLs/tokens into a
+# public checkout. Seeded from the repo copy on first run.
+CC_MCP_REGISTRY = CC_HOME / "mcp.json"
+# Global credential env, sourced into EVERY session shell. Distinct from
+# server.env, which configures the amux server process itself — this one is for
+# the agents and the stdio MCP servers they spawn, so ${VAR} in mcp.json
+# resolves the same way in every lane instead of per-session shell setup.
+CC_AMUX_ENV = CC_HOME / "amux.env"
+
+# The served client version (the JS `const APP_VER` below) parsed once at boot —
+# pushed in SSE pings so long-lived clients detect they're stale and self-reload.
+try:
+    _APP_VER_PY = (re.search(r"const APP_VER = '([0-9.]+)'",
+                             open(__file__, encoding="utf-8", errors="replace").read()) or [None]).group(1)
+except Exception:
+    _APP_VER_PY = ""
+CC_GMAIL = CC_HOME / "gmail-tokens"        # per-account Gmail OAuth tokens
+CC_BRANDING = CC_HOME / "branding"         # white-label assets (icon, logo)
+CC_JOURNAL_MEDIA = CC_HOME / "journal-media"  # journal photo/media files
+CC_CHANNELS = CC_HOME / "channels"            # pairwise session-to-session message threads (jsonl)
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 # ── Ebook → self-contained HTML (pure stdlib) ────────────────────────────────
@@ -728,6 +722,81 @@ AUTH_TOKEN = _load_or_create_auth_token()
 # by any API endpoint. Override for trusted automation with
 # AMUX_ALLOW_AGENT_SESSION_DELETE=1 in ~/.amux/server.env.
 import hashlib as _hashlib
+
+def _health_store_probe(budget_ms: int = 800) -> dict:
+    """Actually touch the board store, so /health can observe what it claims.
+
+    Runs the probe on a worker thread and gives up on the WALL CLOCK rather than
+    waiting for sqlite: during the AC-164 spin the process is at ~100% CPU and a
+    query may never return, and a /health that blocks would be its own outage.
+    Timing out is a RESULT here, not an error — "the store did not answer in
+    800ms" is precisely the fact /health was previously unable to express.
+
+    Never raises: a health endpoint that can fail is one more thing to page on.
+    """
+    out = {"store": "unknown", "store_ms": None}
+    res = {}
+
+    def _probe():
+        t0 = time.time()
+        try:
+            db = get_db()
+            db.execute("SELECT 1").fetchone()
+            # A second, representative read: SELECT 1 never touches a page of
+            # the 132MB db and would stay fast while every real query starved.
+            db.execute("SELECT id FROM issues WHERE deleted IS NULL LIMIT 1").fetchone()
+            res["ms"] = int((time.time() - t0) * 1000)
+        except Exception as e:
+            res["ms"] = int((time.time() - t0) * 1000)
+            res["err"] = str(e)[:120]
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(budget_ms / 1000.0)
+    if t.is_alive():
+        out["store"] = "hung"
+        out["store_ms"] = budget_ms
+        out["degraded"] = True
+        out["detail"] = (f"board store did not answer within {budget_ms}ms — endpoints backed "
+                         f"by it (/api/board, /api/email/*) are likely hanging right now")
+    elif res.get("err"):
+        out["store"] = "error"
+        out["store_ms"] = res.get("ms")
+        out["degraded"] = True
+        out["detail"] = res["err"]
+    else:
+        out["store_ms"] = res.get("ms")
+        out["store"] = "slow" if (res.get("ms") or 0) > 250 else "ok"
+        if out["store"] == "slow":
+            out["degraded"] = True
+            out["detail"] = "board store responding but slow — spin may be starting"
+    return out
+
+
+_BUILD_ID = None
+
+
+def _build_id() -> str:
+    """Short content hash of this server file: which BUILD is actually running.
+
+    A deployed container reports uptime, which says the process is young and
+    nothing about what code it contains. Verifying a fix in prod today meant
+    reading a field, getting the pre-fix answer, and having no way to tell a real
+    negative from a container still on the previous image — for two different
+    sessions, on two different fixes, in the same hour.
+
+    Hashing the file itself rather than baking in a git sha keeps it honest
+    through execv reloads and hand-patched containers, where a build-time
+    constant would keep asserting a commit the file no longer matches.
+    """
+    global _BUILD_ID
+    if _BUILD_ID is None:
+        try:
+            _BUILD_ID = _hashlib.sha256(
+                Path(__file__).resolve().read_bytes()).hexdigest()[:12]
+        except Exception:
+            _BUILD_ID = "unknown"
+    return _BUILD_ID
 _UI_TOKEN = _hashlib.sha256(("amux-ui-guard:" + AUTH_TOKEN).encode()).hexdigest()[:40]
 
 
@@ -833,8 +902,6 @@ CC_LOGS.mkdir(parents=True, exist_ok=True)
 CC_MEMORY.mkdir(parents=True, exist_ok=True)
 CC_BOARD_DIR.mkdir(parents=True, exist_ok=True)
 CC_UPLOADS.mkdir(parents=True, exist_ok=True)
-CC_NOTES.mkdir(parents=True, exist_ok=True)
-CC_NOTES_PINS.parent.mkdir(parents=True, exist_ok=True)
 CC_TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
 CC_GMAIL.mkdir(parents=True, exist_ok=True)
 CC_BRANDING.mkdir(parents=True, exist_ok=True)
@@ -985,6 +1052,28 @@ _active_servers: list = []  # populated in main(); used by signal handler for cl
 def _install_signal_handlers():
     """Install signal handlers that log before exit."""
     import signal
+    # SIGUSR1 -> dump every thread's stack into the log, WITHOUT exiting.
+    #
+    # The spin (AC-164/AC-170) pegs a core while /api/board and /api/email hang,
+    # then launchd replaces the process, so the evidence is gone before anyone
+    # looks. py-spy would answer it in one sample — but py-spy REQUIRES ROOT ON
+    # macOS, which a session cannot do unattended, so on this machine it is not
+    # an available instrument at all. faulthandler needs no privileges because
+    # the process dumps ITSELF, and STAT=R means a pure-Python spin will service
+    # the signal between bytecodes and name the function it is looping in.
+    #
+    # Deliberately not fatal: this is a probe, not a crash path. `kill -USR1
+    # <pid>` any time the server is misbehaving and the stacks land in
+    # ~/.amux/logs/server.log next to the request log that shows what hung.
+    try:
+        import faulthandler
+        _dump_target = open(os.path.expanduser("~/.amux/logs/server.log"), "a")
+        faulthandler.register(signal.SIGUSR1, file=_dump_target, all_threads=True, chain=False)
+        slog("[diag] SIGUSR1 -> all-thread stack dump into server.log "
+             "(kill -USR1 %d to catch a spin in the act)" % os.getpid())
+    except Exception as e:
+        slog(f"[diag] faulthandler unavailable, no spin dump on SIGUSR1: {e}")
+
     def _sig_handler(signum, frame):
         sig_name = signal.Signals(signum).name
         slog(f"[SIGNAL] received {sig_name} ({signum}) — logging diagnostics before exit")
@@ -1118,7 +1207,210 @@ def _browser_touch(session: str = "amux"):
     """Record activity for a browser-use session (called on every _bu_call)."""
     _browser_session_activity[session] = time.time()
 
+_ILOG_MAX = 200_000          # rows kept; ~weeks of fleet activity
+_ILOG_BLOB_CAP = 4000        # per-field cap so one huge eval cannot bloat the table
+_ilog_seq_lock = threading.Lock()
+
+def _ilog(kind, action, actor="", target="", url="", detail=None,
+          before=None, result=None, ok=True, ms=0):
+    """Record one interaction. Best-effort: logging must never break the action.
+
+    Deliberately called at the CHOKEPOINTS (_bu_call/_cdp_call/send_text) rather
+    than at each API handler. /api/browser/action alone has ~20 return paths,
+    and the one that gets missed is the one you needed in the audit."""
+    try:
+        def _blob(v):
+            if v is None:
+                return ""
+            s = v if isinstance(v, str) else json.dumps(v, default=str)
+            return s[:_ILOG_BLOB_CAP]
+        db = get_db()
+        with _ilog_seq_lock:
+            row = db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM interaction_log WHERE kind=? AND target=?",
+                (kind, target or "")).fetchone()
+            seq = (row[0] if row else 0) + 1
+            db.execute(
+                "INSERT INTO interaction_log "
+                "(ts,kind,actor,target,action,url,detail,before,result,ok,ms,seq) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (int(time.time() * 1000), kind, actor or "", target or "", action or "",
+                 url or "", _blob(detail), _blob(before), _blob(result),
+                 1 if ok else 0, int(ms), seq))
+            db.commit()
+    except Exception as e:
+        slog(f"[ilog] failed to record {kind}/{action}: {e}")
+
+
+def _ilog_prune():
+    """Keep the ledger bounded. Runs on the existing scheduler tick."""
+    try:
+        db = get_db()
+        db.execute("DELETE FROM interaction_log WHERE id NOT IN "
+                   "(SELECT id FROM interaction_log ORDER BY id DESC LIMIT ?)", (_ILOG_MAX,))
+        db.commit()
+    except Exception:
+        pass
+
+
+def _bu_page_state(session: str) -> dict:
+    """Current URL/title for a browser session — the 'where' of an interaction.
+
+    Captured BEFORE each action so a replay knows what page the step assumed,
+    and a rollback knows where to return to. Silent on failure: a state probe
+    that throws must not stop the action the user actually asked for."""
+    try:
+        lock = _browser_locks.get(session)
+        if lock and lock.locked():
+            return {}          # mid-action; probing would deadlock on the per-session lock
+        # `eval location.href` rather than a `url` subcommand — browser-use has
+        # no `url` verb, and the version that did returned usage text that
+        # parsed to an empty URL, i.e. a rollback point pointing nowhere.
+        # Direct subprocess (not _bu_call) so this cannot recurse into logging.
+        r = subprocess.run(
+            [_BROWSER_USE_BIN, "--json", "--session", session, "eval",
+             "JSON.stringify({u:location.href,t:document.title})"],
+            capture_output=True, text=True, timeout=8)
+        d = json.loads((r.stdout or "").strip() or "{}")
+        raw = (d.get("data") or {}).get("result") or ""
+        try:
+            p = json.loads(raw) if isinstance(raw, str) and raw.startswith("{") else {}
+        except Exception:
+            p = {}
+        return {"url": p.get("u", ""), "title": p.get("t", "")}
+    except Exception:
+        return {}
+
+
+# Actions that CHANGE the page. Only these get a before-state probe: a probe
+# costs a subprocess, and capturing it for read-only verbs would double the cost
+# of every screenshot for a rollback point identical to the one before it.
+_BU_MUTATING = {"click", "type", "input", "keys", "scroll", "eval", "back",
+                "navigate", "goto", "select", "upload", "press"}
+
+# ── Profile-true session server (AMUX-2133) ─────────────────────────────────
+# browser-use's CLI hardwires the session server's user-data-dir to the REAL
+# Chrome directory; --profile only names a folder inside it. amux profiles
+# live elsewhere, so the named identity never loaded — and locally the real
+# dir is locked by the user's Chrome, so sessions silently fell back to temp
+# dirs (AMUX-1979). Fix: pre-spawn the SAME daemon the CLI would spawn,
+# through a bootstrap that patches get_chrome_profile_path(None) to return
+# the amux-resolved dir. The CLI finds the server already running and every
+# verb hits the correctly-pathed daemon unchanged. profile_verified is the
+# regression tripwire that proves the directory actually taken.
+# ── Profile-true sessions via self-patching daemon (AMUX-2133/2159 v2) ──────
+# v1 pre-spawned a patched daemon and raced the CLI's own ensure-server; the
+# bootstrap needed ~9s to import browser_use while the CLI spawns instantly,
+# so the CLI's unpatched daemon won the session lock every time (watched
+# second-by-second: pidfile appears at t≈9s, owner '-m skill_cli.server').
+# v2 stops racing: a sitecustomize shim on PYTHONPATH patches
+# get_chrome_profile_path inside ANY python that starts with
+# AMUX_BU_USER_DATA_DIR set — including the daemon the CLI itself spawns,
+# which copies our env. The CLI can win every race; its daemon is ours now.
+_BU_SHIM_DIR = CC_HOME / "bu-shim"
+_BU_SHIM_SRC = (
+    "import os, sys\n"
+    "def _amux_log(msg):\n"
+    "    try:\n"
+    "        open('/tmp/amux-bu-shim.log', 'a').write(msg + chr(10))\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "if os.environ.get('AMUX_BU_USER_DATA_DIR'):\n"
+    "    try:\n"
+    "        import browser_use.skill_cli.utils as _U\n"
+    "        _o = _U.get_chrome_profile_path\n"
+    "        def _amux_gcpp(profile=None, *a, **k):\n"
+    "            _r = os.environ['AMUX_BU_USER_DATA_DIR'] if profile is None else _o(profile, *a, **k)\n"
+    "            _amux_log('resolve pid=%s argv0=%s profile=%r -> %s' % (os.getpid(), sys.argv[0:2], profile, _r))\n"
+    "            return _r\n"
+    "        _U.get_chrome_profile_path = _amux_gcpp\n"
+    "        import browser_use.browser.profile as _BP\n"
+    "        _oc = _BP.BrowserProfile._copy_profile\n"
+    "        def _amux_copy(self):\n"
+    "            _amux_log('copy_profile pid=%s udd=%r pdir=%r' % (os.getpid(), str(self.user_data_dir), str(getattr(self, chr(112)+'rofile_directory', '?'))))\n"
+    "            return _oc(self)\n"
+    "        _BP.BrowserProfile._copy_profile = _amux_copy\n"
+    "        _amux_log('patched pid=%s argv=%s dir=%s' % (os.getpid(), sys.argv[0:2], os.environ['AMUX_BU_USER_DATA_DIR']))\n"
+    "    except Exception as _e:\n"
+    "        _amux_log('PATCH FAILED pid=%s: %r' % (os.getpid(), _e))\n"
+)
+
+def _bu_write_shim():
+    try:
+        _BU_SHIM_DIR.mkdir(parents=True, exist_ok=True)
+        f = _BU_SHIM_DIR / "sitecustomize.py"
+        if not f.exists() or f.read_text() != _BU_SHIM_SRC:
+            f.write_text(_BU_SHIM_SRC)
+    except Exception as e:
+        slog(f"[browser] shim write failed: {e}")
+
+_bu_daemon_checked: dict = {}   # session -> monotonic ts of last provenance check
+
+def _bu_ensure_profile_env(session: str, profile: str, env: dict) -> dict:
+    """Arm env so the CLI (and the daemon it spawns) self-patch to the amux
+    profile store, and kill a live UNARMED daemon once so the next spawn
+    inherits the armed env. No pre-spawn: the CLI owns its daemon lifecycle."""
+    udir, pdir = _bu_profile_launch_target(profile)
+    _bu_write_shim()
+    env["AMUX_BU_USER_DATA_DIR"] = str(udir)
+    env["PYTHONPATH"] = str(_BU_SHIM_DIR) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        now_m = time.monotonic()
+        if now_m - _bu_daemon_checked.get(session, 0) > 10:
+            _bu_daemon_checked[session] = now_m
+            import tempfile as _tf
+            _pidf = Path(_tf.gettempdir()) / f"browser-use-{session}.pid"
+            if _pidf.exists():
+                _pid = int(_pidf.read_text().strip() or 0)
+                _r = subprocess.run(["ps", "-wwwE", "-p", str(_pid)],
+                                    capture_output=True, text=True)
+                _alive = subprocess.run(["ps", "-p", str(_pid)], capture_output=True).returncode == 0
+                if _alive and "AMUX_BU_USER_DATA_DIR=" + str(udir) not in (_r.stdout or ""):
+                    slog(f"[browser] recycling unarmed daemon pid={_pid} for {session} "
+                         f"(target store: {udir})")
+                    os.kill(_pid, signal.SIGTERM)
+                    for _ in range(20):
+                        if subprocess.run(["ps", "-p", str(_pid)],
+                                          capture_output=True).returncode != 0:
+                            break
+                        time.sleep(0.25)
+    except Exception as e:
+        slog(f"[browser] daemon provenance check failed for {session}: {e}")
+    return env, pdir
+
+
 def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
+    """Logging wrapper over the raw browser-use call.
+
+    Wraps rather than patching each return path: the raw function has seven,
+    and an audit trail with a hole in it is worse than none — you would trust
+    it. Captures the page the action ran against BEFORE executing, so a
+    sequence can be both replayed (what was done, where) and rolled back
+    (what the page was before)."""
+    # The real verb is the first NON-flag token: several callers lead with
+    # `-b real --profile <name>`, which logged the action as "-b" and made the
+    # ledger useless for exactly the profile-browser calls it most needed.
+    verb, _skip = "", False
+    for a in (args or []):
+        a = str(a)
+        if _skip:
+            _skip = False; continue
+        if a.startswith("-"):
+            _skip = a in ("-b", "--profile", "--browser", "--session", "--timeout", "--amount")
+            continue
+        verb = a
+        break
+    before = _bu_page_state(session) if verb in _BU_MUTATING else {}
+    t0 = time.time()
+    res = _bu_call_raw(args, timeout_s, session)
+    ok = not (isinstance(res, dict) and res.get("error"))
+    _ilog("browser", verb, actor=session, target=session,
+          url=before.get("url", ""), detail={"args": args, "backend": "profile"},
+          before=before, result=res, ok=ok, ms=int((time.time() - t0) * 1000))
+    return res
+
+
+def _bu_call_raw(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
     """Run a browser-use CLI command, return parsed JSON result.
 
     Serialized per-session via lock to prevent concurrent subprocess spawning
@@ -1130,6 +1422,26 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
     try:
         if args and args[0] != "close":
             _browser_touch(session)
+        # Profile-carrying calls get the profile-true daemon (AMUX-2133): the
+        # pre-spawn must happen before the CLI's own ensure-server logic runs,
+        # or the CLI spawns the hardwired-directory one and wins the lock.
+        _sargs = [str(a) for a in (args or [])]
+        _env = None
+        if "--profile" in _sargs:
+            try:
+                _pi = _sargs.index("--profile")
+                _pname = _sargs[_pi + 1] if _pi + 1 < len(_sargs) else ""
+                _env, _pdir = _bu_ensure_profile_env(session, _pname, dict(os.environ))
+                # --profile carries the CHROME profile-directory inside the
+                # armed store, never the amux name (the name doubled the path
+                # into a fresh empty profile — first red of the discriminator).
+                if _pdir:
+                    _sargs[_pi + 1] = _pdir
+                else:
+                    del _sargs[_pi:_pi + 2]
+                args = _sargs
+            except Exception:
+                pass
         cmd = [_BROWSER_USE_BIN, "--json", "--session", session] + args
         # Self-heal the transient "SessionManager not initialized" race: the
         # persistent browser-use session server can lag a beat behind /start, so
@@ -1138,7 +1450,8 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
         last = None
         for attempt in range(3):
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s,
+                                   env=_env)
             except subprocess.TimeoutExpired:
                 return {"error": "browser operation timed out"}
             except Exception as e:
@@ -1170,7 +1483,43 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
 _CDP_SCRIPT = str(Path(__file__).resolve().parent / "skills" / "chrome-cdp" / "scripts" / "cdp.mjs")
 _live_targets: dict = {}   # amux browser-session name -> CDP target-id prefix
 
+def _cdp_local_only() -> bool:
+    """CDP drives the USER'S OWN Chrome on their machine. A hosted container has
+    no such Chrome, and pointing it at one would mean reaching a browser that is
+    not the caller's — so the live backend is local-only.
+
+    Detected from capability, not an IS_CLOUD flag: a hosted deployment is the
+    one with no DISPLAY (headless linux box), and AMUX_BROWSER_HEADLESS forces
+    it explicitly. Local macOS/desktop keeps CDP exactly as it is today."""
+    if os.environ.get("AMUX_BROWSER_HEADLESS") == "1":
+        return True
+    return sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
+
+
 def _cdp_call(args: list, timeout_s: int = 30) -> dict:
+    """Logging wrapper over the live-Chrome CDP call. See _bu_call for why the
+    wrap is at this level rather than at the API handlers."""
+    if _cdp_local_only():
+        return {"error": "live-Chrome (CDP) is local-only — this deployment has no "
+                         "desktop Chrome to attach to. Use a Playwright profile "
+                         "instead: POST /api/browser/profile/create then /api/browser/start "
+                         "with that profile."}
+    verb = (args[0] if args else "") or ""
+    tid = str(args[1]) if len(args) > 1 else ""
+    t0 = time.time()
+    res = _cdp_call_raw(args, timeout_s)
+    ok = not (isinstance(res, dict) and res.get("error"))
+    # The live backend drives the user's OWN Chrome — real logins, real
+    # sessions. That makes its audit trail more important than the profile
+    # browser's, not less.
+    _ilog("browser", verb, actor="live-chrome", target=tid,
+          url=(res.get("url") if isinstance(res, dict) else "") or "",
+          detail={"args": [str(a) for a in args], "backend": "live-chrome"},
+          result=res, ok=ok, ms=int((time.time() - t0) * 1000))
+    return res
+
+
+def _cdp_call_raw(args: list, timeout_s: int = 30) -> dict:
     """Run one cdp.mjs command against the user's real Chrome."""
     try:
         r = subprocess.run(["node", _CDP_SCRIPT] + [str(a) for a in args],
@@ -1192,8 +1541,18 @@ def _cdp_call(args: list, timeout_s: int = 30) -> dict:
 
 # Observation budgets: hard caps so a page dump can never flood the session's
 # context. The URL is always surfaced as the restorable pointer instead.
-_OBS_EVAL_CAP = 8_000
-_OBS_STATE_CAP = 24_000
+# Budget knobs, not constants (ethos dev-4): these bound what the model may SEE,
+# which is context-scarcity policy — it belongs in ~/.amux/server.env where it can
+# grow with the model's window, not hardcoded where it silently becomes the ceiling.
+# Bring sessions back after the container/host they lived in was replaced.
+# OFF by default and deliberately so: on a desktop this would launch every
+# session in the fleet on every server restart. The cloud gateway sets it per
+# user container, where the opposite default is the right one — a session a
+# person created should not silently disappear because we shipped an image.
+_AUTOSTART_SESSIONS = (os.environ.get("AMUX_AUTOSTART_SESSIONS", "") or "").strip().lower() \
+    in ("1", "true", "yes", "on")
+_OBS_EVAL_CAP = int(os.environ.get("AMUX_OBS_EVAL_CAP", "8000"))
+_OBS_STATE_CAP = int(os.environ.get("AMUX_OBS_STATE_CAP", "24000"))
 
 def _obs_cap(text, limit: int):
     if not isinstance(text, str) or len(text) <= limit:
@@ -1284,6 +1643,21 @@ def _bu_pw_profile_dirs() -> list:
                    if p.is_dir() and not p.name.startswith(".")]
     except Exception:
         out = []
+    # Profiles created since the two stores were unified live in the Chrome
+    # user-data-dir. Listing only the legacy location is how a profile could be
+    # created successfully and then not appear in the picker at all.
+    try:
+        cud = _chrome_user_data_dir()
+        if cud.is_dir():
+            for p in cud.iterdir():
+                if not p.is_dir() or p.name.startswith("."):
+                    continue
+                # Chrome keeps non-profile state (Crashpad, ShaderCache, …)
+                # beside the profiles; a profile is the thing with Preferences.
+                if (p / "Preferences").exists():
+                    out.append(p.name)
+    except Exception:
+        pass
     try:
         if (_PW_AUTH_DIR / "profile").is_dir():
             out.append("default")
@@ -1292,12 +1666,54 @@ def _bu_pw_profile_dirs() -> list:
     return sorted(set(out))
 
 
+def _chrome_user_data_dir() -> Path:
+    """The Chrome user-data-dir that browser-use's `-b real` mode opens.
+
+    Mirrors browser_use.skill_cli.utils.get_chrome_profile_path(None). A named
+    profile is a SUBDIRECTORY of this dir (Chrome's --profile-directory), which
+    is the whole reason this function exists: amux used to CREATE profiles with
+    Playwright under playwright-auth/profiles/<name> while browsing opened
+    <chrome-user-data-dir>/<name>. Two different directories, so signing in
+    through the UI could never affect the browser that actually ran — the login
+    appeared to save and then silently did nothing.
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+    if sys.platform.startswith("win"):
+        return Path(os.path.expandvars(r"%LocalAppData%\Google\Chrome\User Data"))
+    return Path.home() / ".config" / "google-chrome"
+
+
 def _bu_profile_dir(name: str):
-    """Absolute path for a profile name ('default' maps to the bare dir)."""
+    """Absolute path for a profile name ('default' maps to the bare dir).
+
+    New profiles live where browser-use will look for them, so create-path and
+    use-path are the same bytes. Profiles that already exist in the old location
+    keep resolving there — people are logged into those, and relocating them
+    would silently sign everyone out.
+    """
     n = (name or "").strip()
     if not n or n == "default":
         return _PW_AUTH_DIR / "profile"
-    return _PW_PROFILES_DIR / n
+    legacy = _PW_PROFILES_DIR / n
+    if legacy.is_dir():
+        return legacy
+    return _chrome_user_data_dir() / n
+
+
+def _bu_profile_launch_target(name: str):
+    """(user_data_dir, profile_directory) for launching a profile.
+
+    Playwright's launchPersistentContext treats its argument as the USER-DATA-DIR
+    and nests a Default/ inside it, while Chrome's --profile-directory selects a
+    named folder within that dir. Handing Playwright the profile folder itself
+    therefore produced <profile>/Default while browser-use read <profile> — the
+    off-by-one-level version of the same mismatch.
+    """
+    d = _bu_profile_dir(name)
+    if d.parent == _chrome_user_data_dir():
+        return d.parent, d.name       # shared with browser-use `-b real`
+    return d, ""                      # legacy/default: the dir IS the user-data-dir
 
 
 def _bu_profile_size_mb(name: str) -> float:
@@ -1332,18 +1748,82 @@ def _bu_profile_size_mb(name: str) -> float:
 # and localStorage to disk. cwd is the repo so `require('playwright')` resolves.
 _PW_SIGNIN_JS = r"""
 const { chromium } = require('playwright');
-const dir = process.argv[2], url = process.argv[3] || 'about:blank';
+// argv: <user-data-dir> <profile-directory|""> <url>
+// profileDir empty => the user-data-dir IS the profile (legacy/default store).
+const dir = process.argv[2], profileDir = process.argv[3] || '',
+      url = process.argv[4] || 'about:blank';
 (async () => {
-  const ctx = await chromium.launchPersistentContext(dir, {
-    headless: false,
+  // Headless when no display is available (cloud) — the SAME persistent-context
+  // path either way, so a profile captured in one mode is reusable in the other.
+  // Capability-driven, never an IS_CLOUD branch: DISPLAY present => headed.
+  const headless = process.env.AMUX_BROWSER_HEADLESS === '1'
+    || (!process.env.DISPLAY && process.platform === 'linux');
+  // Use whatever browser this machine actually has. The cloud image ships
+  // branded Chrome only (no playwright-chromium), so launching plain chromium
+  // failed silently in a detached process and the profile dir was never
+  // created. Try the installed Chrome first, fall back to bundled chromium.
+  const opts = {
+    headless,
     ignoreHTTPSErrors: true,
     viewport: null,
-    args: ['--no-first-run', '--no-default-browser-check'],
-  });
+    args: ['--no-first-run', '--no-default-browser-check']
+      // Select the SAME named folder browser-use opens with
+      // `-b real --profile <name>`, so the login captured here is the login
+      // the browser later runs with.
+      .concat(profileDir ? ['--profile-directory=' + profileDir] : []),
+  };
+  let ctx;
+  // A headless launcher must never outlive its job. There is no window for a
+  // human to close, and for as long as it lives it HOLDS this profile's Chrome
+  // locks — so the next `browser-use -b real --profile <name>` cannot open the
+  // profile and silently runs a throwaway temp user-data-dir instead, sending
+  // every cookie and localStorage write to /tmp. That is AMUX-2070, and it
+  // presents as "the profile saves but never reloads". The code below already
+  // closes on the headless path; this covers it HANGING before it gets there
+  // (goto, storageState and close are each an await that can stall), because a
+  // stall here poisons the profile for the life of the container.
+  if (headless) {
+    const t = setTimeout(async () => {
+      try {
+        await Promise.race([
+          ctx ? ctx.close() : Promise.resolve(),
+          new Promise(r => setTimeout(r, 10000)),
+        ]);
+      } catch (e) {}
+      console.error(JSON.stringify({ ok: false, headless: true,
+        error: 'watchdog: launcher exceeded 30s; exiting so the profile lock is released' }));
+      process.exit(1);
+    }, 30000);
+    if (t.unref) t.unref();
+  }
+  try {
+    ctx = await chromium.launchPersistentContext(dir, { ...opts, channel: 'chrome' });
+  } catch (e) {
+    ctx = await chromium.launchPersistentContext(dir, opts);
+  }
   const page = ctx.pages()[0] || await ctx.newPage();
-  try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
+  // 60s is for a HUMAN signing in, where waiting for the page is the point. In
+  // headless there is nobody to sign in: the job is to materialize the profile
+  // and get out. Waiting longer does not make the profile better, it just holds
+  // the profile's Chrome locks — and for as long as they are held, the next
+  // `browser-use -b real --profile <name>` cannot open it and silently runs a
+  // temp user-data-dir instead. That is AMUX-2070, and it was not a hang: with
+  // goto at 60s and the watchdog at 90s, the launcher was ENTITLED to hold the
+  // profile for a minute and a half, while the verify starts writing at t+25s.
+  // The overlap was the bug.
+  try { await page.goto(url, { waitUntil: 'domcontentloaded',
+                               timeout: headless ? 15000 : 60000 }); } catch (e) {}
   // Resolve when the user closes the window. Persistent context writes its
   // storage on close, so this is the moment the login becomes reusable.
+  if (headless) {
+    // No window for a human to close, so the close-to-save handshake cannot
+    // apply. Persist immediately: this is what makes a cloud profile reusable.
+    const profPath = profileDir ? require('path').join(dir, profileDir) : dir;
+    await ctx.storageState({ path: require('path').join(profPath, 'storage-state.json') });
+    await ctx.close();
+    console.log(JSON.stringify({ ok: true, headless: true, dir: profPath }));
+    process.exit(0);
+  }
   await new Promise(res => ctx.on('close', res));
   process.exit(0);
 })().catch(e => { console.error(String(e)); process.exit(1); });
@@ -1356,20 +1836,36 @@ def _bu_profile_signin(name: str, url: str) -> dict:
     if not safe:
         return {"error": "profile name required"}
     d = _bu_profile_dir(safe)
+    udd, profdir = _bu_profile_launch_target(safe)
     try:
         d.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         return {"error": f"could not create profile dir: {e}"}
+    _log_dir = _PW_PROFILES_DIR
     script = TLS_DIR.parent / "pw-signin.cjs"
     try:
+        _log_dir.mkdir(parents=True, exist_ok=True)
         script.write_text(_PW_SIGNIN_JS)
     except Exception as e:
         return {"error": f"could not write launcher: {e}"}
     try:
+        # Node resolves require() from the SCRIPT's directory, not cwd — the
+        # launcher lives in ~/.amux while playwright is installed beside
+        # amux-server.py, so cwd alone gave MODULE_NOT_FOUND and the profile was
+        # never created. NODE_PATH makes the resolution explicit and works
+        # wherever the two happen to sit.
+        _app = Path(__file__).resolve().parent
+        _env = dict(os.environ)
+        _env["NODE_PATH"] = os.pathsep.join(
+            x for x in [str(_app / "node_modules"), _env.get("NODE_PATH", "")] if x)
         subprocess.Popen(
-            ["node", str(script), str(d), url or "about:blank"],
-            cwd=str(Path(__file__).resolve().parent),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            ["node", str(script), str(udd), profdir, url or "about:blank"],
+            cwd=str(_app), env=_env,
+            # Launcher logs always land in ONE predictable place, whichever
+            # store the profile itself lives in — a log you have to guess the
+            # location of is a log nobody reads when the launch fails.
+            stdout=open(str(_log_dir / f"{safe}.log"), "ab"),
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     except Exception as e:
@@ -1478,6 +1974,363 @@ def _bu_session_profile(session: str) -> str:
         pass
     return ""
 
+def _chrome_user_data_dirs_in_use() -> list:
+    """Every --user-data-dir a live Chrome is actually running with.
+
+    Read from the processes themselves, because every other signal here lies.
+    browser-use answers a profile-backed open with mode:'real' and the profile
+    NAME it was asked for even when its Chrome is on
+    /tmp/browser-use-user-data-dir-*, and that response is what sent two
+    sessions chasing a directory-resolution bug that had already been ruled out.
+    Returns [] when it cannot tell (no /proc, no ps) — the caller must treat
+    empty as UNKNOWN, never as "not running".
+    """
+    dirs, seen = [], set()
+
+    def _add(v):
+        v = (v or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            dirs.append(v)
+
+    # /proc keeps the argv boundaries (NUL-separated), so a path containing a
+    # space stays one argument.
+    argvs = []
+    try:
+        proc = Path("/proc")
+        if proc.is_dir():
+            for p in proc.iterdir():
+                if not p.name.isdigit():
+                    continue
+                try:
+                    raw = (p / "cmdline").read_bytes()
+                except OSError:
+                    continue
+                if raw:
+                    argvs.append([a.decode("utf-8", errors="replace")
+                                  for a in raw.split(b"\0") if a])
+    except Exception:
+        pass
+    if argvs:
+        for argv in argvs:
+            # Chrome is not the only thing that takes --user-data-dir: every
+            # Electron app does. Without this filter the probe reported Docker
+            # Desktop's and Granola's directories as "Chrome is running on".
+            if not re.search(r"chrom(e|ium)", argv[0], re.I):
+                continue
+            for tok in argv:
+                if tok.startswith("--user-data-dir="):
+                    _add(tok.split("=", 1)[1])
+        return dirs
+    # ps flattens argv into one string, so splitting on whitespace CUTS a path
+    # that contains a space — macOS's is
+    # "~/Library/Application Support/Google/Chrome", which truncated to
+    # ".../Library/Application" and would have reported a correctly-running
+    # profile as a mismatch. Match to the next " --" instead.
+    try:
+        r = subprocess.run(["ps", "-ax", "-o", "command="],
+                           capture_output=True, text=True, timeout=8)
+    except Exception:
+        return []
+    for line in r.stdout.splitlines():
+        if not re.search(r"chrom(e|ium)", line, re.I):
+            continue
+        for m in re.finditer(r"--user-data-dir=(.*?)(?=\s+--|$)", line):
+            _add(m.group(1))
+    return dirs
+
+
+def _bu_profile_in_use(profile: str) -> dict:
+    """Is a live Chrome actually running on the profile we asked for?
+
+    {"verified": True|False|None, ...} — None means undeterminable, which is a
+    different answer from False and must not be reported as success.
+    """
+    try:
+        want_udd, _ = _bu_profile_launch_target(profile)
+    except Exception:
+        return {"verified": None, "why": "could not resolve the profile directory"}
+    in_use = _chrome_user_data_dirs_in_use()
+    if not in_use:
+        return {"verified": None, "why": "no Chrome process readable from here"}
+    if str(want_udd) in in_use:
+        return {"verified": True, "user_data_dir": str(want_udd)}
+    return {"verified": False, "expected_user_data_dir": str(want_udd),
+            "actual_user_data_dirs": in_use[:4],
+            "why": ("Chrome is running on a different user-data-dir than the profile "
+                    "asked for — writes will not persist to that profile")}
+
+
+_CHROME_SINGLETONS = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def _chrome_locks_present(user_data_dir) -> list:
+    """Which Singleton* entries Chrome still holds in a user-data-dir.
+
+    lstat, not exists(): these are symlinks pointing at <host>-<pid>, and
+    exists() follows the link, so a LIVE lock whose target is unresolvable
+    reads as absent — the check would pass exactly when it should fail.
+    """
+    out = []
+    for n in _CHROME_SINGLETONS:
+        try:
+            (Path(user_data_dir) / n).lstat()
+            out.append(n)
+        except OSError:
+            pass
+    return out
+
+
+def _chrome_terminate_automation(user_data_dir) -> list:
+    """SIGTERM the AUTOMATION Chrome(s) holding `user_data_dir`. Returns pids.
+
+    Deliberately narrow. A process qualifies only if all three hold:
+      - it is chrome/chromium,
+      - its --user-data-dir is exactly this one,
+      - it carries --headless or a --remote-debugging flag.
+    That last condition is what keeps a human's own browser safe: a normal
+    Chrome window has neither, so this can never close the browser someone is
+    using. Only the browser amux itself launched is in scope.
+
+    SIGTERM, never SIGKILL. TERM is the signal Chrome flushes Cookies and Local
+    Storage on; KILL is precisely what loses them, which is the bug this exists
+    to fix — killing harder would make it worse, not better.
+    """
+    want = str(user_data_dir)
+    killed = []
+    try:
+        proc = Path("/proc")
+        if not proc.is_dir():
+            return []          # POSIX-but-no-/proc (macOS): leave it alone
+        for p in proc.iterdir():
+            if not p.name.isdigit():
+                continue
+            try:
+                argv = [a.decode("utf-8", errors="replace")
+                        for a in (p / "cmdline").read_bytes().split(b"\0") if a]
+            except OSError:
+                continue
+            if not argv or not re.search(r"chrom(e|ium)", argv[0], re.I):
+                continue
+            if not any(a == f"--user-data-dir={want}" for a in argv):
+                continue
+            if not any(a.startswith("--headless") or a.startswith("--remote-debugging")
+                       for a in argv):
+                continue      # looks like a human's window — never touch it
+            try:
+                os.kill(int(p.name), signal.SIGTERM)
+                killed.append(int(p.name))
+            except (OSError, ValueError):
+                continue
+    except Exception:
+        return killed
+    if killed:
+        slog(f"[browser] SIGTERM to automation Chrome {killed} on {want} — it "
+             f"survived its own close and was holding the profile")
+    return killed
+
+
+def _bu_wait_for_exit(profile: str, timeout_s: float = 8.0) -> dict:
+    """Block until Chrome has actually exited after a close, or the wait runs out.
+
+    Chrome writes Cookies and Local Storage on graceful shutdown; a killed
+    Chrome never flushes them, which is why a profile could be written, verified
+    live in the page, and still come back empty in the next session. The tell is
+    the Singleton* symlinks: Chrome removes them on a clean exit and leaves them
+    behind when it dies. Returning from /api/browser/stop the moment browser-use
+    replies means returning BEFORE that flush, so the caller starts the next
+    session against a half-written profile.
+
+    Never kills anything. On a desktop the profile backend shares its
+    user-data-dir with the human's own Chrome, so a lingering lock may just mean
+    the user has a window open — reporting that honestly is right, killing it
+    would not be. Reports rather than raises: `clean_exit` false with the
+    remaining locks named is a usable answer, a silent success is not.
+    """
+    if not profile:
+        return {"clean_exit": None,
+                "note": "no profile recorded for this session; nothing to wait on"}
+    try:
+        user_data_dir, _ = _bu_profile_launch_target(profile)
+    except Exception as e:
+        return {"clean_exit": None, "note": f"could not resolve profile dir: {e}"}
+    t0 = time.time()
+    remaining = _chrome_locks_present(user_data_dir)
+    while remaining and (time.time() - t0) < timeout_s:
+        time.sleep(0.25)
+        remaining = _chrome_locks_present(user_data_dir)
+    out = {"profile": profile, "user_data_dir": str(user_data_dir),
+           "clean_exit": not remaining,
+           "waited_ms": int((time.time() - t0) * 1000)}
+    if remaining:
+        # It did not go. Ask the OS, gracefully.
+        #
+        # SIGTERM is what makes Chrome flush Cookies and Local Storage and drop
+        # its Singleton locks — the same path a window close takes. Without this
+        # the browser survives its own stop, keeps the profile locked, and the
+        # NEXT session cannot open that profile: browser-use silently falls back
+        # to a throwaway temp user-data-dir, so the login just written is
+        # invisible and the profile looks like it never persisted (AMUX-2070).
+        #
+        # Only ever an AUTOMATION Chrome on this exact profile: the process must
+        # carry --headless or a --remote-debugging flag, which a human's own
+        # browser window never does. amux started this browser; stop has to mean
+        # stopped. Never SIGKILL — that is the thing that loses the storage.
+        killed = _chrome_terminate_automation(user_data_dir)
+        if killed:
+            t1 = time.time()
+            while remaining and (time.time() - t1) < 6:
+                time.sleep(0.25)
+                remaining = _chrome_locks_present(user_data_dir)
+            out["terminated_pids"] = killed
+            out["clean_exit"] = not remaining
+            out["waited_ms"] = int((time.time() - t0) * 1000)
+    if remaining:
+        out["locks_remaining"] = remaining
+        out["note"] = (f"Chrome still holds {', '.join(remaining)} after {timeout_s:g}s — "
+                       f"storage may not be flushed. Another Chrome (e.g. the user's own "
+                       f"window) may share this user-data-dir.")
+    return out
+
+
+# ── v3 profile driver (AMUX-2159): amux owns the browser process ───────────
+# Five instrument layers proved the CLI+daemon path cannot be made
+# profile-true from outside on browser_use 0.12.2 (the launch BrowserProfile
+# does not descend from any patched instance). The driver removes every
+# intermediary: ONE Playwright persistent context opened directly on the
+# amux profile store — no copy, so reads AND writes persist, and the
+# desktop-Chrome lock is irrelevant because the store is not the real Chrome
+# dir. JSON-lines REPL, one process per amux browser session. The CLI path
+# remains for non-profile modes. Acceptance is the seeded-from-source ROUND
+# TRIP (amux-cloud's contract): dir equality (profile_verified) is a
+# tripwire, never a verdict.
+_BU_DRIVER_SRC = r"""
+import asyncio, base64, json, sys
+async def main():
+    udir, headless = sys.argv[1], sys.argv[2] == "1"
+    from playwright.async_api import async_playwright
+    pw = await async_playwright().start()
+    ctx = await pw.chromium.launch_persistent_context(
+        udir, headless=headless, ignore_https_errors=True, viewport={"width": 1280, "height": 900})
+    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+    print(json.dumps({"ready": True, "user_data_dir": udir}), flush=True)
+    loop = asyncio.get_event_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            break
+        try:
+            req = json.loads(line)
+        except Exception:
+            continue
+        rid, verb = req.get("id"), req.get("verb")
+        out = {"id": rid, "ok": True}
+        try:
+            if verb == "open":
+                await page.goto(req["url"], wait_until="domcontentloaded", timeout=45000)
+                out.update(url=page.url, title=await page.title())
+            elif verb == "state":
+                txt = await page.evaluate("document.body ? document.body.innerText.slice(0, 4000) : ''")
+                out.update(url=page.url, title=await page.title(), text=txt)
+            elif verb == "screenshot":
+                img = await page.screenshot(full_page=False)
+                out.update(b64=base64.b64encode(img).decode())
+            elif verb == "click":
+                await page.mouse.click(float(req["x"]), float(req["y"]))
+            elif verb == "type":
+                await page.keyboard.type(str(req.get("text", "")), delay=20)
+            elif verb == "keys":
+                await page.keyboard.press(str(req.get("key", "Enter")))
+            elif verb == "eval":
+                out.update(value=await page.evaluate(str(req.get("js", ""))))
+            elif verb == "cookies":
+                out.update(cookies=await ctx.cookies())
+            elif verb == "set_cookie":
+                await ctx.add_cookies([req["cookie"]])
+            elif verb == "close":
+                await ctx.close()
+                await pw.stop()
+                print(json.dumps({"id": rid, "ok": True, "closed": True}), flush=True)
+                return
+            else:
+                out = {"id": rid, "ok": False, "error": "unknown verb: %s" % verb}
+        except Exception as e:
+            out = {"id": rid, "ok": False, "error": str(e)[:300]}
+        print(json.dumps(out), flush=True)
+asyncio.run(main())
+"""
+
+_bu_drivers: dict = {}          # session -> {proc, profile, udir}
+_bu_driver_lock = threading.Lock()
+
+def _bu_driver_stop(session: str):
+    d = _bu_drivers.pop(session, None)
+    if not d:
+        return
+    try:
+        d["proc"].stdin.write('{"id":"x","verb":"close"}\n')
+        d["proc"].stdin.flush()
+        d["proc"].wait(timeout=8)
+    except Exception:
+        try:
+            d["proc"].kill()
+        except Exception:
+            pass
+
+def _bu_driver_call(session: str, profile: str, verb: str, params: dict | None = None,
+                    timeout_s: int = 45) -> dict:
+    """Run a verb against the profile-true driver, spawning it on demand.
+    Returns {ok, ...} or {error}. Serialized per session."""
+    with _bu_driver_lock:
+        d = _bu_drivers.get(session)
+        if d and (d["profile"] != profile or d["proc"].poll() is not None):
+            _bu_driver_stop(session)
+            d = None
+        if not d:
+            udir, _pdir = _bu_profile_launch_target(profile)
+            # Interpreter: the server's own python may not have playwright
+            # (the first live spawn died at import with stderr on DEVNULL —
+            # 'driver failed to start: <empty>', undiagnosable). stderr is now
+            # captured into the error, and the interpreter is configurable.
+            _py = os.environ.get("AMUX_BU_DRIVER_PYTHON") or sys.executable
+            proc = subprocess.Popen(
+                [_py, "-c", _BU_DRIVER_SRC, str(udir), "1"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
+            ready = proc.stdout.readline()
+            try:
+                if not json.loads(ready or "{}").get("ready"):
+                    raise ValueError(ready[:200])
+            except Exception as e:
+                try:
+                    _err = (proc.stderr.read() or "")[-400:]
+                except Exception:
+                    _err = ""
+                try: proc.kill()
+                except Exception: pass
+                return {"error": f"driver failed to start: {e} :: {_err}".strip()}
+            d = {"proc": proc, "profile": profile, "udir": str(udir)}
+            _bu_drivers[session] = d
+            slog(f"[browser] v3 driver up session={session} profile={profile!r} store={udir}")
+        req = dict(params or {})
+        req.update(id="r", verb=verb)
+        try:
+            d["proc"].stdin.write(json.dumps(req) + "\n")
+            d["proc"].stdin.flush()
+            import select as _select
+            r, _, _ = _select.select([d["proc"].stdout], [], [], timeout_s)
+            if not r:
+                return {"error": "driver timeout"}
+            line = d["proc"].stdout.readline()
+            res = json.loads(line or "{}")
+            if res.get("closed"):
+                _bu_drivers.pop(session, None)
+            return res
+        except Exception as e:
+            _bu_driver_stop(session)
+            return {"error": f"driver io: {e}"}
+
+
 def _bu_open(url: str, session: str = "amux", explicit_profile: str = "",
              fresh: bool = False, timeout_s: int = 30) -> dict:
     """Open a URL under the correct profile.
@@ -1496,6 +2349,34 @@ def _bu_open(url: str, session: str = "amux", explicit_profile: str = "",
     else:
         if cur:  # existing session runs a different profile — close before reopening
             _bu_call(["close"], session=session, timeout_s=10)
+        # v3 driver (AMUX-2159 increment 2): profile sessions on amux-managed
+        # stores run through OUR Playwright persistent context — no CLI, no
+        # daemon, no copy; reads AND writes persist (the 0.12.2 copy ceiling
+        # is structural, proven at five instrumented layers). Legacy stores
+        # resolve to (dir, "") — that discriminator picks the driver. CLI
+        # remains for non-profile modes and as the fallback if the driver
+        # cannot start.
+        _udir, _pdir = _bu_profile_launch_target(profile)
+        if _pdir == "" and Path(_udir).exists():
+            dres = _bu_driver_call(session, profile, "open", {"url": url},
+                                   timeout_s=timeout_s)
+            if dres.get("ok"):
+                return {"success": True, "ok": True, "backend": "driver",
+                        "profile": profile, "auto_profile": auto,
+                        "url": dres.get("url", url), "title": dres.get("title", ""),
+                        "writes_persist": True,
+                        # REGIME NOTE (amux-cloud, 2026-08-02): under CLI copy
+                        # semantics this field was a failure detector and a
+                        # useless success detector. On the driver backend it is
+                        # true BY CONSTRUCTION, so a FALSE here now means "the
+                        # CLI fallback fired" — same field, opposite job: a
+                        # clean fallback tripwire, never a success verdict. The
+                        # cookie round trip remains the only verdict.
+                        "profile_verified": True,
+                        "profile_verified_note": ("driver holds the store open "
+                                                  "directly — no temp copy exists")}
+            slog(f"[browser] v3 driver failed for {session}/{profile}: "
+                 f"{dres.get('error')!r} — falling back to CLI path")
         res = _bu_call(["-b", "real", "--profile", profile, "open", url],
                        session=session, timeout_s=timeout_s)
         # Graceful fallback: if real-Chrome mode can't launch, browse anyway
@@ -1510,6 +2391,17 @@ def _bu_open(url: str, session: str = "amux", explicit_profile: str = "",
         res = dict(res)
         res["profile"] = profile
         res["auto_profile"] = auto
+        # `profile` above is what we ASKED for. Say what we actually GOT: a
+        # caller that trusts the request echo has no way to learn its writes are
+        # landing in a temp dir, which is precisely how this stayed misdiagnosed.
+        if not res.get("error"):
+            chk = _bu_profile_in_use(profile)
+            res["profile_verified"] = chk.get("verified")
+            if chk.get("verified") is False:
+                res["profile_warning"] = chk["why"]
+                res["actual_user_data_dirs"] = chk.get("actual_user_data_dirs")
+                slog(f"[browser] profile '{profile}' requested but Chrome is on "
+                     f"{chk.get('actual_user_data_dirs')} — writes will not persist")
         # Re-install the console/network capture shim on every navigation (page
         # globals reset on load) so /api/browser/inspect can troubleshoot the page.
         if not res.get("error"):
@@ -1773,13 +2665,22 @@ def _fetch_claude_usage() -> dict:
         return {"available": False, "reason": f"Usage fetch failed: {e}"}
 
 
-def _claude_oneshot(prompt: str, model: str = "haiku", timeout: int = 35) -> tuple:
+# One knob for every helper one-shot (ethos dev-3). Pinning a named weak model
+# in 5 separate call sites was a bet that could not improve as models improve —
+# and the throttle its cost forced is why most commands never reached the board.
+# Set AMUX_HELPER_MODEL (CLI alias) / AMUX_HELPER_MODEL_API (full API id) in
+# ~/.amux/server.env to move the whole fleet's helper tier in one line.
+_HELPER_MODEL = os.environ.get("AMUX_HELPER_MODEL", "haiku")
+_HELPER_MODEL_API = os.environ.get("AMUX_HELPER_MODEL_API", "claude-haiku-4-5-20251001")
+
+def _claude_oneshot(prompt: str, model: str = None, timeout: int = 35) -> tuple:
     """Run a one-shot headless `claude -p` query using the active Claude Code
     session's auth — Plan OAuth or API key, whichever the CLI is configured with.
 
     Returns (text, error). Mirrors amux's session launch: when on a Plan, the
     ANTHROPIC_API_KEY is unset so the subscription is used rather than a key.
     """
+    model = model or _HELPER_MODEL
     claude_bin = _resolve_claude_bin()
     if not claude_bin:
         return ("", "claude CLI not found")
@@ -1807,7 +2708,7 @@ def _claude_oneshot(prompt: str, model: str = "haiku", timeout: int = 35) -> tup
 # doesn't need an Anthropic key just to explain a snippet. Not the session's own
 # (possibly heavy) model: the point is a cheap, snappy answer.
 _PROVIDER_LOOKUP_MODEL = {
-    "claude": "haiku",
+    "claude": _HELPER_MODEL,
     "gemini": "gemini-2.5-flash-lite",
     "codex":  "gpt-5-mini",
 }
@@ -1857,13 +2758,13 @@ def _lookup_via_claude(prompt: str, timeout: int = 35) -> tuple:
             import anthropic as _anthropic
             client = _anthropic.Anthropic(api_key=api_key)
             msg = client.messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=400,
+                model=_HELPER_MODEL_API, max_tokens=400,
                 messages=[{"role": "user", "content": prompt}],
             )
             return (msg.content[0].text.strip(), "")
         except Exception as e:
             return ("", str(e))
-    return _claude_oneshot(prompt, model="haiku", timeout=timeout)
+    return _claude_oneshot(prompt, timeout=timeout)
 
 
 def _lookup_via_provider(provider: str, prompt: str, name: str = "", timeout: int = 35) -> tuple:
@@ -2328,6 +3229,7 @@ def _classify_request(method: str, path: str) -> tuple:
         if method == "DELETE"and sub == "steer":   return ("session", "steer-cleared",sname, sname)
         if method == "POST"  and sub == "archive": return ("session", "archived",     sname, sname)
         if method == "POST"  and sub == "wake":    return ("session", "woken",        sname, sname)
+        if method == "POST"  and sub == "reset":   return ("session", "reset",       sname, sname)
         if method == "PATCH" and sub == "config":  return ("session", "configured",   sname, sname)
         if method == "DELETE":                     return ("session", "deleted",       sname, sname)
         if method == "POST"  and sub == "memory":  return ("memory",  "updated",      sname, sname)
@@ -2364,7 +3266,6 @@ def _classify_request(method: str, path: str) -> tuple:
 
 # Auto-recovery state
 _sse_alerts: list = []           # ring buffer of alert dicts pushed to all SSE clients
-_notes_version: int = 0             # bumped on any notes write; triggers SSE invalidation
 _crm_version: int = 0               # bumped on any CRM write; triggers SSE invalidation
 _journal_version: int = 0           # bumped on any journal write; triggers SSE invalidation
 _sse_alert_lock = threading.Lock()
@@ -2377,6 +3278,13 @@ _VALID_CC_SESSION_NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$')
 _stop_pool = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=4)
 _USER_SHELL = os.environ.get("SHELL", "/bin/bash")
 _session_auto_actions: dict = {} # {name: {"last_compact": ts, "last_restart": ts}}
+# Harness SELF-REPORTED state (ethos dev-1). Written by POST /api/sessions/<n>/report
+# — fired by Claude Code's own Stop / UserPromptSubmit hooks — so state flows FROM
+# the harness instead of being inferred by regex over a rendered terminal. A fresh
+# report outranks the pane scrape; a stale one falls through to it. The scrapers
+# stay as the fallback for crashes, subagents, and providers without hooks.
+_session_reported: dict = {}   # name -> {"state": ..., "detail": ..., "ts": epoch}
+_SELF_REPORT_FRESH_S = 25      # Stop fires per turn; anything older is inference territory
 _steering_queue: dict = {}      # {session_name: [{"text": str, "queued_at": float, "id": str}]}
 _steering_lock = threading.Lock()
 
@@ -3460,7 +4368,7 @@ def _session_cc_tasks(name: str) -> dict:
         if raw:
             clean = _STRIP_ANSI.sub("", raw)
             i = clean.rfind("Claude Code v")
-            if i >= 0 and "⏺" not in clean[i:]:
+            if i >= 0 and "⏺" not in clean[i:] and "●" not in clean[i:]:
                 return {"tasks": [], "counts": {}, "active": None, "total": 0}
         tasks = []
         for jf in tdir.glob("[0-9]*.json"):
@@ -3833,6 +4741,12 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                     # ⏺ bullet and renders prose in the default fg (not dim);
                     # continuation lines indent 2 cols under the bullet.
                     body = _md_to_ansi(txt).replace("\n", "\n  ")
+                    # NOTE (AMUX-2118): this ⏺ is amux's PRESENTATION choice.
+                    # The live pane may show ● instead (Claude Code's fallback
+                    # glyph on terminals without U+23FA). peek `history` is a
+                    # reconstruction from the JSONL — never source pane-parsing
+                    # fixtures from it; use `live`/tmux capture, which is what
+                    # the detectors actually read.
                     out.append("\x1b[38;5;231m⏺\x1b[39m " + body + "\x1b[0m")
                 out.append("")
             elif bt == "tool_use":
@@ -4272,6 +5186,17 @@ _RATE_LIMIT_RESET_MONTHDAY_RE = re.compile(
 # the 5-hour /rate-limit-options prompt). Detecting it lets amux record the
 # reset time so badges, bulk actions and auto-resume treat it like any other
 # rate limit. e.g. "You've hit your weekly limit · resets Jun 26 at 5am (...)".
+# Non-Claude provider limit banners (ethos D1: scrape allowed only because the
+# provider exposes this state nowhere else). Codex's cap banner sat on a session
+# card that read HEALTHY while the agent was hard-stopped until Aug 27 — found
+# by the gates-adherence probe, filed as AMUX-2088. Routed down the CREDIT path
+# (badge, no auto-resume), matched only against the live region's tail, and
+# spans are bounded (.{0,N}) so DOTALL can't stitch prose to a distant mention.
+_PROVIDER_LIMIT_RES = [
+    ("codex", re.compile(r"You've hit your usage limit\..{0,160}?(?:Codex|ChatGPT)", re.IGNORECASE | re.DOTALL)),
+    ("gemini", re.compile(r"(?:Quota exceeded|You have reached your (?:daily )?quota).{0,80}Gemini", re.IGNORECASE | re.DOTALL)),
+]
+
 _WEEKLY_LIMIT_RE = re.compile(
     r"(?:you'?ve\s+)?(?:hit|reached)\s+your\s+(?:weekly|usage)\s+limit",
     re.IGNORECASE,
@@ -4323,6 +5248,159 @@ _MODEL_CREDIT_LIMIT_CTX_RE = re.compile(
 # which only exists in a live render — the prose alone shows up whenever a
 # session merely discusses the gate (this file does). Callers additionally
 # require it in the live region's tail.
+# ── Transient API errors (529 Overloaded / 5xx) ──────────────────────────────
+# Claude Code prints these inline and then just STOPS, leaving the session at a
+# prompt. amux saw status=idle with every limit flag false, so a session looping
+# on 529 was indistinguishable from one that had finished its work — six sessions
+# were in that state when this was found, primis having burned SEVEN consecutive
+# attempts (including a manual "continue") with no badge, no alert, and no place
+# in Bulk actions.
+#
+# Unlike a credit limit (needs a model switch) or a weekly cap (needs to wait for
+# a known reset), a 5xx is server-side and immediately retryable — so the correct
+# bulk action really is "send continue", which is what was asked for.
+_API_ERROR_RE = re.compile(r"API Error:\s*(5\d\d)\b", re.IGNORECASE)
+# Anchored form: the marker line must START with the error (after the ⏺ glyph),
+# which is how Claude Code emits it. Used for the decision; the loose form above
+# is only used to COUNT occurrences once the decision is made.
+_API_ERROR_START_RE = re.compile(r"^(?:[⏺●]\s*)?API Error:\s*(5\d\d)\b", re.IGNORECASE)
+# API-key quota exhaustion arrives IN-BAND as a 4xx, not a banner: every
+# session on an exhausted key prints "⏺ API Error: 400 You have reached your
+# specified API usage limits. You will regain access on 2026-08-01 at 00:00
+# UTC." and then just sits there looking idle (AMUX-2111; fleet-wide live
+# specimen on the cloud gateway key, 2026-07-31). Unlike a 5xx this is a HARD
+# gate — but unlike the credit gates it carries a machine-readable reset, so
+# it maps onto rate_limit_reset_at and auto-resume genuinely works once the
+# key regains access.
+# The marker test runs on one physical line; the phrase and timestamp run on
+# the tail with line breaks REMOVED, because tmux hard-wraps the capture at
+# pane width and splits mid-word (observed live: "You will rega/in access").
+# Raw concat self-heals mid-word splits; the \s* between words absorbs
+# word-boundary wraps whether or not they keep the space.
+_API_QUOTA_MARKER_RE = re.compile(
+    r"^(?:[⏺●]\s*)?API Error:\s*4\d\d\b", re.IGNORECASE)
+_API_QUOTA_PHRASE_RE = re.compile(
+    r"API\s*usage\s*limits", re.IGNORECASE)
+_API_QUOTA_RESET_RE = re.compile(
+    r"regain\s*access\s*on\s*(\d{4})-(\d{2})-(\d{2})\s*at\s*(\d{1,2}):(\d{2})\s*UTC",
+    re.IGNORECASE)
+# The gateway's own budget wall is a third in-band class (AMUX-2113): "API
+# Error: 402 amux trial budget exhausted ($25.03 of $25.00). Upgrade at
+# https://cloud...". No reset time exists — the fix is an upgrade/top-up — so
+# it carries credit-path semantics, not a reset target. Same wrap tolerance
+# as the quota patterns.
+_API_BUDGET_MARKER_RE = re.compile(
+    r"^(?:[⏺●]\s*)?API Error:\s*402\b", re.IGNORECASE)
+_API_BUDGET_PHRASE_RE = re.compile(
+    r"budget\s*exhausted", re.IGNORECASE)
+
+
+def _api_error_region(clean: str) -> tuple:
+    """(last activity-marker line, capture-tail lines) — the shared structural
+    anchor for in-band API-error detection. See _api_error_state for why the
+    anchor is the LAST activity marker above the input box, and why it reads
+    the capture tail rather than _live_limit_region's slice."""
+    lines = [l.rstrip() for l in clean.splitlines()[-60:]]
+    box = -1
+    for i, l in enumerate(lines):
+        if l.strip()[:1] == "❯":
+            box = i          # candidate live input box; echoes also start with ❯
+    # A ❯ line is only the LIVE input box if no transcript marker follows it.
+    # Echoed user messages start with ❯ too, and a session with no live box
+    # rendered (manual mode) has its last echo sitting ABOVE fresh transcript:
+    # cutting there swallowed everything below, and a fleet-wide cloud 400
+    # read rate_limited_until=0 with the error directly under '❯ ping'
+    # (AMUX-2111 respecimen, 2026-07-31). Content after the last ❯ means that
+    # ❯ was an echo — keep the whole tail. Cost: error text PASTED into a
+    # live composer (wrapped onto ⏺-prefixed lines below its ❯) could flag;
+    # that needs the paste to persist two scans, and the inverse failure was
+    # live, not hypothetical.
+    if box >= 0 and any(_LIMIT_ACTIVITY_RE.match(l.strip()) for l in lines[box + 1:]):
+        box = -1
+    region = lines[:box] if box >= 0 else lines
+    last_marker = ""
+    for l in region:
+        if _LIMIT_ACTIVITY_RE.match(l.strip()):
+            last_marker = l.strip()
+    return last_marker, lines
+
+
+def _api_quota_reset(clean: str):
+    """Epoch reset time when an in-band 4xx usage-limit API error is the
+    session's CURRENT state (same structural anchor as _api_error_state),
+    else None. Only flags when the reset timestamp parses: the timestamp is
+    what makes this class actionable (rate_limit_reset_at → auto-resume), so
+    a 4xx without one stays unflagged rather than badging with no target."""
+    marker, lines = _api_error_region(clean)
+    if not marker or not _API_QUOTA_MARKER_RE.match(marker):
+        return None
+    # Line breaks removed, not joined: see the _API_QUOTA_*_RE comment on
+    # tmux's mid-word hard-wrapping.
+    flat = "".join(lines)
+    if not _API_QUOTA_PHRASE_RE.search(flat):
+        return None
+    m = _API_QUOTA_RESET_RE.search(flat)
+    if not m:
+        return None
+    import datetime as _dt
+    y, mo, d, h, mi = (int(x) for x in m.groups())
+    try:
+        return int(_dt.datetime(y, mo, d, h, mi,
+                                tzinfo=_dt.timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def _api_budget_gated(clean: str) -> bool:
+    """True when the gateway's 402 budget wall is the session's CURRENT state
+    (same structural anchor as _api_error_state). No reset time exists — the
+    fix is an upgrade/top-up — so callers feed this into the CREDIT path
+    rather than a reset target."""
+    marker, lines = _api_error_region(clean)
+    if not marker or not _API_BUDGET_MARKER_RE.match(marker):
+        return False
+    # Line breaks removed, not joined: see the _API_QUOTA_*_RE comment on
+    # tmux's mid-word hard-wrapping.
+    return bool(_API_BUDGET_PHRASE_RE.search("".join(lines)))
+
+
+def _api_error_state(clean: str) -> tuple:
+    """(code, occurrences) when a transient API error is the session's CURRENT
+    state, else ('', 0).
+
+    Takes the whole clean capture, NOT _live_limit_region's slice. That slice
+    keeps only what follows the last activity marker — and '⏺ API Error: 529'
+    IS an activity marker, so the region excluded the very line being looked
+    for. Measured on roadtrip while it was visibly erroring: the live viewport
+    held 4 non-empty lines (prompt box + status bar) and the slice held none of
+    the error. Claude Code prints its transcript to normal scrollback and keeps
+    only the input box live, so anything transcript-shaped must be read from the
+    capture tail.
+
+    The anchor is structural rather than a window size: drop the input box and
+    everything below it, then take the LAST activity-marker line. On a 5xx,
+    Claude Code prints the error and stops, so that last marker IS the error. If
+    the session produced any output afterwards, the last marker is that output
+    instead and nothing is flagged — which is what keeps a session that merely
+    QUOTES the string (this file does) from flagging itself, the same false
+    positive that once told a sender its delivered message had failed
+    (social-media, 2026-07-27).
+    """
+    last_marker, lines = _api_error_region(clean)
+    if not last_marker:
+        return "", 0
+    # Must BEGIN with the error, not merely contain it. A session explaining the
+    # error ('⏺ It looks for "API Error: 529 Overloaded" in the tail') is also a
+    # marker line sitting above a prompt, and a `search` flagged it — verified as
+    # a false positive before this anchor was added. Claude Code emits the error
+    # as the entire line, so requiring the start separates the two cleanly.
+    m = _API_ERROR_START_RE.match(last_marker)
+    if not m:
+        return "", 0
+    # Occurrences across the captured tail: one blip vs a wedged retry loop.
+    return m.group(1), len(_API_ERROR_RE.findall("\n".join(lines)))
+
+
 _MODEL_CREDIT_MENU_RE = re.compile(
     r"^\s*\d+\.\s*set\s+up\s+usage\s+credits",
     re.IGNORECASE | re.MULTILINE,
@@ -4332,6 +5410,19 @@ _MODEL_CREDIT_BANNER_RE = re.compile(
     r"(?:uses|runs\s+on|have)\s+usage\s+credits",
     re.IGNORECASE,
 )
+# Spend-limit adjustment menu (gtm-videos, 2026-08-02 / GMA-29): yet another
+# gate render — "What do you want to do?  Usage credit balance: $N /
+# ❯ Adjust monthly spend limit: $N / Wait for limit to reset  Resets 1pm (TZ)".
+# ETHAN-32's verification of AMUX-1898 was real AND expired: a pattern list
+# answers "does this render match a gate I know", which needs a new entry per
+# variant forever (the pattern-free stalled-Nm badge is the durable half —
+# gtm-media-assets' framing). Detection only: this menu's default-selected row
+# ADJUSTS A SPEND LIMIT, i.e. money, so amux never auto-answers it regardless
+# of rate_limit_action; badge + is:gated + bulk visibility, human presses keys.
+_SPEND_MENU_OPT_RE = re.compile(r"Adjust\s+monthly\s+spend\s+limit", re.I)
+_SPEND_MENU_WAIT_RE = re.compile(r"Wait\s+for\s+limit\s+to\s+reset", re.I)
+_SPEND_MENU_BAL_RE = re.compile(r"Usage\s+credit\s+balance", re.I)
+
 # Pull the model name out for display ("Fable 5", "Opus", ...). Best-effort.
 _MODEL_CREDIT_NAME_RE = re.compile(
     r"reached\s+your\s+([A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?)\s+limit"
@@ -4537,11 +5628,19 @@ _RATE_LIMIT_COOLDOWN = 10
 _RATE_LIMIT_DRIFT_TOLERANCE = 30  # seconds; reset times closer than this are "in sync"
 _RATE_LIMIT_DRIFT_LOG_COOLDOWN = 600  # don't repeat the drift warning more than every 10 min
 _rate_limit_last_responded: dict = {}
+# Swallowed-exception ledger for the fleet scan loop (AMUX-2111 post-mortem):
+# per-session dedupe so a recurring throw logs every ~10 min, not every scan.
+_rate_limit_scan_err: dict = {}
 _rate_limit_last_drift_log: float = 0.0
 
 # Proof the session produced output on a line: an assistant message (⏺), an
 # echoed user message (❯ [09:32 AM] …), or a tool-run summary.
-_LIMIT_ACTIVITY_RE = re.compile(r"^(?:⏺\s|❯\s*\[\d|Ran \d+ shell command)")
+# ⏺/● both accepted: the live `tmux capture-pane` (what the scan reads)
+# renders Claude Code's record glyph as ● U+25CF, while the peek endpoint
+# yields ⏺ U+23FA — fixtures built from peek matched, live panes did not
+# (AMUX-2111, cloud stage-probe run 30644742436: the ONLY failing stage was
+# the marker lookup; phrase and reset parsed clean).
+_LIMIT_ACTIVITY_RE = re.compile(r"^(?:[⏺●]\s|❯\s*\[\d|Ran \d+ shell command)")
 
 
 def _live_limit_region(clean: str) -> str:
@@ -4564,7 +5663,13 @@ def _live_limit_region(clean: str) -> str:
     box = -1
     for i, l in enumerate(lines):
         if l.strip()[:1] == "❯":
-            box = i  # last ❯ wins: earlier ones are echoed user messages
+            box = i  # candidate live input box; echoes also start with ❯
+    # Same echo-vs-live-box discrimination as _api_error_region: a ❯ with
+    # transcript markers below it is an echoed message, not the input box —
+    # cutting there blinded every banner class on manual-mode panes (no live
+    # box rendered), the failure the AMUX-2111 cloud respecimen exposed.
+    if box >= 0 and any(_LIMIT_ACTIVITY_RE.match(l.strip()) for l in lines[box + 1:]):
+        box = -1
     region = lines[:box] if box >= 0 else lines
     cut = -1
     for i, l in enumerate(region):
@@ -4643,6 +5748,16 @@ def _rate_limit_auto_respond():
                 continue
             if now - _rate_limit_last_responded.get(name, 0) < _RATE_LIMIT_COOLDOWN:
                 continue
+            # Already handled: if we already pressed "1" and recorded a
+            # reset_at in the future, skip the expensive tmux capture.
+            # Re-pressing "1" is destructive: the menu text lingers in
+            # scrollback and re-matches, sending "1" as user input which
+            # triggers another rate-limit cycle (CPU hot-loop).
+            _existing_actions = _session_auto_actions.get(name)
+            if _existing_actions:
+                _ra = _existing_actions.get("rate_limit_reset_at")
+                if _ra and _ra > now and not _existing_actions.get("rate_limit_credits"):
+                    continue
             # 300 lines is enough to catch the reset-time line, which can
             # appear ~10-20 lines above the menu in Claude Code's UI.
             raw = tmux_capture(name, 300)
@@ -4677,11 +5792,22 @@ def _rate_limit_auto_respond():
             # (the reset line can sit ~10-20 lines above the menu); only the
             # decision to press a key requires a live menu render.
             tail = "\n".join(clean.splitlines()[-30:])
+            # The POLICY here is the human's, set once, not amux's (ethos dev-2):
+            # rate_limit_action pref — 'wait' (default) answers the menu with
+            # option 1 fleet-wide; 'off' detects but leaves the menu for a human.
+            # The scrape itself stays only because Claude Code exposes this state
+            # nowhere else; exit condition tracked in ethos.md known-deviations.
+            try:
+                _rl_row = get_db().execute("SELECT value FROM prefs WHERE key='rate_limit_action'").fetchone()
+                _rl_action = (_rl_row[0] or "wait").strip().lower() if _rl_row else "wait"
+            except Exception:
+                _rl_action = "wait"
             matched_idx = -1
             for i, (pattern, response) in enumerate(_RATE_LIMIT_PROMPTS):
                 if pattern.search(tail):
-                    send_text(name, response)
-                    _rate_limit_last_responded[name] = now
+                    if _rl_action != "off":
+                        send_text(name, response)
+                        _rate_limit_last_responded[name] = now
                     matched_idx = i
                     break
             # Weekly/usage-cap banner has no menu to answer — detect it on its own
@@ -4716,6 +5842,31 @@ def _rate_limit_auto_respond():
             # bulk action. Require the exact position, corroborated by the
             # banner prose just above it.
             _live_ne = [l for l in live.splitlines() if l.strip()]
+            # Non-Claude provider caps (codex/gemini) — checked BEFORE the
+            # Claude classification is acted on, because codex phrases its cap
+            # "You've hit your usage limit", which _WEEKLY_LIMIT_RE also
+            # matches: the AMUX-2088 probe classified a codex cap as a Claude
+            # weekly limit and scheduled auto-resume off "8:00 PM" lifted from
+            # the WRONG provider's banner (actual codex reset: Aug 27). On a
+            # provider hit the banner flags are cleared and the session routes
+            # down the CREDIT path — badge + is:gated + hard-gate alert, no
+            # reset time, no auto-resume nudging a lane amux cannot un-cap.
+            # Searched over the SAME `live` region as the Claude banner
+            # regexes, deliberately wider than the credit gates' tail-only
+            # window: this check exists to disambiguate, so any placement
+            # where _WEEKLY_LIMIT_RE can see the codex banner must be one the
+            # provider check sees too (tail-8 left a 9..30-line band where the
+            # codex banner re-classified as Claude-weekly). Text that would
+            # false-positive here already false-positives the weekly regex on
+            # the same words, so precedence cannot widen the blast radius —
+            # and the two-scan persistence gate applies to this flag too.
+            _provider_hit = ""
+            if matched_idx < 0:
+                for _pname, _pre in _PROVIDER_LIMIT_RES:
+                    if _pre.search(live):
+                        _provider_hit = _pname
+                        is_weekly = is_session_banner = is_banner = False
+                        break
             _is_menu_gate = bool(
                 _live_ne
                 and _MODEL_CREDIT_MENU_RE.search(_live_ne[-1])
@@ -4733,8 +5884,31 @@ def _rate_limit_auto_respond():
             _is_banner_gate = bool(
                 _MODEL_CREDIT_LIMIT_RE.search("\n".join(_live_ne[-5:]))
                 and _MODEL_CREDIT_LIMIT_CTX_RE.search("\n".join(_live_ne[-5:])))
-            _credit_raw = (matched_idx < 0 and not is_banner
-                           and (_is_banner_gate or _is_menu_gate))
+            # Spend-limit menu: option line + corroboration (the wait option or
+            # the balance readout). Tested against the CLEAN SCREEN's tail, not
+            # the live region — _live_limit_region cuts AT the highlighted
+            # "❯ Adjust monthly spend limit" row, so this menu's option lines
+            # always fall OUTSIDE the region (verified against the live
+            # gtm-videos gate: region ends at "What do you want to do?").
+            # Position still holds: a live modal owns the bottom of the screen,
+            # while a session merely QUOTING these strings has its own input
+            # box/activity rendered below them — and the two-scan persistence
+            # gate applies on top.
+            _clean_tail = "\n".join(
+                [l for l in clean.splitlines() if l.strip()][-8:])
+            _is_spend_menu_gate = bool(
+                _SPEND_MENU_OPT_RE.search(_clean_tail)
+                and (_SPEND_MENU_WAIT_RE.search(_clean_tail)
+                     or _SPEND_MENU_BAL_RE.search(_clean_tail)))
+            # Gateway 402 budget wall (AMUX-2113): in-band, no reset time —
+            # credit-path semantics, so it feeds _credit_raw and inherits the
+            # two-scan gate, badge, is:gated, hard-gate alert and clear
+            # machinery wholesale. The model-name slot names the gate so the
+            # badge reads "trial budget limit".
+            _budget_gated = matched_idx < 0 and _api_budget_gated(clean)
+            _credit_raw = bool(_provider_hit) or _budget_gated or (
+                matched_idx < 0 and not is_banner
+                and (_is_banner_gate or _is_menu_gate or _is_spend_menu_gate))
             # PERSISTENCE GATE. No regex fully separates "this session is gated"
             # from "this session is displaying text about the gate" — the source
             # file documenting these very patterns matches them, so any session
@@ -4749,6 +5923,52 @@ def _rate_limit_auto_respond():
             _credit_prev = bool(_st.get("credit_raw_prev"))
             _st["credit_raw_prev"] = _credit_raw
             is_credit = _credit_raw and _credit_prev
+            # Transient API error (529/5xx). Same two-scan persistence gate as the
+            # credit gate, for the same reason: text about the error must not read
+            # as the error. Recorded on _st (not `actions`) so it survives the
+            # `continue` below — a session showing ONLY an API error has no
+            # rate-limit UI at all and would otherwise bail out before the
+            # actions dict is written.
+            _api_code, _api_n = _api_error_state(clean)
+            _api_prev = _st.get("api_err_prev") or ""
+            _st["api_err_prev"] = _api_code
+            if _api_code and _api_prev == _api_code:
+                if not _st.get("api_error"):
+                    slog(f"[api-error] session={name} API Error {_api_code} "
+                         f"x{_api_n} on live screen — flagged retryable")
+                _st["api_error"] = True
+                _st["api_error_code"] = _api_code
+                _st["api_error_count"] = _api_n
+            elif not _api_code and _st.get("api_error"):
+                # Cleared as soon as it scrolls off: a 5xx is transient, and a
+                # stale flag would keep a working session in Bulk actions.
+                _st.pop("api_error", None)
+                _st.pop("api_error_code", None)
+                _st.pop("api_error_count", None)
+                slog(f"[api-error] session={name} API error cleared")
+            # In-band 4xx quota gate (AMUX-2111): a hard stop with a REAL
+            # reset time, printed as an API error rather than a banner. Same
+            # two-scan persistence as above, recorded on _st for the same
+            # reason (it must survive the no-rate-limit-UI `continue` below).
+            # Setting rate_limit_reset_at gives the badge, is:gated and
+            # auto-resume for free; cleared as soon as the error leaves the
+            # live tail — output below it means the session is working again.
+            _q_reset = _api_quota_reset(clean)
+            _q_prev = int(_st.get("api_quota_prev") or 0)
+            _st["api_quota_prev"] = _q_reset or 0
+            if _q_reset and _q_prev == _q_reset:
+                if not _st.get("rate_limit_api_quota"):
+                    slog(f"[api-quota] session={name} in-band API usage-limit "
+                         f"error — gated until {_q_reset} (parsed UTC reset)")
+                _st["rate_limit_api_quota"] = True
+                _st["rate_limit_reset_at"] = _q_reset
+                _st.pop("rate_limit_reset_at_fallback", None)
+                _st["rate_limit_last_event_ts"] = int(now)
+            elif not _q_reset and _st.get("rate_limit_api_quota"):
+                _st.pop("rate_limit_api_quota", None)
+                _st.pop("rate_limit_reset_at", None)
+                _st.pop("rate_limit_reset_at_fallback", None)
+                slog(f"[api-quota] session={name} quota error cleared")
             if matched_idx < 0 and not is_banner and not is_credit:
                 # No live rate-limit UI. A real banner cap keeps its banner on
                 # screen until reset, so a session flagged from a banner without a
@@ -4791,7 +6011,10 @@ def _rate_limit_auto_respond():
                 # would mislabel the badge even when the gate itself is real.
                 m = _MODEL_CREDIT_NAME_RE.search("\n".join(_live_ne[-6:]))
                 actions["rate_limit_model_name"] = (
-                    (m.group(1) or m.group(2) or "").strip() if m else "")
+                    _provider_hit
+                    or ("trial budget" if _budget_gated else "")
+                    or ("monthly spend" if _is_spend_menu_gate else "")
+                    or ((m.group(1) or m.group(2) or "").strip() if m else ""))
                 actions["rate_limit_last_event_ts"] = int(now)
                 actions.pop("rate_limit_reset_at", None)
                 actions.pop("rate_limit_reset_at_fallback", None)
@@ -4840,7 +6063,19 @@ def _rate_limit_auto_respond():
                 "fallback": not parsed_reset,
             }, distinct_id=name)
         except Exception:
-            pass
+            # A poisoned iteration must not kill the fleet scan — but a SILENT
+            # pass here made a real cloud negative indistinguishable from "the
+            # loop threw before the parser ran" (AMUX-2111). Log it, deduped,
+            # so an absent flag always carries evidence one way or the other.
+            try:
+                import traceback as _tb
+                _now_e = time.time()
+                if _now_e - _rate_limit_scan_err.get(name, 0) > 600:
+                    _rate_limit_scan_err[name] = _now_e
+                    slog(f"[rate-limit] scan error on {name}: "
+                         f"{_tb.format_exc(limit=3)}")
+            except Exception:
+                pass
 
 
 def _rate_limit_auto_resume():
@@ -5189,6 +6424,65 @@ def _sms_bridge_gate(to: str, text: str) -> tuple[bool, str]:
 
 _urgent_alert_last = {}  # message-hash → ts, for a light flood guard
 
+# ── Owner-alert STORM guard (AMUX / MF-427) ──────────────────────────────────
+# MEASURED 2026-08-02/03: 38 identical owner pages, message '--help', one every
+# ~302s for 3h06m, every one a real push AND a real iMessage, deduped=false on
+# all 38. Nothing noticed.
+#
+# The 60s dedupe above is the wrong SHAPE for that failure, not merely too
+# short: a storm on a 302s cadence steps cleanly between 60s windows, so each
+# page is individually distinct and legitimate. A guard whose window is shorter
+# than the interval it must suppress suppresses nothing.
+#
+# Why this matters more than noise: the owner alert is the fire alarm, and its
+# entire value is that a page means act now. 38 empty pages in one night trains
+# the owner to ignore it, which destroys the signal exactly as thoroughly as a
+# dead alert path — the failure the canary existed to prevent, reached from the
+# other side.
+#
+# THE NEGATIVE CONTROL IS PART OF THE DESIGN, not an afterthought: the key
+# includes the message and the claimed session, so 38 DISTINCT genuine alerts
+# have 38 distinct keys, accumulate nothing, and all deliver. Collapsing real
+# incidents would be the remediation-riskier-than-the-defect version of this.
+_urgent_alert_hist: dict = {}   # key → [send timestamps within the window]
+_urgent_alert_mute: dict = {}   # key → mute expiry ts
+URGENT_STORM_THRESHOLD = 2      # identical sends in-window before collapsing
+URGENT_STORM_WINDOW = 1800.0    # 30m: comfortably wider than any plausible cadence
+URGENT_STORM_MUTE = 1800.0      # sliding — each suppressed attempt extends it
+
+
+def urgent_alert_decision(key, now, hist, mute_until, *, dedupe_last=None):
+    """Pure decision for one alert attempt. No I/O, so the 38-row storm can be
+    replayed exactly.
+
+    Returns (action, new_hist, new_mute_until) where action is one of:
+      'send'         deliver normally
+      'dedupe'       inside the existing 60s repeat window
+      'storm_notice' threshold crossed: deliver ONE 'storming' page, then mute
+      'muted'        storm already declared and still active; deliver nothing
+
+    The mute SLIDES: every suppressed attempt pushes the expiry out, so a storm
+    that keeps firing stays muted instead of resuming every window. A storm ends
+    by stopping, which is the only evidence that it ended.
+    """
+    # `dedupe_last` falsy means NEVER SENT. The old call site used .get(key, 0),
+    # which conflates "never" with "sent at epoch 0" — harmless against a real
+    # time.time() and wrong for anything that supplies its own clock, including
+    # the replay of the incident this guard exists for.
+    if dedupe_last and now - dedupe_last < 60:
+        return "dedupe", hist, mute_until
+
+    if mute_until and now < mute_until:
+        # Still storming. Extend rather than count down toward a resume.
+        return "muted", hist, now + URGENT_STORM_MUTE
+
+    recent = [t for t in (hist or []) if now - t < URGENT_STORM_WINDOW]
+    recent.append(now)
+    if len(recent) >= URGENT_STORM_THRESHOLD:
+        return "storm_notice", recent, now + URGENT_STORM_MUTE
+    return "send", recent, 0.0
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _record_owner_alert(origin: str, claimed: str, message: str, reason: str,
                         channels: dict, deduped: bool) -> None:
@@ -5230,10 +6524,36 @@ def _send_urgent_alert(message: str, session: str = "", reason: str = "", origin
         slog(f"[urgent-alert] PROVENANCE MISMATCH: verified origin={origin!r} but claimed session={session!r} — recording both")
     key = _hashlib.sha256((session + "|" + msg).encode()).hexdigest()[:16]
     now = time.time()
-    if now - _urgent_alert_last.get(key, 0) < 60:
+    action, _hist, _mute = urgent_alert_decision(
+        key, now, _urgent_alert_hist.get(key), _urgent_alert_mute.get(key, 0.0),
+        dedupe_last=_urgent_alert_last.get(key),
+    )
+    _urgent_alert_hist[key] = _hist
+    _urgent_alert_mute[key] = _mute
+
+    if action == "dedupe":
         _record_owner_alert(origin, session, msg, reason, {}, deduped=True)
         return {"ok": True, "deduped": True, "channels": {}, "message": msg,
                 "origin": origin, "claimed": session, "provenance_mismatch": _mismatch}
+
+    if action == "muted":
+        # Recorded, deliberately not delivered. The ledger still shows every
+        # attempt, so a storm remains fully visible at GET /api/alert/owner —
+        # the suppression must not also hide the evidence.
+        _record_owner_alert(origin, session, msg, reason, {}, deduped=True)
+        slog(f"[urgent-alert] STORM-MUTED key={key} origin={origin!r} msg={message[:80]!r}")
+        return {"ok": True, "deduped": True, "storm_muted": True, "channels": {},
+                "message": msg, "origin": origin, "claimed": session,
+                "provenance_mismatch": _mismatch}
+
+    if action == "storm_notice":
+        # One page saying it is storming, then silence. This page is the LAST
+        # one for this message until the storm stops, so it has to carry where
+        # to look rather than just repeating the alert.
+        n = len(_hist)
+        msg = (f"STORM: this alert has fired {n}x and is now MUTED for "
+               f"{int(URGENT_STORM_MUTE // 60)}m. Original: {msg}\n"
+               f"Full history: GET /api/alert/owner")
     _urgent_alert_last[key] = now
     channels = {}
     if os.environ.get("AMUX_URGENT_PUSH", "1") != "0":
@@ -5743,6 +7063,13 @@ def _cmd_hist_record(session: str, text: str, ctype: str = "user", origin: str =
                    "(SELECT id FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ?)",
                    (session, session, _CMD_HIST_KEEP))
         db.commit()
+        # Mirror into the unified ledger. cmd_history is per-session and pruned
+        # aggressively for the Messages tab; the ledger is fleet-wide and keeps
+        # the cross-session picture, which is the one you need when asking "what
+        # touched this lane, and who told it to".
+        _ilog("inter_session" if ctype == "session" else "session",
+              ctype, actor=(origin or ctype), target=session,
+              detail={"text": text, "origin": origin})
     except Exception:
         pass
 
@@ -5972,7 +7299,15 @@ def _snapshot_all_sessions_inner():
                 if pct < 30 and now - actions.get("last_backup", 0) > 120:
                     actions["last_backup"] = now
                     threading.Thread(target=backup_session_jsonl, args=(name, "pre_compact"), daemon=True).start()
-                if _ac_enabled and pct < 50 and now - actions.get("last_compact", 0) > 300:
+                # Threshold is a pref, not amux's hardcoded judgment (ethos dev-5):
+                # WHEN to summarize is increasingly the model's own call. 0 disables
+                # the proactive path entirely while keeping resume-dialog handling.
+                try:
+                    _th_row = get_db().execute("SELECT value FROM prefs WHERE key='auto_compact_threshold'").fetchone()
+                    _ac_threshold = int(_th_row[0]) if _th_row and str(_th_row[0]).strip() else 50
+                except Exception:
+                    _ac_threshold = 50
+                if _ac_enabled and _ac_threshold > 0 and pct < _ac_threshold and now - actions.get("last_compact", 0) > 300:
                     actions["last_compact"] = now
                     actions["post_compact_continue"] = True  # send continuation when compact finishes
                     send_text(name, "/compact")
@@ -6588,8 +7923,50 @@ def get_claude_stats(work_dir: str) -> dict:
 _model_cache = {}  # {work_dir: (model, mtime, timestamp)}
 _MODEL_CACHE_TTL = 15  # seconds
 
+# `/model opus` is recorded as a plain user turn — command name, message and
+# args in one entry — and carries no `message.model` anywhere. Without reading
+# it, a model switch stays invisible until the session's next assistant turn,
+# which for an idle session never comes.
+_SLASH_MODEL_RE = re.compile(
+    r"<command-name>\s*/model\s*</command-name>.*?<command-args>(.*?)</command-args>",
+    re.DOTALL,
+)
+
+
+def _entry_text(entry: dict) -> str:
+    """Flatten a JSONL entry's message content to text. Content is a bare string
+    for simple turns and a list of blocks for richer ones; slash commands appear
+    in both shapes depending on how the turn was composed."""
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return ""
+
+
+def _slash_model_switch(entry: dict) -> str:
+    """Return the model a `/model <arg>` turn switched to, or "" if this entry is
+    not one — or is the bare `/model` that opens the interactive picker, which
+    records no id we could trust."""
+    if entry.get("type") != "user":
+        return ""
+    text = _entry_text(entry)
+    if "/model" not in text:
+        return ""
+    m = _SLASH_MODEL_RE.search(text)
+    if not m:
+        return ""
+    ok, model, _err = _validate_model_name(m.group(1).strip())
+    return model if ok else ""
+
+
 def detect_active_model(work_dir: str, conversation_id: str = "") -> str:
-    """Detect the model in use from the session's own JSONL conversation file."""
+    """Detect the model in use from the session's own JSONL conversation file.
+
+    Reads backward and returns whichever signal is most recent: an explicit
+    `/model <id>` switch, or the model observed on the last assistant turn.
+    """
     if not work_dir:
         return ""
     project_dir = _claude_project_dir(work_dir)
@@ -6631,7 +8008,10 @@ def detect_active_model(work_dir: str, conversation_id: str = "") -> str:
             for line in reversed(data.splitlines()):
                 try:
                     entry = json.loads(line)
-                    model = entry.get("message", {}).get("model", "")
+                    # Whichever comes first scanning backward is the newer
+                    # signal, so a /model switch after the last assistant turn
+                    # wins, and a later assistant turn overrides the switch.
+                    model = entry.get("message", {}).get("model", "") or _slash_model_switch(entry)
                     if model:
                         _model_cache[cache_key] = (model, mtime, time.time())
                         return model
@@ -6779,6 +8159,36 @@ CREATE INDEX IF NOT EXISTS idx_sched_runs_ran   ON schedule_runs(ran_at DESC);
 -- Mutation audit: EVERY change to a schedule's fields (esp. the enabled flag)
 -- is recorded here so a flip is never unattributed again. Forensics after the
 -- 07-14 bulk-disable / unattributed re-enables (AMUX-1735).
+-- Unified interaction ledger: everything an agent or a human DID, in one place.
+-- Previously these were scattered — cmd_history held messages, the server log
+-- held prose, and browser actions were recorded nowhere at all, so a sequence
+-- of clicks that changed a real web page left no trace you could audit or undo.
+--
+-- `kind`   session | inter_session | browser | schedule
+-- `actor`  who initiated (session name, 'human', ip:...)
+-- `target` session name, or the browser session
+-- `url`    page the action executed against  (browser only)
+-- `detail` JSON: the full arguments, enough to REPLAY the step
+-- `before` JSON: state captured before the action, enough to ROLL BACK to it
+-- `seq`    monotonic per (kind,target) so a sequence can be replayed in order
+CREATE TABLE IF NOT EXISTS interaction_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    actor       TEXT NOT NULL DEFAULT '',
+    target      TEXT NOT NULL DEFAULT '',
+    action      TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    before      TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '',
+    ok          INTEGER NOT NULL DEFAULT 1,
+    ms          INTEGER NOT NULL DEFAULT 0,
+    seq         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ilog_ts     ON interaction_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ilog_kind   ON interaction_log(kind, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ilog_target ON interaction_log(target, ts DESC);
 CREATE TABLE IF NOT EXISTS schedule_audit (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     schedule_id TEXT NOT NULL,
@@ -7205,7 +8615,7 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=30000")
         _db_local.conn = conn
     return _db_local.conn
 
@@ -7947,12 +9357,20 @@ def _init_claude_config():
     import json as _json
     import pathlib as _pathlib
 
+    # A managed upstream (amux cloud's Anthropic proxy) authenticates with
+    # ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN and deliberately has NO
+    # ANTHROPIC_API_KEY. Returning early on that left claude to show its
+    # first-run theme wizard and folder-trust dialog, so a correctly
+    # authenticated cloud session sat at an interactive prompt forever.
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    _auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+    _base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    cred = api_key or (_auth_token if _base_url else "")
+    if not cred:
         return
 
-    # claude uses the last 20 chars of the key as its identifier
-    key_hash = api_key[-20:]
+    # claude uses the last 20 chars of the credential as its identifier
+    key_hash = cred[-20:]
 
     claude_json = _pathlib.Path.home() / ".claude.json"
     cfg = {}
@@ -8731,6 +10149,57 @@ def _init_db():
         "ALTER TABLE schedules ADD COLUMN done_pattern TEXT",
         "ALTER TABLE schedules ADD COLUMN done_action TEXT NOT NULL DEFAULT 'disable'",
         "ALTER TABLE schedules ADD COLUMN gcal_event_id TEXT",
+        # kind:shell exit-code action map (MG audit #1 / AMUX-2199): JSON like
+        # {"1":"alert","2":"retry_once_then_alert","3":"log"}. NULL = today's
+        # behavior (nonzero -> error row). This is what lets a monitoring
+        # schedule run WITHOUT a model in the loop: the script decides, the
+        # map escalates, the session is the escalation path not the poller.
+        "ALTER TABLE schedules ADD COLUMN exit_actions TEXT",
+        # Monitor-card provenance (AMUX-2204 / MG audit #10): a derived card
+        # decays independently of its source — 3 of 4 SLA-breach cards
+        # escalated to Ethan were already resolved in the thread (one had
+        # CONVERTED TO PAYING). source_ref names what the card derives from;
+        # last_verified_at is when the producer last re-checked the source.
+        "ALTER TABLE issues ADD COLUMN source_ref TEXT",
+        "ALTER TABLE issues ADD COLUMN last_verified_at INTEGER",
+        # WHY a run happened. Without this a hand-pressed "Run now" is byte-identical
+        # to a cron fire in the runs list, so an extra same-day fire reads as the
+        # scheduler double-firing. That cost a real investigation (AMUX-1998:
+        # SCHED-108 "re-fired 3x" was one cron fire + two Run-now taps, from an
+        # iPhone and a laptop). Default 'cron' so pre-existing rows stay honest —
+        # they were overwhelmingly cron, and 'cron' is the claim least likely to
+        # invent attribution that was never recorded.
+        "ALTER TABLE schedule_runs ADD COLUMN source TEXT NOT NULL DEFAULT 'cron'",
+        # Archiving a session must take its cards with it. Kept SEPARATE from
+        # `deleted` on purpose: deleted means gone, archived means "this lane is
+        # closed but the work is still readable". Cards carrying real findings
+        # (cost analysis, pricing, root causes) should survive their session
+        # being put away, just not clutter the live board.
+        "ALTER TABLE issues ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+        # Graph edges (2026-07-31). depends_on: JSON list of card ids — a card is
+        # BLOCKED while any of them is open; the autonomy loop traverses these
+        # instead of parsing "BLOCKS X" prose. reviewer: session name — when set,
+        # review->done requires the ACK to come from the reviewer, making
+        # cross-session verification first-class instead of voluntary.
+        "ALTER TABLE issues ADD COLUMN depends_on TEXT",
+        "ALTER TABLE issues ADD COLUMN reviewer TEXT",
+        # Append-only system history (2026-07-31, AMUX-2112). _append_board_log
+        # used to append into desc, where any full-desc PATCH (the normal way
+        # sessions and the detail-panel textarea update a card) silently
+        # destroyed it — a hook-attached commit line lived 2 minutes before an
+        # evidence update wiped it. log is system-owned: written only by
+        # _append_board_log, deliberately absent from the PATCH allow-list.
+        "ALTER TABLE issues ADD COLUMN log TEXT",
+        # Optimistic concurrency (2026-07-31, AMUX-1711). rev increments on
+        # every PATCH and log-append; PATCH may send If-Match / expect_rev and
+        # gets a 409 with the current item on mismatch instead of silently
+        # last-writer-winning. Absent header = legacy behavior.
+        "ALTER TABLE issues ADD COLUMN rev INTEGER NOT NULL DEFAULT 0",
+        # Message->card join (2026-08-01, AMUX-2143). Capture stamps the id of
+        # the card it created/folded onto the message row itself — a FIELD,
+        # not a timestamp heuristic — so 'what happened to what I asked' is a
+        # join, not an inference.
+        "ALTER TABLE cmd_history ADD COLUMN card_id TEXT",
         # Messages history: tag each command by WHO sent it (origin session name
         # or schedule title), so the peek can color-code user vs inter-session vs
         # scheduled vs system commands.
@@ -9216,6 +10685,101 @@ _TASK_SUMMARY_MIN_GAP = float(os.environ.get("AMUX_TASK_LABEL_GAP_SECS", "600"))
 _PROHIBITIVE_LABEL_RE = re.compile(r"^\s*(no|never|don'?t|do\s+not)\b", re.IGNORECASE)
 
 
+def _autotask_enabled() -> bool:
+    """Whether EVERY human command should land on the board. Pref, default on."""
+    try:
+        row = get_db().execute("SELECT value FROM prefs WHERE key='board_autotask'").fetchone()
+        return (row["value"] if row else "1") != "0"
+    except Exception:
+        return True
+
+
+_AUTOTASK_MIN_CHARS = 12
+_AUTOTASK_SKIP = {
+    # Control words that steer the CURRENT task rather than starting a new one.
+    # A card for "continue" is noise that buries the cards that mean something.
+    "continue", "go", "yes", "y", "no", "n", "ok", "okay", "yep", "yeah", "sure",
+    "stop", "wait", "retry", "again", "next", "done", "thanks", "ty", "k",
+    "proceed", "resume", "keep going", "carry on", "do it", "sounds good",
+}
+# Slash commands drive the HARNESS, not the work. `/compact` became a board card
+# titled "Load Project Context", auto-pickup dispatched it as a task, and the
+# session that received it had nothing it could honestly do — no gate is
+# satisfiable by a card that describes a UI action. Each one burns a pickup slot
+# and pushes real cards down the queue.
+# Named built-ins are skipped even with arguments; anything else starting with
+# "/" is skipped only when it is a BARE command, so a user-defined skill invoked
+# with a real brief ("/deploy the gateway change") still files a card.
+_AUTOTASK_SLASH_CONTROL = {
+    "compact", "clear", "model", "help", "resume", "exit", "quit", "cost",
+    "status", "config", "doctor", "login", "logout", "memory", "init", "agents",
+    "mcp", "hooks", "ide", "privacy-settings", "release-notes", "bug", "export",
+    "upgrade", "permissions", "add-dir", "terminal-setup", "vim", "pr-comments",
+    "install-github-app", "context", "output-style", "todos", "usage",
+}
+
+
+def _autotask_title(text: str) -> str:
+    """Derive a readable card title from the prompt itself.
+
+    Deliberately does NOT call the model. The existing labeller shells out to
+    `claude -p`, which pays a full CLI boot (~12-15k input tokens) for a 3-word
+    label — that cost is exactly why auto-create was throttled to one per 10
+    minutes per session, which is why most commands never reached the board.
+    A real instruction is usually already descriptive, so the first clause of it
+    is a better title than a paraphrase, and it is free."""
+    t = re.sub(r"^\[.*?\]\s*", "", text or "").strip()           # drop "[03:47 PM] "
+    t = re.sub(r"^\[amux-origin:.*?\]\s*", "", t, flags=re.S)     # drop relay stamps
+    t = re.sub(r"\s+", " ", t)
+    # First sentence/clause, so a long multi-paragraph brief still titles cleanly.
+    m = re.split(r"(?<=[.!?])\s|\n|  +|;\s", t, maxsplit=1)
+    head = (m[0] if m else t).strip(" -–—:")
+    # Best-practice shaping (AMUX-2163): strip conversational filler so the
+    # title is the ACTION, drop a leading discourse marker, sentence-case a
+    # lowercase opener, trim trailing punctuation. Applied to the derived
+    # clause only — the model is not called (see docstring).
+    head = re.sub(r"^(?:"
+                  r"(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
+                  r"i\s+(?:want|need|would\s+like)\s+(?:you\s+)?(?:to\s+)?|"
+                  r"i'?d\s+like\s+(?:you\s+)?(?:to\s+)?|"
+                  r"let'?s\s+|we\s+(?:should|need\s+to)\s+|"
+                  r"please\s+|kindly\s+|pls\s+|"
+                  r"(?:also|so|and|oh|ok|okay|hey|yeah|yea|um)[,\s]+)+",
+                  "", head, flags=re.I).strip(" -–—:,")
+    head = head.rstrip(".!?,; ").strip()
+    if head and head[0].islower():
+        head = head[0].upper() + head[1:]
+    if len(head) > 80:
+        head = head[:77].rsplit(" ", 1)[0] + "…"
+    return head or (t[:60] or "Task")
+
+
+def _autotask_from_command(session_name: str, text: str):
+    """One board card per human command, when the toggle is on.
+
+    The user should not have to remember to file the work; the board is only a
+    source of truth if it captures what was actually asked without anyone
+    thinking about it. Skips pure control words ('continue', 'yes') — those
+    steer the task already in flight rather than starting a new one, and a card
+    for each would bury the cards that mean something."""
+    if not _autotask_enabled():
+        return
+    try:
+        stripped = re.sub(r"^\[.*?\]\s*", "", text or "").strip().lower().rstrip(".!?")
+        if len(stripped) < _AUTOTASK_MIN_CHARS or stripped in _AUTOTASK_SKIP:
+            return
+        if stripped.startswith("/"):
+            cmd = stripped[1:].split()[0] if len(stripped) > 1 else ""
+            if cmd in _AUTOTASK_SLASH_CONTROL or " " not in stripped:
+                return
+        threading.Thread(
+            target=_auto_create_board_issue,
+            args=(session_name, _autotask_title(text), text),
+            daemon=True, name=f"autotask-{session_name}").start()
+    except Exception as e:
+        slog(f"[autotask] {session_name}: {e}")
+
+
 def _summarize_task_bg(session_name: str, text: str):
     """Summarize a message into a 3-word task label via `claude -p`, then auto-create a board issue.
     For vague one-word inputs (continue, yeah, etc.) supplements with recent terminal output.
@@ -9248,7 +10812,7 @@ def _summarize_task_bg(session_name: str, text: str):
             result = subprocess.run(
                 [
                     "claude", "-p",
-                    "--model", "haiku",
+                    "--model", _HELPER_MODEL,
                     "--system-prompt", "You are a task labeler. Output ONLY 3 words in title case. No punctuation, no explanation.",
                     "--no-session-persistence",
                     prompt,
@@ -9266,10 +10830,78 @@ def _summarize_task_bg(session_name: str, text: str):
                 summary = "Re: " + summary
             if summary:
                 _update_meta(session_name, task_summary=summary)
-                _auto_create_board_issue(session_name, summary, text)
+                if not _autotask_enabled():
+                    # When autotask is on, the card already exists with the
+                    # prompt's own first clause as its title — a second create
+                    # here was the double-fire (AMUX-2114): _auto_create never
+                    # retitles (MO-2952), and the invented 3-word label dilutes
+                    # the fold-dedupe word overlap below threshold ("Status
+                    # Update Check" vs "status of it ?" = 0.33), so "improve
+                    # the title later" materialized as a twin card instead.
+                    # This path's product is the session label above; the card
+                    # is autotask's. Card-create remains only for fleets with
+                    # autotask disabled, where this is the sole capture path.
+                    _auto_create_board_issue(session_name, summary, text)
         except Exception:
             pass
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _is_same_task(issue_id: str, title: str, prompt_text: str) -> bool:
+    """True if this prompt is a REPEAT of what `issue_id` already tracks.
+
+    The whole point of splitting cards is that a distinct task gets its own
+    card; the whole point of keeping folding is that a re-sent or lightly
+    re-worded instruction should not spawn a near-duplicate. Compares against
+    the card's title and everything already folded into it, on a word-overlap
+    ratio — deliberately crude, because the failure modes are asymmetric: a
+    missed fold costs one extra card you can discard, a wrong fold silently
+    buries a real task inside another card, which is the bug being fixed."""
+    try:
+        row = get_db().execute("SELECT title, desc, log FROM issues WHERE id=?", (issue_id,)).fetchone()
+        if not row:
+            return False
+        def words(s):
+            return {w for w in re.findall(r"[a-z0-9]{4,}", (s or "").lower())}
+        incoming = words(title) | words(prompt_text[:300])
+        if not incoming:
+            return True          # nothing to distinguish it by — fold, do not spawn noise
+        # Compare against the title and each folded entry separately: a card with
+        # 40 folds accumulates enough vocabulary to match almost anything if the
+        # whole desc is treated as one bag of words.
+        cands = [row["title"] or ""]
+        cands += re.findall(r"New task:\s*(.+)",
+                            (row["desc"] or "") + "\n" + (row["log"] or ""))
+        for c in cands:
+            cw = words(c)
+            if not cw:
+                continue
+            if len(incoming & cw) / len(incoming) >= 0.6:
+                return True
+        return False
+    except Exception:
+        return True              # on error, preserve today's behaviour rather than spawning
+
+
+def _stamp_msg_card(session_name: str, prompt_text: str, card_id: str):
+    """Stamp the capture's card id onto the message row it came from
+    (AMUX-2143): exact text+session match, newest unstamped row. Retries
+    briefly because /send fires capture BEFORE it records history — the
+    steer path records first, so ordering differs per path."""
+    for _ in range(4):
+        try:
+            db = get_db()
+            cur = db.execute(
+                "UPDATE cmd_history SET card_id=? WHERE id=("
+                "SELECT id FROM cmd_history WHERE session=? AND text=? "
+                "AND card_id IS NULL ORDER BY ts DESC LIMIT 1)",
+                (card_id, session_name, prompt_text))
+            db.commit()
+            if cur.rowcount:
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
 
 
 def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
@@ -9291,42 +10923,105 @@ def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
             (session_name,)
         ).fetchone()
         now = int(time.time())
-        if existing:
-            # An active agent card already exists for this session — LOG the new
-            # prompt against it, but NEVER overwrite its title or flip its status.
-            # (2026-07-06) Auto-retitling with a haiku summary + auto-moving to
-            # 'doing' on every inbound message clobbered manually-managed cards
-            # (orch MO-2952/2963 incident) — and it's the same footgun the codebase
-            # already forbids in _complete_session_board_issue: a status/title
-            # change must be a deliberate act, never a side effect of run-state.
+        if existing and _is_same_task(existing["id"], title, prompt_text):
+            # A genuine REPEAT of the task this card already tracks — fold it, so a
+            # re-sent or re-phrased instruction does not spawn a near-duplicate.
+            # Still never overwrites the title or flips the status: auto-retitling
+            # on every inbound message clobbered manually-managed cards
+            # (MO-2952/2963 incident, 2026-07-06), and a status/title change must
+            # be a deliberate act, never a side effect of run-state.
             _append_board_log(existing["id"], f"New task: {prompt_text[:200]}")
+            _stamp_msg_card(session_name, prompt_text, existing["id"])
             return
-        # Create new issue
+        if existing:
+            # A DISTINCT task arrived while another card is open. Folding it into
+            # that card is what turned cards into session journals: 421 cards
+            # carried folded tasks and MO-2963 reached 451, at which point it is
+            # not a task at all — nothing is done or not-done, so no gate can
+            # govern it. Give the new work its own card instead.
+            #
+            # It lands in 'todo', NOT 'doing': the session already has something
+            # in flight, and auto-starting a second one would break WIP-1 and make
+            # "what is being worked on" untrue. Creating a card cannot clobber the
+            # existing one, so the incident this replaces stays fixed.
+            # Dedupe-at-mint (AMUX-2207): the same prompt re-delivered an hour apart
+            # minted twin cards (MG-1382/1383 — identical body, identical title,
+            # both routed to pickup). While an identical OPEN capture exists for
+            # this session, re-capture is a no-op: the ledger already has it.
+            _dup = db.execute(
+                "SELECT id FROM issues WHERE session=? AND title=? AND deleted IS NULL "
+                "AND status NOT IN ('done','verified','discarded') "
+                "AND COALESCE(log,'') LIKE '%capture: session prompt%' LIMIT 1",
+                (session_name, title)).fetchone()
+            if _dup:
+                slog(f"[board] {session_name}: duplicate prompt capture suppressed "
+                     f"({_dup['id']} already open with identical title)")
+                _stamp_msg_card(session_name, prompt_text, _dup["id"])
+                return
+            prefix = _prefix_from_session(session_name)
+            item_id = _next_issue_id(prefix)
+            # notified=1 at birth: the session already RECEIVED this prompt as
+            # its live command; the card is the ledger of it, not news. Born at
+            # 0, the first later patch of any kind (even a desc edit) tripped
+            # the assignment notifier and re-announced the card hours stale.
+            db.execute(
+                """INSERT INTO issues (id, title, desc, status, session, creator, created, updated, owner_type, notified)
+                   VALUES (?, ?, ?, 'todo', ?, 'amux', ?, ?, 'agent', 1)""",
+                (item_id, title, f"**Prompt:** {prompt_text[:300]}", session_name, now, now),
+            )
+            db.commit()
+            # Durable capture marker (amux-cloud finding, 2026-08-01): the
+            # not-a-task guard used to regex the DESC for '**Prompt:**', so
+            # annotating a spurious card ("NOT A TASK — ...") REMOVED the
+            # marker and re-armed pickup forever — the honest act broke the
+            # protection. The log survives every desc rewrite (AMUX-2112).
+            _append_board_log(item_id, "capture: session prompt")
+            _stamp_msg_card(session_name, prompt_text, item_id)
+            _board_changed()
+            slog(f"[board] {session_name}: new task -> {item_id} (queued alongside {existing['id']})")
+            return
+        # Create new issue (same dedupe as the queued path — AMUX-2207)
+        _dup2 = db.execute(
+            "SELECT id FROM issues WHERE session=? AND title=? AND deleted IS NULL "
+            "AND status NOT IN ('done','verified','discarded') "
+            "AND COALESCE(log,'') LIKE '%capture: session prompt%' LIMIT 1",
+            (session_name, title)).fetchone()
+        if _dup2:
+            slog(f"[board] {session_name}: duplicate prompt capture suppressed "
+                 f"({_dup2['id']} already open with identical title)")
+            _stamp_msg_card(session_name, prompt_text, _dup2["id"])
+            return
         prefix = _prefix_from_session(session_name)
         item_id = _next_issue_id(prefix)
         db.execute(
-            """INSERT INTO issues (id, title, desc, status, session, creator, created, updated, owner_type)
-               VALUES (?, ?, ?, 'doing', ?, 'amux', ?, ?, 'agent')""",
+            """INSERT INTO issues (id, title, desc, status, session, creator, created, updated, owner_type, notified)
+               VALUES (?, ?, ?, 'doing', ?, 'amux', ?, ?, 'agent', 1)""",
             (item_id, title, f"**Prompt:** {prompt_text[:300]}", session_name, now, now),
         )
         db.commit()
+        _append_board_log(item_id, "capture: session prompt")  # durable marker, see above
+        _stamp_msg_card(session_name, prompt_text, item_id)
         _board_changed()
     except Exception as e:
         print(f"[board] auto-create failed for {session_name}: {e}", flush=True)
 
 
 def _append_board_log(issue_id: str, line: str):
-    """Append an action line to a board issue's description."""
+    """Append an action line to a board issue's append-only system log.
+
+    NOT desc: desc is writer-owned narrative and gets wholesale-replaced by
+    every PATCH and by the detail-panel textarea, which silently destroyed
+    appended history (AMUX-2112). log has no PATCH path at all."""
     try:
         db = get_db()
-        row = db.execute("SELECT desc FROM issues WHERE id=?", (issue_id,)).fetchone()
+        row = db.execute("SELECT log FROM issues WHERE id=?", (issue_id,)).fetchone()
         if not row:
             return
-        desc = row["desc"] or ""
+        log = row["log"] or ""
         ts = time.strftime("%H:%M")
-        desc = desc.rstrip() + f"\n`{ts}` {line}"
-        db.execute("UPDATE issues SET desc=?, updated=? WHERE id=?",
-                   (desc, int(time.time()), issue_id))
+        log = (log.rstrip() + f"\n`{ts}` {line}").strip()
+        db.execute("UPDATE issues SET log=?, rev=COALESCE(rev,0)+1, updated=? WHERE id=?",
+                   (log, int(time.time()), issue_id))
         db.commit()
         _board_changed()
     except Exception:
@@ -9367,6 +11062,332 @@ def _complete_session_board_issue(session_name: str):
 _autopickup_danger_flagged: set = set()
 
 
+_autopickup_junk_flagged: set = set()   # card-log SKIPPED note fired once per card (AMUX-2128)
+_DECOMPOSE_NUDGE_COOLDOWN = 6 * 3600    # decompose-dispatch cooldown; durably enforced via session_events
+
+
+# IRREVERSIBLE-ACTION GUARD (orch, 2026-07-26): a card can carry careful
+# "do not drop without confirmation" prose, but PROSE DOES NOT BIND AN
+# AUTOMATED READER — an agent auto-executing the card scrolls straight
+# past the warning and does the destructive thing the warning forbade.
+# So the CONSUMER enforces, not the card text: anything naming an
+# unrecoverable operation is never auto-executed. It stays in todo for a
+# human to dispatch, and the owner is told why.
+# NOT-A-TASK GUARD. Auto-pickup says "work it now", which is meaningless
+# for a card that is not a single unit of work. Two shapes qualify, and
+# both were in the eligible pool the moment pickup went fleet-wide
+# (2026-07-30: 345 eligible, 66 journals, 16 test artifacts):
+#
+#   JOURNALS — cards with tasks folded into the desc. One reached 451
+#   folds. Nothing about them is done or not-done, so no gate governs
+#   them and there is no state in which finishing is possible. The fold
+#   fix stops NEW ones forming; these already exist.
+#
+#   PROBE/TEST ARTIFACTS — leftovers from verification runs, including
+#   my own. The first card this loop handed a session after going
+#   fleet-wide was AMUX-1848, titled "[probe-stale] 1784823029868" with
+#   47 folds.
+#   CAPTURED PROMPTS — a card whose whole body is one harvested
+#   conversational turn. Talking to an agent created cards, pickup
+#   dispatched them back to that same agent, and its replies produced
+#   more: a closed loop. On 2026-07-30 it emitted eight in a row to one
+#   session (AC-129..AC-136), including "/compact" and two duplicate
+#   pairs of the same turn. None was a unit of work, so no gate could be
+#   honestly satisfied and none could be cleared — they re-queue after
+#   the cooldown forever. Matches ONLY when the desc is nothing but the
+#   prompt block, so a real card that quotes its originating prompt
+#   alongside actual content is unaffected.
+def _pickup_junk_reason(title: str, desc: str) -> str:
+    """Why auto-pickup must refuse this card, or '' if it is a real task.
+    ORDER (MG ground truth, 2026-08-02, second revision): marker ->
+    artifact/dormant -> STRUCTURE VETO -> journal -> shell. Structure now
+    beats the fold count: MG-1328 (7,111 chars, root cause, named fix)
+    carries 33 fold lines as RESIDUE of the folding era in its desc and is
+    a real card; a true journal (the 451-fold class) has folds and no
+    structure. Structure = my markers OR 2+ ALLCAPS-PHRASE: section heads
+    (THE DEFECT: / CONSEQUENCE: / NOTE ON SCOPE: ...), which real
+    investigation cards use and 26-312-char shells never do. Dormancy
+    still beats structure (a structured tripwire is not dispatchable).
+    Every caller passes the SAME inputs (title, desc+log)."""
+    _folds = len(re.findall(r"New task:", desc))
+    if "capture: session prompt" in desc and _folds < 2:
+        return "captured chat prompt, not a unit of work"
+    if re.search(r"^\s*\[?(probe|temp|test)\b|\bprobe-stale\b|\bcanary\b|"
+                 r"\btripwire\b|\barmed watch\b", title or "", re.I):
+        return "looks like a test artifact or armed tripwire"
+    _caps_heads = len(re.findall(r"^[A-Z][A-Z0-9 /'-]{3,40}:", desc or "", re.M))
+    if (_caps_heads >= 2
+        or re.search(r"^#{1,3}\s|\bsuccess criteri|\bacceptance criteri|^SCOPE:|^- \[[ x]\]|"
+                     r"\bgate(?:_checked| policy| criteria)\b|\bROOT CAUSE\b|\bunhappy path",
+                     desc or "", re.I | re.M)):
+        return ""
+    if _folds >= 2:
+        return "journal card ({} folded tasks)".format(_folds)
+    _pm = re.match(r"^\s*\*\*Prompt:\*\*\s*(?:\[[^\]]*\]\s*)?(.*)$",
+                   (desc or "").strip(), re.S)
+    if _pm:
+        _body = _pm.group(1).strip()
+        return ("harness slash command, not a task" if _body.startswith("/")
+                else "captured chat prompt, not a unit of work")
+    return ""
+
+_advance_last: dict = {}
+_ADVANCE_COOLDOWN = 15 * 60     # never push the same lane twice inside this window
+
+
+def _advance_open_card(session_name: str) -> bool:
+    """A session that goes idle holding an in-flight card gets pushed to finish it.
+
+    _pickup_next_board_task only promotes a `todo`, so a lane sitting on a
+    `doing` card was invisible to every autonomy path amux had: the task-guard
+    stays silent because a doing card exists, and pickup stays silent because
+    it will not break WIP-1. mixpeek-general went idle with 36 open cards, wrote
+    "Next up: MG-1362" in its own last message, and nothing moved it.
+
+    Pushes rather than promotes: the session decides whether the card is done,
+    blocked, or still live. Never forces a status — a nudge that closed cards
+    itself would be the fake-progress the gates exist to prevent.
+
+    Returns True iff it sent something."""
+    try:
+        cfg = parse_env_file(CC_SESSIONS / f"{session_name}.env")
+        if cfg.get("CC_AUTO_PICKUP", "").strip().lower() in ("0", "false", "no", "off"):
+            return False
+        # The nudge is DELIVERED with send_text, which makes the session active
+        # and then idle again — the same self-retriggering loop the task-guard
+        # hit today. The cooldown, not the idle transition, is what bounds this.
+        last = _advance_last.get(session_name, 0)
+        if last and (time.time() - last) < _ADVANCE_COOLDOWN:
+            return False
+        db = get_db()
+        row = db.execute(
+            "SELECT id, title, status, type FROM issues WHERE session=? AND deleted IS NULL "
+            "AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent' "
+            "ORDER BY updated DESC LIMIT 1", (session_name,)).fetchone()
+        if not row:
+            return False
+        # Same not-a-task guard as auto-pickup. Pushing a session to "advance"
+        # a journal card asks for exactly the false progress the gates exist to
+        # prevent: there is no state in which 47 folded tasks are collectively
+        # done, so any move it makes is a lie. Guarding pickup but not this left
+        # the loop still handing sessions uncompletable work — the second half
+        # of the same bug (2026-07-30).
+        _it = _item_by_id(row["id"]) or {}
+        _d = (_it.get("desc") or "") + "\n" + (_it.get("log") or "")
+        # ONE predicate, same inputs as pickup (MG three-verdicts incident):
+        # this block used to inline its own copy of the journal/artifact
+        # regexes, which diverged from the shared predicate the moment the
+        # shared one gained the structure veto — three paths, three verdicts,
+        # one unchanged card.
+        why = _pickup_junk_reason(row["title"] or "", _d)
+        if why:
+            slog(f"[advance] {session_name}: not nudging on {row['id']} — {why}")
+            _append_board_log(row["id"], f"Advance-nudge SKIPPED — {why}; split it into real cards "
+                                         f"or discard it. A session cannot honestly finish this.")
+            return False
+        nxt = db.execute(
+            "SELECT COUNT(*) AS n FROM issues WHERE session=? AND deleted IS NULL "
+            "AND COALESCE(archived,0)=0 AND status IN ('todo','backlog') AND owner_type='agent'",
+            (session_name,)).fetchone()
+        queued = (nxt["n"] if nxt else 0)
+        item = _item_by_id(row["id"]) or {}
+        # Dependency edge: if the held card is blocked, the useful push is at
+        # the BLOCKER, not the holder. Same-session dependency -> redirect the
+        # nudge to it; another lane's -> say so and do not nudge the holder.
+        _blocking = _deps_blocking(item)
+        if _blocking:
+            _dep_id = _blocking[0]
+            _dep = _item_by_id(_dep_id) or {}
+            if (_dep.get("session") or "") == session_name:
+                if not is_running(session_name):
+                    return False
+                ok, err = send_text(session_name,
+                    f"[amux] {row['id']} is blocked by {_dep_id} ({(_dep.get('title') or '')[:80]}), "
+                    f"which is YOURS. Work the dependency first: drive {_dep_id} through its gates, "
+                    f"then return to {row['id']}. Do not mark {row['id']} done while its dependency is open.",
+                    defer_if_busy=True)
+                if ok:
+                    _advance_last[session_name] = time.time()
+                    _cmd_hist_record(session_name, f"[amux] advance: work dependency {_dep_id} of {row['id']}", "system", "advance")
+                    slog(f"[advance] {session_name}: routed to dependency {_dep_id} of {row['id']}")
+                return bool(ok)
+            slog(f"[advance] {session_name}: {row['id']} blocked by {_dep_id} ({_dep.get('session') or 'unassigned'}) — not nudging the holder")
+            return False
+        # Reviewer edge: a card in review with a named reviewer is the REVIEWER's
+        # work now — pushing the author asks for a self-ack the transition refuses.
+        _rev = (item.get("reviewer") or "").strip()
+        if row["status"] == "review" and _rev and _rev != session_name:
+            if not is_running(_rev):
+                slog(f"[advance] {row['id']} awaits reviewer {_rev}, which is not running — skipping")
+                return False
+            ok, err = send_text(_rev,
+                f"[amux] {row['id']} ({(row['title'] or '')[:80]}) sits in review and names YOU as "
+                f"reviewer. Review it: if the work holds, ack review->done yourself (your "
+                f"X-Amux-Session is the required sign-off); if not, say what fails on the card. "
+                f"The author cannot close it.",
+                defer_if_busy=True)
+            if ok:
+                _advance_last[session_name] = time.time()
+                _cmd_hist_record(_rev, f"[amux] review requested: {row['id']}", "system", "advance")
+                slog(f"[advance] routed review of {row['id']} to reviewer {_rev}")
+            return bool(ok)
+        gate_next = "review" if row["status"] == "doing" else "done"
+        gate = _effective_gate(item, gate_next) or []
+        gate_txt = "\n".join(f"  - {g}" for g in gate) or "  (no gate configured)"
+        msg = (
+            f"[amux] You went idle holding {row['id']} in '{row['status']}': "
+            f"{(row['title'] or '')[:110]}\n\n"
+            f"Keep driving it. Do exactly one of:\n"
+            f"  1. Advance it. The gate for '{gate_next}' is:\n{gate_txt}\n"
+            f"     Satisfy those honestly and move it, then continue to the next card.\n"
+            f"  2. If it is genuinely finished, close it out to verified with the evidence.\n"
+            f"  3. If it is BLOCKED, say what on — and if the blocker is another card, "
+            f"go work that dependency instead of waiting.\n"
+            f"  4. If it is blocked on a HUMAN decision, record that on the card and pick up "
+            f"the next unblocked one.\n"
+            f"  5. If NEITHER done nor todo would be a TRUE statement about this card — a "
+            f"standing role, a journal, a mis-shape — it cannot rot because it cannot finish: "
+            f"DISCARD it with a note pointing at the closable units (or retype it "
+            f"tripwire/watch if it is a real dormant watch).\n\n"
+            f"You have {queued} more card(s) queued. Do not stall on a full queue: the aim is "
+            f"every card driven to verified, working dependencies first. Never --force a gate "
+            f"you cannot satisfy — an honest blocker beats a false 'done'."
+        )
+        if not is_running(session_name):
+            return False
+        # send_text returns (ok, err) and CAN fail or defer. Stamping the
+        # cooldown and logging "pushed" without checking would claim a delivery
+        # that never happened AND buy 15 minutes of silence for a lane that
+        # received nothing — the same defect as discarding a response body.
+        ok, err = send_text(session_name, msg, defer_if_busy=True)
+        if not ok:
+            slog(f"[advance] {session_name}: send failed ({err}) — not starting the cooldown")
+            return False
+        _advance_last[session_name] = time.time()
+        # Record it in the Messages history like every other system send.
+        # send_text alone does NOT record (only the API send path does), so
+        # without this the nudge was invisible in the one surface built for
+        # "what was sent to this session" — unverifiable by exactly the person
+        # trying to check whether the autonomy loop is working.
+        _cmd_hist_record(session_name, msg, "system", "advance")
+        _ilog("session", "advance_nudge", actor="amux", target=session_name,
+              detail={"card": row["id"], "status": row["status"], "queued": queued},
+              # ok from send_text with defer_if_busy means ACCEPTED, which is not
+              # the same as landed in the terminal. Say what is actually known.
+              result={"accepted": True, "deferred_if_busy": True})
+        slog(f"[advance] {session_name}: pushed on {row['id']} ({row['status']}, {queued} queued)")
+        return True
+    except Exception as e:
+        slog(f"[advance] {session_name}: {e}")
+        return False
+
+
+def _stamp_evicted_dependents(evicted) -> int:
+    """Before cards leave the board, tell every OPEN card that references them.
+
+    Eviction does not just lose history — an open card waiting on the evicted
+    id would wait forever, and once the id resolves to nothing nobody can tell
+    what the dependency MEANT, so the honest triage outcome "still real,
+    re-point it" becomes unreachable (MO-3049; confirmed in two lanes). The
+    stamp carries the dead id AND its title while the title still exists,
+    lands in the append-only log (desc writes cannot destroy it, AMUX-2112),
+    and strips the structured edge so the autonomy loop unblocks. Prose
+    references keep their text — their semantics belong to the owning lane.
+    evicted: iterable of (id, title). Returns cards stamped."""
+    stamped = 0
+    try:
+        db = get_db()
+        open_rows = db.execute(
+            "SELECT id, depends_on, COALESCE(desc,'') AS d, COALESCE(log,'') AS l "
+            "FROM issues WHERE deleted IS NULL "
+            "AND status NOT IN ('done','verified','discarded')").fetchall()
+        for cid, title in evicted:
+            pat = re.compile(re.escape(cid) + r"(?![0-9])")  # AMUX-2 must not match AMUX-21
+            for r in open_rows:
+                if r["id"] == cid:
+                    continue
+                blob = (r["depends_on"] or "") + "\n" + r["d"] + "\n" + r["l"]
+                if not pat.search(blob):
+                    continue
+                if f"EVICTED-DEPENDENCY: {cid}" in r["l"]:
+                    continue
+                deps = []
+                try:
+                    deps = json.loads(r["depends_on"] or "[]")
+                except Exception:
+                    deps = []
+                if cid in deps:
+                    deps = [x for x in deps if x != cid]
+                    db.execute("UPDATE issues SET depends_on=? WHERE id=?",
+                               (json.dumps(deps) if deps else None, r["id"]))
+                _t = (title or "").strip()
+                _append_board_log(r["id"],
+                    f"EVICTED-DEPENDENCY: {cid}" + (f" — '{_t[:80]}'" if _t else "")
+                    + " left the board (evicted/cleared); a wait on it can never"
+                      " complete. If the work is alive elsewhere, re-point this"
+                      " card; otherwise drop the reference.")
+                stamped += 1
+        db.commit()
+    except Exception as e:
+        slog(f"[board] evicted-dependents stamp failed: {e}")
+    return stamped
+
+
+def _title_trigrams(t: str) -> set:
+    t = re.sub(r"[^a-z0-9 ]", " ", (t or "").lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    return {t[i:i+3] for i in range(max(0, len(t) - 2))}
+
+
+def _similar_open_cards(title: str, exclude_session: str, db=None, limit: int = 3) -> list:
+    """Open cards from OTHER sessions whose titles trigram-match this one
+    (AMUX-2202 / MG audit #7: four sessions independently investigated ONE
+    deploy revert-loop because nothing surfaced the overlap at filing time).
+    Pure computation — no model call; a dumb trigram catches MHC-283 vs
+    MG-1381 and that is the bar."""
+    tg = _title_trigrams(title)
+    if len(tg) < 8:
+        return []                     # too short to score meaningfully
+    db = db or get_db()
+    rows = db.execute(
+        "SELECT id, session, title FROM issues WHERE deleted IS NULL "
+        "AND status IN ('todo','doing','review','backlog') "
+        "AND session IS NOT NULL AND session != ? "
+        "ORDER BY updated DESC LIMIT 400", (exclude_session or "",)).fetchall()
+    out = []
+    for r in rows:
+        og = _title_trigrams(r["title"] or "")
+        if not og:
+            continue
+        sim = len(tg & og) / max(1, len(tg | og))
+        if sim >= 0.45:
+            out.append({"id": r["id"], "session": r["session"],
+                        "title": (r["title"] or "")[:80], "sim": round(sim, 2)})
+    out.sort(key=lambda x: -x["sim"])
+    return out[:limit]
+
+
+def _deps_blocking(item) -> list:
+    """Card ids in item.depends_on that are still OPEN (deleted/absent do not
+    block). This is the edge the autonomy loop traverses: prose like 'BLOCKS
+    AC-138' was invisible to it; a field is not."""
+    try:
+        deps = item.get("depends_on") or []
+        if isinstance(deps, str):
+            deps = json.loads(deps or "[]")
+        if not deps:
+            return []
+        db = get_db()
+        out = []
+        for d in deps:
+            row = db.execute("SELECT status FROM issues WHERE id=? AND deleted IS NULL", (d,)).fetchone()
+            if row and _status_canon(row["status"]) not in ("done", "verified", "discarded"):
+                out.append(d)
+        return out
+    except Exception:
+        return []
+
+
 def _pickup_next_board_task(session_name: str):
     """Pick up the next queued (todo) board task for this session — OPT-IN only.
     Called when a session goes idle; moves the oldest agent todo to 'doing' and
@@ -9386,13 +11407,44 @@ def _pickup_next_board_task(session_name: str):
     AMUX-1471 (footgun hit by MO-2029 / MS-921)."""
     try:
         cfg = parse_env_file(CC_SESSIONS / f"{session_name}.env")
-        if cfg.get("CC_AUTO_PICKUP", "").strip().lower() not in ("1", "true", "yes"):
-            return  # not opted into the autonomous loop
+        # OPT-OUT, not opt-in (2026-07-30). As opt-in this reached 4 of 101
+        # sessions, so 97 lanes went idle on a full queue and stayed there:
+        # mixpeek-general sat idle holding 36 open cards, having named its own
+        # next card in its last message. An autonomy loop nobody is enrolled in
+        # is not an autonomy loop. Every guard below still applies — freshness,
+        # re-claim cooldown, agent-only, and the irreversible-operation refusal —
+        # so what changed is enrollment, not what may be auto-run.
+        if cfg.get("CC_AUTO_PICKUP", "").strip().lower() in ("0", "false", "no", "off"):
+            return  # explicitly opted out of the autonomous loop
         time.sleep(3)
         db = get_db()
-        row = db.execute(
-            "SELECT id, title, desc FROM issues i "
+        # WIP cap (MG audit #3): pickup claimed via raw UPDATE, bypassing the
+        # limit the PATCH path enforces — one session accumulated TWELVE doing
+        # cards, a lie every other session reads. At/over the cap, the lane
+        # already has work; pickup queues by doing nothing.
+        _wip_cap = int(os.environ.get("AMUX_MAX_DOING_PER_SESSION", "1") or 1)
+        _doing_n = db.execute(
+            "SELECT COUNT(*) FROM issues WHERE session=? AND status='doing' "
+            "AND deleted IS NULL "
+            # Dormant types don't consume WIP (MG follow-up): an armed
+            # tripwire 'costs nothing until it fires' and can never be
+            # completed by working it — one held a lane's entire WIP-1
+            # budget indefinitely. type is the honest discriminator
+            # (ethos #3: fix the type, not the truth).
+            "AND COALESCE(type,'') NOT IN ('tripwire','watch')",
+            (session_name,)).fetchone()[0]
+        if _doing_n >= _wip_cap:
+            return
+        rows = db.execute(
+            "SELECT id, title, desc, log FROM issues i "
             "WHERE session=? AND status='todo' AND owner_type='agent' AND deleted IS NULL "
+            # Archived cards stay SEARCHABLE but are never auto-grabbed
+            # (Ethan 2026-08-02) — this filter was missing here alone.
+            "AND COALESCE(archived,0)=0 "
+            # A dormant card (tripwire/watch) is not dispatchable work — it
+            # arms and waits. The loop never claims one; a human or the
+            # firing event moves it.
+            "AND COALESCE(type,'') NOT IN ('tripwire','watch') "
             # Freshness gate: never auto-run a card nobody has touched in 7+
             # days — fossils get triaged/parked by a human, not silently
             # executed at idle (2026-07-23 sweep found 337 such cards; blind
@@ -9407,34 +11459,119 @@ def _pickup_next_board_task(session_name: str):
             "AND NOT EXISTS (SELECT 1 FROM session_events e "
             "                WHERE e.type='task.claimed' AND e.ts > ? "
             "                AND e.data LIKE '%\"' || i.id || '\"%') "
-            "ORDER BY created ASC LIMIT 1",
+            # Board drag order IS the priority queue (AMUX-2128): pos is what
+            # the user reorders in the UI, so dragging a card up prioritizes
+            # it for pickup. created breaks ties for never-dragged cards.
+            "ORDER BY COALESCE(pos, 0) ASC, created ASC LIMIT 16",
             (session_name, int(time.time()) - 7 * 86400, time.time() - 86400)
-        ).fetchone()
+        ).fetchall()
+        # Dependency edges: skip cards whose depends_on is still open. Fetch a
+        # few candidates so one blocked card does not stall the whole queue.
+        row = None
+        for cand in (rows or []):
+            blocking = _deps_blocking(_item_by_id(cand["id"]) or {})
+            if blocking:
+                slog(f"[auto-pickup] {session_name}: {cand['id']} blocked by {blocking} — skipping")
+                continue
+            # Prose-dependency FALLBACK (MG audit #2 + their red-test report):
+            # fires ONLY when depends_on is EMPTY. Card ids in prose are
+            # ambiguous by nature — MG-1363's blocker names Ray-6a in words
+            # but the only id in it is the EPIC it cites for authority, so a
+            # prose match would skip it for the WRONG reason: right answer via
+            # wrong mechanism, broken the day the coincidence lapses. The
+            # structured field is the unambiguous edge; when the fallback
+            # fires it logs LOUDLY so someone populates depends_on.
+            _has_deps = bool((_item_by_id(cand["id"]) or {}).get("depends_on"))
+            if not _has_deps:
+                _dep_blob = (cand["title"] or "") + "\n" + (cand["desc"] or "")
+                _pm2 = re.search(r"(?:blocked\s+(?:by|on)|cannot\s+start\s+until|"
+                                 r"depends\s+on|waits?\s+(?:for|on))\s+.{0,40}?"
+                                 r"\b([A-Z][A-Z]+-\d+)(?![0-9])", _dep_blob)
+                if _pm2:
+                    _dep_item = _item_by_id(_pm2.group(1))
+                    if _dep_item and _dep_item.get("status") not in ("done", "verified", "discarded"):
+                        slog(f"[auto-pickup] {session_name}: {cand['id']} prose-blocked by "
+                             f"{_pm2.group(1)} ({_dep_item.get('status')}) — skipping; "
+                             f"POPULATE depends_on (prose is an ambiguous fallback)")
+                        if cand["id"] not in _autopickup_junk_flagged:
+                            _autopickup_junk_flagged.add(cand["id"])
+                            _append_board_log(cand["id"],
+                                f"Auto-pickup skipped on PROSE dependency ({_pm2.group(1)} open). "
+                                f"Prose cannot distinguish dependency from citation — set depends_on "
+                                f"to make this edge unambiguous.")
+                        continue            # Refusal guards run INSIDE the loop (AMUX-2128): they used to
+            # return, so one refusable card at the head of the queue stalled
+            # the entire lane forever — 81 clean todos sat behind refusable
+            # heads when this was measured. A refusal now tries the next
+            # candidate, and its card-log note fires once, not every tick.
+            _cid = cand["id"]
+            _ctitle = cand["title"] or ""
+            _cdesc = (cand["desc"] or "") + "\n" + ((cand["log"] if "log" in cand.keys() else "") or "")
+            _junk = _pickup_junk_reason(_ctitle, _cdesc)
+            if _junk:
+                slog(f"[auto-pickup] {session_name}: skipped {_cid} — {_junk}")
+                if _cid not in _autopickup_junk_flagged:
+                    _autopickup_junk_flagged.add(_cid)
+                    _append_board_log(_cid, f"Auto-pickup SKIPPED — {_junk}; needs a human to split or discard it.")
+                continue
+            _blob = (_ctitle + "\n" + _cdesc).lower()
+            _danger = re.search(r"stash\s+(drop|clear)|rm\s+-[rf]{1,2}\b|push\s+(--force|-f)\b|"
+                                r"reset\s+--hard|git\s+clean\s+-[a-z]*[fd]|drop\s+table|"
+                                r"truncate\s+table|delete\s+from\s+\w+\s*;|--no-preserve-root", _blob)
+            if _danger:
+                if _cid not in _autopickup_danger_flagged:
+                    _autopickup_danger_flagged.add(_cid)
+                    _append_board_log(_cid, f"Auto-pickup DECLINED — names an irreversible operation "
+                                            f"({_danger.group(0).strip()}); needs a human to dispatch.")
+                    slog(f"[auto-pickup] {session_name}: declined {_cid} — irreversible op "
+                         f"'{_danger.group(0).strip()}'")
+                    _push_alert("task_pickup", session_name,
+                                f"'{_cid}' was NOT auto-executed: it names an irreversible operation "
+                                f"('{_danger.group(0).strip()}'). Review and dispatch it yourself if intended.")
+                continue
+            row = cand
+            break
         if not row:
+            # Every candidate was refused. If the refusals were captured-prompt
+            # shells or journals and the lane is otherwise free, dispatch ONE
+            # decompose instruction instead of going silent (AMUX-2131): the
+            # guard is right that a shell is not a unit of work, but the fix is
+            # the session SPLITTING it — judgment the model does well — not the
+            # card rotting. Ethan's 13:30-17:00 audit found six shells parked
+            # on an idle gtm-engine lane exactly this way. Cooldown keeps it to
+            # one nudge per lane per 6h; irreversible-op declines stay silent
+            # (those need a human, and they already alerted once).
+            _shells = [(c["id"], (c["title"] or "")[:70]) for c in (rows or [])
+                       if _pickup_junk_reason(c["title"] or "",
+                                              (c["desc"] or "") + "\n" + ((c["log"] if "log" in c.keys() else "") or ""))]
+            if _shells:
+                # Cooldown must be DURABLE (same reason as the re-claim
+                # cooldown's task.claimed events): the in-memory dict was wiped
+                # by the very first reload after shipping, and the dispatch
+                # re-fired at the same lane within minutes. On a server that
+                # restarts many times a day, an in-memory cooldown is fiction.
+                _recent = get_db().execute(
+                    "SELECT 1 FROM session_events WHERE session=? AND type='pickup.decompose_nudge' "
+                    "AND ts > ? LIMIT 1",
+                    (session_name, time.time() - _DECOMPOSE_NUDGE_COOLDOWN)).fetchone()
+                if not _recent:
+                    _emit_event(session_name, "pickup.decompose_nudge",
+                                {"shells": [c for c, _ in _shells[:8]]},
+                                source="auto-pickup")
+                    _lst = "\n".join(f"  {cid} — {t}" for cid, t in _shells[:8])
+                    send_text(session_name,
+                        f"[amux auto-pickup] Your queue's next {len(_shells)} card(s) are captured "
+                        f"prompts or journals — not dispatchable as-is:\n{_lst}\n"
+                        f"Decompose each into real cards (one honest unit of work per card, correct "
+                        f"type), carry the content over, then discard the shell. Auto-pickup will "
+                        f"work the real cards at your next idle.")
+                    slog(f"[auto-pickup] {session_name}: dispatched decompose nudge for "
+                         f"{len(_shells)} shell card(s)")
             return
         item_id, title, desc = row["id"], row["title"], row["desc"] or ""
-        # IRREVERSIBLE-ACTION GUARD (orch, 2026-07-26): a card can carry careful
-        # "do not drop without confirmation" prose, but PROSE DOES NOT BIND AN
-        # AUTOMATED READER — an agent auto-executing the card scrolls straight
-        # past the warning and does the destructive thing the warning forbade.
-        # So the CONSUMER enforces, not the card text: anything naming an
-        # unrecoverable operation is never auto-executed. It stays in todo for a
-        # human to dispatch, and the owner is told why.
-        _blob = (title + "\n" + desc).lower()
-        _danger = re.search(r"stash\s+(drop|clear)|rm\s+-[rf]{1,2}\b|push\s+(--force|-f)\b|"
-                            r"reset\s+--hard|git\s+clean\s+-[a-z]*[fd]|drop\s+table|"
-                            r"truncate\s+table|delete\s+from\s+\w+\s*;|--no-preserve-root", _blob)
-        if _danger:
-            if item_id not in _autopickup_danger_flagged:
-                _autopickup_danger_flagged.add(item_id)
-                _append_board_log(item_id, f"Auto-pickup DECLINED — names an irreversible operation "
-                                           f"({_danger.group(0).strip()}); needs a human to dispatch.")
-                slog(f"[auto-pickup] {session_name}: declined {item_id} — irreversible op "
-                     f"'{_danger.group(0).strip()}'")
-                _push_alert("task_pickup", session_name,
-                            f"'{item_id}' was NOT auto-executed: it names an irreversible operation "
-                            f"('{_danger.group(0).strip()}'). Left in todo for you to run manually.")
-            return
+        # Fold lines moved from desc to the append-only log (AMUX-2112);
+        # old cards still carry them in desc — count across both.
+        desc = desc + "\n" + ((row["log"] if "log" in row.keys() else "") or "")
         now = int(time.time())
         db.execute("UPDATE issues SET status='doing', updated=? WHERE id=?", (now, item_id))
         _emit_event(session_name, "task.claimed", {"issue": item_id}, source="auto-pickup")
@@ -9461,6 +11598,234 @@ def _pickup_next_board_task(session_name: str):
                         f"'{session_name}' picked up queued task: {title[:80]}")
     except Exception as e:
         print(f"[board] pickup failed for {session_name}: {e}", flush=True)
+
+
+def _age_archive_sweep():
+    """Age-based auto-archive (Ethan 2026-08-02): any card untouched 3+ days
+    — INCLUDING discarded, done, open queues — moves to archived, where it
+    stays fully searchable but is never auto-grabbed. Every move leaves a
+    full trail: a History line naming AGE as the reason and the actor, plus
+    a board-audit row (kind='board', action='archive') with the prior state,
+    so when/why/by-whom is answerable per card forever (AMUX-2141 class).
+    Exclusions: pinned only (pin = never auto-archive, pre-existing
+    semantics). needs:you cards remain visible to Focus even when archived
+    — archiving organizes the board, it must not hide a decision owed."""
+    try:
+        db = get_db()
+        now = int(time.time())
+        last = 0
+        try:
+            row = db.execute("SELECT value FROM prefs WHERE key='age_archive_last'").fetchone()
+            last = int(json.loads(row[0])) if row else 0
+        except Exception:
+            last = 0
+        if now - last < 6 * 3600:
+            return
+        db.execute("INSERT INTO prefs (key, value) VALUES ('age_archive_last', ?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(now),))
+        db.commit()
+        cut = now - 3 * 86400
+        rows = db.execute(
+            "SELECT id, status, session, updated FROM issues WHERE deleted IS NULL "
+            "AND COALESCE(archived,0)=0 AND COALESCE(pinned,0)=0 AND updated < ? "
+            "LIMIT 2000", (cut,)).fetchall()
+        for r in rows:
+            _days = max(3, int((now - (r["updated"] or now)) / 86400))
+            _append_board_log(r["id"],
+                f"archived: AGE — untouched {_days}d (was {r['status']}; by amux age-sweep)")
+            _ilog("board", "archive", actor="amux-age-sweep", target=r["id"],
+                  detail={"reason": "age", "days_untouched": _days},
+                  before={"archived": 0, "status": r["status"], "session": r["session"]},
+                  ok=True)
+        if rows:
+            db.execute(
+                "UPDATE issues SET archived=1, rev=COALESCE(rev,0)+1 WHERE id IN (%s)"
+                % ",".join("?" * len(rows)), [r["id"] for r in rows])
+            db.commit()
+            _board_changed()
+        slog(f"[age-archive] archived {len(rows)} card(s) untouched 3d+")
+    except Exception as e:
+        slog(f"[age-archive] failed: {e}")
+
+
+def _verification_sweep():
+    """Loop 2 (throughput plan, Ethan go 2026-08-02): done != verified, and
+    NOTHING ever asked the owner to close the gap — 821 done cards, all
+    under a week old, none ever prompted. Once per ~20h, each live session
+    gets ONE message: its 10 oldest done agent-cards, verify with prod
+    evidence via the gates or say on-card why it stays done (an honest
+    terminal state). verify.requested events (durable) stop re-nagging a
+    card within 7 days. The verdict is model-authored by the owner —
+    compounds; amux only routes."""
+    try:
+        db = get_db()
+        now = int(time.time())
+        last = 0
+        try:
+            row = db.execute("SELECT value FROM prefs WHERE key='verify_sweep_last'").fetchone()
+            last = int(json.loads(row[0])) if row else 0
+        except Exception:
+            last = 0
+        if now - last < 20 * 3600:
+            return
+        db.execute("INSERT INTO prefs (key, value) VALUES ('verify_sweep_last', ?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(now),))
+        db.commit()
+        live = [s["name"] for s in list_sessions() if s.get("running") and not s.get("archived")]
+        sent = 0
+        for name in live:
+            rows = db.execute(
+                "SELECT id, title FROM issues i WHERE session=? AND status='done' "
+                "AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0 "
+                "AND NOT EXISTS (SELECT 1 FROM session_events e WHERE "
+                "  e.type='verify.requested' AND e.ts > ? AND e.data LIKE '%\"' || i.id || '\"%') "
+                "ORDER BY updated ASC LIMIT 10", (name, now - 7 * 86400)).fetchall()
+            if not rows:
+                continue
+            lst = "\n".join(f"  {r['id']} — {(r['title'] or '')[:70]}" for r in rows)
+            try:
+                _steer_enqueue(name,
+                    f"[amux verification sweep] {len(rows)} of your done cards await the "
+                    f"done→verified gap:\n{lst}\nFor each: move to verified WITH prod "
+                    f"evidence via its gates, or append one line on the card saying why it "
+                    f"honestly stays done. Never force a gate you cannot satisfy.")
+                ok = True
+            except Exception:
+                ok = False
+            if ok:
+                sent += 1
+                for r in rows:
+                    _emit_event(name, "verify.requested", {"issue": r["id"]},
+                                source="verification-sweep")
+        slog(f"[verify-sweep] batched {sent} session(s)")
+    except Exception as e:
+        slog(f"[verify-sweep] failed: {e}")
+
+
+def _caller_scope(headers):
+    """(scoped, tags, name) for the requesting SESSION; dashboard/no-header is
+    unscoped (Ethan tag-isolation policy, 2026-08-02): a session sees only
+    same-tag sessions and same-tag board cards; an untagged session sees only
+    itself and its own cards. The dashboard (no X-Amux-Session) sees all."""
+    name = (headers.get("X-Amux-Session") or "").strip()
+    if not name:
+        return (False, set(), "")
+    try:
+        info = get_session_info(name)
+    except Exception:
+        info = None
+    if not info:
+        # Unknown claimant: strictest honest scope — self only.
+        return (True, set(), name)
+    return (True, {t.lower() for t in (info.get("tags") or [])}, name)
+
+
+def _pick_reviewer(exclude_session: str) -> str | None:
+    """Least-loaded LIVE agent lane, never the card's own session (throughput
+    plan loop 1, Ethan go 2026-08-02): 189 review cards had 2 reviewers
+    between them — finished work waited because it was nobody's turn.
+    Deterministic (load, then name) — no model call; the REVIEW itself is the
+    model-judgment step and compounds with better models."""
+    try:
+        sess = [s for s in list_sessions() if s.get("running")
+                and s["name"] != exclude_session and not s.get("archived")]
+        if not sess:
+            return None
+        # CAPABILITY-AWARE (the `random` refusal, 2026-08-02): load-only
+        # routing sent monorepo cards to an Obsidian-vault session, which
+        # honestly declined all four — the contract held, the routing wasted
+        # a day. The work dir is the durable capability signal we have:
+        # prefer a lane in the SAME repo root as the author; require a lane
+        # whose dir is under ~/Dev at all (vault/personal lanes cannot review
+        # code they cannot open).
+        home_dev = str(Path.home() / "Dev")
+        def _root(d):
+            d = d or ""
+            if not d.startswith(home_dev):
+                return None
+            parts = d[len(home_dev):].strip("/").split("/")
+            return parts[0] if parts and parts[0] else None
+        author_dir = ""
+        try:
+            _ai = get_session_info(exclude_session) or {}
+            author_dir = _ai.get("dir") or ""
+        except Exception:
+            pass
+        author_root = _root(author_dir)
+        cands = [s for s in sess if _root(s.get("dir") or "")]
+        if not cands:
+            return None
+        db = get_db()
+        load = {r[0]: r[1] for r in db.execute(
+            "SELECT reviewer, COUNT(*) FROM issues WHERE status='review' "
+            "AND deleted IS NULL AND reviewer IS NOT NULL AND reviewer != '' "
+            "GROUP BY reviewer").fetchall()}
+        # Same-TAG REQUIRED (Ethan, hardened from 14:10's preference): peer
+        # review never crosses tag boundaries, and an UNTAGGED author gets no
+        # external peer at all — tags are the human-drawn trust groups, and
+        # a lane outside yours reviewing your work is exactly the
+        # random/self misroute class, now structural instead of heuristic.
+        author_tags = set()
+        try:
+            author_tags = {t.lower() for t in ((_ai.get("tags") or []) if isinstance(_ai.get("tags"), list) else [])}
+        except Exception:
+            pass
+        if not author_tags:
+            return None
+        cands = [c for c in cands
+                 if {t.lower() for t in (c.get("tags") or [])} & author_tags]
+        # SAME-CONTEXT REFUSAL (mixpeek-frustrations, MG-1391, 2026-08-02):
+        # session NAME is a proxy for independent reasoning context, and the
+        # proxy goes silently false when a transcript moves panes via
+        # --resume — reviewer and author were two names, ONE conversation,
+        # and a review by the context that wrote the change can only
+        # confirm. The durable identity is the conversation id: a candidate
+        # currently bound to the AUTHOR's transcript is the author.
+        try:
+            _a_conv = (_load_meta(exclude_session) or {}).get("cc_conversation_id", "")
+            if _a_conv:
+                cands = [c for c in cands
+                         if (_load_meta(c["name"]) or {}).get("cc_conversation_id", "") != _a_conv]
+        except Exception:
+            pass
+        if not cands:
+            return None
+        cands.sort(key=lambda s: (
+            0 if (author_root and _root(s.get("dir") or "") == author_root) else 1,
+            load.get(s["name"], 0), s["name"]))
+        return cands[0]["name"]
+    except Exception:
+        return None
+
+
+def _auto_assign_reviewer(bid: str, item: dict, notify: bool = True) -> str | None:
+    """Assign a peer reviewer to a review card that has none. Returns the
+    reviewer or None. The notice tells the reviewer the honest contract:
+    ack review->done via the gates, or write back what blocks."""
+    rev = _pick_reviewer(item.get("session") or "")
+    if not rev:
+        return None
+    try:
+        db = get_db()
+        db.execute("UPDATE issues SET reviewer=? WHERE id=? AND (reviewer IS NULL OR reviewer='')",
+                   (rev, bid))
+        db.commit()
+        _append_board_log(bid, f"reviewer auto-assigned: {rev} (peer-review loop)")
+        _board_changed()
+        if notify:
+            # STEERING queue, not send_text(defer_if_busy): the blocking send
+            # spawned one settle-polling thread PER review-enter — 47 threads,
+            # 192% CPU, 90-second board reads (2026-08-02 outage). The queue
+            # delivers at the reviewer's next turn boundary with zero threads.
+            _steer_enqueue(rev, f"[amux peer-review] You are the reviewer for {bid} — "
+                                f"{(item.get('title') or '')[:100]}. Read it "
+                                f"(#issue={bid}), then either ack review→done honestly "
+                                f"via its gates, or comment on the card what blocks. "
+                                f"Never ack what you cannot verify.")
+        return rev
+    except Exception as e:
+        slog(f"[review-loop] assign failed for {bid}: {e}")
+        return None
 
 
 def _notify_session_of_task(session_name: str, item_id: str, title: str):
@@ -9526,11 +11891,16 @@ _DEFAULT_STATUSES = [
 # session/schedule) and is kept as-is so nothing is rewritten; `kind` is derived
 # on read. Storing five and displaying three is what let the history modal badge
 # a session message as "direct".
-_MSG_KINDS = ("human", "session", "schedule")
+_MSG_KINDS = ("human", "session", "schedule", "amux")
 _MSG_KIND_OF = {
     "direct": "human", "steering": "human", "user": "human", "": "human",
     "session": "session",
     "schedule": "schedule",
+    # amux's own automation (advance nudges, commit-guard, auto-continue). It
+    # fell through the human default: 150 nudges across 21 lanes wore the Human
+    # chip, matched kind=human, and bumped last_human_ts — so an amux nudge made
+    # a lane sort under "Last message from me" as if a person had touched it.
+    "system": "amux",
 }
 
 
@@ -9602,6 +11972,19 @@ _NONCODE_GATES = {
 }
 # code → no override; the per-status defaults (merge/tests/CI) apply unchanged.
 _TYPE_GATES = {t: _NONCODE_GATES for t in _ITEM_TYPES if t != "code"}
+# Dormant types (MG follow-up): an armed tripwire/watch is claimable-but-not-
+# workable — pickup never claims it and it does not consume WIP (both enforced
+# in the pickup loop). Its gates are honest for what it IS: arming, then
+# firing-or-standing-down. Without these entries the pickup exclusion shipped
+# UNREACHABLE — the validator (rightly) refused the type.
+_ITEM_TYPES = _ITEM_TYPES + ("tripwire", "watch") if isinstance(_ITEM_TYPES, tuple) else _ITEM_TYPES + ["tripwire", "watch"]
+for _dt in ("tripwire", "watch"):
+    _TYPE_GATES[_dt] = {
+        "doing": ["Trigger condition documented on the card", "Armed and monitoring"],
+        "review": ["Fired: evidence of the triggering event recorded"],
+        "done": ["Fired and handled, or deliberately stood down (which, and why, on the card)"],
+        "verified": ["Outcome confirmed (handled recurrence, or stand-down still correct)"],
+    }
 
 
 def _item_type_gate(item: dict, target_status: str) -> list:
@@ -9827,6 +12210,9 @@ def _load_board(done_limit: int = 100) -> list:
                i.due, i.due_time, i.created, i.updated, i.owner_type,
                COALESCE(i.pinned, 0) AS pinned,
                COALESCE(i.pos, 0) AS pos,
+               COALESCE(i.archived, 0) AS archived,
+               i.depends_on, i.reviewer, i.log, i.source_ref, i.last_verified_at,
+               COALESCE(i.rev, 0) AS rev,
                i.gate,
                GROUP_CONCAT(t.tag) AS tags_csv"""
     if done_limit > 0:
@@ -9952,6 +12338,9 @@ def _item_by_id(bid: str) -> dict | None:
                   i.due, i.due_time, i.created, i.updated, i.owner_type,
                   COALESCE(i.pinned, 0) AS pinned,
                   COALESCE(i.pos, 0) AS pos,
+                  COALESCE(i.archived, 0) AS archived,
+                  i.depends_on, i.reviewer, i.log, i.source_ref, i.last_verified_at,
+                  COALESCE(i.rev, 0) AS rev,
                   i.gate,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
@@ -9970,6 +12359,11 @@ def _item_by_id(bid: str) -> dict | None:
         item["gate"] = json.loads(g) if g else []
     except Exception:
         item["gate"] = []
+    d = item.get("depends_on")
+    try:
+        item["depends_on"] = json.loads(d) if d else []
+    except Exception:
+        item["depends_on"] = []
     return item
 
 
@@ -10650,9 +13044,23 @@ SCHED_EVENT_TYPES = ("session_idle", "board")
 def _board_changed():
     """Invalidate the board SSE cache and emit a closed-loop 'board' event.
     (Written without the literal cache-assignment substring so the bulk
-    replace that routed all board writes here didn't rewrite this body too.)"""
+    replace that routed all board writes here didn't rewrite this body too.)
+
+    Drops the cached PAYLOAD, not just its timestamp. GET /api/board is
+    stale-while-revalidate: when the entry is stale but still holds data it
+    kicks off a background refresh and returns the OLD json. Marking the time
+    as stale therefore left exactly one more GET serving a board without the
+    write in it, so create-then-read was broken for every client — a card
+    created and read back a moment later came up missing. Nulling the data
+    makes the next GET take the synchronous path and rebuild. TTL expiry still
+    serves stale-while-revalidate, which is what keeps the multi-MB payload
+    cheap for pollers; only an explicit write forces the slow path."""
     _bc = _sse_cache["board"]
     _bc["time"] = 0
+    _bc["data"] = None
+    # Generation guard: an in-flight background refresh that started before this
+    # write must not commit its result on top of the invalidation.
+    _bc["gen"] = _bc.get("gen", 0) + 1
     _fire_schedule_event("board")
 
 def _fire_schedule_event(event_type: str, source_session: str | None = None):
@@ -10715,7 +13123,7 @@ def _drain_and_fire_sched_events(now: float):
             s = dict(zip(cols, row))
             _sched_last_fire[sid] = now
             slog(f"[sched] event-trigger firing '{s['title']}' → {s.get('session')}")
-            _run_schedule(s)
+            _run_schedule(s, source="trigger:" + (str(s.get("trigger_on") or "event").split(",")[0].strip() or "event"))
             db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
                        (int(time.time()), int(now), sid))   # last_run = UTC unix, same clock as schedule_runs.ran_at (AMUX-1736)
             db.commit()
@@ -10761,14 +13169,43 @@ def _sched_mutation_by(headers, client_address, body) -> str:
         return "?"
 
 
-def _run_schedule(sched):
+def _run_schedule(sched, source: str = "cron"):
     """Execute a schedule entry — send message to tmux session (kind='tmux')
     or run as shell command (kind='shell'). Logs the run.
-    If watch=1, spawns a background thread to monitor the response."""
+    If watch=1, spawns a background thread to monitor the response.
+
+    `source` records WHY this fire happened — 'cron' (the schedule came due),
+    'trigger:<event>' (an event woke it), or 'manual:<who>' (someone pressed Run
+    now). It is stored on the run row and echoed into the receiving session's
+    message history, so neither the runs list nor the target session has to
+    guess whether an off-cadence fire was the scheduler misbehaving (AMUX-1998)."""
     session = sched["session"]
     command = sched.get("command") or ""
     kind = sched.get("kind") or "tmux"
-    slog(f"[sched] running '{sched['title']}' [{kind}] → {session or '(shell)'}")
+    # Archived sessions STAY archived (Ethan 2026-08-02): a schedule must
+    # never be a wake path. The send path already refuses ("auto-wake failed:
+    # session is archived"), but that surfaced as a nightly ERROR run forever
+    # and left the intent ambiguous. Skip explicitly BEFORE any delivery
+    # attempt, visibly in the runs list — unarchiving is the wake endpoint's
+    # job, i.e. a human's.
+    if kind != "shell" and session:
+        _sf = CC_SESSIONS / f"{session}.env"
+        if _sf.exists() and parse_env_file(_sf).get("CC_ARCHIVED") == "1":
+            slog(f"[sched] SKIP '{sched['title']}' ({source}) — target "
+                 f"'{session}' is archived; schedules never wake archived sessions")
+            try:
+                db = get_db()
+                db.execute(
+                    "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source) "
+                    "VALUES (?,?,?,?,?)",
+                    (sched["id"], int(time.time()), "skipped",
+                     f"target '{session}' is archived — not delivered, not woken",
+                     (source or "cron")[:64]))
+                db.commit()
+            except Exception as _se:
+                slog(f"[sched] failed to log archived-skip: {_se}")
+            return
+    slog(f"[sched] running '{sched['title']}' [{kind}] ({source}) → {session or '(shell)'}")
     status, note = "ok", None
     # Capture output before sending so we can detect new output later (tmux mode only)
     pre_output = tmux_capture(session, 200) if (kind == "tmux" and sched.get("watch")) else ""
@@ -10778,29 +13215,69 @@ def _run_schedule(sched):
                 ["/bin/bash", "-c", command],
                 capture_output=True, text=True, timeout=600,
             )
-            if r.returncode != 0:
+            _amap = {}
+            try:
+                _amap = json.loads(sched.get("exit_actions") or "null") or {}
+            except Exception:
+                _amap = {}
+            _act = _amap.get(str(r.returncode), "")
+            if _act == "retry_once_then_alert" and r.returncode != 0:
+                slog(f"[sched] '{sched['title']}' exit {r.returncode} — retrying once")
+                r = subprocess.run(["/bin/bash", "-c", command],
+                                   capture_output=True, text=True, timeout=600)
+                _act = "alert" if r.returncode != 0 else "noop"
+            if _act == "alert" or (_act == "" and r.returncode != 0 and _amap):
+                status = "error"
+                note = (r.stderr or r.stdout or f"exit {r.returncode}")[:500]
+                _push_alert("schedule", sched.get("session") or "",
+                            f"'{sched['title']}' exit {r.returncode}: {note[:160]}")
+                slog(f"[sched] ALERT '{sched['title']}' exit {r.returncode}: {note[:120]}")
+            elif _act in ("noop", "log") or (_amap and r.returncode == 0):
+                status = "ok"
+                note = ((f"exit {r.returncode} [{_act or 'ok'}] " if _act else "")
+                        + (r.stdout or ""))[:500] or None
+            elif r.returncode != 0:
                 status = "error"
                 note = (r.stderr or r.stdout or f"exit {r.returncode}")[:500]
                 slog(f"[sched] shell failed for '{sched['title']}': {note}")
             else:
                 note = (r.stdout or "")[:500] or None
         else:
-            ok, err = send_text(session, command, defer_if_busy=True)
+            # An off-cadence fire is prefixed with WHY, in the delivered text itself.
+            # Recording it only in cmd_history.origin was not enough: a session lives
+            # in its terminal, and there a manual tap was still byte-identical to the
+            # 9am cron fire, so "read the tag" meant "poll an endpoint you have no
+            # reason to poll" (AMUX-1998 follow-up). Cron fires are left untouched —
+            # they are the overwhelming majority and nothing about them is ambiguous.
+            delivered = command
+            if source and source != "cron":
+                if source.startswith("manual:"):
+                    _who = source.split(":", 1)[1] or "someone"
+                    _why = (f"[amux] Run-now, triggered by {_who} just now — NOT the scheduled fire. "
+                            f"Treat this as an active ask for a fresh look, not a duplicate to decline.")
+                else:
+                    _why = f"[amux] Off-cadence fire ({source}) — not the scheduled cron fire."
+                delivered = f"{_why}\n\n{command}"
+            ok, err = send_text(session, delivered, defer_if_busy=True)
             if not ok:
                 status, note = "error", str(err)
                 slog(f"[sched] send failed for '{sched['title']}': {err}")
             else:
                 # Record in the Messages history so the peek shows scheduled
-                # commands distinctly (origin = the schedule's title).
-                _cmd_hist_record(session, command, "schedule", sched.get("title") or sched.get("id") or "schedule")
+                # commands distinctly (origin = the schedule's title). Store the
+                # DELIVERED text, so history is what the session actually got.
+                _origin = sched.get("title") or sched.get("id") or "schedule"
+                if source and source != "cron":
+                    _origin = f"{_origin} [{source}]"
+                _cmd_hist_record(session, delivered, "schedule", _origin)
     except Exception as e:
         status, note = "error", str(e)
         slog(f"[sched] exception running '{sched['title']}': {e}")
     try:
         db = get_db()
         db.execute(
-            "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
-            (sched["id"], int(time.time()), status, note)
+            "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source) VALUES (?,?,?,?,?)",
+            (sched["id"], int(time.time()), status, note, (source or "cron")[:64])
         )
         db.execute(
             "UPDATE schedules SET run_count = COALESCE(run_count,0) + 1 WHERE id=?",
@@ -10882,16 +13359,16 @@ def _watch_schedule_response(sched, pre_output: str):
             slog(f"[sched-watch] disabled schedule '{sched['title']}'")
             # Log the auto-disable as a run note
             db.execute(
-                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
-                (sched_id, now_ts, "done", f"Auto-disabled: matched '{done_pattern}'")
+                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source) VALUES (?,?,?,?,?)",
+                (sched_id, now_ts, "done", f"Auto-disabled: matched '{done_pattern}'", "watch")
             )
             db.commit()
         elif done_action == "notify":
             _push_alert("scheduler", session,
                          f"Schedule '{sched['title']}' — done pattern matched: {done_pattern}")
             db.execute(
-                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
-                (sched_id, now_ts, "done", f"Pattern matched (notify only): '{done_pattern}'")
+                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source) VALUES (?,?,?,?,?)",
+                (sched_id, now_ts, "done", f"Pattern matched (notify only): '{done_pattern}'", "watch")
             )
             db.commit()
         elif done_action.startswith("command:"):
@@ -10900,8 +13377,8 @@ def _watch_schedule_response(sched, pre_output: str):
             db.execute("UPDATE schedules SET enabled=0, updated=? WHERE id=?", (now_ts, sched_id))
             _sched_audit(sched_id, "enabled", 1, 0, "watch-done-command")
             db.execute(
-                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
-                (sched_id, now_ts, "done", f"Matched '{done_pattern}' → sent: {follow_up}")
+                "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source) VALUES (?,?,?,?,?)",
+                (sched_id, now_ts, "done", f"Matched '{done_pattern}' → sent: {follow_up}", "watch")
             )
             db.commit()
             _push_alert("scheduler", session,
@@ -10950,7 +13427,7 @@ def _scheduler_loop():
             cols = [d[0] for d in db.execute("SELECT * FROM schedules LIMIT 0").description]
             for row in due:
                 sched = dict(zip(cols, row))
-                _run_schedule(sched)
+                _run_schedule(sched, source="cron")
                 _sched_last_fire[sched["id"]] = now  # cron fire counts toward event cooldown
                 now_ts = int(time.time())
                 if sched["sched_type"] == "once":
@@ -11795,7 +14272,30 @@ def _has_running_subagent(raw_output: str) -> bool:
     return False
 
 
-def _detect_session_status(name: str, raw_output: str) -> str:
+def _detect_gemini_status(raw_output: str) -> str:
+    """Gemini-CLI state from its rendered UI (sherpa-execution, 2026-08-02:
+    provider=gemini sessions sat status='' FOREVER — the Claude-pattern
+    scraper matches nothing in Gemini's frame, so the lane never emitted an
+    idle event and pickup/steering/nudges all skipped it; it answered direct
+    messages while being invisible to every loop. D1-class: the scraper is
+    the fallback control plane and it only spoke one provider's UI.)
+    Markers from the live pane: the empty-input placeholder ('Type your
+    message') is definitive IDLE — it renders only when input is empty and
+    nothing is generating; 'esc to cancel' renders only DURING generation."""
+    tail = _STRIP_ANSI.sub("", raw_output or "")[-2500:]
+    if re.search(r"esc to cancel|\(esc\s", tail, re.I):
+        return "active"
+    if "Type your message" in tail:
+        return "idle"
+    return ""
+
+
+def _detect_session_status(name: str, raw_output: str, provider: str = "claude") -> str:
+    if provider == "gemini":
+        g = _detect_gemini_status(raw_output)
+        if g == "active":
+            _status_last_active[name] = time.monotonic()
+        return g
     raw = _detect_claude_status(raw_output)
     now = time.monotonic()
     if raw == "active":
@@ -11889,6 +14389,31 @@ _commit_guard_nudged: dict[str, bool] = {}  # session -> nudged this dirty episo
 _commit_guard_daily: dict = {}   # (session, YYYYMMDD) -> nudges sent that day
 _COMMIT_GUARD_MAX_PER_DAY = int(os.environ.get("AMUX_COMMIT_NUDGES_PER_DAY", "3"))
 
+_session_workdirs: dict[str, str] = {}
+_session_workdirs_ts = 0.0
+_SESSION_WORKDIRS_TTL = 5.0
+
+
+def _all_session_workdirs() -> dict[str, str]:
+    """session name -> resolved CC_DIR, cached for 5s. Eliminates redundant
+    parse+resolve across _session_dirty_files / _checkout_busy_cotenant /
+    _staged_guard_check (103 env files × 3 callers was the CPU spike)."""
+    global _session_workdirs, _session_workdirs_ts
+    now = time.time()
+    if now - _session_workdirs_ts < _SESSION_WORKDIRS_TTL:
+        return _session_workdirs
+    result = {}
+    for f in CC_SESSIONS.glob("*.env"):
+        try:
+            od = parse_env_file(f).get("CC_DIR")
+            if od:
+                result[f.stem] = str(Path(od).expanduser().resolve())
+        except Exception:
+            pass
+    _session_workdirs = result
+    _session_workdirs_ts = now
+    return result
+
 
 def _session_dirty_files(name: str, work_dir: str) -> list:
     """Uncommitted/untracked files this session owns. Scoped to its working dir,
@@ -11897,18 +14422,11 @@ def _session_dirty_files(name: str, work_dir: str) -> list:
     own territory. Returns paths; [] if clean or not a git repo."""
     try:
         wd = str(Path(work_dir).expanduser().resolve())
-        # Exclude other sessions' cwds that live inside this one (ownership partition).
+        all_dirs = _all_session_workdirs()
         excludes = []
-        for f in CC_SESSIONS.glob("*.env"):
-            if f.stem == name:
+        for other, od in all_dirs.items():
+            if other == name:
                 continue
-            try:
-                od = parse_env_file(f).get("CC_DIR")
-            except Exception:
-                od = None
-            if not od:
-                continue
-            od = str(Path(od).expanduser().resolve())
             if od != wd and (od + os.sep).startswith(wd + os.sep):
                 excludes.append(":(exclude)" + os.path.relpath(od, wd))
         r = subprocess.run(
@@ -11939,15 +14457,10 @@ def _checkout_busy_cotenant(name: str, work_dir: str) -> str:
         wd = str(Path(work_dir).expanduser().resolve())
     except Exception:
         return ""
-    for f in CC_SESSIONS.glob("*.env"):
-        other = f.stem
+    all_dirs = _all_session_workdirs()
+    for other, od in all_dirs.items():
         if other == name:
             continue
-        try:
-            od = parse_env_file(f).get("CC_DIR")
-            od = str(Path(od).expanduser().resolve()) if od else None
-        except Exception:
-            od = None
         if od == wd and _session_prev_status.get(other) in ("active", "waiting"):
             return other
     return ""
@@ -12031,18 +14544,9 @@ def _staged_guard_check(session: str, work_dir: str, rel_paths: list) -> dict:
         wd = str(Path(work_dir).expanduser().resolve())
     except Exception:
         return {"ok": True, "foreign": [], "cotenants": []}
-    cotenants = []
-    for f in CC_SESSIONS.glob("*.env"):
-        other = f.stem
-        if other == session:
-            continue
-        try:
-            od = parse_env_file(f).get("CC_DIR")
-            od = str(Path(od).expanduser().resolve()) if od else None
-        except Exception:
-            od = None
-        if od == wd:
-            cotenants.append(other)
+    all_dirs = _all_session_workdirs()
+    cotenants = [other for other, od in all_dirs.items()
+                 if other != session and od == wd]
     if not cotenants or not rel_paths:
         return {"ok": True, "foreign": [], "cotenants": cotenants}
     window = _staged_guard_window()
@@ -12250,6 +14754,29 @@ def _set_commit_guard_session(name: str, enabled: bool | None):
 
 # ── Task guard: nudge sessions to keep the board reflecting their work ──
 _task_guard_nudged: dict[str, bool] = {}  # session -> nudged this idle episode (re-armed when active)
+_task_guard_last: dict[str, float] = {}   # session -> epoch of last nudge (loop backstop)
+_TASK_GUARD_COOLDOWN = 6 * 3600           # never nudge the same lane twice within 6h
+_TASK_GUARD_CLOSED_WINDOW = 6 * 3600      # "just closed its work" horizon
+
+
+def _session_recently_closed_issue(name: str) -> bool:
+    """True if this session's most recent card is closed and was closed lately.
+
+    Distinguishes 'idle with untracked work' (worth a nudge) from 'idle because
+    it finished and closed the card' (the ledger rule working as intended). The
+    second was being nudged identically, which pressures a session to create a
+    placeholder card to silence it — fake work, and exactly what the ledger rule
+    forbids."""
+    try:
+        row = get_db().execute(
+            "SELECT status, updated FROM issues WHERE session=? AND deleted IS NULL "
+            "ORDER BY updated DESC LIMIT 1", (name,)).fetchone()
+        if not row:
+            return False
+        return (str(row["status"] or "").lower() in ("done", "verified", "discarded")
+                and (time.time() - (row["updated"] or 0)) < _TASK_GUARD_CLOSED_WINDOW)
+    except Exception:
+        return False
 
 
 def _task_guard_enabled() -> bool:
@@ -12335,7 +14862,22 @@ def _task_guard(name: str) -> bool:
             return False
         if _session_has_doing_issue(name):
             return False  # already tracking — _complete_session_board_issue will close it
+        # Hard cooldown, independent of the re-arm flag. The nudge is DELIVERED
+        # with send_text, which makes the session active to read it, which
+        # re-arms the flag, which fires the nudge again on the next idle — the
+        # nudge was causing the very activity that reset its own suppression.
+        # Session `random` took 10+ in a row with all its work already done.
+        last = _task_guard_last.get(name, 0)
+        if last and (time.time() - last) < _TASK_GUARD_COOLDOWN:
+            return False
+        # Nothing untracked if the lane just CLOSED its work. A session idle
+        # after marking its card done is the ledger rule working, not a session
+        # hiding work, and telling it otherwise pushes it to invent a card.
+        if _session_recently_closed_issue(name):
+            _task_guard_nudged[name] = True
+            return False
         _task_guard_nudged[name] = True
+        _task_guard_last[name] = time.time()
         msg = ("You went idle but have no board issue tracked as 'doing'. If you just did "
                "real work, record it on the board now so every session stays aware — create "
                "an issue for your session and set its status:\n"
@@ -12379,6 +14921,26 @@ def _commit_guard(name: str) -> bool:
         if not files:
             _commit_guard_nudged.pop(name, None)   # clean → re-arm for the next episode
             return False
+        # Foreign-dirt filter (2026-07-31). _checkout_busy_cotenant only covers a
+        # peer that is busy RIGHT NOW; a cotenant that edited a file 2 minutes ago
+        # and went idle slipped through, and this session got told — twice inside
+        # ten minutes — to commit amux-cloud's half-written gmail fix. The
+        # staged-guard's per-file attribution already knows whose recent edit each
+        # path is; a file another session touched inside the window is theirs, and
+        # nudging THIS session about it asks it to sweep a peer's WIP (the exact
+        # incident class the staged-guard exists to block).
+        try:
+            _fg = _staged_guard_check(name, wd, files).get("foreign") or []
+            _theirs = {f.get("path") for f in _fg}
+            _own = [f for f in files if f not in _theirs]
+            if not _own:
+                _owners = sorted({f.get("owner") or "?" for f in _fg})
+                slog(f"[commit-guard] {name}: all {len(files)} dirty file(s) are "
+                     f"{'/'.join(_owners)}'s recent edits — not nudging")
+                return False
+            files = _own
+        except Exception:
+            pass   # attribution unavailable → keep the old (over-nudging) behavior
         if _commit_guard_nudged.get(name):
             return False   # already nudged this episode; don't re-nag, allow normal flow
         _commit_guard_nudged[name] = True
@@ -12425,6 +14987,23 @@ def list_sessions() -> list:
     running_names = [f.stem for f in env_files if tmux_name(f.stem) in tmux_info]
     captures = _tmux_capture_batch(running_names, 30, activity=tmux_info) if running_names else {}
     # Token cache is refreshed by background job (_refresh_token_cache via scheduler)
+    # Last HUMAN message per session, batched in one query. "Last activity" is
+    # dominated by schedulers and inter-session traffic, so a lane you have not
+    # touched in a week can sit at the top of the list looking busy. Sorting by
+    # the last thing a PERSON sent is a different and often more useful order.
+    # Same definition as the Messages filter (_MSG_KIND_OF): anything that is
+    # not session-to-session and not a schedule is human. ts is epoch MILLIs
+    # here, unlike last_activity's seconds — converted below rather than
+    # letting two clocks reach the client under similar names.
+    _human_ts: dict = {}
+    try:
+        for _r in get_db().execute(
+                "SELECT session, MAX(ts) AS t FROM cmd_history "
+                "WHERE type NOT IN ('session','schedule','system') GROUP BY session").fetchall():
+            if _r["session"]:
+                _human_ts[_r["session"]] = int((_r["t"] or 0) / 1000)
+    except Exception as _e:
+        slog(f"[sessions] last-human lookup failed: {_e}")
     # Batch-load "doing" board tasks per session for task_name display.
     # ORDER BY updated ASC + dict overwrite → the NEWEST-touched doing card
     # wins. The old query had no ORDER BY, so with multiple doing cards per
@@ -12434,16 +15013,30 @@ def list_sessions() -> list:
     # `updated` rides along so the UI can show the card's age when it's stale.
     _doing_tasks: dict = {}
     _doing_updated: dict = {}
+    _doing_ids: dict = {}      # session -> the doing card's id (AMUX-2165)
+    # Per-session schedule counts for the list card chip (AMUX-2116):
+    # enabled vs disabled at a glance, same numbers the peek tab badges.
+    _sched_counts: dict = {}
+    try:
+        for r in get_db().execute(
+                "SELECT session, SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) o, "
+                "SUM(CASE WHEN enabled=1 THEN 0 ELSE 1 END) f FROM schedules "
+                "WHERE deleted IS NULL AND session IS NOT NULL AND session != '' "
+                "GROUP BY session").fetchall():
+            _sched_counts[r["session"]] = (int(r["o"] or 0), int(r["f"] or 0))
+    except Exception:
+        pass
     try:
         for row in get_db().execute(
-            "SELECT session, title, updated FROM issues "
+            "SELECT session, id, title, updated FROM issues "
             "WHERE status='doing' AND deleted IS NULL AND session IS NOT NULL "
             "ORDER BY updated ASC"
         ).fetchall():
             _doing_tasks[row["session"]] = row["title"]
             _doing_updated[row["session"]] = row["updated"] or 0
+            _doing_ids[row["session"]] = row["id"]
     except Exception:
-        _doing_tasks, _doing_updated = {}, {}
+        _doing_tasks, _doing_updated, _doing_ids = {}, {}, {}
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
@@ -12472,7 +15065,12 @@ def list_sessions() -> list:
             lines = [l for l in raw.splitlines() if l.strip()]
             preview = strip_ansi(lines[-1][:120]) if lines else ""
             if running:
-                status = _detect_session_status(name, raw)
+                status = _detect_session_status(name, raw, provider=cfg.get("CC_PROVIDER", "claude"))
+                # A fresh self-report from the harness's own hooks beats pane
+                # inference — the hook KNOWS the turn ended; the regex guesses.
+                _rep = _session_reported.get(name)
+                if _rep and (time.time() - _rep.get("ts", 0)) < _SELF_REPORT_FRESH_S                         and _rep.get("state") in ("active", "idle", "waiting"):
+                    status = _rep["state"]
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
             # Observable status transition → the event log (issue #48). Only on a
@@ -12496,7 +15094,13 @@ def list_sessions() -> list:
                     task_nudged = _task_guard(sname)     # remind to log untracked work on the board
                     _complete_session_board_issue(sname)
                     if not nudged and not task_nudged:   # don't pile a new task on a nudge
-                        _pickup_next_board_task(sname)
+                        # Two different stalls, two different pushes. A lane holding
+                        # a doing/review card needs finishing, not a second card
+                        # (that would break WIP-1); a lane holding none needs the
+                        # next one claimed. Before this, the first case matched no
+                        # path at all and simply stopped.
+                        if not _advance_open_card(sname):
+                            _pickup_next_board_task(sname)
                 threading.Thread(target=_on_idle, daemon=True).start()
             elif status == "idle" and prev == "idle" and not running:
                 threading.Thread(target=_complete_session_board_issue, args=(name,), daemon=True).start()
@@ -12598,6 +15202,12 @@ def list_sessions() -> list:
             # usage-credits modal, 2026-07-27). Exporting the timestamp lets
             # the card badge a long wait without any push-alert noise.
             "waiting_since": int(_aa.get("ac_waiting_since", 0) or 0),
+            # Transient API error (529 Overloaded / 5xx). Retryable NOW — no reset
+            # time to wait for and no model to switch — so the UI groups it with
+            # the other blocked states but offers "continue" as the fix.
+            "api_error": bool(_aa.get("api_error")),
+            "api_error_code": str(_aa.get("api_error_code") or ""),
+            "api_error_count": int(_aa.get("api_error_count") or 0),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -12607,6 +15217,11 @@ def list_sessions() -> list:
             "preview": preview,
             "preview_lines": preview_lines,
             "last_activity": last_activity,
+            "last_human_ts": _human_ts.get(name, 0),
+            "self_report": ({"state": _session_reported[name]["state"],
+                             "age_s": int(time.time() - _session_reported[name]["ts"]),
+                             "source": _session_reported[name].get("source", "")}
+                            if name in _session_reported else None),
             "active_model": active_model,
             "session_created": session_created,
             "task_time": task_time,
@@ -12616,6 +15231,12 @@ def list_sessions() -> list:
             # client hint that a stale doing card is parked on the board even
             # when the displayed label came from the summary.
             "task_source": _tsrc,
+            # The board card id behind the label, so the session card can show
+            # "<title> (ID)" and deep-link into the board (AMUX-2165). Only set
+            # when the label IS the board title (source 'board'); '' otherwise.
+            "task_board_id": (_doing_ids.get(name, "") if _tsrc == "board" else ""),
+            "sched_on": _sched_counts.get(name, (0, 0))[0],
+            "sched_off": _sched_counts.get(name, (0, 0))[1],
             "task_updated": _bu,
             "task_board_age": int(time.time() - _bu) if (_bt and _bu and not _board_fresh) else 0,
             "tokens": tokens,
@@ -12951,38 +15572,23 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \\
   $AMUX_URL/api/board/TASK-ID
 ```
 
-### Where a document belongs — REPO FILE first, note only for scratch
+### Where a document belongs — a REPO FILE, or the board
 
 **Default: write it as a file in the repo you are working in, and commit it.** Design
 docs, write-ups, research, runbooks, reports, analyses, plans — these belong in the
 codebase next to the work they describe, where they are git-versioned, reviewable, and
 survive amux itself.
 
-**Use notes** (`/api/notes`) ONLY for personal scratch: a throwaway draft, a clipboard,
-something with no repo to live in. Notes are stored under `~/.amux/notes` and are **NOT
-git-versioned** — a work doc saved there is invisible to review and lost on a restore.
+**For anything outside a repo**, write a real file and use the Files view. amux notes
+were removed (2026-07-30): they were only ever a thin view over a directory, so a file
+is the same thing without a second API to keep in sync. If a path is configured as a
+notes vault it is browsable under Files like any other directory.
 
 **Use board issues** (`/api/board`) for: tasks, todos, bugs, action items — anything
-meant to be *done* or *tracked*.
+meant to be *done* or *tracked*. This is the source of truth for work.
 
-> Rule of thumb: "write a doc about X" → a committed file in the repo. "jot down X" →
-> `/api/notes`. "create a task/issue/todo for X" → `/api/board`.
-
-```bash
-# List all notes
-curl -sk $AMUX_URL/api/notes
-
-# Read a note
-curl -sk $AMUX_URL/api/notes/my-note
-
-# Create or update a note (content is plain text or Quill HTML)
-curl -sk -X POST -H 'Content-Type: application/json' \\
-  -d '{"content":"# Title\\n\\nBody text here"}' \\
-  $AMUX_URL/api/notes/my-note
-
-# Delete a note (moves to trash)
-curl -sk -X DELETE $AMUX_URL/api/notes/my-note
-```
+> Rule of thumb: "write a doc about X" → a committed file in the repo. "create a
+> task/issue/todo for X" → `/api/board`. There is no third place.
 
 ### Google Drive — use the API, not Chrome MCP
 
@@ -13173,7 +15779,7 @@ def _evict_stale_caches():
         _model_cache.pop(k, None)
     # Prune session-keyed dicts for sessions that no longer have .env files
     live_sessions = {f.stem for f in CC_SESSIONS.glob("*.env")}
-    for d in (_session_auto_actions, _yolo_last_responded, _last_jsonl_backup, _session_prev_status, _commit_guard_nudged, _commit_guard_cotenant_skip, _task_guard_nudged):
+    for d in (_session_auto_actions, _yolo_last_responded, _last_jsonl_backup, _session_prev_status, _commit_guard_nudged, _commit_guard_cotenant_skip, _task_guard_nudged, _task_guard_last, _advance_last):
         stale_keys = [k for k in d if k not in live_sessions]
         for k in stale_keys:
             d.pop(k, None)
@@ -13192,6 +15798,8 @@ def _cleanup_session_state(name: str):
     _commit_guard_nudged.pop(name, None)
     _commit_guard_cotenant_skip.pop(name, None)
     _task_guard_nudged.pop(name, None)
+    _task_guard_last.pop(name, None)
+    _advance_last.pop(name, None)
     with _send_locks_lock:
         _send_locks.pop(name, None)
 
@@ -13322,13 +15930,20 @@ def _attach_log_streaming():
     Called on every server startup — including os.execv reloads where tmux
     sessions survive. For surviving sessions, this re-attaches pipe-pane so
     logs continue streaming after a server restart/deploy.
+
+    Runs in a background thread (non-blocking to port binding) and
+    parallelizes tmux calls so 50+ sessions finish in ~1s, not ~13s.
     """
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    targets = []
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
         if not is_running(name):
             continue
+        targets.append(name)
+
+    def _attach_one(name):
         lp = _log_path(name)
         try:
             with lp.open("ab") as lf:
@@ -13343,6 +15958,11 @@ def _attach_log_streaming():
             )
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
             pass
+
+    if targets:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_attach_one, targets))
 
 
 def _migrate_memory_files():
@@ -13994,6 +16614,82 @@ def _commit_stamp_enabled() -> bool:
     return os.environ.get("AMUX_COMMIT_STAMP", "1").strip().lower() not in ("0", "false", "off", "no")
 
 
+_AMUX_PUSH_MARKER = "# amux-push-guard"
+_AMUX_PUSH_BODY = '''#!/usr/bin/env python3
+# amux-push-guard — blocks a push that would ship commits authored by a
+# DIFFERENT amux session sharing this checkout.
+#
+# The staged-guard stops one session COMMITTING another's staged files. Nothing
+# stopped one session PUSHING another's commits, and in a shared checkout that
+# is the same class of problem one layer up: `git push` ships whatever is on the
+# branch, so a session pushing its own work silently deploys everyone else's
+# too. On 2026-07-30 that happened five times in one day — work shipped without
+# the owner asking, and once a board feature went out inside a commit message
+# about browser fixes.
+#
+# Attribution comes from the Amux-Session trailer that prepare-commit-msg
+# already stamps on every commit, so this needs no new bookkeeping.
+#
+# Fail-open by design: any error lets the push proceed. Outside amux
+# ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
+# Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
+import os, subprocess, sys
+
+ZERO = "0" * 40
+
+
+def main():
+    sess = os.environ.get("AMUX_SESSION", "")
+    if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):
+        return 0
+    if os.environ.get("AMUX_PUSH_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
+        return 0
+    foreign = {}
+    try:
+        for line in sys.stdin.read().splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local_sha, remote_sha = parts[1], parts[3]
+            if local_sha.strip("0") == "":
+                continue                      # branch deletion
+            rng = local_sha if remote_sha == ZERO else remote_sha + ".." + local_sha
+            out = subprocess.run(
+                ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)", rng],
+                capture_output=True, text=True, timeout=15).stdout
+            for row in out.splitlines():
+                if not row.strip():
+                    continue
+                bits = row.split("\\x1f")
+                if len(bits) < 3:
+                    continue
+                who = bits[2].strip()
+                if who and who != sess:
+                    foreign.setdefault(who, []).append((bits[0], bits[1][:62]))
+    except Exception:
+        return 0  # fail open — the guard must never brick a push
+    if not foreign:
+        return 0
+    w = sys.stderr.write
+    n = sum(len(v) for v in foreign.values())
+    w("\\namux push-guard: PUSH BLOCKED — this would ship %d commit(s) authored by "
+      "another session in this shared checkout:\\n\\n" % n)
+    for who in sorted(foreign):
+        w("  %s:\\n" % who)
+        for sha, subj in foreign[who][:6]:
+            w("    %s  %s\\n" % (sha, subj))
+        if len(foreign[who]) > 6:
+            w("    ... and %d more\\n" % (len(foreign[who]) - 6))
+    w("\\nTheir work is not yours to deploy. Options:\\n"
+      "  - ask that session to push its own commits, or\\n"
+      "  - if the human explicitly asked you to ship everything:\\n"
+      "      AMUX_ALLOW_FOREIGN=1 git push ...\\n\\n")
+    return 1
+
+
+sys.exit(main())
+'''
+
 _AMUX_GUARD_MARKER = "# amux-staged-guard"
 _AMUX_GUARD_BODY = '''#!/usr/bin/env python3
 # amux-staged-guard — blocks a commit whose staged set contains files that a
@@ -14127,6 +16823,90 @@ def _install_amux_precommit_guard(work_dir: str) -> None:
         pass
 
 
+_AMUX_POSTCOMMIT_MARKER = "# amux-commit-report"
+_AMUX_POSTCOMMIT_BODY = """#!/bin/sh
+# amux-commit-report — attach each commit to the session's in-flight board card
+# (AMUX-2015: a card should carry its code history). No-op outside amux; always
+# exits 0 — reporting must never wedge a commit. Fail-open by design.
+[ -n "$AMUX_SESSION" ] || exit 0
+sha=$(git rev-parse --short HEAD 2>/dev/null)
+# tr strips the two JSON-hostile characters instead of escaping them — a
+# quote-less subject in a log line beats a sed pipeline that broke on its own
+# escaping and posted empty subjects (first live test of this hook).
+subj=$(git log -1 --format=%s 2>/dev/null | tr -d '"\\' | cut -c1-120)
+[ -n "$sha" ] || exit 0
+payload=$(printf '{"sha":"%s","subject":"%s"}' "$sha" "$subj")
+curl -sk -m 3 -X POST -H 'Content-Type: application/json' \
+  -H "X-Amux-Session: $AMUX_SESSION" -d "$payload" \
+  "${AMUX_URL:-https://localhost:8822}/api/sessions/$AMUX_SESSION/commit-report" >/dev/null 2>&1
+exit 0
+"""
+
+
+def _install_amux_postcommit_hook(work_dir: str) -> None:
+    """Install the commit-report hook as post-commit. Written whole when absent;
+    a foreign post-commit is left alone (post-commit takes no stdin, but the
+    same never-clobber rule as every other amux hook applies)."""
+    try:
+        gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
+                            capture_output=True, text=True, timeout=5)
+        if gr.returncode != 0:
+            return
+        git_dir = gr.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(work_dir, git_dir)
+        hooks_dir = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_path = os.path.join(hooks_dir, "post-commit")
+        cur = ""
+        if os.path.exists(hook_path):
+            try:
+                cur = open(hook_path).read()
+            except Exception:
+                return
+            if cur and _AMUX_POSTCOMMIT_MARKER not in cur:
+                return
+        if cur != _AMUX_POSTCOMMIT_BODY:
+            with open(hook_path, "w") as fh:
+                fh.write(_AMUX_POSTCOMMIT_BODY)
+            os.chmod(hook_path, 0o755)
+    except Exception:
+        pass
+
+
+def _install_amux_prepush_guard(work_dir: str) -> None:
+    """Install the pre-push guard. Written as pre-push directly (not a shim +
+    chained hook like pre-commit) because pre-push reads the ref list from
+    STDIN, and a shim would have to tee it to every chained hook to stay
+    correct. If a foreign pre-push already exists we leave it alone rather than
+    risk swallowing its stdin. Best-effort; failures are swallowed."""
+    try:
+        gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
+                            capture_output=True, text=True, timeout=5)
+        if gr.returncode != 0:
+            return
+        git_dir = gr.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(work_dir, git_dir)
+        hooks_dir = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_path = os.path.join(hooks_dir, "pre-push")
+        cur = ""
+        if os.path.exists(hook_path):
+            try:
+                cur = open(hook_path).read()
+            except Exception:
+                return
+            if cur and _AMUX_PUSH_MARKER not in cur:
+                return  # someone else's pre-push — do not touch it
+        if cur != _AMUX_PUSH_BODY:
+            with open(hook_path, "w") as fh:
+                fh.write(_AMUX_PUSH_BODY)
+            os.chmod(hook_path, 0o755)
+    except Exception:
+        pass
+
+
 def _install_amux_commit_hook(work_dir: str) -> None:
     """Install a non-destructive prepare-commit-msg hook that stamps commits
     with $AMUX_SESSION. Idempotent; never clobbers a foreign hook (chains onto
@@ -14135,6 +16915,8 @@ def _install_amux_commit_hook(work_dir: str) -> None:
     # so both hooks reach every session repo through the same three paths
     # (start_session, _install_hooks_all_sessions, the git peek action).
     _install_amux_precommit_guard(work_dir)
+    _install_amux_prepush_guard(work_dir)
+    _install_amux_postcommit_hook(work_dir)
     try:
         gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
                             capture_output=True, text=True, timeout=5)
@@ -14187,6 +16969,42 @@ def _remove_amux_commit_hook(hook_path: str) -> None:
         pass
 
 
+_STATE_HOOK_MARKER = "/api/sessions/$AMUX_SESSION/report"
+
+def _install_state_report_hooks() -> None:
+    """Install Stop/UserPromptSubmit hooks in ~/.claude/settings.json so every
+    Claude Code session REPORTS its state to amux instead of amux inferring it
+    from the rendered terminal (ethos dev-1). Follows the tracked-files hook
+    precedent already in that file: guarded on $AMUX_SESSION so it is a no-op
+    outside amux, 2s timeout, always exits 0 so it can never wedge a turn.
+    Merge-safe and idempotent: appends alongside existing hooks, never replaces
+    anything, keyed on _STATE_HOOK_MARKER. Failures are swallowed — a missing
+    hook only means the scraper fallback keeps doing the work."""
+    try:
+        sp = Path.home() / ".claude" / "settings.json"
+        cfg = json.loads(sp.read_text()) if sp.exists() else {}
+        hooks = cfg.setdefault("hooks", {})
+        def _cmd(state, source):
+            return ("[ -n \"$AMUX_SESSION\" ] && curl -sk -m 2 -X POST "
+                    "-H 'Content-Type: application/json' "
+                    "-d '{\"state\":\"" + state + "\",\"source\":\"" + source + "\"}' "
+                    "\"${AMUX_URL:-https://localhost:8822}" + _STATE_HOOK_MARKER + "\" "
+                    ">/dev/null 2>&1; exit 0")
+        changed = False
+        for event, state, source in (("Stop", "idle", "stop-hook"),
+                                     ("UserPromptSubmit", "active", "prompt-hook")):
+            arr = hooks.setdefault(event, [])
+            if any(_STATE_HOOK_MARKER in json.dumps(e) for e in arr):
+                continue
+            arr.append({"hooks": [{"type": "command", "command": _cmd(state, source)}]})
+            changed = True
+        if changed:
+            sp.write_text(json.dumps(cfg, indent=2) + "\n")
+            slog("[hooks] installed state-report hooks (Stop->idle, UserPromptSubmit->active)")
+    except Exception as e:
+        slog(f"[hooks] state-report install failed (scraper fallback still active): {e}")
+
+
 def _install_hooks_all_sessions() -> None:
     """Proactively install the commit-stamping hook into every existing
     session's repo, so attribution works for already-created sessions without
@@ -14202,6 +17020,73 @@ def _install_hooks_all_sessions() -> None:
                 pass
     except Exception:
         pass
+
+
+def _mcp_registry_path():
+    """Path to the MCP registry every session launches against, seeding it on
+    first use from the repo's shipped mcp.json.
+
+    Before this, `--mcp-config` was only passed when CC_MCP=="chrome", and no
+    session had CC_MCP set at all — so the repo's six-server mcp.json was
+    loaded by exactly nothing. MCP is the extension point that lets amux get
+    more capable as models get better at tool use, which it cannot do if no
+    agent is ever handed a server. Returns None if there is nothing to pass, so
+    a missing/corrupt registry degrades to today's behaviour instead of
+    breaking session start."""
+    try:
+        if not CC_MCP_REGISTRY.exists():
+            seed = Path(__file__).parent / "mcp.json"
+            if not seed.exists():
+                return None
+            CC_MCP_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+            CC_MCP_REGISTRY.write_text(seed.read_text())
+            slog(f"[mcp] seeded registry at {CC_MCP_REGISTRY} from {seed}")
+        # Never hand the agent a file that will make its launch fail.
+        srv = json.loads(CC_MCP_REGISTRY.read_text()).get("mcpServers") or {}
+        return CC_MCP_REGISTRY if srv else None
+    except Exception as e:
+        slog(f"[mcp] registry unusable ({e}) — launching without --mcp-config")
+        return None
+
+
+def _autostart_sessions_bg():
+    """Restart sessions this server knows about but tmux does not.
+
+    A cloud image deploy REPLACES the user's container. The amux data lives on a
+    volume, so every session's .env, the board and the schedules come back
+    exactly as they were — and tmux does not, because the processes died with
+    the old container. The result is a workspace that reads fully populated
+    through the API and shows its owner nothing but the first-run scaffold.
+    That is not hypothetical: a prospect workspace was reported as seeded three
+    times while its owner was looking at an empty dashboard, and four separate
+    deploys wiped it again over one afternoon while it was being verified.
+
+    Nothing was rebuilding them, so the repair was manual and had to be
+    remembered after every deploy. Gated on AMUX_AUTOSTART_SESSIONS because on a
+    workstation this would be wrong — see the flag's definition.
+    """
+    try:
+        time.sleep(8)          # let the listener bind and the DB settle first
+        tmux_info = _tmux_info_map()
+        names = [f.stem for f in sorted(CC_SESSIONS.glob("*.env"))
+                 if not _is_session_blocked(f.stem)]
+        missing = [n for n in names if tmux_name(n) not in tmux_info]
+        if not missing:
+            slog(f"[autostart] {len(names)} session(s) known, all already running")
+            return
+        slog(f"[autostart] {len(missing)} of {len(names)} session(s) have no tmux "
+             f"(container replaced?) — restarting: {', '.join(missing[:8])}"
+             + (" …" if len(missing) > 8 else ""))
+        for n in missing:
+            try:
+                ok_, msg = start_session(n)
+                slog(f"[autostart] {n}: {'started' if ok_ else 'FAILED — ' + str(msg)}")
+            except Exception as e:
+                slog(f"[autostart] {n}: FAILED — {e}")
+            time.sleep(1.5)    # stagger: a fleet coming up at once starves the box
+    except Exception as e:
+        # Never take the server down over this; it is a repair, not a dependency.
+        slog(f"[autostart] aborted: {e}")
 
 
 def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False) -> tuple[bool, str]:
@@ -14392,7 +17277,20 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 _gemini_opts += " --yolo"
             if "--skip-trust" not in _gemini_opts:
                 _gemini_opts += " --skip-trust"
-            include_dirs = [str(CC_LOGS)]
+            # Memory parity (Ethan 16:58): Claude lanes get amux-composed
+            # memory via the CLAUDE.md hierarchy; Gemini reads GEMINI.md.
+            # Bridge WITHOUT touching any repo's own GEMINI.md: mirror the
+            # composed memory into a session-scoped dir and hand it to
+            # --include-directories, which Gemini walks for GEMINI.md files.
+            _gmem_dir = CC_MEMORY / "gemini" / name
+            try:
+                _gmem_dir.mkdir(parents=True, exist_ok=True)
+                _mem_src = CC_MEMORY / f"{name}.md"
+                if _mem_src.exists():
+                    (_gmem_dir / "GEMINI.md").write_text(_mem_src.read_text())
+            except Exception as _ge:
+                print(f"[start] {name}: gemini memory bridge failed: {_ge}")
+            include_dirs = [str(CC_LOGS), str(_gmem_dir)]
             try:
                 _gr = subprocess.run(
                     ["git", "-C", work_dir, "rev-parse", "--show-toplevel"],
@@ -14432,9 +17330,18 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 cmd += f" {session_flag}"
             if extra_flags:
                 cmd += f" {_shell_quote_flags(extra_flags)}"
-            # Inject --mcp-config based on CC_MCP setting (chrome or empty)
+            # Every session gets the shared MCP registry unless it opts OUT with
+            # CC_MCP=off. Opt-out rather than opt-in: an extension point nobody
+            # is enrolled in is the state we just came from, where six
+            # configured servers reached zero of 101 sessions.
             mcp_val = cfg.get("CC_MCP", "").strip().lower()
             mcp_dir = CC_HOME  # ~/.amux
+            if mcp_val not in ("off", "none", "0"):
+                _reg = _mcp_registry_path()
+                if _reg:
+                    cmd += f" --mcp-config {shlex.quote(str(_reg))}"
+            # Legacy: CC_MCP=chrome pre-dates the registry. Still honoured, but
+            # only when the file exists AND is not already the registry itself.
             if mcp_val == "chrome":
                 mcp_chrome = mcp_dir / "mcp-chrome.json"
                 if mcp_chrome.exists():
@@ -14472,6 +17379,13 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 if rc.exists():
                     shell_rc += f"source {rc} 2>/dev/null; cd {shlex.quote(work_dir)}; "
                     break
+            # Global agent credentials, sourced AFTER the shell profile so amux's
+            # values win. This is what makes ${VAR} in the MCP registry resolve
+            # identically in every lane — otherwise each session depends on
+            # whatever its own shell happened to export, which is how one lane
+            # gets a working server and the next silently gets an unauthed one.
+            if CC_AMUX_ENV.exists():
+                shell_rc += f"set -a; source {shlex.quote(str(CC_AMUX_ENV))} 2>/dev/null; set +a; "
             else:
                 shell_rc += f"cd {shlex.quote(work_dir)}; "
             if provider not in ("codex", "gemini") and _has_oauth:
@@ -14770,7 +17684,16 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                             time.sleep(1.0)  # space the two sends out
                         _send_after_ready(
                             sname,
-                            "Board snapshot (startup):\n\n" + digest, 60)
+                            "Board snapshot (startup):\n\n" + digest +
+                            "\n\nSTANDING RULE — decompose prompts into tasks: when a prompt "
+                            "you receive contains more than one distinct task, immediately "
+                            "create one board card PER unit of work (correct type; queue in "
+                            "todo) instead of one umbrella card, then work them through the "
+                            "gates in order. amux auto-captures each prompt as a single card "
+                            "for the ledger; SPLIT that card when it covers several tasks — "
+                            "you have the context to decompose it, amux does not. A card is "
+                            "one unit of work: something that can be honestly done or not "
+                            "done. Never fold new tasks into an old card's description.", 60)
                 threading.Thread(target=_send_boot_briefing, daemon=True,
                                  name=f"boot-{name}").start()
             _emit_event(name, "session.started",
@@ -14992,7 +17915,81 @@ def archive_session(name: str) -> tuple[bool, str]:
     cfg = parse_env_file(f)
     cfg["CC_ARCHIVED"] = "1"
     _write_env(f, cfg)
+    _archive_session_issues(name, 1)
     return True, "archived"
+
+
+def _archive_session_issues(name: str, flag: int) -> int:
+    """Flip the archived bit on every one of a session's cards, both ways.
+
+    A card outlives the lane that owned it, so archiving a session and leaving
+    its cards on the live board produces exactly the rot the board triage keeps
+    finding: open cards nobody can execute, because the session they name no
+    longer exists. Waking the session flips them back rather than leaving the
+    lane live with an invisible backlog. Closed cards are included — otherwise
+    un-archiving would silently resurrect only part of the history."""
+    try:
+        db = get_db()
+        cur = db.execute(
+            "UPDATE issues SET archived=?, updated=? WHERE session=? AND deleted IS NULL AND archived!=?",
+            (flag, int(time.time()), name, flag),
+        )
+        db.commit()
+        n = cur.rowcount or 0
+        if n:
+            slog(f"[board] {'archived' if flag else 'un-archived'} {n} card(s) for session '{name}'")
+            _board_changed()
+        return n
+    except Exception as e:
+        slog(f"[board] issue archive cascade failed for '{name}': {e}")
+        return 0
+
+
+def reset_session(name: str) -> tuple[bool, str]:
+    """Drop the CONVERSATION, keep the lane.
+
+    A session is two things welded together: the lane (working dir, model,
+    flags, board cards, schedules, tags, and the name other sessions message)
+    and the conversation. Only the second one fills up. Until now the only way
+    to get a clean context was to abandon the lane and build a new one, because
+    start_session always resumes cc_conversation_id — so "I am out of context"
+    meant "this lane is finished", which it never was.
+
+    Clearing the conversation pointer makes the next start a fresh one. The
+    session then rebuilds its own context from the board on boot: the existing
+    boot briefing already sends _board_digest(name), which carries what is in
+    flight across the fleet plus this session's own queued work. That is the
+    board being the source of truth doing the job it exists for — the
+    conversation is disposable precisely because the board is not."""
+    f = CC_SESSIONS / f"{name}.env"
+    if not f.exists():
+        return False, f"session '{name}' not found"
+    if _is_session_blocked(name):
+        return False, "session is blocked; remove it from blocked-sessions.txt first"
+    was_running = is_running(name)
+    if was_running:
+        # Save scrollback first: the terminal history is the only record of the
+        # conversation once its id is gone, and a reset should not silently
+        # destroy the transcript of what it is resetting.
+        try:
+            r = subprocess.run(["tmux", "capture-pane", "-t", tmux_target(name), "-p", "-S", "-"],
+                               capture_output=True, text=True, timeout=30)
+            if r.stdout.strip():
+                data = r.stdout.encode("utf-8", errors="replace")
+                _log_path(name).write_bytes(data[-MAX_LOG_BYTES:])
+        except Exception:
+            pass
+        stop_session(name)
+        _kill_tmux_session(name)
+    meta = _load_meta(name)
+    dropped = meta.pop("cc_conversation_id", None)
+    meta.pop("cc_session_name", None)
+    _save_meta(name, meta)
+    slog(f"[reset] {name}: dropped conversation {dropped or '(none)'}; lane kept")
+    _ilog("session", "reset", actor=name, target=name,
+          detail={"dropped_conversation": dropped or None, "was_running": was_running})
+    ok, msg = start_session(name)
+    return ok, ("reset — fresh conversation, lane intact" if ok else msg)
 
 
 def wake_session(name: str) -> tuple[bool, str]:
@@ -15005,6 +18002,7 @@ def wake_session(name: str) -> tuple[bool, str]:
     cfg = parse_env_file(f)
     cfg.pop("CC_ARCHIVED", None)
     _write_env(f, cfg)
+    _archive_session_issues(name, 0)
     return start_session(name)
 
 
@@ -15655,12 +18653,15 @@ def _agent_panel(clean: str):
     while i >= 0:
         s = lines[i].strip()
         body = s.lstrip("❯ \xa0").strip()
-        if body[:1] in ("⏺", "◯"):
+        # Both glyph families: Claude Code draws ⏺/◯ where the terminal
+        # supports them and ●/○ where it does not (cloud containers) — the
+        # pane is ground truth, and it varies (AMUX-2118).
+        if body[:1] in ("⏺", "◯", "●", "○"):
             # Row layout: "type  title <wide column gap> timer · tokens" —
             # keep only the left column, single-spaced.
             label = re.split(r"\s{4,}", body[1:].strip())[0]
             rows.append({"cursor": s.startswith("❯"),
-                         "viewed": body[:1] == "⏺",
+                         "viewed": body[:1] in ("⏺", "●"),
                          "label": re.sub(r"\s+", " ", label)})
             i -= 1
             continue
@@ -16194,8 +19195,58 @@ _GMAIL_DEFAULT_CLIENT = None  # Must supply ~/.amux/gmail-oauth-client.json
 
 # Pending OAuth flows: state → (account, flow)
 _gmail_pending: dict = {}
+# Pending OAuth state must survive restarts: this server execv-reloads on every
+# save of its own file, and a shared-checkout cotenant can trigger that at any
+# moment. A user who clicks the consent link 40s after a restart lands on
+# "Invalid or expired auth request" through no fault of their own (hello@amux.io
+# re-auth, 2026-07-31: URL minted 08:44, cotenant restart 08:51:05, click
+# 08:51:45). Only account + PKCE verifier are needed to rebuild the Flow.
+_GMAIL_PENDING_PATH = CC_HOME / "gmail-pending.json"
+
+def _gmail_pending_save(state: str, account: str, flow) -> None:
+    try:
+        d = {}
+        if _GMAIL_PENDING_PATH.exists():
+            d = json.loads(_GMAIL_PENDING_PATH.read_text())
+        now = time.time()
+        d = {k: v for k, v in d.items() if now - v.get("ts", 0) < 3600}   # 1h TTL
+        d[state] = {"account": account,
+                    "verifier": getattr(flow, "code_verifier", None), "ts": now}
+        _GMAIL_PENDING_PATH.write_text(json.dumps(d))
+        _GMAIL_PENDING_PATH.chmod(0o600)
+    except Exception as e:
+        slog(f"[gmail] pending persist failed (auth still works until a restart): {e}")
+
+def _gmail_pending_restore(state: str):
+    """(account, rebuilt_flow) for a state minted by a PREVIOUS process, or None."""
+    try:
+        if not _GMAIL_PENDING_PATH.exists():
+            return None
+        d = json.loads(_GMAIL_PENDING_PATH.read_text())
+        e = d.pop(state, None)
+        _GMAIL_PENDING_PATH.write_text(json.dumps(d))   # single-use either way
+        if not e or time.time() - e.get("ts", 0) > 3600:
+            return None
+        cfg = _gmail_oauth_client_config()
+        if not cfg:
+            return None
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_config(cfg, _GMAIL_SCOPES, redirect_uri=_GMAIL_REDIRECT_URI)
+        if e.get("verifier"):
+            flow.code_verifier = e["verifier"]
+        slog(f"[gmail] pending state {state[:8]}… restored from disk (survived a restart)")
+        return (e["account"], flow)
+    except Exception as ex:
+        slog(f"[gmail] pending restore failed: {ex}")
+        return None
 _gmail_creds_fail: dict = {}  # account → timestamp of last refresh failure (negative cache)
 _GMAIL_CREDS_FAIL_TTL = 300   # skip refresh retries for 5 min after a failure
+
+def _gmail_check_revoked(account: str, exc: Exception) -> None:
+    """If exc is an invalid_grant (token revoked/expired), populate the negative
+    cache so we stop round-tripping to Google on every request."""
+    if "invalid_grant" in str(exc):
+        _gmail_creds_fail[account] = time.time()
 
 _GMAIL_REDIRECT_URI = "http://localhost:8822/api/gmail/callback"
 
@@ -16285,6 +19336,7 @@ def _gmail_auth_url(account: str) -> tuple[str, str] | tuple[None, str]:
             login_hint=account, include_granted_scopes="true"
         )
         _gmail_pending[state] = (account, flow)
+        _gmail_pending_save(state, account, flow)
         return url, state
     except Exception as e:
         return None, str(e)
@@ -16404,6 +19456,7 @@ def _gmail_list_messages(account: str, label: str = "INBOX",
                 pass
         return {"messages": summaries, "next_page_token": page_next}
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] list_messages {account}: {e}")
         return {"error": str(e)}
 
@@ -16451,6 +19504,7 @@ def _gmail_get_thread(account: str, thread_id: str) -> dict:
                 pass
         return {"thread_id": thread_id, "messages": messages}
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] get_thread {account}: {e}")
         return {"error": str(e)}
 
@@ -16476,8 +19530,11 @@ def _gmail_send_message(account: str, to: str, subject: str, body: str,
         if thread_id:
             send_body["threadId"] = thread_id
         result = svc.users().messages().send(userId="me", body=send_body).execute()
+        with _gmail_query_cache_lock:
+            _gmail_query_cache.clear()
         return {"ok": True, "id": result.get("id"), "thread_id": result.get("threadId")}
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] send {account}: {e}")
         return {"error": str(e)}
 
@@ -16507,6 +19564,7 @@ def _gmail_get_signature(account: str, send_as: str = "") -> str:
             chosen = sendas[0]
         return (chosen or {}).get("signature", "") or ""
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] get_signature {account}: {e}")
         return ""
 
@@ -16564,9 +19622,12 @@ def _gmail_compose_send(account: str, to: str, subject: str, body: str,
         if thread_id:
             send_body["threadId"] = thread_id
         result = svc.users().messages().send(userId="me", body=send_body).execute()
+        with _gmail_query_cache_lock:
+            _gmail_query_cache.clear()
         return {"ok": True, "id": result.get("id"), "thread_id": result.get("threadId"),
                 "signature_included": bool(sig_html)}
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] compose_send {account}: {e}")
         return {"error": str(e)}
 
@@ -16589,6 +19650,7 @@ def _gmail_find_message_by_rfc822(account: str, rfc822_id: str) -> dict | None:
             metadataHeaders=["From", "To", "Cc", "Subject", "Message-ID",
                              "References", "In-Reply-To"]).execute()
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] find_rfc822 {account}: {e}")
         return None
 
@@ -16699,6 +19761,7 @@ def _gmail_get_message_full(account: str, rfc822_id: str) -> dict | None:
         return svc.users().messages().get(
             userId="me", id=msgs[0]["id"], format="full").execute()
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] get_full {account}: {e}")
         return None
 
@@ -16750,9 +19813,30 @@ def _gmail_latest_matching(account: str, from_addr: str = "", with_addr: str = "
                     "gmail_message_id": m["id"], "thread_id": meta.get("threadId", ""),
                     "account": account}
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] latest_matching {account}: {e}")
     return None
 
+
+_gmail_query_cache: dict = {}
+_gmail_query_cache_lock = threading.Lock()
+_GMAIL_QUERY_CACHE_TTL = 30  # seconds — prevent hammering Gmail API
+
+def _gmail_cache_get(key: str):
+    with _gmail_query_cache_lock:
+        entry = _gmail_query_cache.get(key)
+        if entry and time.time() - entry["ts"] < _GMAIL_QUERY_CACHE_TTL:
+            return entry["data"]
+    return None
+
+def _gmail_cache_set(key: str, data):
+    with _gmail_query_cache_lock:
+        _gmail_query_cache[key] = {"ts": time.time(), "data": data}
+        if len(_gmail_query_cache) > 200:
+            cutoff = time.time() - _GMAIL_QUERY_CACHE_TTL
+            stale = [k for k, v in _gmail_query_cache.items() if v["ts"] < cutoff]
+            for k in stale:
+                del _gmail_query_cache[k]
 
 def _gmail_inbox_messages(account: str, count: int = 20, q: str = "", days: float = 0.0) -> dict:
     """Return messages for the unified /api/email/inbox shape, using the RFC822
@@ -16764,6 +19848,10 @@ def _gmail_inbox_messages(account: str, count: int = 20, q: str = "", days: floa
     poc_radar false-zero). Paginates via pageToken up to `count` (the hard cap).
     Returns {messages, truncated}: truncated=True means more matched the window
     than the cap returned, so a caller can tell a real 0 from a capped slice."""
+    cache_key = f"{account}:{count}:{q}:{days}"
+    cached = _gmail_cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         svc = _gmail_service(account)
         if not svc:
@@ -16827,8 +19915,11 @@ def _gmail_inbox_messages(account: str, count: int = 20, q: str = "", days: floa
                 "read": "UNREAD" not in full.get("labelIds", []),
                 "body": full.get("snippet", ""),
             })
-        return {"messages": out, "truncated": truncated}
+        result = {"messages": out, "truncated": truncated}
+        _gmail_cache_set(cache_key, result)
+        return result
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] inbox_messages {account}: {e}")
         return {"error": str(e)}
 
@@ -16847,6 +19938,7 @@ def _gmail_list_labels(account: str) -> list:
             return (0, PRIO.index(n)) if n in PRIO else (1, n.lower())
         return sorted(labels, key=_key)
     except Exception as e:
+        _gmail_check_revoked(account, e)
         slog(f"[gmail] list_labels {account}: {e}")
         return []
 
@@ -17065,6 +20157,77 @@ def _whisper_transcribe(raw: bytes, mime: str) -> tuple:
         if tmp:
             try: os.unlink(tmp)
             except Exception: pass
+
+
+# ── Local text-to-speech (Piper) ────────────────────────────────────────────
+# Same presence-detection shape as Whisper above: if the module and a voice are
+# on this box, "read aloud" speaks locally and free; otherwise /api/tts falls
+# back to ElevenLabs if a key is configured. Same file, both deployments.
+_PIPER_VOICE_NAME = os.environ.get("AMUX_PIPER_VOICE", "en_US-amy-medium").strip()
+_piper_py_cached = None
+
+
+def _piper_voice_path(name: str):
+    """(onnx, config) paths for a downloaded voice, or (None, None)."""
+    d = Path(os.path.expanduser("~/.amux/piper-voices"))
+    onnx, cfg = d / f"{name}.onnx", d / f"{name}.onnx.json"
+    return (onnx, cfg) if onnx.exists() and cfg.exists() else (None, None)
+
+
+def _piper_python():
+    """An interpreter that can `import piper`, or None. AMUX_PIPER_PYTHON first,
+    same reasoning as _whisper_python: the server's own interpreter usually
+    isn't the one with the model deps installed."""
+    global _piper_py_cached
+    if _piper_py_cached is not None:
+        return _piper_py_cached or None
+    cands = [os.environ.get("AMUX_PIPER_PYTHON", "").strip(), sys.executable]
+    cands += [shutil.which(c) for c in ("python3.11", "python3.12", "python3.13", "python3.14", "python3")]
+    for c in cands:
+        if not c or not os.path.exists(c):
+            continue
+        try:
+            r = subprocess.run([c, "-c", "import importlib.util as u,sys;"
+                                         "sys.exit(0 if u.find_spec('piper') else 1)"],
+                               capture_output=True, timeout=20)
+            if r.returncode == 0:
+                _piper_py_cached = c
+                return c
+        except Exception:
+            continue
+    _piper_py_cached = ""
+    return None
+
+
+def _piper_available() -> bool:
+    onnx, cfg = _piper_voice_path(_PIPER_VOICE_NAME)
+    return onnx is not None and _piper_python() is not None
+
+
+def _piper_generate(text: str):
+    """WAV bytes, or None. Spawned per-call rather than kept warm — measured
+    ~1s for a full paragraph on this host, well under the latency a warm
+    worker (like Whisper's) exists to avoid."""
+    py = _piper_python()
+    onnx, _cfg = _piper_voice_path(_PIPER_VOICE_NAME)
+    if not py or not onnx:
+        return None
+    import tempfile
+    fd, out_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        r = subprocess.run([py, "-m", "piper", "-m", str(onnx), "-f", out_path],
+                            input=text.encode(), capture_output=True, timeout=60)
+        if r.returncode != 0:
+            slog(f"[tts] piper failed: {r.stderr.decode(errors='replace')[:200]}")
+            return None
+        return Path(out_path).read_bytes()
+    except Exception as e:
+        slog(f"[tts] piper exception: {e}")
+        return None
+    finally:
+        try: os.unlink(out_path)
+        except Exception: pass
 
 
 # ── Session-name recovery for locally-transcribed text ──────────────────────
@@ -17298,13 +20461,7 @@ async function loadNotes() {
   try {
     const r = await fetch(API + '/notes');
     const notes = await r.json();
-    el.innerHTML = notes.map(n => '<a class="note-link" onclick="viewNote(\'' + n.path + '\')">' + n.path + '</a>').join('');
   } catch(e) { el.innerHTML = 'Error loading notes'; }
-}
-async function viewNote(p) {
-  document.getElementById('notes-list').style.display = 'none';
-  const nc = document.getElementById('note-content'); nc.style.display = 'block'; nc.textContent = 'Loading\u2026';
-  try { const r = await fetch(API + '/note/' + encodeURIComponent(p)); const d = await r.json(); nc.textContent = d.content || '(empty)'; } catch(e) { nc.textContent = 'Error'; }
 }
 loadInfo(); startPoll();
 """
@@ -17897,6 +21054,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .sched-group { margin-bottom:10px; }
   .sched-group-header { display:flex;align-items:center;gap:6px;font-size:0.68rem;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:0.06em;padding:4px 0 5px;border-bottom:1px solid var(--border);margin-bottom:6px; }
   .sched-group-count { background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1px 6px;font-size:0.63rem;color:var(--dim); }
+  .sched-fires { font-size: 0.66rem; color: var(--dim); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0 6px; margin-left: 6px; font-family: var(--font-mono); }
+  .sched-fires.hot { color: var(--red); border-color: var(--red); font-weight: 700; }
   .sched-cadence-pill { font-size:0.62rem;padding:1px 5px;border-radius:10px;border:1px solid var(--border);color:var(--dim);background:var(--card);font-family:monospace; }
   .sched-id-badge { font-size:0.6rem;padding:1px 5px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--accent);font-family:monospace;cursor:pointer;flex-shrink:0;letter-spacing:0.02em; }
   .sched-id-badge:hover { border-color:var(--accent); }
@@ -18755,6 +21915,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .log-search-btn .log-search-label { display: none; }
     .search-input { min-width: 0; }
     .search-input:focus { }
+    /* The clear "x" renders as a 20px dot, which is well under the 44px touch
+       minimum. Expand the HIT area with a pseudo-element instead of the box, so
+       the target is thumb-sized without turning the dot into a grey blob. */
+    .search-clear::before {
+      content: ''; position: absolute; left: 50%; top: 50%;
+      width: 44px; height: 44px; transform: translate(-50%, -50%);
+    }
     .header-row { gap: 4px; flex-wrap: nowrap; }
     .header-row h1 { font-size: 1.1rem; flex-shrink: 0; }
     .header-row > div { gap: 6px !important; flex-shrink: 1; min-width: 0; }
@@ -19984,6 +23151,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     min-width: 150px; z-index: 200; padding: 6px 0;
     box-shadow: 0 4px 16px rgba(0,0,0,0.2);
   }
+  #peek-tab-customizer-menu { position: fixed; z-index: 300; }
   .tab-customizer-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 14px;
     font-size: 0.82rem; cursor: pointer; color: var(--fg); user-select: none;
@@ -20148,9 +23316,185 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .stat-card-label { font-size: 0.69rem; color: var(--dim); margin-bottom: 5px; }
   .stat-card-value { font-size: 1.5rem; font-weight: 700; color: var(--text); }
 
+  /* Session sort dropdown */
+  .sort-menu {
+    position: absolute; right: 0; top: calc(100% + 5px); z-index: 60;
+    min-width: 232px; padding: 5px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 9px;
+    box-shadow: 0 8px 26px rgba(0,0,0,0.34);
+  }
+  .sort-opt {
+    padding: 8px 9px; border-radius: 6px; cursor: pointer; font-size: 0.82rem;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .sort-opt:hover { background: var(--bg); }
+  .sort-opt.active { background: var(--bg); }
+  @media (max-width: 600px) {
+    /* Thumb-sized rows, and anchored to the right edge so a 232px menu cannot
+       run off a 375px screen. */
+    .sort-opt { min-height: 44px; padding: 9px 10px; }
+    .sort-menu { min-width: 210px; max-width: calc(100vw - 24px); }
+  }
+
+  /* Tab icons. Default is icon + label; body.tabs-icons hides the labels to
+     buy back horizontal space once you know what the glyphs mean. The COUNT
+     badge deliberately survives icon-only mode -- an unread count is the one
+     thing you cannot infer from an icon. */
+  .tab-ico { display: inline-block; margin-right: 5px; opacity: 0.85; font-size: 0.95em; }
+  .tab-lbl { display: inline; }
+  body.tabs-icons .tab-lbl { display: none; }
+  /* Text-only: drop the glyph but keep the count badge — see note above. */
+  body.tabs-text .tab-ico { display: none; }
+  body.tabs-icons .tab-ico { margin-right: 0; font-size: 1.15em; opacity: 1; }
+  /* Icon-only tabs must stay thumb-sized, not shrink to the glyph's width. */
+  body.tabs-icons .tab-bar > button,
+  body.tabs-icons .peek-tab { min-width: 40px; text-align: center; }
+  @media (max-width: 600px) {
+    body.tabs-icons .tab-bar > button,
+    body.tabs-icons .peek-tab { min-width: 44px; min-height: 44px; }
+  }
+
   /* Board */
+  .focus-overlay { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom)); backdrop-filter: blur(3px); }
+  .focus-card { background: var(--card); border: 1px solid var(--line-2, var(--border));
+    border-radius: 16px; width: 100%; max-width: 560px; max-height: 88vh; display: flex;
+    flex-direction: column; box-shadow: 0 24px 64px rgba(0,0,0,0.5); overflow: hidden; }
+  .focus-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .focus-progress { font-size: 0.78rem; color: var(--dim); font-weight: 600; }
+  .focus-x { background: none; border: none; color: var(--dim); font-size: 1.1rem; cursor: pointer;
+    min-width: 44px; min-height: 44px; }
+  .focus-body { padding: 18px 18px 8px; overflow-y: auto; flex: 1; }
+  .focus-idrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .focus-id { font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent);
+    cursor: pointer; text-decoration: underline dotted; }
+  .focus-sess { font-size: 0.74rem; color: var(--dim); cursor: pointer; margin-left: auto; }
+  .focus-title { font-size: 1.15rem; font-weight: 700; line-height: 1.35; margin-bottom: 14px; }
+  .focus-ask-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--accent); font-weight: 600; margin-bottom: 6px; }
+  .focus-ask { font-size: 0.92rem; line-height: 1.55; color: var(--fg); white-space: pre-wrap;
+    word-break: break-word; background: var(--surface-2, var(--bg-2)); border-radius: 10px; padding: 12px 14px; }
+  .focus-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px;
+    border-top: 1px solid var(--border); }
+  .focus-actions .btn { min-height: 44px; flex: 1 1 auto; }
+  @media (max-width: 600px) { .focus-actions .btn { flex: 1 1 40%; } .focus-title { font-size: 1.05rem; } }
+  .msg-mode-btn { font-size:0.82rem; padding:6px 14px; border:1px solid var(--border); background:transparent; color:var(--dim); border-radius:8px; cursor:pointer; min-height:40px; }
+  .msg-mode-btn.active { border-color:var(--accent); color:var(--accent); background:var(--accent-dim,rgba(199,91,46,0.12)); font-weight:600; }
+  .tr-theme { border:1px solid var(--border); border-radius:10px; margin-bottom:8px; overflow:hidden; }
+  .tr-theme-h { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; flex-wrap:wrap; }
+  .tr-theme-h:hover { background:var(--surface-2,var(--bg-2)); }
+  .tr-theme-x { width:18px; color:var(--dim); font-size:1rem; }
+  .tr-theme-name { font-weight:700; font-size:0.9rem; }
+  .tr-theme-meta { font-size:0.72rem; color:var(--dim); }
+  .tr-theme-status { font-size:0.72rem; margin-left:auto; display:flex; gap:4px; flex-wrap:wrap; }
+  .tr-theme-you { border-color: var(--red); }
+  .tr-pill { font-size:0.66rem; border-radius:8px; padding:1px 7px; font-weight:600; }
+  .tr-pill-v { background:rgba(63,185,80,0.15); color:var(--green); }
+  .tr-pill-d { background:rgba(63,185,80,0.10); color:#3fb950; }
+  .tr-pill-p { background:rgba(210,153,34,0.14); color:#d29922; }
+  .tr-pill-y { background:rgba(248,81,73,0.16); color:var(--red); cursor:pointer; }
+  .tr-pill-done { background:var(--border); color:var(--dim); }
+  .tr-owners { padding:0 12px 10px 30px; font-size:0.74rem; }
+  .tr-owners-l { color:var(--dim); }
+  .tr-owners-meta { color:var(--dim); margin-left:6px; }
+  .tr-answer { background:var(--surface-2,var(--bg-2)); border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-size:0.88rem; }
+  .tr-sessions { display:flex; gap:5px; flex-wrap:wrap; padding:0 12px 10px; }
+  .tr-sess { font-size:0.68rem; color:var(--accent); border:1px solid var(--border); border-radius:8px; padding:0 7px; cursor:pointer; }
+  .tr-cards, .tr-evidence { padding:4px 12px 10px; background:var(--surface-2,var(--bg-2)); }
+  .tr-sub { font-size:0.66rem; text-transform:uppercase; color:var(--dim); letter-spacing:0.05em; margin:8px 0 4px; }
+  .tr-card { font-size:0.8rem; padding:4px 0; cursor:pointer; border-bottom:1px solid var(--border); }
+  .tr-card:hover { color:var(--accent); }
+  .tr-msg { padding:6px 0; border-bottom:1px solid var(--border); }
+  .tr-msg-sess { font-size:0.68rem; color:var(--accent); font-weight:600; }
+  .tr-msg-t { font-size:0.8rem; color:var(--fg); line-height:1.45; margin-top:2px; }
+  .review-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .rv-click { cursor: pointer; } .rv-click:hover { border-color: var(--accent); }
+  .rv-clear { background: var(--surface-2,var(--bg-2)); border:1px solid var(--green); border-radius:10px; padding:12px 14px; color:var(--green); font-size:0.9rem; margin-bottom:12px; }
+  .rv-unblock-all { width:100%; margin-bottom:12px; font-size:0.9rem; min-height:46px; }
+  .rv-blockers { display:flex; flex-direction:column; gap:12px; margin-bottom:18px; }
+  .rv-block { border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .rv-block-needsyou { border-color: var(--red); background: rgba(248,81,73,0.05); }
+  .rv-block-rot { border-color:#d29922; background: rgba(210,153,34,0.05); }
+  .rv-block-h { font-weight:700; font-size:0.9rem; margin-bottom:8px; }
+  .rv-block-n { font-size:0.72rem; color:var(--dim); font-weight:400; }
+  .rv-brow { display:flex; gap:8px; align-items:baseline; padding:6px 4px; border-top:1px solid var(--border); cursor:pointer; flex-wrap:wrap; }
+  .rv-brow:hover { background: var(--border); border-radius:6px; }
+  .rv-bid { font-family:var(--font-mono); font-size:0.72rem; color:var(--accent); flex:0 0 auto; }
+  .rv-btitle { font-size:0.82rem; flex:1; min-width:120px; }
+  .rv-bsess { font-size:0.68rem; color:var(--dim); border:1px solid var(--border); border-radius:6px; padding:0 6px; cursor:pointer; }
+  .rv-bwhy { font-size:0.72rem; color:var(--dim); flex-basis:100%; }
+  .rv-h { margin:18px 0 8px; font-size:0.95rem; }
+  .rv-lanes { display:flex; flex-direction:column; gap:8px; }
+  .rv-lane { border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .rv-lane-h { display:flex; align-items:center; gap:8px; padding:9px 12px; cursor:pointer; flex-wrap:wrap; }
+  .rv-lane-h:hover { background: var(--surface-2,var(--bg-2)); }
+  .rv-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .rv-dot-active { background: var(--green); } .rv-dot-idle { background: var(--dim); } .rv-dot-off { background: var(--red); opacity:0.6; }
+  .rv-lane-name { font-weight:600; font-size:0.88rem; cursor:pointer; text-decoration:underline dotted; }
+  .rv-lane-count { font-size:0.72rem; color:var(--dim); }
+  .rv-lane-cost { font-size:0.7rem; color:var(--dim); margin-left:auto; font-family:var(--font-mono); }
+  .rv-lane-x { font-size:1rem; color:var(--dim); width:20px; text-align:center; }
+  .rv-flag { font-size:0.66rem; border-radius:8px; padding:0 6px; font-weight:600; }
+  .rv-flag-you { background: rgba(248,81,73,0.15); color: var(--red); }
+  .rv-flag-rot { background: rgba(210,153,34,0.15); color:#d29922; }
+  .rv-flag-off { background: var(--border); color: var(--dim); }
+  .rv-lane-cur { font-size:0.78rem; padding:4px 12px 8px; color:var(--fg); cursor:pointer; }
+  .rv-lane-cur:hover { color: var(--accent); }
+  .rv-lane-cards { padding:4px 12px 10px; background: var(--surface-2,var(--bg-2)); }
+  .rv-lane-grp-h { font-size:0.66rem; text-transform:uppercase; color:var(--dim); margin:8px 0 3px; letter-spacing:0.05em; }
+  .rv-lane-card { font-size:0.8rem; padding:4px 0; cursor:pointer; border-bottom:1px solid var(--border); }
+  .rv-lane-card:hover { color: var(--accent); }
+  .rv-digest { background: var(--surface-2,var(--bg-2)); border:1px solid var(--border); border-radius:10px; padding:12px 16px; }
+  
+  .bf-menu { position: fixed; z-index: 120; background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.45); padding: 10px 12px;
+    max-height: 60vh; overflow-y: auto; min-width: 250px; max-width: 330px; }
+  .bf-sheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; max-width: none;
+    border-radius: 16px 16px 0 0; max-height: 70vh; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .bf-sheet-grab { width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 2px auto 10px; }
+  .bf-grp { margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .bf-grp:last-child { border-bottom: none; }
+  .bf-grp-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin: 4px 0; }
+  .bf-opt { padding: 8px 8px; border-radius: 6px; font-size: 0.82rem; cursor: pointer; min-height: 28px; }
+  .bf-opt:hover { background: var(--border); }
+  .bf-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.74rem;
+    border: 1px solid var(--accent); color: var(--accent); border-radius: 14px; padding: 3px 10px; }
+  .bf-chip-neg { border-color: var(--red); color: var(--red); }
+  .bf-chip-x { cursor: pointer; opacity: 0.7; padding: 2px 2px; }
+  .bf-chip-x:hover { opacity: 1; }
   .board-search-wrap {
     position: relative; margin-bottom: 4px;
+  }
+  /* The peek Board tab reuses .board-search-wrap, but its panel is a flex
+     COLUMN while the global board's header is a flex ROW. The mobile rule
+     below sets `flex: 1 1 100%` so the search takes a full line in that row —
+     in a column that means "grow to fill", and the wrap ate 603px of a 695px
+     panel, starving the issue list to height:0. Six cards rendered into a box
+     with no height, so the tab counted "6 issues" and showed nothing.
+     Never grows here, in either axis. */
+  #peek-issues-panel .board-search-wrap { flex: 0 0 auto !important; }
+
+  /* Board controls at phone width. At 390px the row was cramming a scope
+     button, a count, two view toggles and "+ New issue" onto one line, so the
+     count and the button each wrapped to two lines and the toggles were pushed
+     to the screen edge. Give the count its own line and let the buttons sit on
+     one row at full tap size. */
+  @media (max-width: 600px) {
+    #peek-issues-panel .peek-tasks-add {
+      flex-wrap: wrap; row-gap: 6px; align-items: center;
+    }
+    #peek-issues-panel .peek-tasks-add > .board-view-toggle { order: 1; }
+    #peek-issues-panel #piv-scope { order: 2; min-height: 44px; white-space: nowrap; }
+    #peek-issues-panel .peek-tasks-add > .btn.primary {
+      order: 3; margin-left: auto; min-height: 44px; white-space: nowrap;
+    }
+    /* Count last and full-width: it is the one item that can wrap harmlessly. */
+    #peek-issues-panel #peek-issues-count {
+      order: 4; flex: 1 0 100%; text-align: left; margin: 0;
+    }
+    #peek-issues-panel .board-view-toggle .bv-btn { min-width: 44px; min-height: 44px; }
   }
   .board-search-wrap .search-input { width: 100%; box-sizing: border-box; }
   .board-search-wrap .search-clear { display: none; }
@@ -20194,6 +23538,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-tap-highlight-color: transparent;
     will-change: transform;
     position: relative;
+    /* Offscreen cards skip layout/paint entirely; the intrinsic size keeps the
+       scrollbar honest. On a 300-card column this is the difference between
+       painting 300 cards and painting the ~8 visible ones. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 96px;
   }
   /* Kill all transitions while dragging so Sortable's JS animation is the sole driver */
   body.board-dragging .board-card { transition: none !important; }
@@ -20248,8 +23597,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .board-owner-toggle .bv-btn { flex: 1; text-align: center; font-size: 0.78rem; padding: 6px 4px; }
     .board-view-toggle { order: 4; }
     .board-view-toggle .bv-btn { padding: 6px 8px; }
-    .board-col { min-width: 160px; max-width: 280px; padding: 8px 6px; }
-    .board-columns { gap: 8px; min-height: 160px; }
+    /* Mobile kanban, the pattern every major board converged on: one column
+       per swipe with scroll-snap and an ~12vw peek of the next column so the
+       horizontal axis is discoverable. Fixed column width beats squeezed
+       multi-column: 160px columns rendered 2.3 abreast and truncated every
+       title. Snap is proximity, not mandatory — mandatory fights a drag in
+       progress, and Sortable owns the gesture mid-drag. */
+    .board-columns {
+      gap: 10px; min-height: 160px;
+      scroll-snap-type: x proximity;
+      scroll-padding-left: 8px;
+    }
+    body.board-dragging .board-columns { scroll-snap-type: none; }
+    .board-col {
+      flex: 0 0 86vw; min-width: 86vw; max-width: 86vw;
+      scroll-snap-align: start;
+      padding: 8px 8px;
+    }
+    /* A collapsed column is a stub, not a screen. At 86vw the default-collapsed
+       BACKLOG/TODO made the board's first paint an empty header over blank
+       space — the real columns were two swipes away. */
+    .board-col.col-collapsed {
+      flex: 0 0 auto; min-width: 120px; max-width: 136px;
+    }
+    /* Column header stays visible while scrolling a tall column. */
+    .board-col-header { position: sticky; top: 0; z-index: 2;
+      background: var(--bg); border-radius: 6px; }
     .board-card { padding: 8px 10px; }
     .board-card-title { font-size: 0.82rem; }
     .board-card-desc { font-size: 0.7rem; }
@@ -20262,7 +23635,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .board-session-count { font-size: 0.62rem !important; padding: 1px 5px !important; }
   }
   @media (max-width: 400px) {
-    .board-col { min-width: 140px; max-width: 260px; }
+    /* (removed 2026-07-31: this later block re-clamped columns to 260px and
+       silently beat the 86vw snap sizing above — one width authority only) */
     .board-card { padding: 7px 8px; }
     .board-card-title { font-size: 0.78rem; }
     .board-col-header { font-size: 0.66rem; padding: 2px 2px 6px 2px; }
@@ -20515,6 +23889,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border: none; color: var(--text); outline: none; padding: 10px 0;
     font-family: inherit; line-height: 1.65; resize: none; box-sizing: border-box;
   }
+  .board-detail-log { margin-top: 10px; padding: 8px 10px; background: var(--panel2, rgba(255,255,255,0.03)); border-radius: 8px; font-size: 0.74rem; line-height: 1.5; color: var(--dim); max-height: 180px; overflow-y: auto; }
+  .board-detail-key { cursor: pointer; }
+  .board-detail-key:hover { text-decoration: underline; }
+  .bd-status-banner { background: var(--accent-dim, rgba(199,91,46,0.12)); border: 1px solid var(--accent);
+    border-radius: 10px; padding: 10px 12px; margin: 4px 0 12px; }
+  .bd-sb-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+  .bd-sb-text { font-size: 0.9rem; line-height: 1.5; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+  .bd-sb-empty { font-size: 0.82rem; color: var(--dim); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .bd-hist-n { font-size: 0.68rem; opacity: 0.7; }
+  .bd-hist { display: flex; flex-direction: column; gap: 2px; }
+  .bd-hist-row { display: flex; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .bd-hist-row:last-child { border-bottom: none; }
+  .bd-hist-ic { flex: 0 0 16px; text-align: center; font-size: 0.8rem; line-height: 1.5; }
+  .bd-hist-b { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .bd-hist-txt { font-size: 0.82rem; line-height: 1.5; word-break: break-word; }
+  .bd-hist-ts { font-size: 0.68rem; color: var(--dim); flex: 0 0 auto; font-family: var(--font-mono); }
+  .bd-hist-status .bd-hist-txt { font-weight: 600; }
+  .bd-hist-warn .bd-hist-txt { color: var(--red); }
+  .bd-log-title { font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; color: var(--dim); }
+  .bd-log-line { white-space: pre-wrap; word-break: break-word; }
   .board-detail-desc-input::placeholder { color: var(--dim); }
   .board-detail-preview { min-height: 200px; font-size: 0.92rem; color: var(--text); padding: 10px 0; }
   .board-detail-meta { margin-top: 12px; font-size: 0.78rem; color: var(--dim); border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 5px; }
@@ -20588,6 +23982,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .gp-chip:hover { background: var(--hover); color: var(--text); }
   .gp-chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* Pane open but its session stopped — still closable, visibly stale. */
+  .gp-chip.gp-dead { opacity: 0.55; text-decoration: line-through; }
   .ws-profile-chip {
     display: inline-flex; align-items: center; gap: 3px;
     padding: 3px 8px; border-radius: 10px; font-size: 0.73rem; cursor: pointer;
@@ -21544,6 +24940,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #graph-view.sidebar-collapsed .graph-expand-btn { display: flex; }
   #graph-view.sidebar-collapsed .graph-controls { left: 46px; }
   .graph-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  /* Graph source switch (Notes / Fleet). 44px min height keeps it a legal
+     touch target on the phone, per .claude/rules/css-mobile.md. */
+  .graph-switch-btn { flex:1; min-height:32px; padding:6px 10px; font-size:0.75rem; font-family:inherit;
+    background:var(--bg); color:var(--dim); border:1px solid var(--border); border-radius:6px; cursor:pointer; }
+  .graph-switch-btn.active { background:var(--accent); color:#fff; border-color:transparent; }
+  @media (max-width: 600px) { .graph-switch-btn { min-height:44px; font-size:0.8rem; } }
   .graph-canvas { position: absolute; inset: 0; background: radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 24px 24px; cursor: grab; overflow: hidden; }
   .graph-canvas.grabbing { cursor: grabbing; }
   .graph-controls { position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; gap: 3px; z-index: 15; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 4px; }
@@ -21806,7 +25208,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div id="cloud-plan-meter" style="height:6px;border-radius:4px;background:var(--border);margin:8px 0 6px;overflow:hidden;display:none;">
             <div id="cloud-plan-meter-fill" style="height:100%;width:0;background:var(--accent);border-radius:4px;transition:width .3s;"></div>
           </div>
-          <button id="cloud-plan-btn" onclick="_upgradeCheckout('monthly')"
+          <button id="cloud-plan-btn" onclick="_upgradeCheckout('platform')"
             style="width:100%;min-height:44px;padding:9px 12px;border-radius:8px;border:none;background:#7c6fcd;color:#fff;font-size:0.82rem;font-weight:600;cursor:pointer;display:none;">
             Upgrade
           </button>
@@ -21858,6 +25260,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </label>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Pick &quot;Resume from summary&quot; automatically when the old-session dialog appears</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">Auto-file every command as a task</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="autotask-checkbox" onchange="toggleAutotask(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Every command you send becomes a board issue, so the board is the source of truth without you filing anything. Control words (&quot;continue&quot;, &quot;yes&quot;) are skipped.</div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
@@ -21920,6 +25330,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;gap:8px;">
+            <span style="font-size:0.85rem;">Tabs</span>
+            <select id="tabs-display-select" onchange="_tabsDisplaySet(this.value)"
+              style="min-height:44px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem;">
+              <option value="both">Icons and text</option>
+              <option value="icons">Icons only</option>
+              <option value="text">Text only</option>
+            </select>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Counts stay visible in every mode</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;">
             <span style="font-size:0.85rem;">Zoom</span>
             <div style="display:flex;align-items:center;gap:6px;">
@@ -21968,7 +25388,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Notes sync (read + write) with this folder — e.g. your Obsidian vault</div>
           <div id="settings-notes-dir" style="font-family:monospace;font-size:0.74rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;word-break:break-all;color:var(--text);">…</div>
           <div id="settings-notes-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;"></div>
-          <div style="font-size:0.66rem;color:var(--dim);margin-top:4px;">Change via <code>AMUX_NOTES_DIR</code> in <code>~/.amux/server.env</code></div>
+
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" id="settings-billing-section" style="display:none;">
@@ -22027,27 +25447,28 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
-  <button id="tab-sessions" class="active" onclick="switchView('sessions')">Sessions</button>
-  <button id="tab-board" onclick="switchView('board')">Board</button>
-  <button id="tab-calendar" onclick="switchView('calendar')">Calendar</button>
-  <button id="tab-scheduler" onclick="switchView('scheduler')">Scheduler</button>
-  <button id="tab-files" onclick="switchView('files')">Files</button>
-  <button id="tab-proxies" onclick="switchView('proxies')">Proxies</button>
-  <button id="tab-logs" onclick="switchView('logs')">Logs</button>
-  <button id="tab-grid" onclick="enterGridMode()">Workspace</button>
-  <button id="tab-notes" onclick="switchView('notes')">Notes</button>
-  <button id="tab-messages" onclick="switchView('messages')">Messages</button>
-  <button id="tab-skills" onclick="switchView('skills')">Skills</button>
-  <button id="tab-crm" onclick="switchView('crm')">People</button>
-  <button id="tab-sql" onclick="switchView('sql')">Database</button>
-  <button id="tab-map" onclick="switchView('map')">Map</button>
-  <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
-  <button id="tab-cost" onclick="switchView('cost')">Cost</button>
-  <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
-  <button id="tab-terminal" onclick="switchView('terminal')">Terminal</button>
-  <button id="tab-browser" onclick="switchView('browser')">Browser</button>
+  <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Sessions</span></button>
+  <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
+  <button id="tab-scheduler" onclick="switchView('scheduler')"><span class="tab-ico">⏱</span><span class="tab-lbl">Scheduler</span></button>
+  <button id="tab-files" onclick="switchView('files')"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
+  <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
+  <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
+  <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
+  <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
+  <button id="tab-skills" onclick="switchView('skills')"><span class="tab-ico">⚙</span><span class="tab-lbl">Skills</span></button>
+  <button id="tab-crm" onclick="switchView('crm')"><span class="tab-ico">👤</span><span class="tab-lbl">People</span></button>
+  <button id="tab-sql" onclick="switchView('sql')"><span class="tab-ico">⛁</span><span class="tab-lbl">Database</span></button>
+  <button id="tab-map" onclick="switchView('map')"><span class="tab-ico">◈</span><span class="tab-lbl">Map</span></button>
+  <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
+  <button id="tab-cost" onclick="switchView('cost')"><span class="tab-ico">$</span><span class="tab-lbl">Cost</span></button>
+  <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
+  <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
+  <button id="tab-browser" onclick="switchView('browser')"><span class="tab-ico">◳</span><span class="tab-lbl">Browser</span></button>
+  <button id="tab-mcp" onclick="switchView('mcp')"><span class="tab-ico">&#x2B21;</span><span class="tab-lbl">MCP</span></button>
 </div>
 <div class="tab-customize-wrap">
+  <button class="tab-customize-btn" id="tabs-icons-toggle" onclick="event.stopPropagation();toggleTabsIcons()" title="Icons only (hide labels)">&#x21F1;</button>
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
   <div class="tab-customizer-menu" id="tab-customizer-menu" style="display:none;"></div>
 </div>
@@ -22064,7 +25485,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <span id="filters-count" class="filters-count" style="display:none;">0</span>
   </button>
   <div class="tile-controls">
-    <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
+    <div class="sort-wrap" style="position:relative;display:inline-block;">
+      <button class="tile-btn" id="tile-sort-btn" onclick="event.stopPropagation();toggleSortMenu()" title="Sort sessions" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
+      <div class="sort-menu" id="sort-menu" style="display:none;"></div>
+    </div>
     <button class="tile-btn" id="tile-freeze-btn" onclick="toggleFreeze()" title="Freeze session order — click again to unfreeze and reset">&#x2744;</button>
     <button class="tile-btn" id="tile-expand-btn" onclick="toggleExpand()" title="Expand active sessions — click again to collapse all">&#x26A1;</button>
   </div>
@@ -22084,9 +25508,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div id="board-view" style="display:none;">
   <div class="board-toolbar">
+    <div id="bf-chips" style="display:none;flex-basis:100%;order:3;flex-wrap:wrap;gap:6px;padding-top:6px;"></div>
     <div class="board-search-wrap" style="flex:1;">
-      <input id="board-search" class="search-input" type="text" placeholder="Search or filter: is:rotting, status:doing, -session:none" autocapitalize="off" autocorrect="off" spellcheck="false" oninput="boardSearchQuery=this.value;_boardActiveView='';renderBoard()">
-      <button class="search-clear" onclick="document.getElementById('board-search').value='';boardSearchQuery='';_boardActiveView='';renderBoard()">&#x2715;</button>
+      <input id="board-search" class="search-input" type="text" placeholder="Search or filter: is:rotting, status:doing, -session:none" autocapitalize="off" autocorrect="off" spellcheck="false" oninput="boardSearchQuery=this.value;_boardActiveView='';_bfSyncHash();renderBoard()">
+      <button class="search-clear" onclick="document.getElementById('board-search').value='';boardSearchQuery='';_boardActiveView='';_bfSyncHash();renderBoard()">&#x2715;</button>
+      <button class="btn" id="bf-add" onclick="_bfOpenMenu(event)" title="Add a filter" style="flex:0 0 auto;min-height:44px;">+ Filter</button>
     </div>
     <button class="btn primary board-new-btn" onclick="openBoardAdd('todo')"><span class="board-new-label">+ New issue</span><span class="board-new-icon">+</span></button>
     <div class="board-owner-toggle">
@@ -22094,7 +25520,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button id="bo-agent" class="bv-btn" onclick="setBoardOwner('agent')" title="Session issues">Sessions</button>
     </div>
     <div class="board-view-toggle">
-      <button id="bv-session" class="bv-btn" onclick="setBoardView('session')" title="Group by session">&#x25A4;</button>
+      <button id="bv-list" class="bv-btn" onclick="setBoardView('list')" title="Dense list grouped by status">&#x2630;</button>
+        <button id="bv-session" class="bv-btn" onclick="setBoardView('session')" title="Group by session">&#x25A4;</button>
       <button id="bv-status" class="bv-btn" onclick="setBoardView('status')" title="Group by status">&#x2630;</button>
     </div>
   </div>
@@ -22349,69 +25776,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 
 <!-- Notes view -->
-<div id="notes-view" style="display:none;flex-direction:row;overflow:hidden;">
-  <!-- Sidebar -->
-  <div class="notes-sidebar" id="notes-sidebar">
-    <div class="notes-sidebar-header">
-      <span style="font-weight:600;font-size:0.85rem;">Notes</span>
-      <div class="notes-sidebar-actions">
-        <button class="notes-new-btn" onclick="_notesNew()" title="New note"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-        <button class="notes-new-btn" onclick="_notesNewFolder()" title="New folder"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg></button>
-        <button class="notes-new-btn" id="notes-collapse-all-btn" onclick="_notesCollapseAllFolders()" title="Collapse all folders"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 9 8 5 12 9"/><polyline points="4 19 8 15 12 19"/><line x1="16" y1="7" x2="20" y2="7"/><line x1="16" y1="17" x2="20" y2="17"/></svg></button>
-        <button class="notes-toggle-btn" onclick="_notesToggleSidebar()" title="Collapse sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
-      </div>
-    </div>
-    <div class="notes-search-wrap">
-      <input id="notes-search" type="search" placeholder="Search notes…" oninput="_notesSearchFilter(this.value)" style="width:100%;box-sizing:border-box;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;outline:none;">
-    </div>
-    <div id="notes-list" class="notes-list"></div>
-    <div class="notes-trash-section" id="notes-trash-section" style="display:none;">
-      <div class="notes-trash-header" onclick="_notesTrashToggle()">
-        <span class="notes-trash-chevron" id="notes-trash-chevron">&#x25B6;</span>
-        <span>Trash</span>
-        <span id="notes-trash-count" style="margin-left:auto;font-size:0.7rem;"></span>
-      </div>
-      <div class="notes-trash-body" id="notes-trash-body" style="display:none;"></div>
-    </div>
-    <div class="notes-source-indicator" id="notes-source-indicator" onclick="toggleSettings()" title="Notes sync folder — click to open Settings">
-      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
-      <span id="notes-source-name">…</span>
-    </div>
-  </div>
-  <!-- Editor pane -->
-  <div class="notes-editor-pane" id="notes-editor-pane">
-    <div class="notes-editor-header">
-      <button class="notes-expand-btn" onclick="_notesToggleSidebar()" title="Show notes list"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
-      <input id="notes-title" type="text" placeholder="Note title…" class="notes-title-input" oninput="_notesTitleChange()" onblur="_notesSaveDebounce()">
-      <div style="display:flex;gap:6px;align-items:center;">
-        <span id="notes-session-badge" style="display:none;font-size:0.7rem;padding:3px 8px;border-radius:10px;background:rgba(88,166,255,0.12);color:var(--accent);cursor:pointer;border:1px solid rgba(88,166,255,0.3);" title="Open this session"></span>
-        <span id="notes-save-status" style="font-size:0.72rem;color:var(--dim);"></span>
-        <button id="notes-pin-btn" class="notes-pin-btn" onclick="_notesTogglePinActive()" title="Pin to top"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
-        <button class="notes-delete-btn" onclick="_notesDelete()" title="Delete note"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
-      </div>
-    </div>
-    <div class="notes-mode-tabs" id="notes-mode-tabs" style="display:none;">
-      <button class="notes-mode-tab" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
-      <button class="notes-mode-tab active" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
-      <div id="notes-preview-search" style="display:none;margin-left:auto;display:none;align-items:center;gap:4px;">
-        <input id="notes-preview-search-input" type="text" placeholder="Search in preview..." oninput="_notesPreviewSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();event.shiftKey?_notesPreviewSearchNav(-1):_notesPreviewSearchNav(1);}" style="font-size:0.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);width:160px;outline:none;">
-        <span id="notes-preview-search-count" style="font-size:0.68rem;color:var(--dim);min-width:36px;text-align:center;"></span>
-        <button onclick="_notesPreviewSearchNav(-1)" style="background:none;border:1px solid var(--border);border-radius:3px;padding:1px 5px;cursor:pointer;color:var(--fg);font-size:0.7rem;" title="Previous (Shift+Enter)">&#x25B2;</button>
-        <button onclick="_notesPreviewSearchNav(1)" style="background:none;border:1px solid var(--border);border-radius:3px;padding:1px 5px;cursor:pointer;color:var(--fg);font-size:0.7rem;" title="Next (Enter)">&#x25BC;</button>
-        <button onclick="_notesPreviewSearchClear()" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.85rem;padding:0 2px;" title="Close">&times;</button>
-      </div>
-    </div>
-    <div class="notes-editor-wrap" id="notes-editor-wrap" style="display:none;">
-      <textarea id="notes-editor" class="notes-editor-textarea" placeholder="Start writing markdown..." oninput="_notesSaveDebounce()"></textarea>
-    </div>
-    <div class="notes-preview" id="notes-preview"></div>
-    <div class="notes-empty-state" id="notes-empty-state">
-      <div style="font-size:2rem;margin-bottom:8px;">📝</div>
-      <div style="color:var(--dim);font-size:0.85rem;">Select a note or create a new one</div>
-      <button class="btn" onclick="_notesNew()" style="margin-top:12px;font-size:0.8rem;">+ New Note</button>
-    </div>
-  </div>
-</div>
 
 <!-- CRM / People view -->
 <div id="crm-view" style="display:none;">
@@ -22610,6 +25974,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="cost-body"><div style="color:var(--dim);padding:24px;">Loading…</div></div>
 </div>
 
+<!-- Weekly Review view (AMUX-2179) -->
+
+
 <!-- Metrics view -->
 <div id="metrics-view" style="display:none;flex-direction:row;overflow:hidden;">
   <!-- Sidebar: session list -->
@@ -22751,7 +26118,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       line-height:1.45; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
     #messages-view .msg-locate { flex-shrink:0; font-size:0.72rem; padding:4px 10px; align-self:center; }
   </style>
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap;">
+  <div style="display:flex;gap:6px;margin-bottom:10px;flex-shrink:0;">
+    <button class="msg-mode-btn active" id="msgmode-messages" onclick="_msgSetMode('messages')">Messages</button>
+    <button class="msg-mode-btn" id="msgmode-trends" onclick="_msgSetMode('trends')">&#x1F4C8; Trends</button>
+    <select id="trends-days" onchange="_trendsLoad()" style="display:none;font-size:0.8rem;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-left:auto;">
+      <option value="7">Last 7 days</option>
+      <option value="14">Last 14 days</option>
+      <option value="30">Last 30 days</option>
+    </select>
+  </div>
+  <div id="msgs-controls" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap;">
     <div class="search-wrap" style="flex:1;min-width:180px;">
       <input class="search-input" id="msgs-search" type="text" placeholder="Search messages..." autocomplete="off" oninput="_messagesRender()">
     </div>
@@ -22764,6 +26140,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="btn" onclick="_messagesLoad(true)" title="Refresh" style="font-size:0.78rem;padding:5px 10px;min-height:44px;flex:0 0 auto;">&#x21BB;</button>
   </div>
   <div id="msgs-list" style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;-webkit-overflow-scrolling:touch;"></div>
+  <div id="trends-view" style="display:none;overflow-y:auto;flex:1;min-height:0;">
+    <div id="trends-totals" class="review-totals"></div>
+    <div id="trends-body"><div style="color:var(--dim);padding:20px;">Loading…</div></div>
+  </div>
   <div style="flex-shrink:0;padding-top:8px;text-align:center;">
     <button class="btn" id="msgs-more-btn" style="display:none;font-size:0.78rem;" onclick="_messagesLoad(false)">Load older</button>
   </div>
@@ -22869,6 +26249,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </style>
   <!-- Nav row -->
   <div class="bw-row" style="padding-top:8px;">
+    <select id="bw-backend" class="bw-in" style="min-width:104px;display:none;" onchange="_bwOnBackend()" title="How to run the browser — Playwright profiles, or your own Chrome over CDP">
+      <option value="">Playwright</option>
+      <option value="live">My Chrome</option>
+    </select>
     <select id="bw-profile" class="bw-in" style="min-width:120px;" title="Profile — 'Auto' matches the URL to a logged-in profile">
       <option value="">Auto profile</option>
     </select>
@@ -22942,7 +26326,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="notes-toggle-btn" onclick="_graphToggleSidebar()" title="Collapse sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
       </div>
     </div>
-    <div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+    <div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;">
+      <button id="graph-switch-default" class="graph-switch-btn active" onclick="_graphSwitch('default')">Notes</button>
+      <button id="graph-switch-fleet" class="graph-switch-btn" onclick="_graphSwitch('fleet')">Fleet</button>
+    </div>
+    <div id="graph-vault-row" style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
       <input id="graph-vault-path" type="text" placeholder="/path/to/obsidian/vault" style="flex:1;min-width:100px;font-size:0.75rem;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;">
       <button onclick="_graphImportVault()" style="padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;font-size:0.72rem;cursor:pointer;white-space:nowrap;">Import</button>
     </div>
@@ -23087,6 +26475,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="habits-view" style="display:none;flex-direction:column;align-items:center;padding:12px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
   <div id="habits-container" style="width:100%;max-width:480px;"></div>
   <button onclick="_habitsAdd()" style="margin-top:12px;background:var(--accent);color:#000;border:none;border-radius:50%;width:48px;height:48px;font-size:1.5rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:transform 0.15s;" onmousedown="this.style.transform='scale(0.9)'" onmouseup="this.style.transform=''" ontouchstart="this.style.transform='scale(0.9)'" ontouchend="this.style.transform=''">+</button>
+</div>
+
+<div id="mcp-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;gap:10px;overflow:auto;">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <strong style="font-size:0.95rem;">MCP servers</strong>
+    <span id="mcp-sub" style="font-size:0.75rem;color:var(--dim);flex:1;min-width:0;"></span>
+    <button class="btn" style="min-height:44px;" onclick="_mcpRefresh()">Refresh</button>
+    <button class="btn primary" style="min-height:44px;" onclick="_mcpImport()">+ Import</button>
+  </div>
+  <div id="mcp-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+  <div id="mcp-env" style="font-size:0.78rem;color:var(--dim);border-top:1px solid var(--border);padding-top:10px;"></div>
 </div>
 
 <div id="skills-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
@@ -23283,16 +26682,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="overlay-header">
     <div style="display:flex;align-items:center;gap:10px;min-width:0;">
       <button class="btn" onclick="closeBoardDetail()">&#x2190; Back</button>
-      <span id="bd-key" class="board-detail-key"></span>
+      <span id="bd-key" class="board-detail-key" onclick="_bdCopyLink()" title="Copy link to this card"></span>
     </div>
     <button class="btn" onclick="boardDetailDelete()" style="color:var(--red);border-color:rgba(248,81,73,0.3);">Delete</button>
   </div>
   <div class="board-detail-body">
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+    <div id="bd-status-banner" class="bd-status-banner" style="display:none;"></div>
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <div class="board-detail-row" id="bd-session-row">
       <span style="font-size:0.78rem;color:var(--dim);">Session:</span>
       <select id="bd-session" class="board-detail-session-select"></select>
+        <button id="bd-goto-session" class="btn" style="display:none;flex:0 0 auto;min-height:44px;font-size:0.78rem;" title="Open this session's live progress, searched to this card">&#x2192; session</button>
+        <button id="bd-ask-status" class="btn" style="display:none;flex:0 0 auto;min-height:44px;font-size:0.78rem;" title="Ask the owning session to post a status update to this card">&#x1F4AC; Ask status</button>
     </div>
     <div class="board-detail-row">
       <span style="font-size:0.78rem;color:var(--dim);">Due:</span>
@@ -23320,8 +26722,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="board-detail-tabs">
       <button class="board-detail-tab active" id="bd-tab-edit" onclick="boardDetailTab('edit')">Edit</button>
       <button class="board-detail-tab" id="bd-tab-preview" onclick="boardDetailTab('preview')">Preview</button>
+      <button class="board-detail-tab" id="bd-tab-history" onclick="boardDetailTab('history')">History<span id="bd-hist-n" class="bd-hist-n"></span></button>
     </div>
     <textarea id="bd-desc" class="board-detail-desc-input" placeholder="Add notes, description, or context... (supports Markdown)"></textarea>
+    <div id="bd-log" class="board-detail-log" style="display:none"></div>
     <div id="bd-preview" class="board-detail-preview md-content" style="display:none;"></div>
     <div class="board-detail-meta" id="bd-meta"></div>
   </div>
@@ -23485,18 +26889,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- Tab bar -->
   <div class="peek-tabs">
-    <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
-    <!-- AMUX-LOCAL:session-chat --><button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Turn-level chat with this session (owner/session turns; raw terminal stays in Terminal)">Chat</button><!-- /AMUX-LOCAL:session-chat -->
-    <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
-    <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
-    <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
-    <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text">Dictation<span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
-    <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Board<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
-    <button class="peek-tab" id="peek-tab-notes" onclick="setPeekTab('notes')">Notes<span class="peek-tab-count" id="peek-tab-notes-count"></span></button>
-    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task">Cost</button>
-    <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
-    <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')">Commits</button>
-    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
+    <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
+    <!-- AMUX-LOCAL:session-chat --><button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Turn-level chat with this session (owner/session turns; raw terminal stays in Terminal)"><span class="tab-ico">💬</span><span class="tab-lbl">Chat</span></button><!-- /AMUX-LOCAL:session-chat -->
+    <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
+    <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
+    <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
+    <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
+    <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span><span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
+    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task"><span class="tab-ico">$</span><span class="tab-lbl">Cost</span></button>
+    <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)"><span class="tab-ico">☷</span><span class="tab-lbl">Transcript</span></button>
+    <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')"><span class="tab-ico">◇</span><span class="tab-lbl">Commits</span></button>
+    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')"><span class="tab-ico">⎇</span><span class="tab-lbl">Worktree</span></button>
+    <button class="tab-customize-btn" id="peek-tab-customize" onclick="event.stopPropagation();togglePeekTabCustomizer()" title="Show/hide/reorder session tabs" style="flex:0 0 auto;">&#x229E;</button>
+    <div class="tab-customizer-menu" id="peek-tab-customizer-menu" style="display:none;"></div>
   </div>
   <!-- Working directory bar -->
   <div class="peek-dir-bar">
@@ -23543,7 +26948,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
             autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
             enterkeyhint="enter" style="width:100%;"
-            oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
+            oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset();_draftSaveDebounced(peekSession,this.value)" onkeydown="slashAcKeydown(event)"
             onbeforeinput="slashAcBeforeInput(event)"
             onpaste="handlePeekPaste(event)"></textarea>
           <button type="button" class="peek-input-expand" id="peek-input-expand" title="Expand to full screen" onclick="_expandPeekInput()">&#x26F6;</button>
@@ -23658,6 +27063,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button id="piv-scope" class="btn" style="font-size:0.72rem;padding:4px 9px;" onclick="togglePeekIssuesAll()" title="Toggle between this session's issues and all sessions'">This session</button>
       <span id="peek-issues-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn primary" style="font-size:0.8rem;padding:5px 12px;" onclick="openBoardAdd('backlog')">+ New issue</button>
+    </div>
+    <!-- Same query language as the global board (_bqFilter), so is:rotting /
+         status:doing / -tag:x behave identically on both surfaces. Scoped by the
+         session filter above, not by a separate code path. -->
+    <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>
+    <div class="board-search-wrap" style="padding:0 10px 6px;display:flex;gap:6px;">
+      <button class="btn" onclick="_bfOpenMenu(event,'peek')" title="Add a filter" style="flex:0 0 auto;min-height:44px;">+ Filter</button>
+      <input id="peek-issues-search" class="search-input" type="text"
+             placeholder="Search or filter: is:rotting, status:doing, -session:none"
+             autocapitalize="off" autocorrect="off" spellcheck="false"
+             oninput="_peekIssuesQuery=this.value;_bfTarget='peek';_bfRenderChips();renderPeekIssues()">
+      <button class="search-clear" style="right:16px;"
+              onclick="document.getElementById('peek-issues-search').value='';_peekIssuesQuery='';renderPeekIssues()">&#x2715;</button>
     </div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
   </div>
@@ -23799,47 +27217,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </details>
   </div>
   <!-- Notes panel -->
-  <div id="peek-notes-panel" class="peek-tasks-panel" style="flex-direction:row;padding:0;gap:0;overflow:hidden;">
-    <!-- Sidebar -->
-    <div class="notes-sidebar" id="peek-notes-sidebar">
-      <div class="notes-sidebar-header">
-        <span style="font-weight:600;font-size:0.85rem;">Notes</span>
-        <div class="notes-sidebar-actions">
-          <button class="notes-new-btn" onclick="_peekNotesNew()" title="New note"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-          <button class="notes-toggle-btn" onclick="_peekNotesToggleSidebar()" title="Collapse sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
-        </div>
-      </div>
-      <div class="notes-search-wrap">
-        <input id="peek-notes-search" type="search" placeholder="Search notes…" oninput="_peekNotesSearchFilter(this.value)" style="width:100%;box-sizing:border-box;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;outline:none;">
-      </div>
-      <div id="peek-notes-list" class="notes-list"></div>
-    </div>
-    <!-- Editor pane -->
-    <div class="notes-editor-pane" id="peek-notes-editor-pane">
-      <div class="notes-editor-header">
-        <button class="notes-expand-btn" onclick="_peekNotesToggleSidebar()" title="Show notes list"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
-        <input id="peek-notes-title" type="text" placeholder="Note title…" class="notes-title-input" oninput="_peekNotesTitleChange()" onblur="_peekNotesSaveDebounce()">
-        <div style="display:flex;gap:6px;align-items:center;">
-          <span id="peek-notes-save-status" style="font-size:0.72rem;color:var(--dim);"></span>
-          <button id="peek-notes-pin-btn" class="notes-pin-btn" onclick="_peekNotesTogglePin()" title="Pin to top"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
-          <button class="notes-delete-btn" onclick="_peekNotesDelete()" title="Delete note"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
-        </div>
-      </div>
-      <div class="notes-mode-tabs" id="peek-notes-mode-tabs" style="display:none;">
-        <button class="notes-mode-tab" id="peek-notes-tab-edit" onclick="_peekNotesSwitchMode('edit')">Edit</button>
-        <button class="notes-mode-tab active" id="peek-notes-tab-preview" onclick="_peekNotesSwitchMode('preview')">Preview</button>
-      </div>
-      <div class="notes-editor-wrap" id="peek-notes-editor-wrap" style="display:none;">
-        <textarea id="peek-notes-editor" class="notes-editor-textarea" placeholder="Start writing markdown..." oninput="_peekNotesSaveDebounce()"></textarea>
-      </div>
-      <div class="notes-preview" id="peek-notes-preview"></div>
-      <div class="notes-empty-state" id="peek-notes-empty-state">
-        <div style="font-size:2rem;margin-bottom:8px;">📝</div>
-        <div style="color:var(--dim);font-size:0.85rem;">Select a note or create a new one</div>
-        <button class="btn" onclick="_peekNotesNew()" style="margin-top:12px;font-size:0.8rem;">+ New Note</button>
-      </div>
-    </div>
-  </div>
 </div>
 
 <!-- Edit modal -->
@@ -24102,6 +27479,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="channel-thread" class="channel-thread"></div>
     <form class="channel-input-row" onsubmit="event.preventDefault(); channelSend();">
       <textarea id="channel-input" class="channel-input" placeholder="Message..." rows="1"
+        oninput="try{localStorage.setItem('amux_draft_channel_'+(_channelMe||'')+'_'+(_channelOther||''),this.value)}catch(e){}"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();channelSend();}"></textarea>
       <button type="submit" class="btn primary" id="channel-send-btn">Send</button>
     </form>
@@ -24268,6 +27646,26 @@ async function toggleAutoCompact(checked) {
     body: JSON.stringify({ key: 'auto_compact_enabled', value: checked ? '1' : '0' })
   });
 }
+async function toggleAutotask(checked) {
+  await fetch('/api/prefs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'board_autotask', value: checked ? '1' : '0' })
+  });
+  if (typeof showToast === 'function') {
+    showToast(checked ? 'Every command will be filed as a task' : 'Auto-filing off');
+  }
+}
+(async function initAutotask() {
+  try {
+    const r = await fetch('/api/prefs?key=board_autotask');
+    const d = await r.json();
+    const cb = document.getElementById('autotask-checkbox');
+    // Default ON when unset — the whole point is that it works without being
+    // turned on, so an absent pref must not read as disabled.
+    if (cb) cb.checked = String((d && d.value) ?? '1') !== '0';
+  } catch (e) {}
+})();
+
 async function toggleAutoResume(checked) {
   await fetch('/api/prefs', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -24341,8 +27739,9 @@ function _showUpgradeModal(d) {
          'Ongoing workflow creation, tuning, and teaching'].map(f =>
           '<div style="color:#aaa;font-size:0.8rem;padding:3px 0 3px 20px;position:relative;"><span style="position:absolute;left:2px;color:#3fb950;font-weight:700;">✓</span>' + f + '</div>').join('') +
       '</div>' +
-      '<button onclick="_upgradeCheckout(\'monthly\')" style="display:block;width:100%;min-height:44px;background:#7c6fcd;color:#fff;border:none;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Upgrade — monthly</button>' +
-      '<button onclick="_upgradeCheckout(\'annual\')" style="display:block;width:100%;min-height:44px;background:#26263e;color:#e5e5e5;border:1px solid #3a3a5c;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Upgrade — annual (save 17%)</button>' +
+      '<div style="font-size:1.15rem;font-weight:700;color:#c4b5fd;margin-bottom:2px;">$5,000/month</div>' +
+      '<div style="color:#888;font-size:0.76rem;margin-bottom:14px;">amux Platform · includes implementation &amp; enablement</div>' +
+      '<button onclick="_upgradeCheckout(\'platform\')" style="display:block;width:100%;min-height:44px;background:#7c6fcd;color:#fff;border:none;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Talk to us &amp; get started</button>' +
       '<div id="upgrade-modal-err" style="color:#f87171;font-size:0.8rem;min-height:1.1em;"></div>' +
     '</div>';
   document.body.appendChild(wrap);
@@ -24391,7 +27790,7 @@ async function _loadCloudPlan() {
     if (d.plan !== 'pro' && d.stripe_configured) {
       btn.style.display = '';
       btn.textContent = (d.budget_usd != null && Number(d.spend_usd || 0) >= Number(d.budget_usd))
-        ? 'Budget used up — upgrade' : 'Upgrade';
+        ? 'Budget used up — $5,000/mo plan' : 'Upgrade — $5,000/mo';
     }
   } catch(e) { /* self-hosted: no cloud gateway, card stays hidden */ }
 }
@@ -24527,7 +27926,11 @@ function _schedulePeekPoll() {
     _schedulePeekPoll();
   }, _peekPollInterval());
 }
-const _peekDrafts = {};  // session name → command text
+// Composer drafts live in ONE place: _draftGet/_draftSave, keyed by session.
+// There used to be three stores (this in-memory map, the peekState snapshot's
+// own `draft` field, and amux_draft_*). Clearing on send hit one of them and the
+// others put the text back, which is how an already-sent message reappeared and
+// got sent twice. One store cannot disagree with itself.
 
 // ═══════ ZOOM ═══════
 const ZOOM_STEPS = [50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 150, 175, 200];
@@ -24637,6 +28040,66 @@ function _fmtClock(ts) {
   const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
   return ts >= today.getTime() ? t : (d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t);
 }
+// ── Latency probe ───────────────────────────────────────────────────────────
+// Measures round-trip time to the amux server from THIS device, which is the
+// number that matters when the dashboard feels slow over Tailscale or cellular
+// — server-side timings cannot see the network in between.
+//
+// Uses a real endpoint rather than a synthetic one: /api/ping would measure a
+// path nothing else takes. Samples several times and reports min/median/max,
+// because a single sample on a mobile radio is mostly noise. Cache-busted so a
+// 304 does not time an empty round trip.
+function _pingWidgetHtml() {
+  return '<div id="ping-box" style="border-top:1px solid var(--border);padding:10px 0 4px;">'
+    + '<div style="display:flex;align-items:center;gap:8px;">'
+    + '<button id="ping-btn" onclick="_runPing()" style="min-height:36px;padding:5px 12px;border:1px solid var(--border);'
+    + 'border-radius:7px;background:var(--card);color:var(--text);font-size:0.8rem;font-weight:600;cursor:pointer;">Ping server</button>'
+    + '<span id="ping-out" style="font-size:0.8rem;color:var(--dim);font-variant-numeric:tabular-nums;">measure round-trip latency</span>'
+    + '</div><div id="ping-detail" style="font-size:0.72rem;color:var(--dim);margin-top:5px;"></div></div>';
+}
+
+async function _runPing(n) {
+  const btn = document.getElementById('ping-btn');
+  const out = document.getElementById('ping-out');
+  const det = document.getElementById('ping-detail');
+  if (!out) return;
+  const N = n || 5;
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  const ms = [];
+  let failed = 0;
+  for (let i = 0; i < N; i++) {
+    if (out) out.textContent = 'pinging ' + (i + 1) + '/' + N + '…';
+    const t0 = performance.now();
+    try {
+      // no-store + a unique query defeats both the HTTP cache and the ETag/304
+      // path, so this times a real request instead of a revalidation.
+      const r = await fetch(API + '/api/prefs?key=_ping&_p=' + Date.now() + '_' + i,
+                            { cache: 'no-store' });
+      await r.text();
+      ms.push(performance.now() - t0);
+    } catch (e) { failed++; }
+    await new Promise(r => setTimeout(r, 120));
+  }
+  if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  if (!ms.length) {
+    out.innerHTML = '<span style="color:#f85149;">unreachable</span>';
+    if (det) det.textContent = N + '/' + N + ' requests failed — the server is not answering from this device.';
+    return;
+  }
+  const sorted = [...ms].sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)];
+  const lo = sorted[0], hi = sorted[sorted.length - 1];
+  const col = med < 80 ? '#3fb950' : med < 250 ? '#facc15' : '#f85149';
+  out.innerHTML = '<b style="color:' + col + ';">' + Math.round(med) + ' ms</b>'
+                + '<span style="color:var(--dim);"> median</span>';
+  if (det) {
+    det.textContent = 'min ' + Math.round(lo) + ' · max ' + Math.round(hi)
+      + ' · ' + ms.length + '/' + N + ' ok'
+      + (failed ? ' · ' + failed + ' failed' : '')
+      + ' · ' + (location.protocol === 'https:' ? 'https' : 'http') + ' to ' + location.host;
+  }
+}
+
 function showConnHistory() {
   const eps = _connEpisodes();
   const stateLabel = { live: '● Live', polling: '● Polling', offline: '● Offline' }[_connState] || '● —';
@@ -24674,7 +28137,7 @@ function showConnHistory() {
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
     + '<span style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
     + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Disconnections from this device (this browser)</div>'
-    + rows + pendingHtml + clearHtml + '</div>';
+    + _pingWidgetHtml() + rows + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
 }
 
@@ -25157,6 +28620,11 @@ function openBulkActions() {
   const now = Date.now() / 1000;
   const limited = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
   const creditLimited = sessions.filter(s => s.credit_limited);
+  // Transient API errors (529 Overloaded / 5xx). Retryable immediately — no reset
+  // to wait for, no model to switch — so "continue" IS the fix. These were
+  // invisible before: Claude Code prints the error and stops at a prompt, so the
+  // session read as plain idle and never appeared here.
+  const apiErr = sessions.filter(s => s.api_error);
   // Group by behavior, not by the weekly/non-weekly flag: any usage-cap banner
   // (weekly OR 5-hour session limit) auto-resumes at its reset time, so it needs
   // no action. Everything else is a transient/API rate-limit where sending
@@ -25202,12 +28670,33 @@ function openBulkActions() {
     html += `</div>`;
     html += `</div>`;
   }
+  if (apiErr.length) {
+    const codes = [...new Set(apiErr.map(s => s.api_error_code).filter(Boolean))].join('/');
+    const looping = apiErr.filter(s => (s.api_error_count || 0) > 1);
+    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x26A0;&#xFE0F; API error${codes ? ' ' + esc(codes) : ''} &mdash; server-side</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">`
+      + `${apiErr.length} session${apiErr.length>1?'s':''} stopped on a transient API error (Overloaded / 5xx). `
+      + `There is no reset time and no model to switch &mdash; it is retryable now, so "continue" is the fix. `
+      + (looping.length ? `<b>${looping.length}</b> ${looping.length>1?'are':'is'} in a retry loop and will keep failing until the upstream recovers. ` : '')
+      + `Check <a href="https://status.claude.com" target="_blank" rel="noopener" style="color:var(--accent);">status.claude.com</a> if it persists.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    apiErr.forEach(s => {
+      html += `<div style="display:flex;align-items:center;gap:8px;font-size:0.8rem;">`
+        + `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">${esc(s.name)}</span>`
+        + `<span style="color:var(--dim);">${esc(s.api_error_code || '5xx')}${(s.api_error_count||0) > 1 ? ' &times;' + s.api_error_count : ''}</span>`
+        + `</div>`;
+    });
+    html += `</div>`;
+    html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinueApiErr()">Send "continue" to ${apiErr.length} session${apiErr.length>1?'s':''}</button>`;
+    html += `</div>`;
+  }
   // Bottom: one button to resume every LIMITED session at once (rate + credit).
   // Replaces the old all-idle broadcast — there's no reason to nudge sessions
   // that are idle because they finished; the useful bulk action is resuming
   // the ones that actually got stuck.
   const _seen = new Set();
-  const allLimited = [...transient, ...capped, ...creditLimited]
+  const allLimited = [...transient, ...capped, ...creditLimited, ...apiErr]
     .filter(s => !_seen.has(s.name) && _seen.add(s.name));
   const _n = allLimited.length;
   if (_n) {
@@ -25289,6 +28778,30 @@ async function bulkSendContinue(cappedOnly) {
     } catch(e) {}
   }
   showToast(`Sent "continue" to ${sent} session${sent>1?'s':''}`);
+}
+
+// Retry every session stopped on a transient API error. Sent through the normal
+// /send path so each message is origin-stamped and audited like any other —
+// nothing about a bulk retry should bypass provenance.
+async function bulkSendContinueApiErr() {
+  const matched = sessions.filter(s => s.api_error);
+  if (!matched.length) { closeBulkActions(); return; }
+  closeBulkActions();
+  let sent = 0, failed = 0;
+  for (const s of matched) {
+    try {
+      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+        method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({text: 'continue'})
+      });
+      const d = await r.json().catch(() => ({}));
+      // Count what the SERVER accepted, not what we attempted — a bulk action
+      // that reports its own optimism is the same lie as the raw-tmux fallback.
+      if (r.ok && !d.error) sent++; else failed++;
+    } catch(e) { failed++; }
+  }
+  showToast(`Sent "continue" to ${sent} session${sent === 1 ? '' : 's'}`
+    + (failed ? ` — ${failed} failed` : ''));
 }
 
 async function showSessionInfo(name) {
@@ -26183,6 +29696,16 @@ function stripProviderYoloFlags(flags) {
 // re-focusing it makes iOS Safari yank the scroll back to it on every poll
 // (the "search results scroll back" bug). Skipping the no-op focus avoids that.
 function _restoreCardFocus(focusedId, savedInputs) {
+  // Rehydrate persisted composer drafts on every render path. Done HERE rather
+  // than at each of render()'s exits because it has six of them, and the one
+  // that gets missed is the one that eats your text. _draftRestore is a no-op
+  // for a composer that already has content or is focused, so a re-render
+  // mid-type never rewinds you.
+  try {
+    document.querySelectorAll('#cards textarea.send-input').forEach(inp => {
+      if ((inp.id || '').startsWith('input-')) _draftRestore(inp, inp.id.slice(6));
+    });
+  } catch (e) {}
   if (!focusedId) return;
   const inp = document.getElementById(focusedId);
   if (!inp || document.activeElement === inp) return;
@@ -26331,6 +29854,7 @@ function render() {
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
           ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)">${esc(s.credit_limit_model || 'model')} limit</span>` : ''}
+          ${s.api_error ? `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code)} — server-side and retryable. Send &quot;continue&quot; (Bulk actions).">API ${esc(s.api_error_code)}${s.api_error_count > 1 ? ' &times;' + s.api_error_count : ''}</span>` : ''}
           ${s.steering && s.steering.length ? `<span class="status-badge steering" title="${s.steering.length} steering message${s.steering.length>1?'s':''} queued">${s.steering.length} queued</span>` : ''}
           ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
@@ -26340,8 +29864,9 @@ function render() {
       ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.dir)}">${esc(s.dir)}</span></div>` : ''}
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
+      ${(s.sched_on || s.sched_off) ? `<span class="sched-count-chip" title="${s.sched_on} enabled / ${s.sched_off} disabled schedule(s)" onclick="event.stopPropagation();openPeek('${esc(s.name)}');setTimeout(()=>setPeekTab('schedules'),400)" style="cursor:pointer;font-size:0.66rem;border:1px solid var(--border);border-radius:8px;padding:0 6px;font-family:var(--font-mono);"><span style="color:var(--green);font-weight:700;">${s.sched_on}</span><span style="color:var(--dim);">/</span><span style="color:${s.sched_off ? '#d29922' : 'var(--dim)'};">${s.sched_off}</span></span>` : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
-      ${!isExp && s.task_name ? `<div class="card-preview${taskDim ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
+      ${!isExp && s.task_name ? `<div class="card-preview${taskDim ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
       ${!isExp && (schedOn + schedOff) ? `<div class="card-sched-count" onclick="event.stopPropagation();switchView('scheduler')" title="${schedOn} enabled, ${schedOff} disabled">&#x23F2; ${[schedOn ? `<span class="sched-on">${schedOn} on</span>` : '', schedOff ? `<span class="sched-off">${schedOff} off</span>` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
@@ -26362,7 +29887,7 @@ function render() {
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && s.task_name ? `<div class="card-task-name${taskDim ? ' task-stale' : ''}" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" title="Click to edit task label" style="cursor:pointer;"><span class="tn-label">Task:</span>${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
+        ${isExp && s.task_name ? `<div class="card-task-name${taskDim ? ' task-stale' : ''}" title="Click the id to open the board card" style="font-weight:600;"><span class="tn-label">Task:</span><span onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" style="cursor:pointer;">${esc(s.task_name)}</span>${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Session</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
@@ -26377,7 +29902,7 @@ function render() {
           <textarea class="send-input" id="input-${s.name}" rows="1"
             placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
             autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
-            oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
+            oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset();_draftSaveDebounced('${s.name}',this.value)"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
           <button class="btn primary" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">Send</button>
@@ -26401,11 +29926,7 @@ function render() {
   // Grid mode: flat list sorted by activity or alpha, no grouping (desktop only)
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
-    if (sortMode === 'alpha') {
-      sortedFiltered = [...filtered].sort(_alphaSortSessions);
-    } else {
-      sortedFiltered = [...filtered].sort(_naturalSortSessions);
-    }
+    sortedFiltered = [...filtered].sort(_sortFnFor(sortMode));
     el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
@@ -26437,8 +29958,8 @@ function render() {
     });
     // Sort within each bucket: alpha (pinned → name) or pinned → last activity
     for (const key of Object.keys(buckets)) {
-      if (sortMode === 'alpha') {
-        buckets[key].sort(_alphaSortSessions);
+      if (sortMode !== 'natural') {
+        buckets[key].sort(_sortFnFor(sortMode));
       } else {
         buckets[key].sort((a, b) => {
           if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -26472,12 +29993,7 @@ function render() {
     }
   } else {
     // list mode (flat) or group mode with active filter: flat list
-    let flatList = filtered;
-    if (sortMode === 'alpha') {
-      flatList = [...filtered].sort(_alphaSortSessions);
-    } else {
-      flatList = [...filtered].sort(_naturalSortSessions);
-    }
+    let flatList = [...filtered].sort(_sortFnFor(sortMode));
     el.innerHTML = draftCards + flatList.map(_renderSessionCard).join('');
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
   }
@@ -26543,6 +30059,34 @@ function _cssRect(el) {
   const r = el.getBoundingClientRect();
   const z = _uiZoomFactor();
   return { top: r.top / z, right: r.right / z, bottom: r.bottom / z, left: r.left / z, width: r.width / z, height: r.height / z };
+}
+
+// The board-id chip on a session's task label (AMUX-2165): shows the card
+// id when the label came from a board card, click-through straight to the
+// board detail. '' when the label is a summary/desc fallback (no card).
+function _taskIdChip(s) {
+  const id = s && s.task_board_id;
+  if (!id) return '';
+  return ' <span class="task-id-chip" onclick="event.stopPropagation();_openIssue(\'' + escJs(id) + '\')" '
+    + 'title="Open board card ' + esc(id) + '" '
+    + 'style="cursor:pointer;font-size:0.7rem;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;margin-left:4px;white-space:nowrap;">' + esc(id) + '</span>';
+}
+async function _askCardStatus(id, sess) {
+  // Ask the owning session to report status onto the board (AMUX-2174). The
+  // session's model authors the answer; amux only routes + records.
+  try {
+    const r = await apiCall(API + '/api/board/' + id + '/status-request', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}) });
+    if (r && r.delivered) showToast('Asked ' + sess + ' to post a status update');
+    else showToast((r && (r.reason || r.message)) || 'Could not reach ' + sess);
+  } catch (e) { showToast('Status request failed'); }
+}
+
+function _openIssue(id) {
+  try { history.replaceState({}, '', location.pathname + '#issue=' + encodeURIComponent(id)); } catch (e) {}
+  switchView('board');
+  setTimeout(() => { try { openBoardDetail(id); } catch (e) {} }, 250);
 }
 
 function _taskStaleAge(s) {
@@ -26841,8 +30385,48 @@ function toggleMenu(name) {
   el.style.right = 'auto';
   el.style.visibility = '';
   openMenu = name;
+  // Mobile menu-geometry beacon (AMUX-1731): the ⋯ menu detaches on iPhone
+  // with no desktop repro. Compare the intended placement against where the
+  // fixed box ACTUALLY landed one frame later — that drift, plus the
+  // visualViewport numbers, separates the three candidate causes (vv offset
+  // desync, innerHeight vs fixed-viewport mismatch, zoom-probe misread) from
+  // real device numbers, no user round-trip. Two per load, small screens only.
+  if (window.innerWidth <= 700 && _menuBeaconCount < 2) {
+    _menuBeaconCount++;
+    const intendedTop = el.style.top, intendedBottom = el.style.bottom, intendedLeft = left;
+    requestAnimationFrame(() => { try {
+      const a = el.getBoundingClientRect();
+      const vv = window.visualViewport || {};
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'card-menu-geo', ver: APP_VER, menu: name,
+          btn: { t: Math.round(r.top), b: Math.round(r.bottom), l: Math.round(r.left), r: Math.round(r.right) },
+          intended: { top: intendedTop, bottom: intendedBottom, left: intendedLeft },
+          actual: { t: Math.round(a.top), b: Math.round(a.bottom), l: Math.round(a.left) },
+          z: z, vh: Math.round(vh), winH: window.innerHeight, winW: window.innerWidth,
+          vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0), vvLeft: Math.round(vv.offsetLeft || 0),
+          scrollY: Math.round(window.scrollY || 0) }) });
+    } catch (e) {} });
+  }
+  // Dismiss on scroll (AMUX-1731, reproduced on the simulator rig): the menu
+  // is position:fixed, so once ANYTHING scrolls the list it detaches and
+  // floats — on iPhone the opening tap's own momentum/rubber-band scroll
+  // lands right after the menu opens, which is the "detached near the top"
+  // report. The beacon proved placement is correct at open time; the page
+  // moves afterwards. Native context menus dismiss on scroll; do the same.
+  // Attached one frame late so the opening tap's own event storm settles;
+  // capture:true catches inner-container scrolls, not just the window.
+  requestAnimationFrame(() => {
+    if (openMenu === name) window.addEventListener('scroll', _menuScrollClose, { capture: true, passive: true });
+  });
+}
+function _menuScrollClose(e) {
+  // Scrolls INSIDE the open menu (it has overflow-y:auto) must not close it.
+  const el = openMenu && document.getElementById('menu-' + openMenu);
+  if (el && e.target instanceof Node && el.contains(e.target)) return;
+  closeAllMenus();
 }
 function closeAllMenus() {
+  window.removeEventListener('scroll', _menuScrollClose, { capture: true });
   if (openMenu) {
     const el = document.getElementById('menu-' + openMenu);
     if (el) {
@@ -26861,6 +30445,7 @@ function closeAllMenus() {
 }
 document.addEventListener('click', e => {
   closeAllMenus(); closeActiveDropdown(e); closeAddMenu();
+  if (!e.target.closest('.sort-wrap')) closeSortMenu();
   if (_tabCustomizerOpen && !e.target.closest('.tab-customize-wrap')) {
     _tabCustomizerOpen = false;
     const m = document.getElementById('tab-customizer-menu');
@@ -26878,7 +30463,6 @@ const ALL_TABS = [
   { id: 'logs',          label: 'Logs' },
   { id: 'browser',       label: 'Browser' },
   { id: 'grid',          label: 'Workspace' },
-  { id: 'notes',         label: 'Notes' },
   { id: 'messages',      label: 'Messages' },
   { id: 'skills',        label: 'Skills' },
   { id: 'crm',           label: 'People' },
@@ -26888,6 +30472,7 @@ const ALL_TABS = [
   { id: 'cost',          label: 'Cost' },
   { id: 'torrents',      label: 'Torrents' },
   { id: 'terminal',      label: 'Terminal' },
+  { id: 'mcp',           label: 'MCP' },
 ];
 
 let hiddenTabs = (function() {
@@ -27008,6 +30593,97 @@ function _renderTabCustomizerMenu() {
       }
     });
   }
+}
+
+// ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
+// Same mechanism as the main tab bar: hide/show + reorder, persisted to
+// localStorage, applied UNIFORMLY to every session's peek. Terminal is pinned
+// (always visible, always first) — everything else is customizable.
+const PEEK_TABS = [
+  { id: 'steering',   label: 'Steering' },
+  { id: 'schedules',  label: 'Schedules' },
+  { id: 'messages',   label: 'Messages' },
+  { id: 'dictation',  label: 'Dictation' },
+  { id: 'issues',     label: 'Board' },
+  { id: 'cost',       label: 'Cost' },
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'commits',    label: 'Commits' },
+  { id: 'git',        label: 'Worktree' },
+];
+let peekHiddenTabs = (function() {
+  try { const v = localStorage.getItem('amux_peek_hidden_tabs'); if (v !== null) return new Set(JSON.parse(v)); } catch(e) {}
+  return new Set(['dictation', 'commits', 'git']);   // sensible default
+})();
+let peekTabOrder = (function() {
+  try {
+    const v = localStorage.getItem('amux_peek_tab_order');
+    if (v) { const saved = JSON.parse(v); const all = PEEK_TABS.map(t => t.id);
+      return [...new Set([...saved.filter(id => all.includes(id)), ...all.filter(id => !saved.includes(id))])]; }
+  } catch(e) {}
+  return PEEK_TABS.map(t => t.id);
+})();
+function _savePeekTabPrefs() {
+  peekTabOrder = [...new Set(peekTabOrder)];
+  localStorage.setItem('amux_peek_hidden_tabs', JSON.stringify([...peekHiddenTabs]));
+  localStorage.setItem('amux_peek_tab_order', JSON.stringify(peekTabOrder));
+}
+function _applyPeekTabVisibility() {
+  const bar = document.querySelector('.peek-tabs');
+  if (!bar) return;
+  // Reorder AFTER terminal (which stays first), BEFORE the customize button.
+  const custBtn = document.getElementById('peek-tab-customize');
+  peekTabOrder.forEach(id => {
+    const el = document.getElementById('peek-tab-' + id);
+    if (el && custBtn) bar.insertBefore(el, custBtn);
+  });
+  PEEK_TABS.forEach(t => {
+    const el = document.getElementById('peek-tab-' + t.id);
+    if (el) el.style.display = peekHiddenTabs.has(t.id) ? 'none' : '';
+  });
+}
+let _peekTabCustomizerOpen = false, _peekTabMenuSortable = null;
+function _peekCustOutside(e) {
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  const btn = document.getElementById('peek-tab-customize');
+  if (menu && !menu.contains(e.target) && e.target !== btn) { _peekTabCustomizerOpen = false; menu.style.display = 'none'; document.removeEventListener('click', _peekCustOutside, true); }
+}
+function togglePeekTabCustomizer() {
+  _peekTabCustomizerOpen = !_peekTabCustomizerOpen;
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  if (!menu) return;
+  if (_peekTabCustomizerOpen) {
+    _renderPeekTabCustomizer();
+    const btn = document.getElementById('peek-tab-customize');
+    if (btn) { const r = btn.getBoundingClientRect();
+      menu.style.top = (r.bottom + 4) + 'px';
+      menu.style.left = Math.max(8, Math.min(r.left - 160, (document.documentElement.clientWidth||innerWidth) - 230)) + 'px'; }
+    menu.style.display = '';
+    setTimeout(() => document.addEventListener('click', _peekCustOutside, true), 0);
+  } else { menu.style.display = 'none'; document.removeEventListener('click', _peekCustOutside, true); }
+}
+function _renderPeekTabCustomizer() {
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  if (!menu) return;
+  const ordered = peekTabOrder.map(id => PEEK_TABS.find(t => t.id === id)).filter(Boolean);
+  let html = '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
+    + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
+  html += ordered.map(t => {
+    const checked = !peekHiddenTabs.has(t.id);
+    return '<label class="tab-customizer-item" data-ptab-id="' + t.id + '" onclick="event.stopPropagation()">'
+      + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">\u2807</span>'
+      + '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
+  }).join('');
+  menu.innerHTML = html;
+  if (window.Sortable) {
+    if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
+    _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
+      onEnd() { peekTabOrder = [...new Set([...menu.querySelectorAll('.tab-customizer-item[data-ptab-id]')].map(el => el.dataset.ptabId))]; _savePeekTabPrefs(); _applyPeekTabVisibility(); } });
+  }
+}
+function togglePeekTabVisibility(id, show) {
+  if (show) peekHiddenTabs.delete(id);
+  else { if (_peekTab === id) setPeekTab('terminal'); peekHiddenTabs.add(id); }
+  _savePeekTabPrefs(); _applyPeekTabVisibility();
 }
 
 function toggleTabVisibility(id, show) {
@@ -27989,6 +31665,88 @@ async function gitPush(name, e) {
     showToast(`Deploy error: ${e.message}`);
   }
 }
+// ── Composer drafts ────────────────────────────────────────────────────────
+// Unsent text used to die on any reload, and the client force-reloads itself
+// whenever the server's APP_VER moves — so every deploy silently ate whatever
+// you were half-way through typing. Drafts are per-session and local, so they
+// survive a server restart, a client restart, and the version-change reload.
+// localStorage (not IDB): a draft is a few hundred bytes, and the synchronous
+// write is what makes the pagehide flush below reliable.
+const _DRAFT_PREFIX = 'amux_draft_';
+const _DRAFT_MAX_AGE = 14 * 86400 * 1000;
+let _draftTimers = {};
+function _draftKey(session) { return _DRAFT_PREFIX + (session || '__peek__'); }
+function _draftSave(session, text) {
+  try {
+    const k = _draftKey(session);
+    if (!text || !text.trim()) localStorage.removeItem(k);
+    else localStorage.setItem(k, JSON.stringify({ t: text, ts: Date.now() }));
+  } catch (e) {}   // quota/private-mode: a lost draft must never break sending
+}
+function _draftSaveDebounced(session, text) {
+  clearTimeout(_draftTimers[session || '_']);
+  _draftTimers[session || '_'] = setTimeout(() => {
+    _draftSave(session, text);
+    _draftSyncInputs(session, text);   // keep the other view in step as you type
+  }, 250);
+}
+function _draftGet(session) {
+  try {
+    const raw = localStorage.getItem(_draftKey(session));
+    if (!raw) return '';
+    const d = JSON.parse(raw);
+    // Age out rather than restoring something you typed two weeks ago into a
+    // conversation that has long since moved on.
+    if (!d || !d.t || (Date.now() - (d.ts || 0)) > _DRAFT_MAX_AGE) {
+      localStorage.removeItem(_draftKey(session)); return '';
+    }
+    return d.t;
+  } catch (e) { return ''; }
+}
+function _draftClear(session) {
+  clearTimeout(_draftTimers[session || '_']);
+  try { localStorage.removeItem(_draftKey(session)); } catch (e) {}
+  // One store, so one removal. This used to have to chase two more copies
+  // (an in-memory map and the peekState snapshot's own `draft` field), and
+  // missing either put an already-sent message back in the box.
+  _draftSyncInputs(session, '');
+}
+
+// Push a session's draft into EVERY composer showing that session right now:
+// the card in the session list and the peek box are two views of one value, so
+// typing in one and opening the other must not lose or duplicate anything.
+function _draftSyncInputs(session, text) {
+  try {
+    const card = document.getElementById('input-' + session);
+    if (card && card.value !== text && document.activeElement !== card) {
+      card.value = text; try { autoGrow(card); } catch (e) {}
+    }
+    if (typeof peekSession !== 'undefined' && peekSession === session) {
+      const pk = document.getElementById('peek-cmd-input');
+      if (pk && pk.value !== text && document.activeElement !== pk) {
+        pk.value = text; try { autoGrow(pk); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+// Restore into a composer that has just been (re)rendered. Never clobbers text
+// the user is actively typing — a re-render mid-type must not rewind them.
+function _draftRestore(inp, session) {
+  if (!inp || inp.value || document.activeElement === inp) return;
+  const d = _draftGet(session);
+  if (d) { inp.value = d; try { autoGrow(inp); } catch (e) {} }
+}
+// The 250ms debounce can lose the final keystrokes to a reload or a tab kill.
+// pagehide fires on both, including iOS bfcache suspends, so flush synchronously.
+['pagehide', 'visibilitychange'].forEach(ev => window.addEventListener(ev, () => {
+  if (ev === 'visibilitychange' && document.visibilityState !== 'hidden') return;
+  document.querySelectorAll('textarea.send-input').forEach(inp => {
+    const id = inp.id || '';
+    if (id === 'peek-cmd-input') _draftSave(typeof peekSession !== 'undefined' ? peekSession : '', inp.value);
+    else if (id.startsWith('input-')) _draftSave(id.slice(6), inp.value);
+  });
+}));
+
 async function sendFromInput(name) {
   const inp = document.getElementById('input-' + name);
   if (!inp) return;
@@ -28010,6 +31768,7 @@ async function sendFromInput(name) {
   }
   cmdHistoryAdd(text);
   inp.value = '';
+  _draftClear(name);          // it left the composer — a restored copy would be a ghost
   inp.style.height = 'auto';
   await doSend(name, _expandAtMentions(text));
   inp.style.borderColor = 'var(--green)';
@@ -28066,7 +31825,6 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
   document.getElementById('peek-tab-schedules').classList.toggle('active', tab === 'schedules');
-  document.getElementById('peek-tab-notes').classList.toggle('active', tab === 'notes');
   document.getElementById('peek-tab-dictation').classList.toggle('active', tab === 'dictation');
   const dictPanel = document.getElementById('peek-dictation-panel');
   if (tab === 'dictation') { dictPanel.classList.add('active'); _dictLoad(); }
@@ -28100,9 +31858,6 @@ function setPeekTab(tab) {
   const scheds = document.getElementById('peek-schedules-panel');
   if (tab === 'schedules') { scheds.classList.add('active'); _peekLoadSchedules(); }
   else { scheds.classList.remove('active'); }
-  const notes = document.getElementById('peek-notes-panel');
-  if (tab === 'notes') { notes.classList.add('active'); _peekNotesLoad(); }
-  else { notes.classList.remove('active'); }
   // AMUX-LOCAL:session-chat — chat tab dispatch (Scope B2)
   document.getElementById('peek-tab-chat').classList.toggle('active', tab === 'chat');
   const chatPanel = document.getElementById('peek-chat-panel');
@@ -28726,6 +32481,9 @@ function peekGitOpenPR() {
 let _peekIssuesView = localStorage.getItem('amux_peek_issues_view') || 'list';
 let _peekIssuesAllSessions = localStorage.getItem('amux_peek_issues_all') === '1';
 let _peekIssuesSortables = [];
+// Deliberately NOT persisted: a search is a transient lens, and a stale query
+// restored on the next peek looks like an empty board.
+let _peekIssuesQuery = '';
 
 function setPeekIssuesView(mode) {
   _peekIssuesView = mode;
@@ -28745,8 +32503,16 @@ function renderPeekIssues() {
   const list = document.getElementById('peek-issues-list');
   const count = document.getElementById('peek-issues-count');
   const allScope = _peekIssuesAllSessions;
-  const items = (boardItems || []).filter(i => !i.deleted && (allScope || i.session === peekSession));
-  count.textContent = items.length ? items.length + ' issue' + (items.length === 1 ? '' : 's') + (allScope ? ' · all sessions' : '') : '';
+  const scoped = _bqHideArchived(
+    (boardItems || []).filter(i => !i.deleted && (allScope || i.session === peekSession)),
+    _peekIssuesQuery);
+  // Scope first, then query — so "3 of 12" counts within the session you are
+  // looking at, not against the whole board.
+  const items = _bqFilter(scoped, _peekIssuesQuery);
+  const _q = (_peekIssuesQuery || '').trim();
+  count.textContent = !scoped.length ? ''
+    : _q ? items.length + ' of ' + scoped.length + (allScope ? ' · all sessions' : '')
+         : scoped.length + ' issue' + (scoped.length === 1 ? '' : 's') + (allScope ? ' · all sessions' : '');
   // Scope toggle label/active state
   const scopeBtn = document.getElementById('piv-scope');
   if (scopeBtn) {
@@ -28770,8 +32536,11 @@ function renderPeekIssues() {
   list.classList.toggle('peek-issues-kanban', _peekIssuesView === 'kanban');
 
   if (!items.length) {
+    // "No matches" and "no issues" are different facts — saying the board is
+    // empty when a query simply matched nothing sends you looking for a bug.
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">' +
-      (allScope ? 'No issues on the board yet.' : 'No issues for this session yet.') + '</div>';
+      (_q ? 'No issues match <b>' + esc(_q) + '</b>' + (scoped.length ? ' (' + scoped.length + ' hidden)' : '')
+          : allScope ? 'No issues on the board yet.' : 'No issues for this session yet.') + '</div>';
     return;
   }
 
@@ -28780,20 +32549,9 @@ function renderPeekIssues() {
     return;
   }
 
-  list.innerHTML = items.map(item => {
-    const sty = statusStyle(item.status || 'todo');
-    const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
-    const due = item.due ? '<span class="peek-issue-due">' + esc(item.due) + '</span>' : '';
-    // In all-sessions scope, tag each row with its owning session for awareness.
-    const owner = (allScope && item.session && item.session !== peekSession)
-      ? '<span class="peek-issue-owner" style="font-size:0.68rem;color:var(--accent);background:rgba(88,166,255,0.12);border-radius:8px;padding:1px 6px;margin-right:4px;">' + esc(item.session) + '</span>'
-      : '';
-    return '<div class="peek-issue-item" onclick="openBoardDetail(\'' + esc(item.id) + '\')">' +
-      '<span class="peek-issue-key">' + esc(item.id) + '</span>' +
-      '<span class="peek-issue-title">' + owner + esc(item.title) + '</span>' +
-      '<span class="peek-issue-meta">' + badge + due + '</span>' +
-      '</div>';
-  }).join('');
+  // Shared renderer with the global List view (AMUX-2152/parity).
+  list.innerHTML = items.map(item => _issueRowHTML(item,
+    { showOwner: allScope && item.session && item.session !== peekSession })).join('');
 }
 
 function _renderPeekIssuesKanban(items, list) {
@@ -28939,14 +32697,6 @@ async function _peekUpdateTabCounts() {
     _peekColorSchedBadge(sched);   // renders active/inactive two-number badge
   } catch(e) {}
   try {
-    const r = await fetch(API + '/api/notes');
-    if (peekSession !== sess) return;
-    const all = await r.json();
-    const folder = '_sessions/' + sess + '/';
-    const n = all.filter(x => x.path && x.path.startsWith(folder)).length;
-    setCount('peek-tab-notes-count', n);
-  } catch(e) {}
-  try {
     const r = await fetch(API + '/api/dictation/history?count=1&session=' + encodeURIComponent(sess),
                           { headers: _authHeaders() });
     if (peekSession !== sess) return;
@@ -29029,279 +32779,24 @@ let _peekNotesLoading = false;
 let _peekNotesMode = 'preview';
 let _peekNotesSidebarOpen = true;
 let _peekNotesRawContent = '';
-function _peekNotesGetEditor() { return document.getElementById('peek-notes-editor'); }
 
-function _peekNotesFolder() {
-  return '_sessions/' + peekSession;
-}
 
-function _peekNotesToggleSidebar() {
-  _peekNotesSidebarOpen = !_peekNotesSidebarOpen;
-  _peekNotesApplySidebarState();
-}
 
-function _peekNotesApplySidebarState() {
-  const panel = document.getElementById('peek-notes-panel');
-  const sidebar = document.getElementById('peek-notes-sidebar');
-  if (!panel || !sidebar) return;
-  if (_peekNotesSidebarOpen) {
-    sidebar.classList.remove('collapsed');
-    panel.classList.remove('sidebar-collapsed');
-  } else {
-    sidebar.classList.add('collapsed');
-    panel.classList.add('sidebar-collapsed');
-  }
-}
 
-async function _peekNotesLoad() {
-  const list = document.getElementById('peek-notes-list');
-  if (!peekSession) return;
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 8px;">Loading…</div>';
-  const _render = (all) => {
-    const folder = _peekNotesFolder() + '/';
-    _peekNotesAll = all.filter(n => n.path.startsWith(folder));
-    _peekNotesRenderList(_peekNotesAll);
-    const tabCount = document.getElementById('peek-tab-notes-count');
-    if (tabCount) {
-      if (_peekNotesAll.length > 0) { tabCount.textContent = _peekNotesAll.length; tabCount.classList.add('has-count'); }
-      else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
-    }
-    if (!_peekNotesActive && _peekNotesAll.length) _peekNotesOpen(_peekNotesAll[0].path);
-    if (!_peekNotesAll.length) _peekNotesShowEmpty();
-  };
-  try {
-    const r = await fetch(API + '/api/notes');
-    const all = await r.json();
-    if (Array.isArray(all)) _idb.set('notes_all', all);   // cache for offline reads
-    _render(all);
-  } catch(e) {
-    const cached = await _idb.get('notes_all');   // offline fallback
-    if (Array.isArray(cached)) _render(cached);
-    else list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 8px;">Failed to load notes.</div>';
-  }
-}
 
-function _peekNotesRenderList(notes) {
-  const el = document.getElementById('peek-notes-list');
-  if (!notes.length) {
-    el.innerHTML = '<div style="color:var(--dim);font-size:0.82rem;padding:12px 8px;">No notes yet</div>';
-    return;
-  }
-  el.innerHTML = notes.map(n => {
-    const active = _peekNotesActive && _peekNotesActive.path === n.path ? ' active' : '';
-    const pinned = n.pinned ? ' pinned' : '';
-    const dt = n.updated ? new Date(n.updated * 1000).toLocaleDateString() : '';
-    const stem = n.path.replace(/\.md$/, '').split('/').pop();
-    const rawName = n.name || stem;
-    const displayName = /^untitled(-\d+)?$/.test(rawName) ? 'Untitled' : rawName;
-    return `<div class="notes-list-item${active}${pinned}" data-path="${esc(n.path)}"
-      onclick="_peekNotesOpen(this.dataset.path)" style="display:flex;align-items:center;gap:4px;">
-      <div style="flex:1;min-width:0;">
-        <div class="nli-title">${esc(displayName)}</div>
-        <div class="nli-date">${dt}</div>
-      </div>
-    </div>`;
-  }).join('');
-}
 
-function _peekNotesShowEmpty() {
-  document.getElementById('peek-notes-empty-state').style.display = '';
-  document.getElementById('peek-notes-mode-tabs').style.display = 'none';
-  document.getElementById('peek-notes-editor-wrap').style.display = 'none';
-  document.getElementById('peek-notes-preview').classList.remove('active');
-  document.getElementById('peek-notes-preview').style.display = 'none';
-  document.getElementById('peek-notes-title').value = '';
-}
 
-function _peekNotesInitQuill() {
-  // no-op — textarea needs no init
-}
 
-async function _peekNotesOpen(path) {
-  if (path === _peekNotesActive?.path) return;
-  if (_peekNotesSaveTimer) { clearTimeout(_peekNotesSaveTimer); _peekNotesSaveTimer = null; _peekNotesSave(); }
-  _peekNotesInitQuill();
-  // Highlight in sidebar
-  document.querySelectorAll('#peek-notes-list .notes-list-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.path === path);
-  });
-  document.getElementById('peek-notes-save-status').textContent = '';
-  const urlPath = path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-  try {
-    const r = await fetch(API + '/api/notes/' + urlPath);
-    if (!r.ok) throw new Error('not ok');
-    const data = await r.json();
-    _peekNotesActive = { path: data.path };
-    _peekNotesRawContent = data.content || '';
-    const h1md = _peekNotesRawContent.match(/^#\s+(.+)$/m);
-    const titleFromContent = h1md ? h1md[1] : '';
-    const titleFromPath = path.replace(/\.md$/, '').split('/').pop();
-    _peekNotesActive.title = titleFromContent || titleFromPath;
-    document.getElementById('peek-notes-title').value = _peekNotesActive.title;
-    const listEntry = _peekNotesAll.find(n => n.path === data.path);
-    if (listEntry) listEntry.name = _peekNotesActive.title;
-    const editor = _peekNotesGetEditor();
-    if (editor) { _peekNotesLoading = true; editor.value = _peekNotesRawContent; setTimeout(() => { _peekNotesLoading = false; }, 0); }
-    document.getElementById('peek-notes-empty-state').style.display = 'none';
-    document.getElementById('peek-notes-mode-tabs').style.display = 'flex';
-    _peekNotesSwitchMode('preview');
-    _peekNotesUpdatePinBtn();
-    // On mobile, collapse sidebar after selecting
-    if (window.innerWidth <= 600 && _peekNotesSidebarOpen) {
-      _peekNotesSidebarOpen = false;
-      _peekNotesApplySidebarState();
-    }
-  } catch(e) {
-    showToast('Failed to load note');
-  }
-}
 
-async function _peekNotesNew() {
-  if (_peekNotesSaveTimer) { clearTimeout(_peekNotesSaveTimer); _peekNotesSaveTimer = null; _peekNotesSave(); }
-  const folder = _peekNotesFolder();
-  const existing = new Set(_peekNotesAll.map(n => n.path));
-  let filename = folder + '/untitled.md';
-  let displayName = 'Untitled';
-  if (existing.has(filename)) {
-    let i = 1;
-    while (existing.has(folder + '/untitled-' + i + '.md')) i++;
-    filename = folder + '/untitled-' + i + '.md';
-    displayName = 'Untitled ' + i;
-  }
-  const urlPath = filename.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-  await apiCall(API + '/api/notes/' + urlPath, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content: '# ' + displayName + '\n' })
-  });
-  _peekNotesAll.unshift({ path: filename, name: displayName, updated: Math.floor(Date.now() / 1000), pinned: false, size: 0 });
-  _peekNotesRenderList(_peekNotesAll);
-  _peekNotesActive = null; // force open
-  await _peekNotesOpen(filename);
-  const ti = document.getElementById('peek-notes-title');
-  if (ti) { ti.focus(); ti.select(); }
-  _peekUpdateTabCounts();
-}
 
-function _peekNotesSaveDebounce() {
-  if (_peekNotesSaveTimer) clearTimeout(_peekNotesSaveTimer);
-  _peekNotesSaveTimer = setTimeout(_peekNotesSave, 400);
-}
 
-async function _peekNotesSave() {
-  const editor = _peekNotesGetEditor();
-  if (!_peekNotesActive || !editor) return;
-  const content = editor.value;
-  _peekNotesRawContent = content;
-  const pathKey = _peekNotesActive.path.replace(/\.md$/, '');
-  const statusEl = document.getElementById('peek-notes-save-status');
-  const result = await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/'), {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content })
-  });
-  if (!result) { statusEl.textContent = '◐ Offline'; }
-  else { statusEl.textContent = '✓ Saved'; setTimeout(() => { if (statusEl.textContent === '✓ Saved') statusEl.textContent = ''; }, 2000); }
-}
 
-function _peekNotesTitleChange() {
-  const editor = _peekNotesGetEditor();
-  if (!_peekNotesActive || !editor) return;
-  const newTitle = document.getElementById('peek-notes-title').value;
-  _peekNotesActive.title = newTitle;
-  const lines = editor.value.split('\n');
-  if (lines[0] && lines[0].match(/^#\s/)) { lines[0] = '# ' + newTitle; }
-  else { lines.unshift('# ' + newTitle); }
-  editor.value = lines.join('\n');
-  const activeEl = document.querySelector('#peek-notes-list .notes-list-item.active');
-  if (activeEl) { const s = activeEl.querySelector('.nli-title'); if (s) s.textContent = newTitle || _peekNotesActive.path.replace(/\.md$/, ''); }
-  const entry = _peekNotesAll.find(n => n.path === _peekNotesActive.path);
-  if (entry) entry.name = newTitle || entry.path.replace(/\.md$/, '');
-  _peekNotesSaveDebounce();
-}
 
-async function _peekNotesDelete() {
-  if (!_peekNotesActive) return;
-  const btn = document.querySelector('#peek-notes-panel .notes-delete-btn');
-  if (btn && !btn.classList.contains('confirming')) {
-    btn.classList.add('confirming');
-    btn.textContent = 'Delete?';
-    setTimeout(() => { btn.classList.remove('confirming'); btn.innerHTML = _TRASH_SVG; }, 3000);
-    return;
-  }
-  if (btn) { btn.classList.remove('confirming'); btn.innerHTML = _TRASH_SVG; }
-  const pathKey = _peekNotesActive.path.replace(/\.md$/, '');
-  _peekNotesAll = _peekNotesAll.filter(n => n.path !== _peekNotesActive.path);
-  document.querySelector('#peek-notes-list .notes-list-item[data-path="' + _peekNotesActive.path + '"]')?.remove();
-  _peekNotesActive = null;
-  await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/'), { method: 'DELETE' });
-  if (_peekNotesAll.length > 0) {
-    _peekNotesOpen(_peekNotesAll[0].path);
-  } else {
-    _peekNotesShowEmpty();
-    _peekNotesRenderList([]);
-  }
-  _peekUpdateTabCounts();
-}
 
-function _peekNotesSwitchMode(mode) {
-  _peekNotesMode = mode;
-  document.getElementById('peek-notes-tab-edit').classList.toggle('active', mode === 'edit');
-  document.getElementById('peek-notes-tab-preview').classList.toggle('active', mode === 'preview');
-  const editorWrap = document.getElementById('peek-notes-editor-wrap');
-  const preview = document.getElementById('peek-notes-preview');
-  if (mode === 'preview') {
-    const editor = _peekNotesGetEditor();
-    const content = editor ? editor.value : _peekNotesRawContent;
-    preview.innerHTML = renderMarkdown(content) || '<span style="color:var(--dim);font-size:0.85rem;">Empty note</span>';
-    preview.classList.add('md-content');
-    preview.style.display = '';
-    preview.classList.add('active');
-    editorWrap.style.display = 'none';
-  } else {
-    preview.classList.remove('active');
-    preview.style.display = 'none';
-    editorWrap.style.display = 'flex';
-  }
-}
 
-async function _peekNotesTogglePin() {
-  if (!_peekNotesActive) return;
-  const pathKey = _peekNotesActive.path.replace(/\.md$/, '');
-  const r = await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/') + '/pin', { method: 'POST' });
-  if (r) {
-    const entry = _peekNotesAll.find(n => n.path === _peekNotesActive.path);
-    if (entry) entry.pinned = r.pinned;
-    _peekNotesUpdatePinBtn();
-    _peekNotesAll.sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || (b.updated - a.updated));
-    _peekNotesRenderList(_peekNotesAll);
-  }
-}
 
-function _peekNotesUpdatePinBtn() {
-  const btn = document.getElementById('peek-notes-pin-btn');
-  if (!btn) return;
-  const entry = _peekNotesAll.find(n => n.path === _peekNotesActive?.path);
-  btn.classList.toggle('pinned', !!entry?.pinned);
-  btn.style.color = entry?.pinned ? 'var(--accent)' : '';
-}
 
-function _peekNotesSearchFilter(q) {
-  if (!q.trim()) { _peekNotesRenderList(_peekNotesAll); return; }
-  const lq = q.toLowerCase();
-  _peekNotesRenderList(_peekNotesAll.filter(n =>
-    (n.name || '').toLowerCase().includes(lq) || n.path.toLowerCase().includes(lq)
-  ));
-}
 
-function _peekNotesReset() {
-  if (_peekNotesSaveTimer) { clearTimeout(_peekNotesSaveTimer); _peekNotesSaveTimer = null; _peekNotesSave(); }
-  _peekNotesActive = null;
-  _peekNotesAll = [];
-  _peekNotesSidebarOpen = true;
-  _peekNotesApplySidebarState();
-  _peekNotesShowEmpty();
-  const list = document.getElementById('peek-notes-list');
-  if (list) list.innerHTML = '';
-}
 
 function peekMemoryTab(tab) {
   document.getElementById('pm-tab-edit').classList.toggle('active', tab === 'edit');
@@ -29423,7 +32918,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.226';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.382';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29591,6 +33086,7 @@ function _paintCachedPeek(cached) {
   return true;
 }
 function openPeek(name, opts) {
+  try { _applyPeekTabVisibility(); } catch(e) {}
   _stopPeekPoll();
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   const _tb = document.getElementById('peek-transcript-body');
@@ -29649,7 +33145,9 @@ function openPeek(name, opts) {
     searchInp.value = prefillQuery;
     document.getElementById('peek-search-wrap').classList.toggle('has-value', !!prefillQuery);
   }
-  const draft = _peekDrafts[name] || '';
+  // Same draft the session-list card composer uses. Start typing in one, open
+  // the other, and the text is already there.
+  const draft = _draftGet(name) || '';
   const cmdInp = document.getElementById('peek-cmd-input');
   cmdInp.value = draft;
   autoGrow(cmdInp);
@@ -29667,7 +33165,7 @@ function openPeek(name, opts) {
   document.getElementById('peek-body').innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading latest…</span></div>';
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
   _dictCount = 0;   // stale count from the previous session must not linger
-  ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count',
+  ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count',
    'peek-tab-dictation-count'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.textContent = ''; el.classList.remove('has-count', 'has-pending', 'sched-on', 'sched-off'); }
@@ -29743,7 +33241,7 @@ function _markAgentRows(html) {
   const rowIdx = [];
   while (i >= 0) {
     const t = textOf(lines[i]).trim().replace(/^[❯  ]+/, '');
-    if (t[0] === '⏺' || t[0] === '◯') { rowIdx.push(i); i--; continue; }
+    if ('⏺●'.includes(t[0]) || '◯○'.includes(t[0])) { rowIdx.push(i); i--; continue; }
     break;
   }
   if (rowIdx.length < 2) return html;   // a panel always has main + ≥1 agent
@@ -29793,7 +33291,6 @@ function copyPeekContent() {
 
 function closePeek() {
   // Reset peek notes
-  _peekNotesReset();
   // Fold the fullscreen composer (if open) back into the input, and close menus,
   // so the draft below captures whatever was being typed.
   const _fs = document.getElementById('peek-input-fs');
@@ -29808,8 +33305,7 @@ function closePeek() {
   if (peekSession) {
     const inp = document.getElementById('peek-cmd-input');
     const val = inp ? inp.value : '';
-    if (val.trim()) _peekDrafts[peekSession] = val;
-    else delete _peekDrafts[peekSession];
+    _draftSave(peekSession, val);
   }
   peekSession = null;
   if (window._chatTabClose) _chatTabClose();   // AMUX-LOCAL:session-chat — stop chat refetch when peek closes
@@ -30021,6 +33517,7 @@ function _syncPeekOverlayToVisualViewport() {
 // (POST /api/client-debug) so mobile layout bugs are diagnosed from real
 // device numbers — no user round-trips.
 let _geoBeaconSent = false;
+let _menuBeaconCount = 0;   // card-menu-geo beacons per load (AMUX-1731)
 // Second snapshot with the keyboard UP (fires once, on first input focus) —
 // the keyboard-down beacon can't show keyboard-state bugs.
 let _kbdBeaconSent = false;
@@ -30829,7 +34326,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
         // Only a VISIBLE panel row counts. The '← for agents / ↓ to manage'
         // status-bar hint is not enough: with rows hidden ↓ opens the
         // background-shells manager, so there is nothing safe to switch.
-        return t === '⏺ main' || t === '◯ main';
+        return ['⏺ main', '◯ main', '● main', '○ main'].includes(t);
       });
       agentNavEl.style.display = _hasAgents ? 'flex' : 'none';
     }
@@ -31402,7 +34899,7 @@ async function sendPeekCmd() {
     cmdHistoryAdd(text, {type:'steering'});
     inp.value = '';
     inp.style.height = 'auto';
-    delete _peekDrafts[peekSession];
+    _draftClear(peekSession);
     await steerSession(peekSession, text);
     return;
   }
@@ -31425,7 +34922,7 @@ async function sendPeekCmd() {
   if (routed && routed.target !== peekSession) {
     inp.value = '';
     inp.style.height = 'auto';
-    delete _peekDrafts[peekSession];
+    _draftClear(peekSession);
     clearPeekFiles();
     channelOpen(peekSession, routed.target, routed.message);
     return;
@@ -31433,7 +34930,7 @@ async function sendPeekCmd() {
 
   inp.value = '';
   inp.style.height = 'auto';
-  delete _peekDrafts[peekSession];
+  _draftClear(peekSession);
   clearPeekFiles();
 
   // @mentions in the middle of a message stay as text + API hints (Claude can reach them).
@@ -31611,6 +35108,12 @@ function channelOpen(me, other, prefillText) {
   }
   _channelMe = me;
   _channelOther = other;
+  // Restore any offline-typed draft for this pair (AMUX-2209)
+  try {
+    const _cd = localStorage.getItem('amux_draft_channel_' + me + '_' + other);
+    const _ci = document.getElementById('channel-input');
+    if (_cd && _ci && !prefillText) setTimeout(() => { if (!_ci.value) _ci.value = _cd; }, 50);
+  } catch (e) {}
   _channelLastTs = 0;
   document.getElementById('channel-header-pair').textContent = me + ' ↔ ' + other;
   document.getElementById('channel-thread').innerHTML =
@@ -31704,6 +35207,7 @@ async function channelSend() {
   const text = inp.value.trim();
   if (!text) return;
   inp.value = '';
+  try { localStorage.removeItem('amux_draft_channel_' + (_channelMe||'') + '_' + (_channelOther||'')); } catch (e) {}
   inp.style.height = 'auto';
   const btn = document.getElementById('channel-send-btn');
   btn.disabled = true;
@@ -32322,9 +35826,37 @@ if (_abAudio) {
   window.addEventListener('beforeunload', _abSavePos);
 }
 
-// ── Text-to-Speech (ElevenLabs) ──
+// ── Text-to-Speech (Piper local, free — ElevenLabs as fallback if keyed) ──
 let _ttsVoices = null;
 let _ttsSelectedVoice = '';
+let _ttsSpeakAudio = null;   // currently-playing one-click clip, so a second press stops the first
+
+// One-click "read aloud" for a single message — no dialog, just plays. Hits
+// the same /api/tts route as the Text-to-Speech dialog below, so it gets
+// Piper (free, local) when installed and ElevenLabs otherwise.
+async function _ttsSpeak(text, btn) {
+  if (_ttsSpeakAudio) { _ttsSpeakAudio.pause(); _ttsSpeakAudio = null; }
+  if (!text) return;
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '&#x23F3;';
+  try {
+    const r = await fetch(API + '/api/tts', {
+      method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ text }),
+    });
+    const d = await r.json();
+    if (d.error) { showToast(d.error, 'error'); return; }
+    const audio = new Audio(d.url);
+    _ttsSpeakAudio = audio;
+    audio.onended = () => { if (_ttsSpeakAudio === audio) _ttsSpeakAudio = null; };
+    await audio.play();
+  } catch(e) {
+    showToast('Read aloud failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
 
 function openTTS(prefillText) {
   const existing = document.getElementById('tts-wrap');
@@ -32802,8 +36334,8 @@ function slashAcKeydown(e) {
   if (!el.classList.contains('open')) {
     // Enter inserts a newline (standard textarea) — do NOT send. Send is the Send
     // button or Cmd/Ctrl+Enter (handled just above). Arrows still browse history.
-    if (e.key === 'ArrowUp' && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
-    if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); cmdHistoryDown(inp); return; }
+    if (e.key === 'ArrowUp' && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp, peekSession); return; }
+    if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); cmdHistoryDown(inp, peekSession); return; }
     return;
   }
   const atMode = !!el._atItems;
@@ -32861,7 +36393,7 @@ async function _loadCmdHistoryFromServer() {
       return;
     }
     // Server is authoritative — merge and deduplicate
-    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '' }));
+    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '' }));
     localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
     _cmdHistoryServerLoaded = true;
   } catch(e) {}
@@ -32996,10 +36528,10 @@ function _cmdHistRenderChips(items) {
   // Server totals when we have them; local tally only as a pre-fetch placeholder.
   let counts;
   if (_cmdHistCounts) {
-    counts = { all: _cmdHistCounts.all || 0, human: _cmdHistCounts.human || 0,
+    counts = { all: _cmdHistCounts.all || 0, human: _cmdHistCounts.human || 0, amux: _cmdHistCounts.amux || 0,
                session: _cmdHistCounts.session || 0, schedule: _cmdHistCounts.schedule || 0 };
   } else {
-    counts = { all: items.length, human: 0, session: 0, schedule: 0 };
+    counts = { all: items.length, human: 0, session: 0, schedule: 0, amux: 0 };
     items.forEach(e => { counts[_msgKind(e)]++; });
   }
   const chips = [['all','All']].concat(_MSG_KIND_ORDER.map(k => [k, _MSG_KIND[k].label]));
@@ -33089,6 +36621,7 @@ function _msgKind(e) {
   const t = (typeof e === 'string' ? '' : (e.type || '')).toLowerCase();
   if (t === 'session') return 'session';
   if (t === 'schedule') return 'schedule';
+  if (t === 'system') return 'amux';   // amux's own nudges, not a person
   return 'human';   // direct / steering / user / '' — all a person typing
 }
 // Queued vs direct is a DELIVERY detail of a human message, not a fourth kind:
@@ -33101,11 +36634,45 @@ const _MSG_KIND = {
   human:    { label: 'Human',     color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
   session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
   schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
+  amux:     { label: 'amux',      color: '#8b949e', bg: 'rgba(139,148,158,0.14)' },
 };
-const _MSG_KIND_ORDER = ['human', 'session', 'schedule'];
+const _MSG_KIND_ORDER = ['human', 'session', 'schedule', 'amux'];
 // Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
 // calling it gets the canonical kind.
 function _msgOrigin(e) { return _msgKind(e); }
+// Card-id mentions in message text become links, and a capture-joined
+// message carries its live card chip — ONE definition for both the global
+// Messages view and the peek Messages tab (AMUX-2153). Only ids that
+// resolve on the live board linkify: the pattern alone would catch
+// UTF-8-shaped tokens, and a link to nothing is worse than plain text.
+function _linkifyCardIds(safeHtml) {
+  try {
+    if (typeof boardItems === 'undefined' || !Array.isArray(boardItems) || !boardItems.length) return safeHtml;
+    const ids = new Set(boardItems.map(i => i.id));
+    return safeHtml.replace(/\b([A-Z]{2,8}-\d{1,6})\b/g, (m, id) =>
+      ids.has(id)
+        ? '<a href="javascript:void(0)" onclick="event.stopPropagation();switchView(\'board\');setTimeout(() => openBoardDetail(\'' + id + '\'), 250);" style="color:var(--accent);text-decoration:underline dotted;">' + id + '</a>'
+        : m);
+  } catch (e) { return safeHtml; }
+}
+function _msgCardChip(cardId) {
+  if (!cardId) return '';
+  const c = (typeof boardItems !== 'undefined' && Array.isArray(boardItems))
+    ? boardItems.find(i => i.id === cardId) : null;
+  const stC = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
+    : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
+    : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
+  const st = c ? (c.status || 'todo') : '';
+  const undec = c && ((c.log || '').indexOf('capture: session prompt') !== -1) && st === 'todo';
+  const lastCommit = c ? (((c.log || '').match(/commit ([0-9a-f]{7,12}) \u2014 [^\n]*/g) || []).pop() || '') : '';
+  return '<span class="msg-card-chip" onclick="event.stopPropagation();switchView(\'board\');setTimeout(() => openBoardDetail(\'' + escJs(cardId) + '\'), 250);" '
+    + 'title="' + esc(c ? (c.title || '') : 'card no longer on the board') + (lastCommit ? '\n' + esc(lastCommit) : '') + '" '
+    + 'style="cursor:pointer;font-size:0.68rem;border:1px solid ' + (c ? stC(st) : 'var(--border)') + ';border-radius:6px;padding:1px 7px;white-space:nowrap;'
+    + 'color:' + (c ? stC(st) : 'var(--dim)') + ';">\u2192 ' + esc(cardId)
+    + (c ? ' \u00B7 ' + esc(undec ? 'captured, not yet decomposed' : st) : ' \u00B7 gone')
+    + (lastCommit ? ' \u00B7 \u2318' : '') + '</span>';
+}
+
 function _cmdHistItemHTML(e) {
   const text = typeof e === 'string' ? e : e.text;
   const session = typeof e === 'string' ? '' : (e.session || '');
@@ -33124,11 +36691,12 @@ function _cmdHistItemHTML(e) {
   const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;border-left:3px solid ${km.color};">${km.label}${originTxt}</span>`;
   const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
-  const meta = tag + sessTag + tsTag;
+  const meta = tag + sessTag + tsTag + _msgCardChip(typeof e === 'string' ? '' : (e.card_id || ''));
   const locSess = (session || peekSession || '').replace(/'/g,'');
   const copyBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Copy message text" onclick="event.stopPropagation();_msgCopyBtn(this,'${enc}')">&#x1F4CB;</button>`;
+  const speakBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;min-width:44px;min-height:28px;" title="Read aloud" onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent('${enc}'),this)">&#x1F50A;</button>`;
   const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
-  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${copyBtn}${locate}</div>`;
+  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${_linkifyCardIds(safe)}</div>${copyBtn}${speakBtn}${locate}</div>`;
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -33190,7 +36758,7 @@ function _peekMsgRenderChips(items) {
   const bar = document.getElementById('peek-messages-filter');
   if (!bar) return;
   // Count by kind so each chip shows how many of that type exist.
-  const counts = { all: items.length, human: 0, session: 0, schedule: 0 };
+  const counts = { all: items.length, human: 0, session: 0, schedule: 0, amux: 0 };
   items.forEach(e => { counts[_msgKind(e)]++; });
   // Every kind chip is ALWAYS shown, even at zero. Hiding empty ones made the
   // filter row change shape as you moved between sessions, and an absent chip
@@ -33886,19 +37454,60 @@ function _msgOpenInsert(sess, encText) {
   }, 500);
 }
 
-function cmdHistoryUp(inp) {
-  if (!_cmdHistory.length) return;
-  if (_cmdHistoryIdx === -1) { _cmdHistoryDraft = inp.value; _cmdHistoryIdx = _cmdHistory.length - 1; }
+// Up-arrow recall is YOUR prompts to THIS session, nothing else. It used to
+// index the raw global _cmdHistory, so pressing up in one session's composer
+// cycled through other sessions' inter-session mail and scheduler payloads —
+// none of which you ever typed and none of which you would want to re-send.
+let _cmdRecallSess = null;    // session the cached list belongs to
+let _cmdRecallItems = [];     // that session's human messages, oldest -> newest
+
+function _cmdRecallBuild(session) {
+  const out = [];
+  for (const e of _cmdHistory) {
+    // Legacy string rows carry no session or kind, so they cannot be attributed
+    // and are skipped rather than shown under an arbitrary session.
+    if (typeof e === 'string') continue;
+    if ((e.session || '') !== session) continue;
+    if (_msgKind(e) !== 'human') continue;
+    // Strip a captured '\u276F' prompt glyph. Claude Code's prompt marker
+    // sometimes lands in history alongside the same text without it, which made
+    // recall show the identical prompt twice in a row. Only that glyph is
+    // removed, never a leading '>' a person may have typed as a quote.
+    const t = (e.text || '').replace(/^\u276F\s*/, '').trim();
+    if (!t) continue;
+    if (out.length && out[out.length - 1] === t) continue;   // collapse repeats
+    out.push(t);
+  }
+  return out;
+}
+
+// Rebuilt whenever recall STARTS (idx === -1) so anything just sent is present,
+// and whenever the session changes so the index can never point into another
+// session's list.
+function _cmdRecallEnsure(session) {
+  if (_cmdHistoryIdx === -1 || _cmdRecallSess !== session) {
+    _cmdRecallSess = session;
+    _cmdRecallItems = _cmdRecallBuild(session);
+  }
+  return _cmdRecallItems;
+}
+
+function cmdHistoryUp(inp, session) {
+  const sess = session || (typeof peekSession !== 'undefined' ? peekSession : '') || '';
+  const list = _cmdRecallEnsure(sess);
+  if (!list.length) return;
+  if (_cmdHistoryIdx === -1) { _cmdHistoryDraft = inp.value; _cmdHistoryIdx = list.length - 1; }
   else if (_cmdHistoryIdx > 0) { _cmdHistoryIdx--; }
-  const e = _cmdHistory[_cmdHistoryIdx];
-  inp.value = typeof e === 'string' ? e : e.text;
+  inp.value = list[_cmdHistoryIdx] || '';
   autoGrow(inp);
   requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
 }
 
-function cmdHistoryDown(inp) {
+function cmdHistoryDown(inp, session) {
   if (_cmdHistoryIdx === -1) return;
-  if (_cmdHistoryIdx < _cmdHistory.length - 1) { _cmdHistoryIdx++; const e = _cmdHistory[_cmdHistoryIdx]; inp.value = typeof e === 'string' ? e : e.text; }
+  const sess = session || (typeof peekSession !== 'undefined' ? peekSession : '') || '';
+  const list = _cmdRecallEnsure(sess);
+  if (_cmdHistoryIdx < list.length - 1) { _cmdHistoryIdx++; inp.value = list[_cmdHistoryIdx] || ''; }
   else { _cmdHistoryIdx = -1; inp.value = _cmdHistoryDraft; }
   autoGrow(inp);
   requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
@@ -33990,8 +37599,8 @@ function cardSlashAcKeydown(name, e) {
   if (!el || !el.classList.contains('open')) {
     // Enter inserts a newline (standard textarea) — do NOT send. Send is the Send
     // button or Cmd/Ctrl+Enter (handled just above). Arrows still browse history.
-    if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
-    if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); if (inp) cmdHistoryDown(inp); return; }
+    if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp, name); return; }
+    if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); if (inp) cmdHistoryDown(inp, name); return; }
     return;
   }
   const atMode = !!el._atItems;
@@ -36191,27 +39800,63 @@ function _exploreSearchFilter(q) {
   _renderExploreEntries(body, path, data, cacheTs);
 }
 
-// Swipe right to close file preview
+// Swipe right to close file preview.
+//
+// Must never hijack a PINCH. This tracked touches[0] unconditionally, so during
+// a two-finger zoom the first finger's outward drift read as a dismiss swipe and
+// the image viewer closed as you tried to zoom into it. A second finger, or an
+// already-zoomed viewport, means the user is doing something the browser owns —
+// get out of the way rather than compete for the gesture.
 (function() {
   const el = document.getElementById('file-overlay');
+  // Tuned deliberately high. The old values (move at 10px, close at 80px, no
+  // direction test) fired during pinch-zoom and during ordinary vertical
+  // scrolling that drifted sideways, so the viewer appeared to exit by itself.
+  const _SWIPE_MIN = 24;      // px before any visual follow starts
+  const _SWIPE_CLOSE = 120;   // px of horizontal travel required to dismiss
+  const _SWIPE_RATIO = 2;     // dx must be >= 2x dy: clearly sideways, not diagonal
   let sx = 0, sy = 0, tracking = false;
+  const _cancel = () => {
+    if (!tracking) return;
+    tracking = false;
+    el.style.transform = ''; el.style.transition = '';
+  };
+  // True while the page is pinch-zoomed: panning a zoomed image is a pan, not a
+  // dismiss, and closing the viewer under it loses the user's zoom.
+  const _zoomed = () => {
+    try { return !!(window.visualViewport && window.visualViewport.scale > 1.01); }
+    catch (e) { return false; }
+  };
   el.addEventListener('touchstart', e => {
+    if (e.touches.length > 1 || _zoomed()) { _cancel(); return; }
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
     el.style.transition = 'none';
   }, {passive: true});
   el.addEventListener('touchmove', e => {
+    // A second finger landing MID-gesture is the common case: the pinch starts
+    // as one touch, so the guard above passes and only this one catches it.
+    if (e.touches.length > 1 || _zoomed()) { _cancel(); return; }
     if (!tracking) return;
     const dx = e.touches[0].clientX - sx;
-    const dy = Math.abs(e.touches[0].clientY - sy);
-    if (dy > 30 && dx < 30) { tracking = false; el.style.transform = ''; el.style.transition = ''; return; }
-    if (dx > 10) el.style.transform = 'translateX(' + dx + 'px)';
+    const dyRaw = e.touches[0].clientY - sy;
+    const dy = Math.abs(dyRaw);
+    if (dy > 30 && dx < 30) { _cancel(); return; }
+    // Require the motion to be clearly HORIZONTAL before it looks like a
+    // dismiss. Zooming and ordinary scrolling both drift sideways a little, and
+    // reacting to that is what made the viewer feel like it closed on its own.
+    if (dx < _SWIPE_MIN || dx < dy * _SWIPE_RATIO) return;
+    el.style.transform = 'translateX(' + (dx - _SWIPE_MIN) + 'px)';
   }, {passive: true});
   el.addEventListener('touchend', e => {
     if (!tracking) { el.style.transition = ''; return; }
+    // Fingers still down means a pinch is still in progress; this gesture is
+    // not ours to complete.
+    if (e.touches && e.touches.length > 0) { _cancel(); return; }
     tracking = false;
     const dx = e.changedTouches[0].clientX - sx;
     el.style.transition = 'transform 0.25s cubic-bezier(.4,0,.2,1)';
-    if (dx > 80) {
+    const dyEnd = Math.abs(e.changedTouches[0].clientY - sy);
+    if (dx > _SWIPE_CLOSE && dx > dyEnd * _SWIPE_RATIO) {
       el.style.transform = 'translateX(100%)';
       setTimeout(() => { closeFilePreview(); el.style.transform = ''; el.style.transition = ''; }, 260);
     } else {
@@ -37182,6 +40827,11 @@ document.addEventListener('keydown', (e) => {
 // ═══════ LAYOUT MODES (list / grid) ═══════
 let layoutMode = localStorage.getItem('amux_layout') || 'grid';
 let sortMode = localStorage.getItem('amux_sort_mode') || 'natural';
+// A mode persisted by an older build (or hand-edited) must not leave the
+// list sorting by a comparator that no longer exists.
+if (!['natural','human','alpha','status'].includes(sortMode)) sortMode = 'natural';
+if (document.body) setTimeout(() => _sortBtnSync(), 0);
+else document.addEventListener('DOMContentLoaded', () => _sortBtnSync());
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
 let _frozen = localStorage.getItem('amux_frozen') === '1';
 let _sortable = null;
@@ -37203,6 +40853,36 @@ function _naturalSortSessions(a, b) {
 function _alphaSortSessions(a, b) {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   return (a.name || '').localeCompare(b.name || '');
+}
+
+// Last message a PERSON sent, newest first. Schedulers and inter-session
+// traffic are excluded server-side (last_human_ts), so a lane driven entirely
+// by a cron sinks instead of masquerading as the most recent thing you touched.
+// Sessions you have never messaged sort last rather than jumbling into the
+// middle at position zero.
+function _humanSortSessions(a, b) {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  const at = a.last_human_ts || 0, bt = b.last_human_ts || 0;
+  if (!at && !bt) return _naturalSortSessions(a, b);
+  if (!at) return 1;
+  if (!bt) return -1;
+  return bt - at;
+}
+
+// Status order, then recency within each bucket.
+function _statusSortSessions(a, b) {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.running !== b.running) return a.running ? -1 : 1;
+  const ap = _STATUS_PRI[a.status] ?? 1, bp = _STATUS_PRI[b.status] ?? 1;
+  if (ap !== bp) return ap - bp;
+  return (b.last_activity || 0) - (a.last_activity || 0);
+}
+
+function _sortFnFor(mode) {
+  return mode === 'alpha'  ? _alphaSortSessions
+       : mode === 'human'  ? _humanSortSessions
+       : mode === 'status' ? _statusSortSessions
+       : _naturalSortSessions;
 }
 
 // Sort by frozen cardOrder; sessions not in the list go to the end in natural order
@@ -37234,16 +40914,11 @@ function toggleFreeze() {
         else if (s.status === 'waiting') buckets.waiting.push(s);
         else buckets.idle.push(s);
       });
-      const sortFn = sortMode === 'alpha' ? _alphaSortSessions : (a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        return (b.last_activity || 0) - (a.last_activity || 0);
-      };
+      const sortFn = _sortFnFor(sortMode);
       for (const k of Object.keys(buckets)) buckets[k].sort(sortFn);
       ordered = [...buckets.active, ...buckets.waiting, ...buckets.idle, ...buckets.stopped];
-    } else if (sortMode === 'alpha') {
-      ordered = [...visible].sort(_alphaSortSessions);
     } else {
-      ordered = [...visible].sort(_naturalSortSessions);
+      ordered = [...visible].sort(_sortFnFor(sortMode));
     }
     cardOrder = ordered.map(s => s.name);
     localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
@@ -37271,18 +40946,75 @@ function setLayoutMode(mode) {
   _updateResetBtn();
 }
 
-function toggleSortMode() {
-  sortMode = sortMode === 'alpha' ? 'natural' : 'alpha';
-  localStorage.setItem('amux_sort_mode', sortMode);
+// Sort options. 'human' exists because "last activity" is dominated by
+// schedulers and inter-session traffic — a lane nobody has touched in a week
+// can sit at the top looking busy. Sorting by the last thing a PERSON sent
+// answers "where did I leave off", which is a different question.
+const _SORT_OPTS = [
+  { id: 'natural', label: 'Recent activity',     hint: 'Any traffic, including schedules and other sessions' },
+  { id: 'human',   label: 'Last message from me', hint: 'Ignores schedulers and session-to-session' },
+  { id: 'alpha',   label: 'Name (A–Z)',      hint: 'Stable — the order stops shifting under you' },
+  { id: 'status',  label: 'Status',               hint: 'Active, then waiting, then idle, then stopped' },
+];
+const _SORT_GLYPH = { natural: '⇅', human: '●', alpha: 'A↓', status: '☷' };
+
+function _sortLabel(id) {
+  const o = _SORT_OPTS.find(x => x.id === id);
+  return o ? o.label : id;
+}
+function _sortBtnSync() {
   const btn = document.getElementById('tile-sort-btn');
-  if (btn) btn.classList.toggle('active', sortMode === 'alpha');
-  if (sortMode === 'alpha') destroySortable();
+  if (!btn) return;
+  btn.innerHTML = _SORT_GLYPH[sortMode] || 'A↓';
+  btn.title = 'Sort: ' + _sortLabel(sortMode);
+  btn.classList.toggle('active', sortMode !== 'natural');
+}
+function toggleSortMenu() {
+  const m = document.getElementById('sort-menu');
+  if (!m) return;
+  const open = m.style.display !== 'block';
+  m.innerHTML = _SORT_OPTS.map(o => {
+    const on = o.id === sortMode;
+    return `<div class="sort-opt${on ? ' active' : ''}" onclick="event.stopPropagation();setSortMode('${o.id}')">
+      <div style="display:flex;align-items:center;gap:7px;">
+        <span style="width:14px;opacity:${on ? 1 : 0.35};">${on ? '✓' : ''}</span>
+        <span style="font-weight:${on ? 600 : 400};">${esc(o.label)}</span>
+      </div>
+      <div style="font-size:0.66rem;color:var(--dim);margin-left:21px;">${esc(o.hint)}</div>
+    </div>`;
+  }).join('');
+  m.style.display = open ? 'block' : 'none';
+}
+function closeSortMenu() {
+  const m = document.getElementById('sort-menu');
+  if (m) m.style.display = 'none';
+}
+function setSortMode(mode) {
+  sortMode = _SORT_OPTS.some(o => o.id === mode) ? mode : 'natural';
+  localStorage.setItem('amux_sort_mode', sortMode);
+  closeSortMenu();
+  _sortBtnSync();
+  // Sorting is an explicit act, so it must beat the frozen card order that
+  // otherwise pins the list to whatever it looked like when you froze it.
+  _frozen = false;
+  try { localStorage.removeItem('amux_frozen'); localStorage.removeItem('amux_card_order'); } catch (e) {}
+  cardOrder = [];
+  if (typeof showToast === 'function') showToast('Sorted by ' + _sortLabel(sortMode).toLowerCase());
+  render();
+}
+
+function toggleSortMode() {   // legacy entry point; cycles through the options
+  const i = _SORT_OPTS.findIndex(o => o.id === sortMode);
+  setSortMode(_SORT_OPTS[(i + 1) % _SORT_OPTS.length].id);
+  const btn = document.getElementById('tile-sort-btn');
+  if (btn) btn.classList.toggle('active', sortMode !== 'natural');
+  if (sortMode !== 'natural') destroySortable();   // computed order — manual drag would fight it
   render();
 }
 
 function initSortable() {
   if (typeof Sortable === 'undefined') return;
-  if (sortMode === 'alpha') { destroySortable(); return; }
+  if (sortMode !== 'natural') { destroySortable(); return; }
   destroySortable();
   const cards = document.querySelector('.cards');
   if (!cards) return;
@@ -37340,7 +41072,7 @@ document.addEventListener('DOMContentLoaded', function() {
     setTimeout(initSortable, 200);
   }
   const sortBtn = document.getElementById('tile-sort-btn');
-  if (sortBtn) sortBtn.classList.toggle('active', sortMode === 'alpha');
+  if (sortBtn) sortBtn.classList.toggle('active', sortMode !== 'natural');
   const freezeBtn = document.getElementById('tile-freeze-btn');
   if (freezeBtn) freezeBtn.classList.toggle('active', _frozen);
 });
@@ -37618,9 +41350,9 @@ let boardEditId = null;
 let boardEditStatus = 'todo';
 let lastBoardJSON = '';
 let lastStatusesJSON = '';
-let boardFilterTag = null;
-let boardFilterSession = null;
 let boardSearchQuery = '';
+// Restore a shared #bq= filter link before the first render (AMUX-2151).
+window.addEventListener('DOMContentLoaded', () => { try { _bfRestoreHash(); _bfRenderChips(); } catch(e) {} });
 let _boardDragId = null;
 let boardViewMode = localStorage.getItem('amux_board_view') || 'session';
 let boardOwnerFilter = localStorage.getItem('amux_board_owner') || 'human';
@@ -37827,11 +41559,11 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
-  // MUST stay index-aligned with _svIds/_svNames above (19 entries). It had 18,
-  // so 'graph' ran off the end and took the '' fallback by accident.
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex'];
+  const _svIds = ['session', 'board', 'calendar', 'scheduler', 'files', 'proxies', 'logs', 'messages', 'skills', 'crm', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'mcp'];
+  const _svNames = ['sessions', 'board', 'calendar', 'scheduler', 'files', 'proxies', 'logs', 'messages', 'skills', 'crm', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'mcp'];
+  // MUST stay index-aligned with _svIds/_svNames above (20 entries). It once had
+  // 18 for 19 ids, so 'graph' ran off the end and took the '' fallback by accident.
+  const _svDisplay = ['', '', 'flex', '', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', '', 'flex', 'flex', 'flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -37850,6 +41582,7 @@ function switchView(view) {
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
+  if (view === 'mcp') _mcpRefresh();
   if (view === 'sql') _sqlInit();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
@@ -39198,6 +42931,19 @@ async function fetchSchedulerRuns() {
   }
 }
 
+// Why a run happened. Only NON-cron sources get a chip: a cron fire is the
+// expected case, and chipping every row would bury the one row that explains an
+// off-cadence fire. Silence means "the schedule came due" (AMUX-1998).
+function _schedRunSrcChip(src) {
+  const s = String(src || 'cron');
+  if (s === 'cron') return '';
+  const kind = s.split(':')[0];
+  const label = kind === 'manual' ? 'run now' : kind === 'trigger' ? 'trigger' : kind === 'watch' ? 'watch' : kind;
+  const color = kind === 'manual' ? 'var(--accent)' : 'var(--dim)';
+  return `<span style="flex-shrink:0;font-size:0.62rem;padding:1px 5px;border-radius:4px;`
+       + `border:1px solid ${color};color:${color};white-space:nowrap;" title="${esc(s)}">${esc(label)}</span>`;
+}
+
 // ── Scheduler helpers ──────────────────────────────────────────────────────
 function relTime(val) {
   if (!val) return '—';
@@ -39300,6 +43046,14 @@ function renderScheduler(opts) {
         ? `<span class="sched-sess-dot ${sessStatus}" title="${s.session}: ${sessStatus}"></span><span style="color:var(--accent);cursor:pointer;" onclick="switchView('sessions');openPeek('${esc(s.session)}')">${esc(s.session)}</span>`
         : `<span style="color:var(--dim);">(shell)</span>`;
       const nextRel = s.next_run ? `▶ <strong style="color:var(--text);" title="${s.next_run}">${relTime(s.next_run)}</strong>` : '';
+      // Measured cost badge (MG audit #1): fires last 24h + fleet share; red
+      // when one schedule dominates — 51% of wake-ups sat invisible until
+      // measured by hand.
+      const fpd = s.fires_day || 0;
+      const share = s.fleet_share || 0;
+      const fireBadge = fpd
+        ? `<span class="sched-fires${share >= 20 ? ' hot' : ''}" title="${fpd} fires in 24h = ${share}% of fleet">${fpd}/day${share >= 5 ? ` \u00B7 ${share}%` : ''}</span>`
+        : '';
       const _lrTitle = s.last_run ? (/^\d+$/.test(String(s.last_run)) ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString() : new Date(s.last_run).toLocaleString()) : '';
       const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${esc(_lrTitle)}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
       const trigLabel = s.trigger_on ? `&nbsp;&middot;&nbsp;<span style="color:var(--accent);font-size:0.65rem;">&#x26A1; ${esc((s.trigger_on||'').split(',').map(t=>t==='session_idle'?'idle':t==='board'?'board':t).join('+')).trim()}</span>` : '';
@@ -39316,7 +43070,7 @@ function renderScheduler(opts) {
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
               <code class="sched-id-badge" title="Schedule id — click to copy" onclick="event.stopPropagation();_copySchedId('${esc(s.id)}')">${esc(s.id)}</code>
               <span style="font-weight:600;font-size:0.84rem;cursor:pointer;" onclick="toggleSchedExpand('${esc(s.id)}')">${esc(s.title)}</span>
-              <code class="sched-cadence-pill">${esc(recLabel)}</code>
+              <code class="sched-cadence-pill">${esc(recLabel)}</code>${fireBadge}
               ${trigLabel}${watchLabel}${doneLabel}
             </div>
             <div style="font-size:0.72rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--dim);">
@@ -39444,6 +43198,7 @@ function renderScheduler(opts) {
       return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:0.75rem;min-width:0;">
         <span style="color:${okColor};font-weight:600;min-width:28px;flex-shrink:0;">${esc(r.status)}</span>
         <span style="color:var(--dim);white-space:nowrap;flex-shrink:0;" title="${esc(fullDate)}">${esc(timeStr)}</span>
+        ${_schedRunSrcChip(r.source)}
         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">${esc(r.title || r.schedule_id)}</span>
         ${r.note ? `<span style="color:var(--red);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;" title="${esc(r.note)}">${esc(r.note)}</span>` : ''}
       </div>`;
@@ -39495,29 +43250,37 @@ async function toggleSchedEnabled(id, enabled) {
 }
 
 let _boardViewsLoaded = false;
+let _boardEtag = null;
 async function fetchBoard() {
   // Saved views sync via /api/prefs so a view made on the desktop is on the
   // phone. Fetched once, not on every board poll.
   if (!_boardViewsLoaded) { _boardViewsLoaded = true; await _boardViewsLoad(); }
   try {
+    const boardHeaders = {};
+    if (_boardEtag) boardHeaders['If-None-Match'] = _boardEtag;
     const [r, rs, rsg] = await Promise.all([
-      fetch(API + '/api/board'),
+      fetch(API + '/api/board', _boardEtag ? { headers: boardHeaders } : undefined),
       fetch(API + '/api/board/statuses'),
       fetch(API + '/api/board/session-gates'),
     ]);
-    const data = await r.json();
     const statusData = await rs.json();
     try { const sgData = await rsg.json(); if (sgData && typeof sgData === 'object') sessionGates = sgData; } catch(e) {}
     consecutiveFailures = 0;
     if (!online) setOnline(true);
     const sj = JSON.stringify(statusData);
-    const j = JSON.stringify(data);
     const statusesChanged = sj !== lastStatusesJSON;
-    const itemsChanged = j !== lastBoardJSON;
     if (statusesChanged) {
       lastStatusesJSON = sj;
       boardStatuses = statusData;
     }
+    if (r.status === 304) {
+      if (statusesChanged) renderBoard();
+      return;
+    }
+    _boardEtag = r.headers.get('ETag') || null;
+    const data = await r.json();
+    const j = JSON.stringify(data);
+    const itemsChanged = j !== lastBoardJSON;
     if (itemsChanged || statusesChanged) {
       lastBoardJSON = j;
       boardItems = data;
@@ -39700,12 +43463,33 @@ function _bqParse(q) {
 // Duration filters: updated:>7d  created:<3d  updated:>36h
 function _bqAgeMatch(vals, epochSecs) {
   if (!epochSecs) return false;
-  const ageDays = (Date.now() / 1000 - (epochSecs > 1e11 ? epochSecs / 1000 : epochSecs)) / 86400;
+  const ts = epochSecs > 1e11 ? epochSecs / 1000 : epochSecs;
+  const ageDays = (Date.now() / 1000 - ts) / 86400;
+  // Three value forms, comma still means OR like every other key: relative
+  // (<7d, >2w, <36h), absolute day (>2026-07-01, <2026-08-01), and range
+  // literal (2026-07-01..2026-07-31, inclusive) — the filter bar's date
+  // pickers compile to the range form, so the query string stays the single
+  // source of truth (AMUX-2151).
   return vals.some(v => {
-    const m = v.match(/^([<>])(\d+)([dhw])$/);
-    if (!m) return false;
-    const n = parseInt(m[2], 10) * (m[3] === 'h' ? 1 / 24 : m[3] === 'w' ? 7 : 1);
-    return m[1] === '>' ? ageDays > n : ageDays < n;
+    let m = v.match(/^([<>])(\d+)([dhw])$/);
+    if (m) {
+      const n = parseInt(m[2], 10) * (m[3] === 'h' ? 1 / 24 : m[3] === 'w' ? 7 : 1);
+      return m[1] === '>' ? ageDays > n : ageDays < n;
+    }
+    m = v.match(/^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/);
+    if (m) {
+      const a = new Date(m[1] + 'T00:00:00').getTime() / 1000;
+      const b = new Date(m[2] + 'T00:00:00').getTime() / 1000;
+      if (isNaN(a) || isNaN(b)) return false;
+      return ts >= a && ts < b + 86400;
+    }
+    m = v.match(/^([<>])(\d{4}-\d{2}-\d{2})$/);
+    if (m) {
+      const d = new Date(m[2] + 'T00:00:00').getTime() / 1000;
+      if (isNaN(d)) return false;
+      return m[1] === '>' ? ts >= d : ts < d + 86400;
+    }
+    return false;
   });
 }
 
@@ -39737,6 +43521,12 @@ function _bqSessionIndex() {
   return ix;
 }
 
+// Tags a session sets to say "this card is parked on a human" — the durable
+// signal is:needsyou reads, so the owning session (which KNOWS) marks it
+// rather than the board guessing from prose (AMUX-2167).
+const _NEEDS_HUMAN_TAGS = new Set(['needs:you', 'needs:ethan', 'needs:human',
+  'blocked:human', 'human-gated', 'awaiting-decision', 'awaiting-ethan']);
+
 function _bqIs(item, val, ix) {
   const st = _statusCanon(item.status);
   const sess = item.session ? ix[item.session] : null;
@@ -39755,11 +43545,45 @@ function _bqIs(item, val, ix) {
     case 'working':  return !!sess && sess.status === 'active';
     case 'waiting':  return !!sess && sess.status === 'waiting';
     case 'gated':    return !!sess && !!(sess.credit_limited || sess.rate_limited_until);
+    // Needs-you (AMUX-2167): the DURABLE union, not just live session state.
+    // A session working other cards while these await your call read as
+    // 'working' under is:waiting/gated, so they surfaced nowhere. Three
+    // honest signals, no prose-guessing (the MO-3049 lesson): your own cards
+    // (owner:human), a card the owning session explicitly marked
+    // needs-human, and the live waiting/gated state.
+    case 'blocked': {
+      if (!_bqIs(item, 'open', ix)) return false;
+      if (_bqIs(item, 'needsyou', ix) || _bqIs(item, 'rotting', ix)) return true;
+      const deps = Array.isArray(item.depends_on) ? item.depends_on : [];
+      return deps.some(d => { const dc = (boardItems||[]).find(x => x.id === d);
+        return dc && !['done','verified','discarded'].includes(_statusCanon(dc.status)); });
+    }
+    // Derived card whose producer hasn't re-checked its source in 24h+
+    // (AMUX-2204): it may be ASSERTING a state (breach, blocker) its source
+    // already resolved — 3 of 4 escalated SLA cards were stale this way.
+    case 'sourcestale': return _bqIs(item, 'open', ix) && !!item.source_ref
+                        && (!item.last_verified_at
+                            || (Date.now()/1000 - item.last_verified_at) > 86400);
+    // needs:you IGNORES the archived flag deliberately: the age sweep
+    // archives untouched cards after 3d, and a decision owed to the human
+    // must survive that — archived organizes, it must not hide (Ethan
+    // 2026-08-02, both asks same day).
+    case 'needsyou': return _bqIs(item, 'open', ix) && (
+                       // Explicit marker set by whoever knows (a session parking
+                       // its card, or a human reassigning a decision) — NOT every
+                       // owner:human card, which is the standing backlog and
+                       // floods the queue (306 -> the real blocked set). Own
+                       // filed work lives in the Mine view; needs-you is only
+                       // what is actively stopped ON you.
+                       (item.tags || []).some(t => _NEEDS_HUMAN_TAGS.has(String(t).toLowerCase()))
+                       || (!!sess && (sess.status === 'waiting'
+                                      || !!sess.credit_limited || !!sess.rate_limited_until)));
     case 'offline':  return !!item.session && (!sess || !sess.running);
     case 'orphan':   return !item.session || !ix[item.session];
+    case 'archived': return !!item.archived;
     case 'pinned':   return !!item.pinned;
     case 'overdue':  return !!item.due && (item.due * (item.due > 1e11 ? 0.001 : 1)) < Date.now() / 1000;
-    case 'folded':   return ((item.desc || '').match(/New task:/g) || []).length > 0;
+    case 'folded':   return (((item.desc || '') + '\n' + (item.log || '')).match(/New task:/g) || []).length > 0;
     default:         return false;
   }
 }
@@ -39797,6 +43621,150 @@ function _bqMatch(item, ast, ix) {
   return true;
 }
 
+// Archived cards are hidden everywhere UNLESS the query explicitly asks for
+// them. Implemented as a query-aware default rather than a separate toggle so
+// there is ONE place that decides visibility — a second mechanism is how the
+// owner-filter and the query ended up disagreeing and rendering lying counts.
+function _bqWantsArchived(q) {
+  return /(^|\s)-?is:(\S*,)?archived\b/i.test(String(q || ''));
+}
+function _bqHideArchived(items, q) {
+  return _bqWantsArchived(q) ? items : items.filter(i => !i.archived);
+}
+
+// ── Filter bar (AMUX-2151, Linear-oriented) ────────────────────────────────
+// The UI COMPILES to the existing query language: chips are a parsed render
+// of boardSearchQuery and the menu appends tokens to it. One filter
+// mechanism, one source of truth — the same rule that keeps _bqHideArchived
+// honest. State is mirrored to the URL hash so a filtered view is shareable.
+function _bfSyncHash() {
+  try {
+    const q = (boardSearchQuery || '').trim();
+    const cur = location.hash;
+    const next = q ? '#bq=' + encodeURIComponent(q) : (cur.startsWith('#bq=') ? '' : cur);
+    if (cur !== next) history.replaceState({}, '', location.pathname + (next || ''));
+  } catch (e) {}
+  _bfRenderChips();
+}
+function _bfRestoreHash() {
+  try {
+    if (location.hash.startsWith('#bq=')) {
+      boardSearchQuery = decodeURIComponent(location.hash.slice(4));
+      const inp = document.getElementById('board-search');
+      if (inp) inp.value = boardSearchQuery;
+    }
+  } catch (e) {}
+}
+function _bfRenderChips() {
+  const peek = _bfTarget === 'peek';
+  const row = document.getElementById(peek ? 'bf-chips-peek' : 'bf-chips');
+  if (!row) return;
+  let ast;
+  const _q = peek ? (_peekIssuesQuery || '') : (boardSearchQuery || '');
+  try { ast = _bqParse(_q.trim()); } catch (e) { ast = { terms: [], text: [] }; }
+  if (!ast.terms.length) { row.style.display = 'none'; row.innerHTML = ''; return; }
+  row.style.display = 'flex';
+  row.innerHTML = ast.terms.map((t, i) =>
+    '<span class="bf-chip' + (t.neg ? ' bf-chip-neg' : '') + '">'
+    + esc((t.neg ? '-' : '') + t.key + ': ' + t.vals.join(', '))
+    + '<span class="bf-chip-x" onclick="_bfRemoveTerm(' + i + ')" title="Remove filter">\u2715</span></span>'
+  ).join('');
+}
+function _bfRemoveTerm(idx) {
+  const peek = _bfTarget === 'peek';
+  const q = (peek ? (_peekIssuesQuery || '') : (boardSearchQuery || '')).trim();
+  const toks = q.split(/\s+/);
+  let seen = -1;
+  const kept = toks.filter(tok => {
+    if (/^-?[a-z_]+:/i.test(tok)) { seen += 1; return seen !== idx; }
+    return true;
+  });
+  const next = kept.join(' ');
+  if (peek) {
+    _peekIssuesQuery = next;
+    const pinp = document.getElementById('peek-issues-search');
+    if (pinp) pinp.value = next;
+    _bfRenderChips(); renderPeekIssues();
+  } else {
+    boardSearchQuery = next;
+    const inp = document.getElementById('board-search');
+    if (inp) inp.value = next;
+    _bfSyncHash(); renderBoard();
+  }
+}
+// Which surface the filter menu writes to: the global board (default) or the
+// peek Board tab — same menu, same chips, two query targets (parity, 07:17).
+let _bfTarget = 'board';
+function _bfAppend(token) {
+  if (_bfTarget === 'peek') {
+    _peekIssuesQuery = ((_peekIssuesQuery || '').trim() + ' ' + token).trim();
+    const pinp = document.getElementById('peek-issues-search');
+    if (pinp) pinp.value = _peekIssuesQuery;
+    _bfCloseMenu(); _bfRenderChips(); renderPeekIssues();
+    return;
+  }
+  boardSearchQuery = ((boardSearchQuery || '').trim() + ' ' + token).trim();
+  const inp = document.getElementById('board-search');
+  if (inp) inp.value = boardSearchQuery;
+  _boardActiveView = '';
+  _bfCloseMenu(); _bfSyncHash(); renderBoard();
+}
+function _bfCloseMenu() {
+  const m = document.getElementById('bf-menu');
+  if (m) m.remove();
+  document.removeEventListener('click', _bfOutside, true);
+}
+function _bfOutside(e) {
+  const m = document.getElementById('bf-menu');
+  if (m && !m.contains(e.target)) _bfCloseMenu();
+}
+function _bfOpenMenu(ev, target) {
+  ev.stopPropagation();
+  _bfTarget = target === 'peek' ? 'peek' : 'board';
+  _bfCloseMenu();
+  const items = (typeof boardItems !== 'undefined' ? boardItems : []).filter(i => !i.archived);
+  const uniq = a => [...new Set(a.filter(Boolean))].sort();
+  const statuses = uniq(items.map(i => _statusCanon(i.status)));
+  const sessions = uniq(items.map(i => i.session)).slice(0, 40);
+  const types = uniq(items.map(i => i.type || 'code'));
+  const tags = uniq(items.flatMap(i => i.tags || [])).slice(0, 40);
+  const isPreds = ['open', 'working', 'waiting', 'gated', 'rotting', 'orphan', 'overdue', 'pinned', 'folded', 'archived'];
+  const today = new Date(); const iso = d => d.toISOString().slice(0, 10);
+  const grp = (label, entries) => entries.length
+    ? '<div class="bf-grp"><div class="bf-grp-label">' + label + '</div>' + entries.join('') + '</div>' : '';
+  const opt = (label, token) =>
+    '<div class="bf-opt" onclick="_bfAppend(\'' + escJs(token) + '\')">' + esc(label) + '</div>';
+  const dateGrp = key => grp(key.charAt(0).toUpperCase() + key.slice(1), [
+    opt('today', key + ':<1d'), opt('last 7 days', key + ':<7d'), opt('last 30 days', key + ':<30d'),
+    opt('older than 7 days', key + ':>7d'),
+    '<div class="bf-opt" style="display:flex;gap:4px;align-items:center;" onclick="event.stopPropagation()">'
+      + '<input type="date" id="bf-' + key + '-a" style="font-size:0.72rem;max-width:120px;">\u2013'
+      + '<input type="date" id="bf-' + key + '-b" style="font-size:0.72rem;max-width:120px;">'
+      + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="(function(){'
+      + 'var a=document.getElementById(\'bf-' + key + '-a\').value,b=document.getElementById(\'bf-' + key + '-b\').value;'
+      + 'if(a&&b)_bfAppend(\'' + key + ':\'+a+\'..\'+b);})()">apply</button></div>',
+  ]);
+  const html =
+    grp('Status', statuses.map(v => opt(v, 'status:' + v)))
+    + grp('Type', types.map(v => opt(v, 'type:' + v)))
+    + grp('Tag', tags.map(v => opt(v, 'tag:' + v)))
+    + grp('Session', sessions.map(v => opt(v, 'session:' + v)))
+    + grp('Quick (is:)', isPreds.map(v => opt(v, 'is:' + v)))
+    + dateGrp('updated') + dateGrp('created');
+  const m = document.createElement('div');
+  m.id = 'bf-menu';
+  const mobile = window.innerWidth <= 700;
+  m.className = mobile ? 'bf-menu bf-sheet' : 'bf-menu';
+  m.innerHTML = (mobile ? '<div class="bf-sheet-grab"></div>' : '') + html;
+  document.body.appendChild(m);
+  if (!mobile) {
+    const r = _cssRect(ev.currentTarget || ev.target);
+    m.style.top = (r.bottom + 6) + 'px';
+    m.style.left = Math.max(8, Math.min(r.left, (document.documentElement.clientWidth || innerWidth) - 340)) + 'px';
+  }
+  setTimeout(() => document.addEventListener('click', _bfOutside, true), 0);
+}
+
 function _bqFilter(items, q) {
   const s = (q || '').trim();
   if (!s) return items;
@@ -39813,10 +43781,11 @@ function _bqFilter(items, q) {
 // so a view saved on the desktop is there on the phone.
 const _BOARD_BUILTIN_VIEWS = [
   { id: '_working',  name: 'Working now', q: 'is:working is:open',        hint: 'Cards whose session is running right now' },
-  { id: '_needsyou', name: 'Needs you',   q: 'is:waiting,gated is:open',  hint: 'Session is blocked at a prompt or a model gate' },
+  { id: '_needsyou', name: 'Needs you',   q: 'is:needsyou',  hint: 'Blocked on you: your own cards, cards a session marked needs-human, or a session at a prompt/model gate' },
   { id: '_rotting',  name: 'Rotting',     q: 'is:rotting',                hint: 'Claimed in-flight, session idle 7d+' },
   { id: '_orphan',   name: 'Unowned',     q: 'is:orphan is:open',         hint: 'Open, but no session can execute it' },
   { id: '_mine',     name: 'Mine',        q: 'owner:human is:open',       hint: 'Your own issues, not the agent cards' },
+  { id: '_archived', name: 'Archived',    q: 'is:archived',               hint: 'Cards belonging to archived sessions' },
 ];
 let _boardViews = [];        // user-saved: [{id,name,q}]
 let _boardActiveView = '';   // id of the applied view, '' = none
@@ -39889,10 +43858,169 @@ function _boardRenderViews() {
       +  (n ? '<span class="bvc-n">' + n + '</span>' : '')
       +  '<span class="bvc-x" onclick="_boardDeleteView(\'' + v.id + '\',event)" title="Delete view">&#x2715;</span></button>';
   });
+  // Focus button (AMUX-2170): rapid-fire triage of whatever is:needsyou
+  // returns — one card at a time, resolve, auto-advance. Shown with a live
+  // count so "3 need you" is one tap from clearing them.
+  const _nyN = _boardViewCount('is:needsyou');
+  if (_nyN) h += '<button class="board-view-chip focus" onclick="_focusStart(\'is:needsyou\')" '
+    + 'title="Rapid-fire triage everything blocked on you" '
+    + 'style="border-color:var(--accent);color:var(--accent);font-weight:600;">\u26A1 Focus<span class="bvc-n">' + _nyN + '</span></button>';
   h += '<button class="board-view-chip add" onclick="_boardSaveCurrentView()" title="Save the current query as a view">+ Save view</button>';
   h += '<button class="board-view-chip add" onclick="_boardQueryHelp()" title="Query syntax">?</button>';
   el.innerHTML = h;
 }
+// ── Needs-you Focus mode (AMUX-2170) ───────────────────────────────────────
+// A full-screen, one-card-at-a-time triage over a query (default is:needsyou).
+// Each card shows its ASK; actions resolve and auto-advance. Keyboard: j/k
+// prev/next, e Answer, a Approve, r Reject, u Unblock, Esc close. The whole
+// point is boom-boom-boom: never hunt, never scroll, decide and move.
+let _focusQ = '';
+let _focusList = [];
+let _focusIdx = 0;
+function _focusStart(q) {
+  _focusQ = q || 'is:needsyou';
+  _focusRebuild();
+  if (!_focusList.length) { showToast('Nothing is blocked on you right now.'); return; }
+  _focusIdx = 0;
+  document.addEventListener('keydown', _focusKey, true);
+  _focusRender();
+}
+function _focusRebuild() {
+  const ix = _bqSessionIndex();
+  _focusList = _bqFilter((boardItems || []).filter(i => !i.deleted), _focusQ)
+    .sort((a, b) => (b.owner_type === 'human') - (a.owner_type === 'human') || (a.created || 0) - (b.created || 0));
+}
+// The card's ASK: an explicit NEEDS-YOU marker line in the log wins; else the
+// first line of desc; else the title. Never guesses beyond the marker.
+function _focusAsk(item) {
+  // The explicit ask wins wherever it lives (desc or log) — take the LAST
+  // NEEDS-YOU marker so a re-marked card shows its freshest question. Only
+  // then fall back to the desc's first meaningful line, then the title.
+  const hay = (item.desc || '') + '\n' + (item.log || '');
+  const ms = [...hay.matchAll(/NEEDS[- ]?(?:YOU|ETHAN|HUMAN):\s*([^\n]+)/ig)];
+  if (ms.length) return ms[ms.length - 1][1].trim().slice(0, 400);
+  const d = (item.desc || '').replace(/^\*\*Prompt:\*\*\s*/i, '').split('\n').find(l => l.trim());
+  return (d || item.title || '').slice(0, 400);
+}
+function _focusClose() {
+  document.removeEventListener('keydown', _focusKey, true);
+  const ov = document.getElementById('focus-overlay');
+  if (ov) ov.remove();
+  renderBoard();
+}
+function _focusNext() {
+  _focusIdx++;
+  if (_focusIdx >= _focusList.length) { _focusDone(); return; }
+  _focusRender();
+}
+function _focusPrev() { if (_focusIdx > 0) { _focusIdx--; _focusRender(); } }
+function _focusDone() {
+  const ov = document.getElementById('focus-overlay');
+  if (ov) ov.querySelector('.focus-body').innerHTML =
+    '<div style="text-align:center;padding:60px 20px;"><div style="font-size:2.4rem;">\u2705</div>'
+    + '<div style="font-size:1.1rem;font-weight:600;margin-top:12px;">Inbox zero.</div>'
+    + '<div style="color:var(--dim);margin-top:6px;">Nothing else is blocked on you.</div>'
+    + '<button class="btn primary" style="margin-top:20px;" onclick="_focusClose()">Done</button></div>';
+}
+function _focusKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); _focusClose(); }
+  else if (e.key === 'j' || e.key === 'ArrowRight') { e.preventDefault(); _focusNext(); }
+  else if (e.key === 'k' || e.key === 'ArrowLeft') { e.preventDefault(); _focusPrev(); }
+  else if (e.key === 'e') { e.preventDefault(); _focusAnswer(); }
+  else if (e.key === 'a') { e.preventDefault(); _focusDecide('approved'); }
+  else if (e.key === 'r') { e.preventDefault(); _focusDecide('rejected'); }
+  else if (e.key === 'u') { e.preventDefault(); _focusUnblock(); }
+  else if (e.key === 'n') { e.preventDefault(); _focusNudge(); }
+}
+async function _focusPatch(id, body) {
+  try { return await apiCall(API + '/api/board/' + id, { method: 'PATCH',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }); }
+  catch (e) { return null; }
+}
+async function _focusSend(name, text) {
+  try { const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send',
+    { method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ text, record_history: true }) }); return r.ok; }
+  catch (e) { return false; }
+}
+async function _focusResolveTag(item) {
+  // Remove the needs-human markers so it leaves the queue (owner:human cards
+  // stay yours — resolving those is a status move, handled by the actions).
+  const keep = (item.tags || []).filter(t => !_NEEDS_HUMAN_TAGS.has(String(t).toLowerCase()));
+  await _focusPatch(item.id, { tags: keep });
+}
+async function _focusAnswer() {
+  const item = _focusList[_focusIdx]; if (!item) return;
+  const sess = item.session;
+  const ok = await showFormModal('Answer ' + item.id + (sess ? ' \u2192 ' + sess : ''),
+    '<textarea id="focus-ans" class="bw-in" style="width:100%;min-height:90px;box-sizing:border-box" '
+    + 'placeholder="Your reply — sent to the owning session and recorded on the card"></textarea>', 'Send');
+  const ans = (document.getElementById('focus-ans') || {}).value || '';
+  if (!ok || !ans.trim()) return;
+  if (sess) { try { await _focusSend(sess, '[Ethan, re ' + item.id + '] ' + ans); } catch(e) {} }
+  await _focusPatch(item.id, { desc_append: '`answered` Ethan: ' + ans });
+  await _focusResolveTag(item);
+  showToast('Answered ' + item.id);
+  _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
+  _focusNext();
+}
+async function _focusDecide(verdict) {
+  const item = _focusList[_focusIdx]; if (!item) return;
+  await _focusPatch(item.id, { desc_append: '`decision` Ethan ' + verdict.toUpperCase() + ' ' + new Date().toISOString().slice(0,10) });
+  if (item.session) { try { await _focusSend(item.session, '[Ethan decision on ' + item.id + '] ' + verdict.toUpperCase() + ' — proceed accordingly.'); } catch(e) {} }
+  await _focusResolveTag(item);
+  showToast(item.id + ' ' + verdict);
+  _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
+  _focusNext();
+}
+async function _focusNudge() {
+  const item = _focusList[_focusIdx]; if (!item) return;
+  if (item.session) { await _focusSend(item.session,
+    '[amux] Please advance ' + item.id + ' (' + (item.title||'').slice(0,60) + '): work it now, or post a status-update / mark its blocker. It is showing as blocked.'); }
+  await _focusPatch(item.id, { desc_append: '`nudge` Ethan asked ' + (item.session||'?') + ' to advance this' });
+  showToast('Nudged ' + (item.session||'') + ' on ' + item.id);
+  _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
+  _focusNext();
+}
+async function _focusUnblock() {
+  const item = _focusList[_focusIdx]; if (!item) return;
+  await _focusResolveTag(item);
+  showToast(item.id + ' unblocked');
+  _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
+  _focusNext();
+}
+function _focusRender() {
+  const item = _focusList[_focusIdx];
+  if (!item) { _focusDone(); return; }
+  let ov = document.getElementById('focus-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'focus-overlay'; ov.className = 'focus-overlay';
+    ov.innerHTML = '<div class="focus-card"><div class="focus-head"></div><div class="focus-body"></div><div class="focus-actions"></div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) _focusClose(); });
+  }
+  const sty = statusStyle(item.status || 'todo');
+  const sess = item.session ? '<span class="focus-sess" onclick="_focusClose();openPeek(\'' + escJs(item.session) + '\',{query:\'' + escJs(item.id) + '\'})" title="Open the session">' + esc(item.session) + ' \u2197</span>' : '';
+  ov.querySelector('.focus-head').innerHTML =
+    '<span class="focus-progress">' + (_focusIdx + 1) + ' / ' + _focusList.length + ' blocked on you</span>'
+    + '<button class="focus-x" onclick="_focusClose()" title="Close (Esc)">\u2715</button>';
+  ov.querySelector('.focus-body').innerHTML =
+    '<div class="focus-idrow"><span class="focus-id" onclick="_focusClose();openBoardDetail(\'' + escJs(item.id) + '\')">' + esc(item.id) + '</span>'
+    + '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';">' + esc(item.status || 'todo') + '</span>' + sess + '</div>'
+    + '<div class="focus-title">' + esc(item.title || '') + '</div>'
+    + '<div class="focus-ask-label">Needs your call:</div>'
+    + '<div class="focus-ask">' + _linkifyCardIds(esc(_focusAsk(item))) + '</div>';
+  ov.querySelector('.focus-actions').innerHTML =
+    '<button class="btn" onclick="_focusPrev()" title="Previous (k)">\u2190</button>'
+    + '<button class="btn primary" onclick="_focusAnswer()" title="Answer (e)">\u270E Answer</button>'
+    + '<button class="btn" style="color:var(--green);border-color:var(--green);" onclick="_focusDecide(\'approved\')" title="Approve (a)">\u2713 Approve</button>'
+    + '<button class="btn" style="color:var(--red);border-color:var(--red);" onclick="_focusDecide(\'rejected\')" title="Reject (r)">\u2717 Reject</button>'
+    + '<button class="btn" onclick="_focusUnblock()" title="Just clear the block (u)">Unblock</button>'
+    + '<button class="btn" onclick="_focusNudge()" title="Nudge the owning session (n)">\uD83D\uDC49 Nudge</button>'
+    + '<button class="btn" onclick="_focusNext()" title="Skip (j)">Skip \u2192</button>';
+}
+
 function _boardQueryHelp() {
   showFormModal('Board query syntax',
     '<div style="font-size:0.8rem;line-height:1.6">'
@@ -39909,38 +44037,29 @@ function renderBoardFilters() {
   const el = document.getElementById('board-filters');
   if (!el) return;
   _boardRenderViews();
-  const allTags = [...new Set(boardItems.flatMap(i => i.tags || []))].sort();
-  const allSessions = [...new Set(boardItems.map(i => i.session).filter(Boolean))].sort();
+  // Curated + query-compiling (Ethan 07:19: chips filtered into an empty set
+  // and machine tags polluted the row). Two fixes with one design rule:
+  // clicking a chip APPENDS tag:x / session:x to the query — the same single
+  // mechanism as the + Filter menu, which bypasses the owner toggle, so a
+  // chip can never show nothing. The row shows only HUMAN-meaning tags with
+  // open cards (machine/namespaced tags — anything with ':' or '@', like
+  // hrsla:someone@x.com — stay reachable via + Filter and typed queries, but
+  // do not earn toolbar real estate), ranked by open-card count, capped.
+  const openItems = boardItems.filter(i => !i.archived && !['done','verified','discarded'].includes(_statusCanon(i.status)));
+  const tagCount = {};
+  openItems.forEach(i => (i.tags || []).forEach(t => {
+    if (t.includes(':') || t.includes('@')) return;
+    tagCount[t] = (tagCount[t] || 0) + 1;
+  }));
+  const topTags = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 12);
   let html = '';
-  if (allTags.length) {
+  if (topTags.length) {
     html += '<span class="board-filter-label">Tag:</span>';
-    allTags.forEach(t => {
-      const active = boardFilterTag === t;
-      html += "<button class='board-filter-chip" + (active ? " active" : "") + "' onclick='toggleBoardTag(" + JSON.stringify(t) + ")'>" + esc(t) + "</button>";
+    topTags.forEach(([t, n]) => {
+      html += "<button class='board-filter-chip' onclick='_bfTarget=\"board\";_bfAppend(" + JSON.stringify('tag:' + t) + ")'>" + esc(t) + " <span style='color:var(--dim)'>" + n + "</span></button>";
     });
-  }
-  if (allSessions.length) {
-    if (allTags.length) html += '<span class="board-filter-sep">|</span>';
-    html += '<span class="board-filter-label">Session:</span>';
-    allSessions.forEach(s => {
-      const active = boardFilterSession === s;
-      html += "<button class='board-filter-chip" + (active ? " active" : "") + "' onclick='toggleBoardSession(" + JSON.stringify(s) + ")'>" + esc(s) + "</button>";
-    });
-  }
-  if (boardFilterTag || boardFilterSession) {
-    html += '<button class="board-filter-chip board-filter-clear" onclick="boardFilterTag=null;boardFilterSession=null;document.getElementById(\'board-search\').value=\'\';boardSearchQuery=\'\';renderBoard()">&#x2715; Clear</button>';
   }
   el.innerHTML = html;
-}
-
-function toggleBoardTag(tag) {
-  boardFilterTag = boardFilterTag === tag ? null : tag;
-  renderBoard();
-}
-
-function toggleBoardSession(session) {
-  boardFilterSession = boardFilterSession === session ? null : session;
-  renderBoard();
 }
 
 function boardDragStart(e, id) {
@@ -40002,6 +44121,27 @@ function toggleSessionGroup(name) {
   _sessionGroupCollapsed[name] = !_sessionGroupCollapsed[name];
   localStorage.setItem('amux_board_collapsed', JSON.stringify(_sessionGroupCollapsed));
   renderBoard();
+}
+
+// Shared Linear-dense issue row (AMUX-2152): status dot · id · one-line
+// title · owner chip · due · status badge, 44px tap target. ONE renderer for
+// the global List view and the peek Board tab, so the two surfaces cannot
+// drift (Ethan 07:17: same UX on both).
+function _issueRowHTML(item, opts) {
+  opts = opts || {};
+  const sty = statusStyle(item.status || 'todo');
+  const due = item.due ? '<span class="peek-issue-due">' + esc(item.due) + '</span>' : '';
+  const owner = (opts.showOwner && item.session)
+    ? '<span class="peek-issue-owner" style="font-size:0.68rem;color:var(--accent);background:rgba(88,166,255,0.12);border-radius:8px;padding:1px 6px;margin-right:4px;">' + esc(item.session) + '</span>'
+    : '';
+  const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
+  const dot = '<span class="board-status-dot" style="background:' + sty.dot + ';flex:0 0 auto;"></span>';
+  return '<div class="peek-issue-item" style="min-height:44px;" onclick="openBoardDetail(\'' + esc(item.id) + '\')">' +
+    dot +
+    '<span class="peek-issue-key">' + esc(item.id) + '</span>' +
+    '<span class="peek-issue-title">' + owner + esc(item.title) + '</span>' +
+    '<span class="peek-issue-meta">' + badge + due + '</span>' +
+    '</div>';
 }
 
 function _renderBoardCard(item) {
@@ -40135,8 +44275,10 @@ function renderBoard() {
   // Update view toggle buttons
   var bvS = document.getElementById('bv-session');
   var bvC = document.getElementById('bv-status');
+  var bvL = document.getElementById('bv-list');
   if (bvS) bvS.classList.toggle('active', boardViewMode === 'session');
   if (bvC) bvC.classList.toggle('active', boardViewMode === 'status');
+  if (bvL) bvL.classList.toggle('active', boardViewMode === 'list');
   var boH = document.getElementById('bo-human');
   var boA = document.getElementById('bo-agent');
   if (boH) boH.classList.toggle('active', boardOwnerFilter === 'human');
@@ -40150,13 +44292,35 @@ function renderBoard() {
   const _qActive = !!(boardSearchQuery || '').trim();
   let visible = _qActive ? boardItems.slice()
     : boardItems.filter(i => boardOwnerFilter === 'agent' ? i.owner_type === 'agent' : i.owner_type !== 'agent');
-  if (boardFilterTag) visible = visible.filter(i => (i.tags || []).includes(boardFilterTag));
-  if (boardFilterSession) visible = visible.filter(i => i.session === boardFilterSession);
+
   // Structured query: key:value facets, -negation, quoted phrases, and is:
   // facets derived from live session state. Bare words still substring-match,
   // so the old search behaviour is a strict subset of this.
+  visible = _bqHideArchived(visible, boardSearchQuery);
   visible = _bqFilter(visible, boardSearchQuery);
 
+  if (boardViewMode === 'list') {
+    // Linear-dense List view (AMUX-2152): grouped by status with counts,
+    // shared row renderer with the peek Board tab.
+    container.classList.remove('board-columns');
+    container.classList.add('board-list-mode');
+    const order = ['doing', 'review', 'todo', 'backlog', 'done', 'verified', 'discarded'];
+    const groups = {};
+    visible.forEach(i => { const st = _statusCanon(i.status || 'todo'); (groups[st] = groups[st] || []).push(i); });
+    let html = '';
+    order.concat(Object.keys(groups).filter(k => !order.includes(k))).forEach(st => {
+      const g = groups[st];
+      if (!g || !g.length) return;
+      const sty = statusStyle(st);
+      html += '<div class="board-list-group-head" style="display:flex;align-items:center;gap:8px;padding:10px 6px 4px;font-size:0.74rem;font-weight:600;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;">'
+        + '<span class="board-status-dot" style="background:' + sty.dot + '"></span>' + esc(st)
+        + '<span style="color:var(--dim);font-weight:400;">' + g.length + '</span></div>';
+      html += g.map(i => _issueRowHTML(i, { showOwner: true })).join('');
+    });
+    container.innerHTML = html || '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">Nothing matches.</div>';
+    return;
+  }
+  container.classList.remove('board-list-mode');
   if (boardViewMode === 'session') {
     container.classList.remove('board-columns');
     container.classList.add('board-columns-list');
@@ -40687,7 +44851,16 @@ async function saveBoardEdit() {
 // ── Board detail (full-screen) ──
 let boardDetailId = null;
 let boardDetailStatus = 'todo';
-const _boardDrafts = {};  // item id → { title, desc, session, status, due }
+// Persisted to localStorage (AMUX-2209): board-detail edits typed OFFLINE
+// used to live only in memory — a reload or iOS killing the backgrounded PWA
+// destroyed them. Hydrated at boot, saved on every draft write.
+const _boardDrafts = (function() {
+  try { return JSON.parse(localStorage.getItem('amux_board_drafts') || '{}') || {}; }
+  catch (e) { return {}; }
+})();
+function _boardDraftsPersist() {
+  try { localStorage.setItem('amux_board_drafts', JSON.stringify(_boardDrafts)); } catch (e) {}
+}
 
 function openBoardDetail(id) {
   const item = boardItems.find(i => i.id === id);
@@ -40700,10 +44873,36 @@ function openBoardDetail(id) {
   titleEl.style.height = 'auto';
   titleEl.style.height = titleEl.scrollHeight + 'px';
   document.getElementById('bd-desc').value = draft ? draft.desc : (item.desc || '');
+  // History is now a TAB (below); the inline strip is retired.
+  const logEl = document.getElementById('bd-log');
+  if (logEl) { logEl.style.display = 'none'; }
+  _bdRenderHistory(item);
+  // Latest-status banner: the freshest model-authored STATUS on the card, or a
+  // prompt to ask for one (AMUX status-request flow). Makes the card answer
+  // "where is this?" the moment it opens.
+  _bdRenderStatusBanner(item);
   _renderDetailStatusBtns();
   const keyEl = document.getElementById('bd-key');
   if (keyEl) keyEl.textContent = item.id || '';
   _populateSessionSelect('bd-session', draft ? draft.session : (item.session || ''));
+  // One-tap jump from a card to the owning session's live progress
+  // (Ethan 07:19): opens the peek on the terminal, prefilled to search for
+  // this card id so the jump lands where the session last touched it.
+  const goBtn = document.getElementById('bd-goto-session');
+  if (goBtn) {
+    const _sess = (draft ? draft.session : item.session) || '';
+    goBtn.style.display = _sess ? '' : 'none';
+    goBtn.onclick = (e) => {
+      e.stopPropagation();
+      try { closeBoardDetail(); } catch (err) {}
+      openPeek(_sess, { query: item.id });
+    };
+    const askBtn = document.getElementById('bd-ask-status');
+    if (askBtn) {
+      askBtn.style.display = _sess ? '' : 'none';
+      askBtn.onclick = (e) => { e.stopPropagation(); _askCardStatus(item.id, _sess); };
+    }
+  }
   const dueEl = document.getElementById('bd-due');
   if (dueEl) dueEl.value = draft ? (draft.due || '') : (item.due || '');
   const dueTimeEl = document.getElementById('bd-due-time');
@@ -40716,21 +44915,107 @@ function openBoardDetail(id) {
   _beTagInputUpdate('bd');
   const meta = document.getElementById('bd-meta');
   const parts = [];
+  if (item.type) parts.push('Type ' + esc(item.type));
   if (item.creator) parts.push('From ' + esc(item.creator));
   if (item.created) parts.push('Created ' + timeAgo(item.created));
   if (item.updated && item.updated !== item.created) parts.push('Updated ' + timeAgo(item.updated));
-  meta.innerHTML = parts.map(p => '<div class="board-detail-meta-row">' + p + '</div>').join('');
+  if (item.reviewer) parts.push('Reviewer ' + esc(item.reviewer));
+  if (item.source_ref) {
+    const lv = item.last_verified_at;
+    const ageH = lv ? Math.round((Date.now()/1000 - lv) / 3600) : null;
+    const stale = !lv || ageH > 24;
+    parts.push('Derived from ' + esc(String(item.source_ref).slice(0,60))
+      + (lv ? (' · source re-checked ' + ageH + 'h ago') : ' · never re-verified')
+      + (stale ? ' <span style="color:var(--red);font-weight:600;">STALE — re-check the source before acting</span>' : ''));
+  }
+  const deps = Array.isArray(item.depends_on) ? item.depends_on : [];
+  let depHtml = '';
+  if (deps.length) depHtml = '<div class="board-detail-meta-row">Blocked by ' + deps.map(d =>
+    '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(d) + '\')" style="cursor:pointer;">' + esc(d) + '</span>').join(' ') + '</div>';
+  meta.innerHTML = parts.map(p => '<div class="board-detail-meta-row">' + p + '</div>').join('') + depHtml;
   document.getElementById('bd-save-status').textContent = '';
   document.getElementById('board-detail-overlay').classList.add('active');
   setTimeout(() => document.getElementById('bd-title').focus(), 100);
 }
 
+// ── Improved detail: status banner, typed History, permalink (AMUX-2178) ───
+function _bdParseHistory(log) {
+  // Each backtick-timestamped line becomes a typed event for styled rendering.
+  return (log || '').split('\n').filter(l => l.trim()).map(line => {
+    const m = line.match(/^`(\d{1,2}:\d{2})`\s*(.*)$/);
+    const ts = m ? m[1] : '';
+    const body = m ? m[2] : line;
+    let kind = 'note';
+    if (/^STATUS\s*\(/i.test(body)) kind = 'status';
+    else if (/^status:\s/i.test(body)) kind = 'transition';
+    else if (/^commit\s/i.test(body)) kind = 'commit';
+    else if (/^claimed by/i.test(body)) kind = 'claim';
+    else if (/^status requested/i.test(body)) kind = 'request';
+    else if (/EVICTED-DEPENDENCY|FORCED/i.test(body)) kind = 'warn';
+    else if (/^(decision|answered)/i.test(body)) kind = 'decision';
+    return { ts, body, kind };
+  });
+}
+const _BD_KIND_ICON = { status:'\uD83D\uDCCD', transition:'\u2192', commit:'\u2318', claim:'\u270B',
+  request:'\uD83D\uDCAC', decision:'\u2713', warn:'\u26A0', note:'\u00B7' };
+const _BD_KIND_COL = { status:'var(--accent)', transition:'var(--fg)', commit:'var(--green)',
+  claim:'#d29922', request:'var(--accent)', decision:'var(--green)', warn:'var(--red)', note:'var(--dim)' };
+function _bdRenderHistory(item) {
+  const el = document.getElementById('bd-log');
+  const nb = document.getElementById('bd-hist-n');
+  const evs = _bdParseHistory(item.log);
+  if (nb) nb.textContent = evs.length ? ' ' + evs.length : '';
+  if (!el) return;
+  el.innerHTML = evs.length
+    ? '<div class="bd-hist">' + evs.slice().reverse().map(e =>
+        '<div class="bd-hist-row bd-hist-' + e.kind + '">'
+        + '<span class="bd-hist-ic" style="color:' + (_BD_KIND_COL[e.kind] || 'var(--dim)') + '">' + (_BD_KIND_ICON[e.kind] || '\u00B7') + '</span>'
+        + '<div class="bd-hist-b"><span class="bd-hist-txt">' + _linkifyCardIds(esc(e.body)) + '</span>'
+        + (e.ts ? '<span class="bd-hist-ts">' + esc(e.ts) + '</span>' : '') + '</div></div>').join('')
+      + '</div>'
+    : '<div style="color:var(--dim);font-size:0.85rem;padding:18px;text-align:center;">No activity recorded yet.</div>';
+}
+function _bdRenderStatusBanner(item) {
+  const el = document.getElementById('bd-status-banner');
+  if (!el) return;
+  const evs = _bdParseHistory(item.log).filter(e => e.kind === 'status');
+  const sess = item.session || '';
+  if (evs.length) {
+    const last = evs[evs.length - 1];
+    el.style.display = '';
+    el.innerHTML = '<div class="bd-sb-label">\uD83D\uDCCD Latest status'
+      + (last.ts ? ' \u00B7 ' + esc(last.ts) : '') + '</div>'
+      + '<div class="bd-sb-text">' + _linkifyCardIds(esc(last.body.replace(/^STATUS\s*\([^)]*\):\s*/i, ''))) + '</div>'
+      + (sess ? '<button class="btn" style="margin-top:8px;font-size:0.74rem;min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
+  } else if (sess) {
+    el.style.display = '';
+    el.innerHTML = '<div class="bd-sb-empty">No status posted yet.'
+      + ' <button class="btn" style="font-size:0.74rem;min-height:36px;margin-left:6px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDCAC Ask ' + esc(sess) + '</button></div>';
+  } else { el.style.display = 'none'; }
+}
+function _bdCopyLink() {
+  if (!boardDetailId) return;
+  const url = location.origin + location.pathname + '#issue=' + encodeURIComponent(boardDetailId);
+  try { navigator.clipboard.writeText(url); showToast('Link copied: ' + boardDetailId); }
+  catch (e) { showToast(url); }
+}
+
 function boardDetailTab(tab) {
   const editBtn = document.getElementById('bd-tab-edit');
   const previewBtn = document.getElementById('bd-tab-preview');
+  const histBtn = document.getElementById('bd-tab-history');
   const desc = document.getElementById('bd-desc');
   const preview = document.getElementById('bd-preview');
+  const log = document.getElementById('bd-log');
   if (!editBtn || !previewBtn || !desc || !preview) return;
+  [editBtn, previewBtn, histBtn].forEach(bt => bt && bt.classList.remove('active'));
+  if (tab === 'history') {
+    if (histBtn) histBtn.classList.add('active');
+    desc.style.display = 'none'; preview.style.display = 'none';
+    if (log) log.style.display = '';
+    return;
+  }
+  if (log) log.style.display = 'none';
   if (tab === 'preview') {
     editBtn.classList.remove('active');
     previewBtn.classList.add('active');
@@ -40776,8 +45061,10 @@ function closeBoardDetail() {
       // Only save draft if something actually differs from saved state
       if (t !== (item.title || '') || d !== (item.desc || '') || s !== (item.session || '') || st !== (item.status || 'todo') || due !== (item.due || '') || due_time !== (item.due_time || '')) {
         _boardDrafts[boardDetailId] = { title: t, desc: d, session: s, status: st, due, due_time };
+        _boardDraftsPersist();
       } else {
         delete _boardDrafts[boardDetailId];
+        _boardDraftsPersist();
       }
     }
   }
@@ -41787,9 +46074,30 @@ function exitGridMode() {
 function _renderGridChips() {
   const el = document.getElementById('grid-chips');
   if (!el) return;
-  el.innerHTML = (sessions || []).map(s => {
-    const on = !!_gridPanes[s.name];
-    return '<button class="gp-chip' + (on ? ' on' : '') + '" onclick="toggleGridPane(\'' + s.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">' + esc(s.name) + '</button>';
+  // Was: every entry in `sessions`, unfiltered and unsorted — 101 chips, 49 of
+  // them for sessions that are NOT running. Tapping one of those opens a dead
+  // pane, and with no ordering the row reshuffled as activity changed, so the
+  // chip you wanted moved between visits.
+  //
+  // Show what can actually be paned: running sessions, plus any session you
+  // already have open (a pane whose session stopped must stay closable from
+  // here). Order is deliberate and stable — open panes first, then working,
+  // then needs-input, then by most recent activity.
+  const open = _gridPanes || {};
+  const rank = s => (open[s.name] ? 0 : s.status === 'active' ? 1 : s.status === 'waiting' ? 2 : 3);
+  const list = (sessions || [])
+    .filter(s => s.running || open[s.name])
+    .sort((a, b) => rank(a) - rank(b)
+                 || (b.last_activity || 0) - (a.last_activity || 0)
+                 || a.name.localeCompare(b.name));
+  el.innerHTML = list.map(s => {
+    const on = !!open[s.name];
+    const dead = !s.running && on;   // pane open but the session went away
+    const esc_ = s.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    const title = dead ? ' title="Session is not running — pane is stale"'
+                       : (s.status ? ' title="' + esc(s.status) + '"' : '');
+    return '<button class="gp-chip' + (on ? ' on' : '') + (dead ? ' gp-dead' : '') + '"'
+      + title + ' onclick="toggleGridPane(\'' + esc_ + '\')">' + esc(s.name) + '</button>';
   }).join('');
 }
 
@@ -41880,7 +46188,6 @@ function _gridRestoreLayout() {
       if (!item.id) return;
       const notePath = _notePathFromId(item.id);
       if (notePath) {
-        wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
       } else if (item.id.startsWith('ws-term:')) {
         wsAddTermPane(item.x, item.y, item.w, item.h, item.id);
       } else if ((sessions || []).find(s => s.name === item.id)) {
@@ -41960,7 +46267,6 @@ function wsClearWorkspace() {
   Object.keys(_gridPanes).slice().forEach(n => removeGridPane(n));
   Object.keys(_notePanes).slice().forEach(nid => {
     const path = _notePathFromId(nid);
-    if (path) wsRemoveNotePane(path);
   });
   Object.keys(_wsTerm).slice().forEach(pid => wsRemoveTermPane(pid));
 }
@@ -41971,13 +46277,11 @@ function wsLoadProfile(name) {
   if (!layout) return;
   // Clear current panes (sessions + notes)
   Object.keys(_gridPanes).forEach(n => removeGridPane(n));
-  Object.keys(_notePanes).slice().forEach(nid => { const p = _notePathFromId(nid); if (p) wsRemoveNotePane(p); });
   // Load profile panes
   layout.forEach(item => {
     if (!item.id) return;
     const notePath = _notePathFromId(item.id);
     if (notePath) {
-      wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
     } else if (item.id.startsWith('ws-term:')) {
       wsAddTermPane(item.x, item.y, item.w, item.h, item.id);
     } else if ((sessions || []).find(s => s.name === item.id)) {
@@ -42121,168 +46425,19 @@ function _noteIdFromPath(path) {
   return 'note:' + path;
 }
 
-function _notePathFromId(id) {
-  return id.startsWith('note:') ? id.slice(5) : null;
-}
 
-async function wsToggleNoteMenu() {
-  const menu = document.getElementById('ws-note-menu');
-  if (menu.classList.contains('open')) { menu.classList.remove('open'); return; }
-  // Fetch notes list
-  let notes = [];
-  try {
-    notes = await fetch(API + '/api/notes').then(r => r.json());
-  } catch(e) {
-    // Try cache
-    try { notes = JSON.parse(localStorage.getItem('amux_notes_cache') || '[]'); } catch(e2) {}
-  }
-  let html = '<button class="ws-note-menu-new" onclick="wsAddNewNotePane()">+ New note</button>';
-  notes.forEach(n => {
-    const p = n.path || n.name;
-    const title = n.name || p.replace(/\.md$/, '').split('/').pop();
-    const nid = _noteIdFromPath(p);
-    const already = !!_notePanes[nid];
-    html += '<button onclick="wsAddNotePane(\'' + p.replace(/'/g, "\\'") + '\')"' +
-      (already ? ' style="opacity:0.4;" disabled' : '') + '>' + esc(title) + '</button>';
-  });
-  menu.innerHTML = html;
-  menu.classList.add('open');
-  // Close on outside click
-  setTimeout(() => document.addEventListener('click', _wsCloseNoteMenu, { once: true }), 0);
-}
 
 function _wsCloseNoteMenu(e) {
   const menu = document.getElementById('ws-note-menu');
   if (menu) menu.classList.remove('open');
 }
 
-async function wsAddNewNotePane() {
-  document.getElementById('ws-note-menu')?.classList.remove('open');
-  // Create a new note via API
-  const ts = Date.now();
-  const slug = 'note-' + ts;
-  try {
-    await fetch(API + '/api/notes/' + slug, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ content: '# Untitled\n' })
-    });
-  } catch(e) {}
-  wsAddNotePane(slug + '.md');
-}
 
-function wsAddNotePane(path, x, y, w, h) {
-  if (!_grid) return;
-  const nid = _noteIdFromPath(path);
-  if (_notePanes[nid]) return;
-  const sid = _gpSafeId(nid);
-  const title = path.replace(/\.md$/, '').split('/').pop();
-  const safePath = path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
-  const content =
-    '<div class="gp-header" style="background:var(--card);">' +
-      '<span style="font-size:0.75rem;margin-right:4px;">&#x1F4DD;</span>' +
-      '<span class="gp-title" id="' + sid + '-title">' + esc(title) + '</span>' +
-      _gpSizeButtons() +
-      '<button class="gp-peek-btn" onclick="wsOpenNoteInTab(\'' + safePath + '\');event.stopPropagation();" title="Open in Notes tab">&#x2197;</button>' +
-      '<button class="gp-close" onclick="wsRemoveNotePane(\'' + safePath + '\')">&#x2715;</button>' +
-    '</div>' +
-    '<div class="gp-note-body" id="' + sid + '-body">' +
-      '<textarea id="' + sid + '-editor" class="notes-editor-textarea" style="width:100%;height:100%;border:none;outline:none;resize:none;background:var(--bg);color:var(--text);font-family:\'SF Mono\',\'Fira Code\',\'Consolas\',monospace;font-size:0.85rem;line-height:1.6;padding:8px 12px;" placeholder="Write your note…"></textarea>' +
-    '</div>' +
-    '<div class="gp-note-status" id="' + sid + '-status"></div>';
 
-  const widget = _grid.addWidget({ id: nid, x, y, w: w || 4, h: h || 7, content });
-  _notePanes[nid] = { widget, path, saveTimer: null };
 
-  setTimeout(() => _initNotePaneQuill(nid), 50);
-  _gridSaveLayout();
-}
 
-function _initNotePaneQuill(nid) {
-  const pane = _notePanes[nid];
-  if (!pane) return;
-  const sid = _gpSafeId(nid);
-  const editorEl = document.getElementById(sid + '-editor');
-  if (!editorEl) return;
-  _loadNotePaneContent(nid);
-  editorEl.addEventListener('input', () => {
-    const h1m = editorEl.value.match(/^#\s+(.+)$/m);
-    if (h1m) {
-      const titleEl = document.getElementById(sid + '-title');
-      if (titleEl) titleEl.textContent = h1m[1] || 'Untitled';
-    }
-    if (pane.saveTimer) clearTimeout(pane.saveTimer);
-    pane.saveTimer = setTimeout(() => _saveNotePaneContent(nid), 800);
-  });
-}
 
-async function _loadNotePaneContent(nid) {
-  const pane = _notePanes[nid];
-  if (!pane) return;
-  const sid = _gpSafeId(nid);
-  const statusEl = document.getElementById(sid + '-status');
-  const editorEl = document.getElementById(sid + '-editor');
-  if (!editorEl) return;
-  const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-
-  let data;
-  try {
-    data = await fetch(API + '/api/notes/' + pathKey).then(r => r.json());
-    _idb.set('amux_note_' + pane.path, JSON.stringify(data));
-  } catch(e) {
-    try {
-      const cached = await _idb.get('amux_note_' + pane.path);
-      if (cached) data = JSON.parse(cached);
-    } catch(e2) {}
-  }
-  if (!data) { if (statusEl) statusEl.textContent = 'Could not load note'; return; }
-
-  editorEl.value = data.content || '';
-  const h1m = (data.content || '').match(/^#\s+(.+)$/m);
-  if (h1m) {
-    const titleEl = document.getElementById(sid + '-title');
-    if (titleEl) titleEl.textContent = h1m[1] || 'Untitled';
-  }
-}
-
-async function _saveNotePaneContent(nid) {
-  const pane = _notePanes[nid];
-  if (!pane) return;
-  const sid = _gpSafeId(nid);
-  const statusEl = document.getElementById(sid + '-status');
-  const editorEl = document.getElementById(sid + '-editor');
-  if (!editorEl) return;
-  const content = editorEl.value;
-  const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-
-  const result = await apiCall(API + '/api/notes/' + pathKey, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content })
-  });
-  if (statusEl) {
-    statusEl.textContent = result ? '\u2713 Saved' : 'Queued';
-    setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 1500);
-  }
-  // Update IDB cache
-  _idb.set('amux_note_' + pane.path, JSON.stringify({ path: pane.path, content }));
-}
-
-function wsRemoveNotePane(path) {
-  const nid = _noteIdFromPath(path);
-  const pane = _notePanes[nid];
-  if (!pane || !_grid) return;
-  // Flush pending save
-  if (pane.saveTimer) { clearTimeout(pane.saveTimer); _saveNotePaneContent(nid); }
-  try { _grid.removeWidget(pane.widget); } catch(e) {}
-  delete _notePanes[nid];
-  _gridSaveLayout();
-}
-
-function wsOpenNoteInTab(path) {
-  // Switch to notes tab and open this note
-  switchView('notes');
-  setTimeout(() => _notesOpen(path), 200);
-}
 
 // ── Workspace Terminal Panes ───────────────────────────────────────────────────
 let _wsTerm = {}; // pid → {widget, term, fit, poll, ptyId}
@@ -42344,10 +46499,13 @@ function _wsTermSetupHandlers(pid) {
   });
   p.term.onResize(({ cols, rows }) => {
     if (!p.ptyId) return;
-    fetch(API + '/api/terminal/' + p.ptyId + '/resize', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cols, rows }),
-    }).catch(() => {});
+    clearTimeout(p._resizeTimer);
+    p._resizeTimer = setTimeout(() => {
+      fetch(API + '/api/terminal/' + p.ptyId + '/resize', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cols, rows }),
+      }).catch(() => {});
+    }, 150);
   });
 }
 
@@ -42506,9 +46664,9 @@ function gpSendKeydown(name, e) {
     const hasSelection = inp && inp.selectionStart !== inp.selectionEnd;
     if (!hasSelection) { e.preventDefault(); gpDoKeys(name, 'C-c'); }
   } else if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) {
-    e.preventDefault(); cmdHistoryUp(inp);
+    e.preventDefault(); cmdHistoryUp(inp, name);
   } else if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) {
-    e.preventDefault(); cmdHistoryDown(inp);
+    e.preventDefault(); cmdHistoryDown(inp, name);
   }
 }
 
@@ -42871,7 +47029,6 @@ function connectSSE() {
           if (key === 'notes') {
             if (activeView === 'notes') { _notesLoad(); _notesReloadActive(); }
             else _notesDirty = true;
-            _pinnedNotesRefresh();
           } else if (key === 'crm') {
             if (activeView === 'crm') _crmLoad();
             else _crmDirty = true;
@@ -43074,6 +47231,19 @@ async function _swOfferGoodOrigin() {
   const attach = () => document.body && document.body.appendChild(bar);
   if (document.body) attach(); else document.addEventListener('DOMContentLoaded', attach);
 }
+
+// Ask for durable storage as early as possible. The localStorage HTML fallback
+// below guards against the SW cache being evicted, but localStorage is evicted
+// by the same sweep — on iOS both go after ~7 days without a visit, taking the
+// queued messages and peek scrollback with them. persist() is the only thing
+// that actually exempts the origin, and it is free to call on every load.
+// Declared HERE, above the call: these are top-level `let`s, so leaving them
+// beside their functions further down put this call in the temporal dead zone —
+// it threw ReferenceError inside an async fn, which becomes a silently swallowed
+// unhandled rejection, and the startup request never actually ran.
+let _storagePersisted = null;      // null = not asked yet
+let _storageEstimate = null;       // {usage, quota} from the browser, not our cap
+_storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(reg => {
@@ -43814,6 +47984,29 @@ async function _offlineBudgetEnforce() {
   _offlineInfoRefresh();
 }
 // Byte formatting uses the shared _fmtBytes defined below.
+// Browsers evict IndexedDB + Cache Storage on their own schedule unless the
+// origin is marked PERSISTENT. iOS clears a non-persistent origin after ~7 days
+// without a visit, and Chrome drops "best-effort" origins under storage
+// pressure. Either one silently takes the queued messages and the peek
+// scrollback with it — the cache looks fine right up until the restart where it
+// is gone. Ask once, cache the answer, and report it honestly rather than
+// assuming the request was granted.
+async function _storagePersistEnsure() {
+  try {
+    if (!navigator.storage || !navigator.storage.persist) { _storagePersisted = false; return false; }
+    _storagePersisted = await navigator.storage.persisted()
+      ? true
+      : await navigator.storage.persist();
+    return _storagePersisted;
+  } catch (e) { _storagePersisted = false; return false; }
+}
+async function _storageEstimateRefresh() {
+  try {
+    if (navigator.storage && navigator.storage.estimate) _storageEstimate = await navigator.storage.estimate();
+  } catch (e) { _storageEstimate = null; }
+  return _storageEstimate;
+}
+
 async function _offlineInfoRefresh() {
   const el = document.getElementById('offline-cache-info');
   if (!el) return;
@@ -43833,15 +48026,168 @@ async function _offlineInfoRefresh() {
   const filesTxt = fc.count
     ? `${fc.count} file${fc.count === 1 ? '' : 's'} · ${_fmtBytes(fc.bytes)}`
     : 'no files yet — files you open are saved automatically';
+  // Our MB cap is a soft budget; the BROWSER's quota is the hard one. Showing
+  // only ours would read as "you have 500 MB" on a device that will hand out 50.
+  if (_storagePersisted === null) await _storagePersistEnsure();
+  await _storageEstimateRefresh();
+  let durability;
+  if (_storagePersisted) {
+    durability = `<span style="color:var(--green,#4ade80);">&#x1F512; Protected from eviction</span>`
+               + ` — survives restarts and idle time.`;
+  } else {
+    durability = `<span style="color:var(--yellow,#d29922);">&#x26A0; Best-effort storage</span>`
+               + ` — the browser may clear this when idle or low on space`
+               + (window.matchMedia('(display-mode: standalone)').matches
+                   ? `.` : `. Add amux to your Home Screen to make it durable.`);
+  }
+  const quota = _storageEstimate && _storageEstimate.quota
+    ? `<br>Browser grant: ${_fmtBytes(_storageEstimate.usage || 0)} of ${_fmtBytes(_storageEstimate.quota)}`
+    : '';
   el.innerHTML =
     `<b>${n}</b> of ${running} running sessions saved (${_fmtBytes(kb * 1024)})<br>`
     + `Files: ${filesTxt}<br>`
     + `<span style="display:inline-block;width:100%;height:4px;background:rgba(139,148,158,0.25);border-radius:2px;margin:4px 0;">`
     + `<span style="display:block;width:${pct}%;height:100%;background:${pct>90?'#f85149':'var(--accent)'};border-radius:2px;"></span></span>`
-    + `${_fmtBytes(totalBytes)} of ${_offlineMB} MB used (${pct}%). Oldest-opened evicted first.`;
+    + `${_fmtBytes(totalBytes)} of ${_offlineMB} MB used (${pct}%). Oldest-opened evicted first.`
+    + quota
+    + `<br>${durability}`;
 }
 // Settings controls for the offline caps. Both persist to /api/prefs, so the
 // limits follow you to every device instead of each phone keeping its own.
+// ── MCP tab ────────────────────────────────────────────────────────────────
+// The list leads with READY vs missing-credentials, not with the server name.
+// "Configured" was never the useful fact: six servers sat in mcp.json for
+// months while four of them could not authenticate and one was reaching no
+// session at all, and nothing in the UI would have told you.
+let _mcpData = null;
+async function _mcpRefresh() {
+  const list = document.getElementById('mcp-list');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--dim);font-size:0.82rem;">Loading…</div>';
+  try {
+    const r = await fetch(API + '/api/mcp');
+    _mcpData = await r.json();
+  } catch (e) {
+    list.innerHTML = '<div style="color:var(--red);font-size:0.82rem;">Could not read the registry.</div>';
+    return;
+  }
+  const d = _mcpData || {};
+  if (d.error) {
+    list.innerHTML = '<div style="color:var(--red);font-size:0.82rem;">' + esc(d.error) + '</div>';
+    return;
+  }
+  const servers = d.servers || [];
+  const ready = servers.filter(s => s.ready).length;
+  const sub = document.getElementById('mcp-sub');
+  if (sub) sub.textContent = servers.length
+    ? `${ready} of ${servers.length} ready · every session gets these unless CC_MCP=off`
+    : 'No servers configured.';
+  list.innerHTML = servers.map(s => {
+    const badge = s.ready
+      ? '<span style="color:var(--green,#4ade80);font-size:0.7rem;">&#x25CF; ready</span>'
+      : '<span style="color:var(--yellow,#d29922);font-size:0.7rem;">&#x25CF; needs credentials</span>';
+    const miss = s.missing && s.missing.length
+      ? `<div style="font-size:0.7rem;color:var(--yellow,#d29922);margin-top:3px;">missing: ${esc(s.missing.join(', '))} — add to ${esc(d.env_file || 'amux.env')}</div>`
+      : '';
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:2px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <strong style="font-size:0.85rem;">${esc(s.name)}</strong>
+        <span style="font-size:0.68rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:0 4px;">${esc(s.type)}</span>
+        ${badge}
+        <span style="flex:1;"></span>
+        <button class="btn" style="min-height:44px;min-width:44px;font-size:0.72rem;" onclick="_mcpDelete('${esc(s.name)}')">Remove</button>
+      </div>
+      <div style="font-size:0.72rem;color:var(--dim);word-break:break-all;">${esc(s.url || s.command || '')}</div>
+      ${miss}
+    </div>`;
+  }).join('') || '<div style="color:var(--dim);font-size:0.82rem;">No servers yet — Import one to get started.</div>';
+  const envEl = document.getElementById('mcp-env');
+  if (envEl) {
+    envEl.innerHTML = `Credentials file: <code>${esc(d.env_file || '')}</code> `
+      + (d.env_exists ? `(${(d.env_keys || []).length} key${(d.env_keys||[]).length===1?'':'s'} defined)` : '<b>not created</b>')
+      + `<br>Registry: <code>${esc(d.path || '')}</code>`
+      + `<br><span style="opacity:0.8;">Running sessions keep the registry they started with — restart a session to pick up changes.</span>`;
+  }
+}
+async function _mcpImport() {
+  // Accepts a single {"name":{...}} or a full {"mcpServers":{...}} blob, because
+  // that is what people actually have on the clipboard from a server's README.
+  showFormModal('Import MCP server',
+    `<div style="font-size:0.78rem;color:var(--dim);margin-bottom:6px;">Paste a server config. Either <code>{"mcpServers":{...}}</code> or a single <code>{"name":{...}}</code>.</div>
+     <textarea id="mcp-json" class="send-input" rows="8" spellcheck="false"
+       style="width:100%;font-family:'SF Mono',monospace;font-size:0.76rem;"
+       placeholder='{"mcpServers":{"deepwiki":{"type":"http","url":"https://mcp.deepwiki.com/mcp"}}}'></textarea>`,
+    'Import', async () => {
+      const raw = (document.getElementById('mcp-json') || {}).value || '';
+      let parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (e) { showToast('Not valid JSON: ' + e.message); return false; }
+      const r = await fetch(API + '/api/mcp', { method: 'POST',
+        headers: {'Content-Type':'application/json'}, body: JSON.stringify({ bulk: parsed }) });
+      const d = await r.json();
+      if (d.error) { showToast(d.error); return false; }
+      showToast('Imported: ' + (d.added || []).join(', '));
+      _mcpRefresh();
+    });
+}
+async function _mcpDelete(name) {
+  if (!confirm('Remove MCP server "' + name + '" from the registry?')) return;
+  const r = await fetch(API + '/api/mcp/' + encodeURIComponent(name), { method: 'DELETE' });
+  const d = await r.json();
+  if (d.error) { showToast(d.error); return; }
+  showToast('Removed ' + name);
+  _mcpRefresh();
+}
+
+// Icon-only tabs. Persisted to /api/prefs rather than localStorage so the
+// choice follows you to the phone, where the space actually matters — a
+// per-device setting would mean setting it again on every client.
+const _TABS_MODES = ['both', 'icons', 'text'];
+const _TABS_LABEL = { both: 'Icons and text', icons: 'Icons only', text: 'Text only' };
+let _tabsDisplay = 'both';
+function _tabsDisplayApply() {
+  document.body.classList.toggle('tabs-icons', _tabsDisplay === 'icons');
+  document.body.classList.toggle('tabs-text',  _tabsDisplay === 'text');
+  const sel = document.getElementById('tabs-display-select');
+  if (sel && sel.value !== _tabsDisplay) sel.value = _tabsDisplay;
+  const b = document.getElementById('tabs-icons-toggle');
+  if (b) {
+    // The header button cycles; Settings is the canonical control. Both write
+    // the same pref, so they cannot disagree.
+    b.textContent = _tabsDisplay === 'icons' ? '⇲' : _tabsDisplay === 'text' ? 'A' : '⇱';
+    b.title = 'Tabs: ' + _TABS_LABEL[_tabsDisplay] + ' (click to cycle)';
+  }
+}
+async function _tabsDisplayLoad() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=tabs_display');
+    const d = await r.json();
+    let v = String((d && d.value) || '');
+    // Migrate the earlier boolean pref rather than silently resetting anyone
+    // who had already chosen icons-only.
+    if (!_TABS_MODES.includes(v)) {
+      const old = await (await fetch(API + '/api/prefs?key=tabs_icons_only')).json().catch(() => ({}));
+      v = String((old && old.value) || '') === '1' ? 'icons' : 'both';
+    }
+    _tabsDisplay = _TABS_MODES.includes(v) ? v : 'both';
+  } catch (e) { _tabsDisplay = 'both'; }
+  _tabsDisplayApply();
+}
+async function _tabsDisplaySet(mode) {
+  _tabsDisplay = _TABS_MODES.includes(mode) ? mode : 'both';
+  _tabsDisplayApply();
+  try {
+    await fetch(API + '/api/prefs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'tabs_display', value: _tabsDisplay }) });
+  } catch (e) {}
+  if (typeof showToast === 'function') showToast('Tabs: ' + _TABS_LABEL[_tabsDisplay]);
+}
+function toggleTabsIcons() {   // header button: cycle both -> icons -> text
+  _tabsDisplaySet(_TABS_MODES[(_TABS_MODES.indexOf(_tabsDisplay) + 1) % _TABS_MODES.length]);
+}
+if (document.body) _tabsDisplayLoad();
+else document.addEventListener('DOMContentLoaded', _tabsDisplayLoad);
+
 function _offlineSettingsHTML() {
   const mb = _OFFLINE_MB_CHOICES.map(v =>
     `<option value="${v}"${v === _offlineMB ? ' selected' : ''}>${v >= 1000 ? (v/1000)+' GB' : v+' MB'}</option>`).join('');
@@ -43895,7 +48241,6 @@ function toggleSettings() {
     // Render connections
     _renderInstanceSwitcher();
     // Populate the notes-folder row
-    _notesLoadSource();
     loadCommitGuard();
     loadTaskGuard();
     loadAlertConfig();
@@ -44449,6 +48794,44 @@ async function _handleDeeplink(hash) {
     tryOpen(0);
     return;
   }
+  // #menu=<session>[&scroll=N] — open a session card's ⋯ menu directly. Rig
+  // deeplink like #peek= above (AMUX-1731): the menu detaches on iPhone, the
+  // geometry beacon lives in toggleMenu, and a real-WebKit reproduction needs
+  // to drive the SHIPPED function without tap automation. scroll=N scrolls
+  // the list first so scrolled-state geometry is what gets measured.
+  if (hash && hash.startsWith('#menu=')) {
+    const raw = hash.slice(6);
+    const amp = raw.indexOf('&');
+    const target = decodeURIComponent(amp < 0 ? raw : raw.slice(0, amp));
+    let scrollN = 0;
+    if (amp >= 0) { const m = raw.slice(amp + 1).match(/(?:^|&)scroll=(\d+)/); if (m) scrollN = parseInt(m[1]); }
+    const tryMenu = (attempt) => {
+      const el = document.getElementById('menu-' + target);
+      if (el) {
+        if (scrollN) window.scrollTo(0, scrollN);
+        setTimeout(() => { try { toggleMenu(target); } catch(e) {} }, 250);
+        return;
+      }
+      if (attempt < 20) setTimeout(() => tryMenu(attempt + 1), 400);
+    };
+    tryMenu(0);
+    return;
+  }
+  // #issue=<id> — open a board card directly from anywhere (AMUX-2165), the
+  // shareable twin of the task-label id chip.
+  if (hash && hash.startsWith('#issue=')) {
+    const id = decodeURIComponent(hash.slice(7));
+    const tryOpen = (attempt) => {
+      if (typeof boardItems !== 'undefined' && boardItems.some(i => i.id === id)) {
+        switchView('board');
+        setTimeout(() => { try { openBoardDetail(id); } catch (e) {} }, 250);
+        return;
+      }
+      if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
+    };
+    tryOpen(0);
+    return;
+  }
   let dpath = null;
   if (hash && hash.startsWith('#path=')) {
     dpath = decodeURIComponent(hash.slice(6));
@@ -44506,7 +48889,6 @@ function _restoreScreen() {
     } catch(e) {}
   }
   if (_ps && _ps.session) {
-    if (_ps.draft) _peekDrafts[_ps.session] = _ps.draft;   // rescued from pre-update reload
     setTimeout(() => {
       openPeek(_ps.session);
       if (_ps.split && window.innerWidth > 600) {
@@ -45193,6 +49575,149 @@ function _costRender(d, opts) {
   html += `<div style="font-size:0.68rem;color:var(--dim);margin-top:14px;line-height:1.5;">Cost is the equivalent per-token API price (from ~/.amux/prices.json) applied to every turn amux read from the transcripts \u2014 mostly cache reads of large contexts. Attributed to a task while its board card was <b>In&nbsp;Progress</b> for that session; the rest is \u201CAmbient\u201D. No model was asked anything to compute this.</div>`;
   return html;
 }
+// ── Messages > Trends (AMUX-2179 relocated) ────────────────────────────────
+// The theme/trend synthesis of what YOU have been tasking amux, over N days,
+// with evidence (your messages), session linkage, and the board issues each
+// became. Lives in the Messages tab because that is where your directives are.
+let _msgMode = 'messages';
+let _trendsWeek = null;
+let _trendsExpanded = {};
+const _TREND_THEMES = [
+  { key: 'board', label: 'Board / workflow', re: /board|issue|card|kanban|linear|needs.?you|focus|status|review tab|history|filter/i },
+  { key: 'homepage', label: 'Homepage / GTM site', re: /homepage|page|mxp\.co|cta|traffic|posthog|amux\.io|guide|landing/i },
+  { key: 'infra', label: 'Infra / utilization', re: /gcp|cluster|utiliz|adaptive|latency|\bray\b|tune|resource|scale|sla/i },
+  { key: 'cost', label: 'Cost / billing', re: /bill|cost|token|budget|pric|arrears|credit|revenue|projection/i },
+  { key: 'browser', label: 'Browser / profiles', re: /browser|profile|sign.?in|chrome|playwright|outbound/i },
+  { key: 'creative', label: 'Creative-DNA / campaigns', re: /creative dna|campaign|linkedin|social|signal app|carousel|ad\b|ads\b|face/i },
+  { key: 'poc', label: 'POCs / demos', re: /pluralsight|plural site|canvas|universal extractor|capital express|wexus|prospect|demo/i },
+];
+function _msgSetMode(mode) {
+  _msgMode = mode;
+  document.getElementById('msgmode-messages')?.classList.toggle('active', mode === 'messages');
+  document.getElementById('msgmode-trends')?.classList.toggle('active', mode === 'trends');
+  const isT = mode === 'trends';
+  ['msgs-controls','msgs-kind-filter','msgs-list'].forEach(id => { const e=document.getElementById(id); if(e) e.style.display = isT ? 'none' : ''; });
+  const tv = document.getElementById('trends-view'); if (tv) tv.style.display = isT ? '' : 'none';
+  const td = document.getElementById('trends-days'); if (td) td.style.display = isT ? '' : 'none';
+  if (isT) _trendsLoad();
+}
+async function _trendsLoad() {
+  const days = document.getElementById('trends-days')?.value || '7';
+  try {
+    if (!Array.isArray(boardItems) || !boardItems.length) { try { await fetchBoard(); } catch(e){} }
+    if (!Array.isArray(_cmdHistory) || !_cmdHistory.length) { try { await _loadCmdHistoryFromServer(); } catch(e){} }
+    _trendsWeek = await fetch(API + '/api/review/week?days=' + days).then(r => r.json()).catch(() => null);
+    _trendsRender();
+  } catch (e) {
+    const b = document.getElementById('trends-body'); if (b) b.innerHTML = '<div style="color:var(--red);padding:20px;">Could not load trends.</div>';
+  }
+}
+function _trendsRender() {
+  const totalsEl = document.getElementById('trends-totals');
+  const bodyEl = document.getElementById('trends-body');
+  const days = +(document.getElementById('trends-days')?.value || 7);
+  const since = Date.now() - days * 86400 * 1000;
+  // Your human messages in the window (evidence).
+  const humans = (_cmdHistory || []).filter(m => (m.time || m.ts) >= since && _msgKind(m) === 'human' && (m.text||'').replace(/^\[.*?\]\s*/,'').trim().length > 12);
+  const byId = {}; (boardItems||[]).forEach(i => byId[i.id] = i);
+  const t = (_trendsWeek && _trendsWeek.totals) || {};
+  const stat = (n, l) => '<div class="rv-stat"><div class="rv-stat-n">' + n + '</div><div class="rv-stat-l">' + l + '</div></div>';
+  if (totalsEl) totalsEl.innerHTML =
+      stat(humans.length, 'your directives')
+    + stat((t.cards_created||0).toLocaleString(), 'cards')
+    + stat((t.cards_verified||0)+' / '+(t.cards_done||0), 'verified / done')
+    + stat((t.tokens||0)>=1e6 ? (t.tokens/1e6).toFixed(1)+'M' : (t.tokens||0).toLocaleString(), 'tokens')
+    + stat('$'+Math.round(t.cost_usd||0).toLocaleString(), 'spend');
+  // Cluster your directives into themes.
+  const themed = _TREND_THEMES.map(th => ({ ...th, msgs: [], sessions: new Set(), cards: new Set() }));
+  const other = { key:'other', label:'Other', msgs:[], sessions:new Set(), cards:new Set() };
+  humans.forEach(m => {
+    const txt = (m.text||'').replace(/^\[.*?\]\s*/,'');
+    let hit = themed.find(th => th.re.test(txt)) || other;
+    hit.msgs.push(m); if (m.session) hit.sessions.add(m.session); if (m.card_id) hit.cards.add(m.card_id);
+  });
+  const groups = themed.concat([other]).filter(g => g.msgs.length).sort((a,b)=>b.msgs.length-a.msgs.length);
+  let html = '';
+  groups.forEach(g => {
+    // Roll up card status for this theme.
+    const cards = [...g.cards].map(id => byId[id]).filter(Boolean);
+    const verified = cards.filter(c => c.status==='verified').length;
+    const done = cards.filter(c => c.status==='done').length;
+    const openC = cards.filter(c => !['done','verified','discarded'].includes(_statusCanon(c.status)));
+    const blocked = openC.filter(c => (c.tags||[]).some(x=>_NEEDS_HUMAN_TAGS.has(String(x).toLowerCase())));
+    const exp = _trendsExpanded[g.key];
+    const inProg = openC.length - blocked.length;
+    // AM I NEEDED: any card blocked-on-you -> a red flag that opens Focus for
+    // exactly this theme's blocked cards; else it's moving on its own.
+    const needYou = blocked.length;
+    html += '<div class="tr-theme' + (needYou ? ' tr-theme-you' : '') + '">'
+      + '<div class="tr-theme-h" onclick="_trendsToggle(\'' + g.key + '\')">'
+      + '<span class="tr-theme-x">' + (exp ? '\u2212' : '+') + '</span>'
+      + '<span class="tr-theme-name">' + esc(g.label) + '</span>'
+      + '<span class="tr-theme-status">'
+        + (verified?('<span class="tr-pill tr-pill-v">' + verified + ' verified</span>'):'')
+        + (done?('<span class="tr-pill tr-pill-d">' + done + ' done</span>'):'')
+        + (inProg>0?('<span class="tr-pill tr-pill-p">' + inProg + ' in progress</span>'):'')
+        + (needYou?('<span class="tr-pill tr-pill-y" onclick="event.stopPropagation();_trendsFocusTheme(\'' + g.key + '\')">\u26A1 ' + needYou + ' need you</span>'):(openC.length===0?'<span class="tr-pill tr-pill-done">\u2713 all closed</span>':''))
+      + '</span></div>'
+      // WHO is responsible — owners inline, no drilling.
+      + '<div class="tr-owners"><span class="tr-owners-l">Owners:</span> ' + ([...g.sessions].slice(0,8).map(sn =>
+          '<span class="tr-sess" onclick="switchView(\'sessions\');setTimeout(()=>openPeek(\'' + escJs(sn) + '\'),150)">' + esc(sn) + '</span>').join('') || '<span style="color:var(--dim)">\u2014</span>')
+      + ' <span class="tr-owners-meta">' + g.msgs.length + ' directives \u00B7 ' + cards.length + ' cards</span></div>';
+    if (exp) {
+      // board issues for this theme
+      if (cards.length) html += '<div class="tr-cards"><div class="tr-sub">Board issues</div>' + cards.slice(0,30).map(c =>
+        '<div class="tr-card" onclick="openBoardDetail(\'' + escJs(c.id) + '\')"><span class="rv-bid">' + esc(c.id) + '</span> <span class="status-badge" style="background:' + statusStyle(c.status).bg + ';color:' + statusStyle(c.status).color + ';font-size:0.66rem;padding:0 5px;border-radius:8px;">' + esc(c.status||'todo') + '</span> ' + esc((c.title||'').slice(0,60)) + '</div>').join('') + '</div>';
+      // evidence: your actual messages
+      html += '<div class="tr-evidence"><div class="tr-sub">What you asked (evidence)</div>' + g.msgs.slice(0,12).map(m => {
+        const txt = (m.text||'').replace(/^\[.*?\]\s*/,'');
+        const link = m.card_id ? ' <span class="rv-bid" onclick="event.stopPropagation();openBoardDetail(\'' + escJs(m.card_id) + '\')">' + esc(m.card_id) + '</span>' : '';
+        return '<div class="tr-msg"><span class="tr-msg-sess">' + esc(m.session||'') + '</span>' + link + '<div class="tr-msg-t">' + _linkifyCardIds(esc(txt.slice(0,220))) + (txt.length>220?'\u2026':'') + '</div></div>';
+      }).join('') + '</div>';
+    }
+    html += '</div>';
+  });
+  if (!groups.length) html = '<div style="color:var(--dim);padding:24px;text-align:center;">No directives in this window.</div>';
+  // LEAD with the recurring weekly task-theme SUMMARY (Ethan: a summary running
+  // every 7 days), with a selector to browse prior weeks; the live theme
+  // clustering above is the current-window evidence beneath it.
+  const summaryTop = '<div id="trends-summary-wrap" style="margin-bottom:16px;">'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">'
+    + '<span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--accent);font-weight:600;">\uD83D\uDCC8 Weekly task-theme summary</span>'
+    + '<select id="trends-week" onchange="_trendsLoadSummary(this.value)" style="font-size:0.76rem;padding:3px 6px;margin-left:auto;"></select></div>'
+    + '<div id="trends-digest" class="rv-digest md-content"><span style="color:var(--dim);">Loading summary\u2026</span></div></div>';
+  const totalNeed = groups.reduce((a,g)=>a + [...g.cards].map(id=>byId[id]).filter(c=>c && (c.tags||[]).some(x=>_NEEDS_HUMAN_TAGS.has(String(x).toLowerCase())) && !['done','verified','discarded'].includes(_statusCanon(c.status))).length, 0);
+  const answerBar = '<div class="tr-answer">'
+    + (totalNeed ? '<span style="color:var(--red);font-weight:600;">\u26A1 ' + totalNeed + ' item(s) need you</span> <button class="btn" style="font-size:0.74rem;min-height:34px;margin-left:6px;" onclick="_focusStart(\'is:blocked\')">Clear them</button>'
+                 : '<span style="color:var(--green);font-weight:600;">\u2713 Nothing needs you — it\'s all moving.</span>')
+    + '</div>';
+  html = summaryTop + answerBar + '<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--dim);font-weight:600;margin:10px 0 6px;">By theme \u00B7 what \u00B7 who \u00B7 status \u00B7 needs-you</div>' + html;
+  if (bodyEl) bodyEl.innerHTML = html;
+  _trendsLoadSummary('');
+}
+function _trendsLoadSummary(file) {
+  fetch(API + '/api/review/digest' + (file ? '?file=' + encodeURIComponent(file) : '')).then(r=>r.json()).then(d => {
+    const sel = document.getElementById('trends-week');
+    if (sel && d.weeks) {
+      sel.innerHTML = d.weeks.map(w => '<option value="' + esc(w.file) + '"' + (w.file===d.file?' selected':'') + '>' + esc(w.file.replace(/\.md$/,'').replace('task-themes-','').replace('2026-','')) + '</option>').join('') || '<option>no summaries yet</option>';
+    }
+    const el = document.getElementById('trends-digest');
+    if (el) el.innerHTML = d.markdown ? renderMarkdown(d.markdown)
+      : '<span style="color:var(--dim);">No weekly summary yet — the Monday job writes one, or it can be generated now.</span>';
+  }).catch(()=>{});
+}
+function _trendsToggle(k) { _trendsExpanded[k] = !_trendsExpanded[k]; _trendsRender(); }
+function _trendsFocusTheme(k) {
+  const th = _TREND_THEMES.find(t => t.key === k);
+  // Focus over this theme's blocked cards specifically.
+  const ids = new Set();
+  (_cmdHistory||[]).forEach(m => { if (m.card_id && (!th || th.re.test((m.text||'')))) ids.add(m.card_id); });
+  _focusQ = 'is:blocked';
+  _focusList = _bqFilter((boardItems||[]).filter(i=>!i.deleted && ids.has(i.id)), 'is:blocked');
+  if (!_focusList.length) { _focusStart('is:blocked'); return; }
+  _focusIdx = 0; document.addEventListener('keydown', _focusKey, true); _focusRender();
+}
+
 function _costLoad() {
   const days = document.getElementById('cost-days')?.value || '7';
   const body = document.getElementById('cost-body');
@@ -45990,6 +50515,7 @@ let _termFit = null;    // FitAddon
 let _termId = null;     // server PTY session id
 let _termPoll = null;   // polling interval
 let _termInited = false;
+let _termResizeTimer = null;
 
 // Make the terminal fill the viewport: body is normal flow (not a full-height
 // flex column), so terminal-view's flex:1 does nothing on its own — pin an
@@ -46025,8 +50551,12 @@ function _termInit() {
   requestAnimationFrame(_termLayout);
   const _tc = document.getElementById('term-container');
   if (_tc && window.ResizeObserver) {
+    let _roTimer;
     new ResizeObserver(() => {
-      if (_term && _termFit && activeView === 'terminal') { try { _termFit.fit(); } catch (e) {} }
+      clearTimeout(_roTimer);
+      _roTimer = setTimeout(() => {
+        if (_term && _termFit && activeView === 'terminal') { try { _termFit.fit(); } catch (e) {} }
+      }, 100);
     }).observe(_tc);
   }
   // Load saved font size
@@ -46161,14 +50691,17 @@ async function _termConnect() {
     }).catch(() => {});
   });
 
-  // Handle resize
+  // Handle resize — debounce to avoid flooding the server during drag/animation
   _term.onResize(({ cols, rows }) => {
     if (!_termId) return;
-    fetch(API + '/api/terminal/' + _termId + '/resize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cols, rows }),
-    }).catch(() => {});
+    clearTimeout(_termResizeTimer);
+    _termResizeTimer = setTimeout(() => {
+      fetch(API + '/api/terminal/' + _termId + '/resize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cols, rows }),
+      }).catch(() => {});
+    }, 150);
   });
 
   // Stream output via long-poll: each request blocks server-side until output
@@ -46225,9 +50758,11 @@ function _termSetFontSize(size) {
 }
 
 // Recompute the terminal's viewport-fill height (and refit xterm) on resize.
+{ let _wrt;
 window.addEventListener('resize', () => {
-  if (activeView === 'terminal') _termLayout();
-});
+  clearTimeout(_wrt);
+  _wrt = setTimeout(() => { if (activeView === 'terminal') _termLayout(); }, 100);
+}); }
 
 // ── Messages tab (global send history across all sessions) ──────────────────
 let _msgsData = [];
@@ -46345,9 +50880,25 @@ function _messagesRender() {
                 : (sessF ? 'No messages for ' + esc(sessF) + '.' : 'No messages yet.')) + '</div>';
     return;
   }
+  // Burst grouping + message→card join (AMUX-2143): you fire clusters
+  // across sessions and lose the thread. A divider marks each burst (>90s
+  // gap), and a human row whose capture stamped card_id gets a live chip:
+  // card id + status now + last attached commit, click-through to the card.
+  const _cardById = {};
+  (typeof boardItems !== 'undefined' ? boardItems : []).forEach(c => { _cardById[c.id] = c; });
+  const _stColor = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
+    : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
+    : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
+  let _prevTs = null;
   list.innerHTML = rows.map(m => {
     const enc = encodeURIComponent(m.text || '').replace(/'/g, '%27');
     const sess = m.session || '';
+    let burst = '';
+    if (_msgsKind === 'human' && _prevTs !== null && (_prevTs - m.ts) > 90000) {
+      burst = '<div style="font-size:0.68rem;color:var(--dim);padding:8px 4px 2px;border-top:1px dashed var(--border);margin-top:4px;">' + _msgsFmtTs(m.ts) + '</div>';
+    }
+    _prevTs = m.ts;
+    const cardChip = _msgCardChip(m.card_id || '');   // one chip definition (AMUX-2153)
     // Was queued-only, so a session or scheduled message carried no marker at
     // all here. Same badge the other two surfaces show.
     const _k = _msgKind(m), _km = _MSG_KIND[_k] || _MSG_KIND.human;
@@ -46355,15 +50906,16 @@ function _messagesRender() {
                                 : (m.origin ? ' \u00B7 ' + esc(String(m.origin).slice(0, 26)) : '');
     const tag = '<span class="msg-tag" style="background:' + _km.bg + ';color:' + _km.color
       + ';font-weight:600;border-left:3px solid ' + _km.color + ';">' + _km.label + _sfx + '</span>';
-    return '<div class="msg-row" onclick="_msgOpenInsert(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open ' + esc(sess) + ' with this message in the composer">' +
+    return burst + '<div class="msg-row" onclick="_msgOpenInsert(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open ' + esc(sess) + ' with this message in the composer">' +
       '<div class="msg-main">' +
         '<div class="msg-meta">' +
           (sess ? '<span class="msg-sess">' + esc(sess) + '</span>' : '<span class="msg-sess" style="color:var(--dim);">(unknown)</span>') +
-          '<span class="msg-ts">' + _msgsFmtTs(m.ts) + '</span>' + tag +
+          '<span class="msg-ts">' + _msgsFmtTs(m.ts) + '</span>' + tag + cardChip +
         '</div>' +
-        '<div class="msg-text">' + esc(m.text || '') + '</div>' +
+        '<div class="msg-text">' + _linkifyCardIds(esc(m.text || '')) + '</div>' +
       '</div>' +
       '<button class="btn msg-copy" onclick="event.stopPropagation();_msgCopyBtn(this,\'' + enc + '\')" title="Copy message text">&#x1F4CB;</button>' +
+      '<button class="btn msg-speak" onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(\'' + enc + '\'),this)" title="Read aloud">&#x1F50A;</button>' +
       '<button class="btn msg-locate" onclick="event.stopPropagation();_msgLocate(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open the peek and scroll to where this was sent">&#x2316; Locate</button>' +
     '</div>';
   }).join('');
@@ -46520,26 +51072,6 @@ async function _sqlRun() {
 let _notesActive = null; // { path, title }
 let _notesTrashOpen = false;
 
-async function _notesTrashLoad() {
-  const r = await fetch(API + '/api/notes/trash');
-  if (!r.ok) return;
-  const items = await r.json();
-  const section = document.getElementById('notes-trash-section');
-  const count = document.getElementById('notes-trash-count');
-  const body = document.getElementById('notes-trash-body');
-  if (!items.length) { section.style.display = 'none'; return; }
-  section.style.display = '';
-  count.textContent = items.length;
-  body.innerHTML = items.map(it => {
-    const dt = it.updated ? new Date(it.updated * 1000).toLocaleDateString() : '';
-    return `<div class="notes-trash-item">
-      <span class="notes-trash-item-name" title="${esc(it.name)}">${esc(it.name)}</span>
-      <span style="font-size:0.68rem;color:var(--dim);margin-right:4px;">${dt}</span>
-      <button class="notes-trash-restore" onclick="_notesTrashRestore('${esc(it.file)}')" title="Restore">Restore</button>
-      <button class="notes-trash-del" onclick="_notesTrashDelete('${esc(it.file)}')" title="Delete permanently">&#x2715;</button>
-    </div>`;
-  }).join('');
-}
 
 function _notesTrashToggle() {
   _notesTrashOpen = !_notesTrashOpen;
@@ -46547,15 +51079,7 @@ function _notesTrashToggle() {
   document.getElementById('notes-trash-body').style.display = _notesTrashOpen ? '' : 'none';
 }
 
-async function _notesTrashRestore(file) {
-  const r = await apiCall(API + '/api/notes/trash/' + encodeURIComponent(file) + '/restore', { method: 'POST' });
-  if (r && r.ok) { await _notesLoad(); await _notesTrashLoad(); }
-}
 
-async function _notesTrashDelete(file) {
-  await apiCall(API + '/api/notes/trash/' + encodeURIComponent(file), { method: 'DELETE' });
-  await _notesTrashLoad();
-}
 let _notesSaveTimer = null;
 let _notesAllNotes = [];
 let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
@@ -46605,34 +51129,6 @@ function _notesPreviewBindTapToEdit(container) {
 }
 
 // Swipe-from-left-edge to open the notes sidebar on mobile (Bear/Apple Notes pattern)
-function _notesBindSwipeGestures() {
-  const view = document.getElementById('notes-view');
-  if (!view || view._swipeBound) return;
-  view._swipeBound = true;
-  let startX = 0, startY = 0, tracking = false;
-  view.addEventListener('touchstart', (e) => {
-    if (window.innerWidth > 600) return;
-    const t = e.touches[0];
-    // Only start tracking if touch begins near left edge OR sidebar is currently open (to close)
-    const sidebar = document.getElementById('notes-sidebar');
-    const sidebarOpen = sidebar && !sidebar.classList.contains('collapsed');
-    if (t.clientX < 24 || sidebarOpen) {
-      startX = t.clientX; startY = t.clientY; tracking = true;
-    }
-  }, { passive: true });
-  view.addEventListener('touchend', (e) => {
-    if (!tracking) return;
-    tracking = false;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - startX;
-    const dy = Math.abs(t.clientY - startY);
-    if (dy > 50) return; // mostly vertical = scroll, ignore
-    const sidebar = document.getElementById('notes-sidebar');
-    const sidebarOpen = sidebar && !sidebar.classList.contains('collapsed');
-    if (dx > 60 && !sidebarOpen) _notesToggleSidebar();
-    else if (dx < -60 && sidebarOpen) _notesToggleSidebar();
-  }, { passive: true });
-}
 
 // ── Teleprompter ──
 let _tp = { running: false, y: 0, wpm: 150, size: 48, mirror: false, lastT: 0, raf: null, toolbarTimer: null };
@@ -46912,115 +51408,12 @@ function _notesPreviewSearchClear() {
   if (countEl) countEl.textContent = '';
 }
 
-function _notesToggleSidebar() {
-  _notesSidebarOpen = !_notesSidebarOpen;
-  localStorage.setItem('amux_notes_sidebar', _notesSidebarOpen ? 'open' : 'closed');
-  _notesApplySidebarState();
-}
 
-function _notesApplySidebarState() {
-  const view = document.getElementById('notes-view');
-  const sidebar = document.getElementById('notes-sidebar');
-  if (!view || !sidebar) return;
-  if (_notesSidebarOpen) {
-    sidebar.classList.remove('collapsed');
-    view.classList.remove('sidebar-collapsed');
-  } else {
-    sidebar.classList.add('collapsed');
-    view.classList.add('sidebar-collapsed');
-  }
-}
 
 let _notesEditorReady = false;
-function _notesInitQuill() {
-  if (_notesEditorReady) return;
-  const editor = _notesGetEditor();
-  if (!editor) return;
-  _notesEditorReady = true;
-  editor.addEventListener('keydown', (e) => {
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const start = editor.selectionStart;
-      const end = editor.selectionEnd;
-      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
-      editor.selectionStart = editor.selectionEnd = start + 2;
-      _notesSaveDebounce();
-    }
-  });
-}
 
 let _notesSourceInfo = null;
-async function _notesLoadSource() {
-  try {
-    const r = await fetch(API + '/api/notes-source');
-    const s = await r.json();
-    _notesSourceInfo = s;
-    const nameEl = document.getElementById('notes-source-name');
-    const ind = document.getElementById('notes-source-indicator');
-    if (nameEl) nameEl.textContent = s.name || s.dir;
-    if (ind) {
-      ind.title = (s.exists ? 'Notes sync folder: ' : 'Folder NOT found: ') + s.dir + ' — click to open Settings';
-      ind.style.color = s.exists ? '' : 'var(--danger, #f85149)';
-    }
-    // Mirror into Settings → Notes section if present
-    const setEl = document.getElementById('settings-notes-dir');
-    if (setEl) setEl.textContent = s.dir;
-    const setStatus = document.getElementById('settings-notes-status');
-    if (setStatus) setStatus.textContent = s.exists ? (s.custom ? 'Custom folder (AMUX_NOTES_DIR)' : 'Default folder') : 'Folder not found';
-  } catch(e) {}
-}
 
-async function _notesLoad() {
-  // SWR: render from cache INSTANTLY (synchronous localStorage), then revalidate
-  const cachedRaw = localStorage.getItem('amux_notes_cache');
-  let cached = null;
-  if (cachedRaw) {
-    try { cached = JSON.parse(cachedRaw); } catch(e) {}
-  }
-  let openedFromCache = false;
-  if (cached && cached.length) {
-    _notesAllNotes = cached;
-    _notesRenderList(_notesAllNotes);
-    // Open last-viewed note immediately from cache (cache-first)
-    if (!_notesActive) {
-      const lastPath = localStorage.getItem('amux_last_note');
-      const lastNote = lastPath && _notesAllNotes.find(n => n.path === lastPath);
-      _notesOpen(lastNote ? lastNote.path : _notesAllNotes[0].path); // fire and forget
-      openedFromCache = true;
-    }
-  }
-  // Revalidate in background
-  let fresh;
-  try {
-    const r = await fetch(API + '/api/notes');
-    fresh = await r.json();
-    localStorage.setItem('amux_notes_cache', JSON.stringify(fresh));
-    _idb.set('amux_notes_cache', JSON.stringify(fresh));
-  } catch(e) {
-    // Offline and no cache — try IDB
-    if (!cached) {
-      const idbVal = await _idb.get('amux_notes_cache').catch(() => null);
-      if (idbVal) { localStorage.setItem('amux_notes_cache', idbVal); fresh = JSON.parse(idbVal); }
-    }
-    if (!fresh && !cached) { _notesShowEmpty(); return; }
-    if (!fresh) return; // already rendered from cache
-  }
-  // Preserve local titles — client may be ahead of server (unsaved debounce)
-  if (_notesAllNotes.length) {
-    const localTitles = new Map(_notesAllNotes.map(n => [n.path, n.name]));
-    for (const n of fresh) { if (localTitles.has(n.path)) n.name = localTitles.get(n.path); }
-  }
-  _notesAllNotes = fresh;
-  _notesRenderList(_notesAllNotes);
-  _notesTrashLoad();
-  if (!_notesActive && _notesAllNotes.length === 0) {
-    _notesShowEmpty();
-  } else if (!_notesActive && !openedFromCache && _notesAllNotes.length > 0) {
-    const lastPath = localStorage.getItem('amux_last_note');
-    const lastNote = lastPath && _notesAllNotes.find(n => n.path === lastPath);
-    await _notesOpen(lastNote ? lastNote.path : _notesAllNotes[0].path);
-  }
-}
 
 let _notesCurrentNotes = [];
 let _notesFolderCreating = false;
@@ -47028,12 +51421,6 @@ let _notesFolderCreating = false;
 function _notesFolderOpen(name) {
   try { return JSON.parse(localStorage.getItem('amux_notes_folders') || '{}')[name] !== false; }
   catch { return true; }
-}
-function _notesFolderToggle(name) {
-  const state = JSON.parse(localStorage.getItem('amux_notes_folders') || '{}');
-  state[name] = !_notesFolderOpen(name);
-  localStorage.setItem('amux_notes_folders', JSON.stringify(state));
-  _notesRenderList(_notesCurrentNotes);
 }
 function _notesFolderSetOpen(name, open) {
   const state = JSON.parse(localStorage.getItem('amux_notes_folders') || '{}');
@@ -47079,7 +51466,6 @@ async function _notesFolderConfirm(name) {
   _notesFolderCreating = false;
   if (!name) { _notesRenderList(_notesCurrentNotes); return; }
   _notesFolderSetOpen(name, true);
-  await _notesNew(name);
 }
 function _notesFolderInputKey(e) {
   if (e.key === 'Enter') { e.preventDefault(); _notesFolderConfirm(e.target.value); }
@@ -47090,7 +51476,6 @@ function _notesFolderInputKey(e) {
 document.addEventListener('keydown', e => {
   if (activeView !== 'notes') return;
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key === 'n' && !e.shiftKey) { e.preventDefault(); _notesNew(); }
   if (mod && e.key === 's') { e.preventDefault(); if (_notesSaveTimer) { clearTimeout(_notesSaveTimer); _notesSaveTimer = null; } _notesSave(); }
   if (mod && e.key === 'p') { e.preventDefault(); _notesQuickOpen(); }
 });
@@ -47099,60 +51484,15 @@ function _notesQuickOpen() {
   const q = prompt('Open note:');
   if (!q) return;
   const match = _notesAllNotes.find(n => n.name.toLowerCase().includes(q.toLowerCase()) || n.path.toLowerCase().includes(q.toLowerCase()));
-  if (match) _notesOpen(match.path);
 }
 
 // ── Notes drag-and-drop ──
 let _notesDraggingPath = null;
 
-function _notesDragStart(e, el) {
-  _notesDraggingPath = el.dataset.path;
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', _notesDraggingPath);
-  el.classList.add('notes-item-dragging');
-  document.body.classList.add('notes-dragging');
-  // Show root-drop zone only if note is inside a folder
-  const isInFolder = _notesDraggingPath && _notesDraggingPath.includes('/');
-  const rootDrop = document.getElementById('notes-root-drop');
-  if (rootDrop) rootDrop.style.display = isInFolder ? '' : 'none';
-}
-function _notesDragEnd(e) {
-  _notesDraggingPath = null;
-  document.body.classList.remove('notes-dragging');
-  document.querySelectorAll('.notes-item-dragging').forEach(el => el.classList.remove('notes-item-dragging'));
-  document.querySelectorAll('.notes-drop-target').forEach(el => el.classList.remove('notes-drop-target'));
-  const rootDrop = document.getElementById('notes-root-drop');
-  if (rootDrop) rootDrop.style.display = 'none';
-}
-function _notesDragOverFolder(e, el) {
-  if (!_notesDraggingPath) return;
-  const folder = el.dataset.folder;  // full path, e.g. "Self/Therapy"
-  // Don't highlight if the note already lives directly in this folder
-  const parent = _notesDraggingPath.split('/').slice(0, -1).join('/');
-  if (parent === folder) return;
-  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-  el.classList.add('notes-drop-target');
-}
 function _notesDragOverRoot(e, el) {
   if (!_notesDraggingPath || !_notesDraggingPath.includes('/')) return;
   e.preventDefault(); e.dataTransfer.dropEffect = 'move';
   el.classList.add('notes-drop-target');
-}
-function _notesDragLeave(e, el) {
-  if (!e.relatedTarget || !el.contains(e.relatedTarget)) el.classList.remove('notes-drop-target');
-}
-async function _notesDropOnFolder(e, el) {
-  e.preventDefault();
-  el.classList.remove('notes-drop-target');
-  const path = e.dataTransfer.getData('text/plain') || _notesDraggingPath;
-  const folder = el.dataset.folder;  // full path, e.g. "Self/Therapy"
-  if (!path || !folder) return;
-  const parts = path.split('/');
-  const parent = parts.slice(0, -1).join('/');
-  if (parent === folder) return; // already there
-  const filename = parts[parts.length - 1];
-  const newPath = folder + '/' + filename;
-  await _notesMoveNote(path, newPath);
 }
 async function _notesDropOnRoot(e, el) {
   e.preventDefault();
@@ -47161,39 +51501,6 @@ async function _notesDropOnRoot(e, el) {
   if (!path || !path.includes('/')) return;
   const filename = path.split('/').pop();
   await _notesMoveNote(path, filename);
-}
-async function _notesMoveNote(oldPath, newPath) {
-  if (oldPath === newPath) return;
-  // Resolve name collision
-  const existing = new Set(_notesAllNotes.map(n => n.path));
-  if (existing.has(newPath)) {
-    const base = newPath.replace(/\.md$/, '');
-    let i = 1;
-    while (existing.has(`${base}-${i}.md`)) i++;
-    newPath = `${base}-${i}.md`;
-  }
-  const urlOld = oldPath.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-  const r = await apiCall(API + '/api/notes/' + urlOld, {
-    method: 'PATCH', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ move_to: newPath.replace(/\.md$/, '') })
-  });
-  if (!r || !r.ok) return;
-  // Update in-memory list
-  const entry = _notesAllNotes.find(n => n.path === oldPath);
-  if (entry) entry.path = newPath;
-  if (_notesActive?.path === oldPath) _notesActive.path = newPath;
-  localStorage.setItem('amux_last_note', newPath);
-  // Open the destination folder (and its ancestors) so the moved note shows
-  if (newPath.includes('/')) {
-    const parts = newPath.split('/');
-    let pre = '';
-    for (let i = 0; i < parts.length - 1; i++) {
-      pre = pre ? pre + '/' + parts[i] : parts[i];
-      _notesFolderSetOpen(pre, true);
-    }
-  }
-  _notesRenderList(_notesCurrentNotes.map(n => n.path === oldPath ? {...n, path: newPath} : n));
-  _notesAllNotes = _notesCurrentNotes; // keep in sync
 }
 function _notesItemHtml(n, depth) {
   const active = _notesActive && _notesActive.path === n.path ? ' active' : '';
@@ -47213,32 +51520,6 @@ function _notesItemHtml(n, depth) {
       <div class="nli-date">${dt}</div>
     </div>
   </div>`;
-}
-function _notesRenderList(notes) {
-  _notesCurrentNotes = notes;
-  const el = document.getElementById('notes-list');
-  // Build a recursive tree so nested folders (e.g. Self/Therapy/Notes) render
-  // as a real hierarchy. Each node: { dirs: {name:node}, files: [note] }.
-  const root = { dirs: {}, files: [] };
-  for (const n of notes) {
-    const parts = n.path.split('/');
-    let node = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      node.dirs[parts[i]] = node.dirs[parts[i]] || { dirs: {}, files: [] };
-      node = node.dirs[parts[i]];
-    }
-    node.files.push(n);
-  }
-  let html = '';
-  if (_notesFolderCreating) {
-    html += `<div class="notes-folder-new-wrap"><input id="notes-folder-input" class="notes-folder-input" type="text" placeholder="Folder name…" onkeydown="_notesFolderInputKey(event)" onblur="setTimeout(_notesFolderCancel,150)" autocomplete="off"></div>`;
-  }
-  html += _notesRenderFolders(root.dirs, '', 0);
-  // Root drop zone (only visible while dragging a note that's inside a folder)
-  html += `<div class="notes-root-drop" id="notes-root-drop"
-    ondragover="_notesDragOverRoot(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnRoot(event,this)"></div>`;
-  html += root.files.map(n => _notesItemHtml(n, 0)).join('');
-  el.innerHTML = html || (!_notesFolderCreating ? '<div class="notes-list-empty">No notes yet</div>' : '');
 }
 
 // Count all notes within a tree node (including nested folders)
@@ -47307,7 +51588,6 @@ function _notesRenderContent(data) {
   document.getElementById('notes-title').value = _notesActive.title;
   const listEntry = _notesAllNotes.find(n => n.path === data.path);
   if (listEntry) listEntry.name = _notesActive.title;
-  _notesInitQuill();
   const editor = _notesGetEditor();
   if (editor) {
     _notesLoadingContent = true;
@@ -47338,140 +51618,11 @@ function _notesUpdateSessionBadge(path) {
   }
 }
 
-async function _notesOpen(path) {
-  if (path === _notesActive?.path) return; // already open
-  // Fire pending save in background — don't block switching
-  if (_notesSaveTimer) {
-    clearTimeout(_notesSaveTimer);
-    _notesSaveTimer = null;
-    _notesSave(); // intentionally not awaited
-  }
-  // Cancel any in-flight open request (rapid sidebar clicks)
-  if (_notesOpenAbort) _notesOpenAbort.abort();
-  _notesOpenAbort = new AbortController();
-  const signal = _notesOpenAbort.signal;
-
-  // Optimistic: highlight clicked item instantly
-  document.querySelectorAll('#notes-list .notes-list-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.path === path);
-  });
-  document.getElementById('notes-save-status').textContent = '';
-
-  const noteCacheKey = 'amux_note_' + path;
-
-  // CACHE-FIRST: try to render from IDB synchronously-ish before network
-  // This gives Obsidian-like instant switching even on flaky connections
-  let rendered = false;
-  try {
-    const cached = await _idb.get(noteCacheKey);
-    if (cached && !signal.aborted) {
-      const data = JSON.parse(cached);
-      _notesRenderContent(data);
-      rendered = true;
-      // On mobile, collapse sidebar immediately after cache render
-      if (window.innerWidth <= 600 && _notesSidebarOpen) {
-        _notesSidebarOpen = false;
-        _notesApplySidebarState();
-      }
-    }
-  } catch(e) {}
-
-  // Revalidate from network (SWR)
-  let data;
-  try {
-    const r = await fetch(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'), { signal });
-    if (!r.ok) throw new Error('not ok');
-    data = await r.json();
-    _idb.set(noteCacheKey, JSON.stringify(data));
-  } catch(e) {
-    if (e.name === 'AbortError') return;
-    if (!rendered) { return; } // already logged; nothing to render
-    return; // cache already displayed, silently fail revalidation
-  }
-
-  if (rendered) {
-    const editor = _notesGetEditor();
-    const serverContent = data.content || '';
-    if (editor && editor.value === serverContent) {
-      _notesActive.path = data.path;
-      return;
-    }
-    if (editor && document.activeElement === editor) return;
-  }
-
-  _notesRenderContent(data);
-  if (!rendered && window.innerWidth <= 600 && _notesSidebarOpen) {
-    _notesSidebarOpen = false;
-    _notesApplySidebarState();
-  }
-}
 
 // Reload the currently-open note's content from disk (e.g. after an external
 // edit in Obsidian). Unlike _notesOpen, this refreshes the SAME open note.
 // Guarded so it never clobbers unsaved local edits or in-progress typing.
-async function _notesReloadActive() {
-  if (!_notesActive) return;
-  if (_notesSaveTimer) return;                                  // pending local save
-  const editor = _notesGetEditor();
-  if (editor && document.activeElement === editor) return;      // user is typing in body
-  const titleInp = document.getElementById('notes-title');
-  if (titleInp && document.activeElement === titleInp) return;  // editing the title
-  const path = _notesActive.path;
-  let data;
-  try {
-    const r = await fetch(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'));
-    if (!r.ok) return;
-    data = await r.json();
-  } catch(e) { return; }
-  if (!_notesActive || _notesActive.path !== path) return;      // switched away mid-fetch
-  const serverContent = data.content || '';
-  if (editor && editor.value === serverContent) return;         // unchanged — nothing to do
-  _idb.set('amux_note_' + path, JSON.stringify(data));
-  _notesRawContent = serverContent;
-  if (editor) {
-    _notesLoadingContent = true;
-    editor.value = serverContent;
-    setTimeout(() => { _notesLoadingContent = false; }, 0);
-  }
-  const h1md = serverContent.match(/^#\s+(.+)$/m);
-  if (h1md) {
-    _notesActive.title = h1md[1];
-    if (titleInp) titleInp.value = _notesActive.title;
-    const listEntry = _notesAllNotes.find(n => n.path === path);
-    if (listEntry) { listEntry.name = _notesActive.title; _notesRenderList(_notesAllNotes); }
-  }
-  if (_notesMode === 'preview') _notesSwitchMode('preview');    // re-render preview from new content
-  const st = document.getElementById('notes-save-status');
-  if (st) { st.textContent = 'Updated from disk'; setTimeout(() => { if (st.textContent === 'Updated from disk') st.textContent = ''; }, 2500); }
-}
 
-async function _notesNew(folder) {
-  // Flush pending save in background before creating (captures path+content synchronously)
-  if (_notesSaveTimer) { clearTimeout(_notesSaveTimer); _notesSaveTimer = null; _notesSave(); }
-  const prefix = folder ? folder + '/' : '';
-  // Pick unique "untitled" / "untitled-1" / ... filename
-  const existing = new Set(_notesAllNotes.map(n => n.path));
-  let filename = prefix + 'untitled.md';
-  let displayName = 'Untitled';
-  if (existing.has(filename)) {
-    let i = 1;
-    while (existing.has(`${prefix}untitled-${i}.md`)) i++;
-    filename = `${prefix}untitled-${i}.md`;
-    displayName = `Untitled ${i}`;
-  }
-  const urlPath = filename.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
-  await apiCall(API + '/api/notes/' + urlPath, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content: '# ' + displayName + '\n' })
-  });
-  // Insert at top of list without re-fetching
-  _notesAllNotes.unshift({ path: filename, name: displayName, updated: Math.floor(Date.now() / 1000), pinned: false, size: 0 });
-  _notesRenderList(_notesAllNotes);
-  await _notesOpen(filename);
-  const titleEl = document.getElementById('notes-title');
-  titleEl.focus();
-  titleEl.select();
-}
 
 function _notesTitleChange() {
   const editor = _notesGetEditor();
@@ -47500,81 +51651,8 @@ function _notesSaveDebounce() {
   _notesSaveTimer = setTimeout(_notesSave, 400);
 }
 
-async function _notesSave() {
-  const editor = _notesGetEditor();
-  if (!_notesActive || !editor) return;
-  const content = editor.value;
-  _notesRawContent = content;
-  const pathKey = _notesActive.path.replace(/\.md$/, '');
-  const statusEl = document.getElementById('notes-save-status');
-  const activePath = _notesActive.path;
-  // OPTIMISTIC: write to IDB FIRST so local state is always durable
-  // (survives reload even if network/queue hasn't drained yet)
-  _idb.set('amux_note_' + activePath, JSON.stringify({ path: activePath, content }));
-  const result = await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/'), {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content })
-  });
-  if (!result) {
-    statusEl.textContent = '◐ Offline';
-    statusEl.title = 'Saved locally, will sync when online';
-    return;
-  }
-  statusEl.textContent = '✓';
-  statusEl.title = 'Saved';
-  setTimeout(() => { statusEl.textContent = ''; statusEl.title = ''; }, 1500);
-  // Update in-memory list and patch the DOM item in place (no full re-render)
-  const saved = _notesAllNotes.find(n => n.path === _notesActive.path);
-  if (saved) {
-    saved.updated = Math.floor(Date.now() / 1000);
-    saved.name = _notesActive.title || saved.name;
-    const dt = new Date(saved.updated * 1000).toLocaleDateString();
-    const item = document.querySelector(`#notes-list [data-path="${CSS.escape(saved.path)}"]`);
-    if (item) {
-      const dateEl = item.querySelector('.nli-date');
-      if (dateEl) dateEl.textContent = dt;
-      const titleEl = item.querySelector('.nli-title');
-      if (titleEl) titleEl.textContent = saved.name;
-    }
-  }
-}
 
 const _TRASH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
-async function _notesDelete() {
-  if (!_notesActive) return;
-  const btn = document.querySelector('.notes-delete-btn');
-  if (btn && !btn.classList.contains('confirming')) {
-    btn.classList.add('confirming');
-    btn.textContent = 'Delete?';
-    const reset = () => {
-      btn.classList.remove('confirming');
-      btn.innerHTML = _TRASH_SVG;
-    };
-    const tid = setTimeout(reset, 3000);
-    btn._resetTimer = tid;
-    return;
-  }
-  if (btn) {
-    clearTimeout(btn._resetTimer);
-    btn.classList.remove('confirming');
-    btn.innerHTML = _TRASH_SVG;
-  }
-  const pathKey = _notesActive.path.replace(/\.md$/, '');
-  if (localStorage.getItem('amux_last_note') === _notesActive.path) localStorage.removeItem('amux_last_note');
-  _idb.del('amux_note_' + _notesActive.path);
-  _notesAllNotes = _notesAllNotes.filter(n => n.path !== _notesActive.path);
-  localStorage.setItem('amux_notes_cache', JSON.stringify(_notesAllNotes));
-  document.querySelector(`#notes-list .notes-list-item[data-path="${_notesActive.path}"]`)?.remove();
-  _notesActive = null;
-  await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/'), { method: 'DELETE' });
-  _notesTrashLoad();
-  if (_notesAllNotes.length > 0) {
-    await _notesOpen(_notesAllNotes[0].path);
-  } else {
-    _notesShowEmpty();
-    await _notesLoad();
-  }
-}
 
 function _notesShowEmpty() {
   document.getElementById('notes-empty-state').style.display = 'flex';
@@ -47588,7 +51666,6 @@ function _notesShowEmpty() {
   // On mobile, show sidebar when no note is open
   if (window.innerWidth <= 600 && !_notesSidebarOpen) {
     _notesSidebarOpen = true;
-    _notesApplySidebarState();
   }
 }
 
@@ -47604,63 +51681,9 @@ async function _notesTogglePinActive() {
   if (!_notesActive) return;
   await _notesTogglePin(_notesActive.path);
 }
-async function _notesTogglePin(path) {
-  const r = await apiCall(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/') + '/pin', { method: 'POST' });
-  if (!r) return;
-  const d = await r.json();
-  const entry = _notesAllNotes.find(n => n.path === path);
-  if (entry) entry.pinned = d.pinned;
-  // Re-sort: pinned first, then by updated desc
-  _notesAllNotes.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updated - a.updated);
-  _notesRenderList(_notesAllNotes);
-  _notesUpdatePinBtn();
-  _pinnedNotesRefresh();
-}
 
 // ── Pinned notes on home screen ──────────────────────────────────────────────
 let _pinnedNotesCache = [];
-async function _pinnedNotesRefresh() {
-  const container = document.getElementById('pinned-notes-home');
-  if (!container) return;
-  try {
-    const r = await fetch(API + '/api/notes');
-    const all = await r.json();
-    const pinned = all.filter(n => n.pinned);
-    if (!pinned.length) { container.innerHTML = ''; _pinnedNotesCache = []; return; }
-    const contents = await Promise.all(pinned.map(async n => {
-      try {
-        const cr = await fetch(API + '/api/notes/' + n.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'));
-        const d = await cr.json();
-        return { ...n, content: d.content || '' };
-      } catch { return { ...n, content: '' }; }
-    }));
-    _pinnedNotesCache = contents;
-    _pinnedNotesRender();
-  } catch(e) { console.error('pinned notes:', e); }
-}
-function _pinnedNotesRender() {
-  const container = document.getElementById('pinned-notes-home');
-  if (!container) return;
-  if (!_pinnedNotesCache.length) { container.innerHTML = ''; return; }
-  container.innerHTML = _pinnedNotesCache.map(n => {
-    const isHtml = /<[a-z][\s\S]*>/i.test(n.content);
-    const body = isHtml ? _sanitizeHtml(n.content) : renderMarkdown(n.content);
-    return `<div class="pinned-note-card" onclick="_pinnedNoteOpen('${esc(n.path)}')" data-path="${esc(n.path)}">
-      <div class="pinned-note-header">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
-        <span class="pinned-note-title">${esc(n.name)}</span>
-        <button class="pinned-note-unpin" onclick="event.stopPropagation();_pinnedNoteUnpin('${esc(n.path)}')" title="Unpin from home">
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <div class="pinned-note-body md-content">${body}</div>
-    </div>`;
-  }).join('');
-}
-function _pinnedNoteOpen(path) {
-  switchView('notes');
-  setTimeout(() => _notesOpen(path), 100);
-}
 async function _pinnedNoteUnpin(path) {
   await _notesTogglePin(path);
 }
@@ -48424,6 +52447,8 @@ async function _gmailSubmitCode(account) {
 // GRAPH / MIND MAP TAB
 // ═══════════════════════════════════════════
 let _graphData = { nodes: [], edges: [] };
+let _graphId = 'default';
+let _graphColorAuthority = false;
 let _graphInited = false;
 let _graphTransform = { x: 0, y: 0, scale: 1 };
 let _graphShowAllEdges = true;
@@ -48498,13 +52523,61 @@ async function _graphInit() {
   _graphApplySidebarState();
   const inp = document.getElementById('graph-vault-path');
   if (inp && _graphVaultPath) inp.value = _graphVaultPath;
-  await _graphLoad();
+  await _graphLoad(_graphId);
 }
 
-async function _graphLoad() {
+// Which graph a node's colour comes from. The fleet projection sends
+// color_authority, meaning its palette was chosen deliberately (validated for
+// contrast and colour-vision separation server-side) and must survive to the
+// screen. Everything else keeps the old behaviour: folder colouring wins, and
+// node.color is a per-note default worth overriding.
+function _graphNodeColor(n) {
+  if (_graphColorAuthority && n && n.color) return n.color;
+  return (n && _GRAPH_FOLDER_COLORS[n.folder]) || '#888';
+}
+
+function _graphFolderColor(f) {
+  if (_graphColorAuthority) {
+    const n = _graphData.nodes.find(x => x.folder === f);
+    if (n && n.color) return n.color;
+  }
+  return _GRAPH_FOLDER_COLORS[f] || '#888';
+}
+
+// Jump from an org-chart node straight into that agent's session peek. The
+// panel closes first so the graph is not left with a selection pointing at a
+// view the user has navigated away from.
+function _graphOpenSession(name) {
+  _graphClosePanel();
+  openPeek(name);
+}
+
+async function _graphSwitch(gid) {
+  if (gid === _graphId) return;
+  _graphClosePanel();
+  _graphActiveFilters.clear();
+  await _graphLoad(gid);
+}
+
+function _graphApplySwitchState() {
+  ['default', 'fleet'].forEach(g => {
+    const b = document.getElementById('graph-switch-' + g);
+    if (b) b.classList.toggle('active', g === _graphId);
+  });
+  // Importing an Obsidian vault into the fleet projection is meaningless — the
+  // fleet has no stored nodes to import into — so hide the control rather than
+  // letting it fail in a way the user has to interpret.
+  const v = document.getElementById('graph-vault-row');
+  if (v) v.style.display = (_graphId === 'default') ? '' : 'none';
+}
+
+async function _graphLoad(gid) {
   try {
-    const r = await fetch(API + '/api/graph/default', { headers: _authHeaders() });
+    if (gid) _graphId = gid;
+    _graphApplySwitchState();
+    const r = await fetch(API + '/api/graph/' + encodeURIComponent(_graphId), { headers: _authHeaders() });
     const d = await r.json();
+    _graphColorAuthority = !!d.color_authority;
     _graphData = d;
     _graphRestorePositions();
     _graphRender();
@@ -48524,7 +52597,13 @@ async function _graphLoad() {
 
 function _graphUpdateStats() {
   const el = document.getElementById('graph-stats');
-  if (el) el.textContent = `${_graphData.nodes.length} nodes, ${_graphData.edges.length} edges`;
+  if (!el) return;
+  if (_graphId === 'fleet') {
+    const depts = new Set(_graphData.nodes.map(n => n.folder)).size;
+    el.textContent = `${_graphData.nodes.length} agents, ${depts} department${depts===1?'':'s'}`;
+  } else {
+    el.textContent = `${_graphData.nodes.length} nodes, ${_graphData.edges.length} edges`;
+  }
 }
 
 async function _graphImportVault() {
@@ -48554,17 +52633,24 @@ function _graphBuildFilters() {
   // Auto-assign colors for unknown folders
   const palette = ['#C97B3A','#4A6FA5','#A54A4A','#4A9A6F','#7A4AA5','#6B8E8A','#B5651D','#8B5CF6','#EC4899','#10B981','#F59E0B','#6366F1'];
   let pi = 0;
-  folders.forEach(f => {
+  // Only auto-assign when the client owns colour. Writing department names into
+  // _GRAPH_FOLDER_COLORS would leak fleet folders into the notes graph's map,
+  // which outlives this view.
+  if (!_graphColorAuthority) folders.forEach(f => {
     if (!_GRAPH_FOLDER_COLORS[f]) _GRAPH_FOLDER_COLORS[f] = palette[pi++ % palette.length];
   });
   el.innerHTML = folders.map(f => {
-    const c = _GRAPH_FOLDER_COLORS[f] || '#888';
-    return `<button class="graph-filter-btn active" data-folder="${f}" onclick="_graphToggleFilter('${f}',this)" style="background:${c};color:#fff;border-color:transparent;">${f}</button>`;
+    const c = _graphFolderColor(f);
+    // f is a folder name: an Obsidian directory for the notes graph, a
+    // department for the fleet. Both reach an HTML attribute AND a
+    // single-quoted JS string, so each layer needs its own escape — esc() for
+    // the attribute, escJs() for the JS string (esc alone leaves "'" intact).
+    return `<button class="graph-filter-btn active" data-folder="${esc(f)}" onclick="_graphToggleFilter('${escJs(f)}',this)" style="background:${c};color:#fff;border-color:transparent;">${esc(f)}</button>`;
   }).join('');
 }
 
 function _graphToggleFilter(folder, btn) {
-  const c = _GRAPH_FOLDER_COLORS[folder] || '#888';
+  const c = _graphFolderColor(folder);
   if (_graphActiveFilters.has(folder)) {
     _graphActiveFilters.delete(folder);
     btn.classList.remove('active');
@@ -48601,7 +52687,7 @@ function _graphRender() {
     el.className = 'graph-node';
     el.dataset.id = n.id;
     el.dataset.folder = n.folder;
-    const c = _GRAPH_FOLDER_COLORS[n.folder] || _GRAPH_FOLDER_COLORS[n.color] || '#888';
+    const c = _graphNodeColor(n);
     const isLight = document.body.classList.contains('light');
     el.style.background = c + (isLight ? '20' : '30');
     el.style.color = isLight ? c : _lightenColor(c, 0.3);
@@ -48636,7 +52722,7 @@ function _graphRenderEdges() {
     if (!src || !tgt) return;
     if (!visible.has(src.folder) || !visible.has(tgt.folder)) return;
     const show = _graphShowAllEdges || _graphHoveredNode === e.source || _graphHoveredNode === e.target || _graphSelectedNode === e.source || _graphSelectedNode === e.target;
-    const c = _GRAPH_FOLDER_COLORS[src.folder] || '#888';
+    const c = _graphNodeColor(src);
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     const x1 = (src.x||0)+50, y1 = (src.y||0)+16, x2 = (tgt.x||0)+50, y2 = (tgt.y||0)+16;
     const mx = (x1+x2)/2, my = (y1+y2)/2 - 30;
@@ -48705,7 +52791,7 @@ function _graphEndDrag(e) {
     s.node.pinned = 1;
     _graphSavePositions();
     // Update server
-    fetch(API + '/api/graph/default/nodes/' + encodeURIComponent(s.node.id), {
+    fetch(API + '/api/graph/' + encodeURIComponent(_graphId) + '/nodes/' + encodeURIComponent(s.node.id), {
       method: 'PATCH', headers: _authHeaders({'Content-Type':'application/json'}),
       body: JSON.stringify({ x: s.node.x, y: s.node.y, pinned: 1 })
     }).catch(()=>{});
@@ -48928,12 +53014,43 @@ function _graphOpenPanel(node) {
   const panel = document.getElementById('graph-side-panel');
   document.getElementById('graph-side-title').textContent = node.label;
   const badge = document.getElementById('graph-side-badge');
-  const c = _GRAPH_FOLDER_COLORS[node.folder] || '#888';
+  const c = _graphNodeColor(node);
   badge.textContent = node.folder;
   badge.style.background = c;
   // Source file path
   const body = document.getElementById('graph-side-body');
   let html = '';
+  // A fleet node is an agent, not a note: show what it is doing and offer the
+  // one action you actually want from an org chart — go look at that session.
+  if (_graphId === 'fleet' && node.session) {
+    const st = node.status || '';
+    const dot = st === 'active' ? 'var(--green)' : (st === 'waiting' ? '#d29922' : 'var(--dim)');
+    html += `<div style="display:flex;align-items:center;gap:7px;font-size:0.8rem;margin-bottom:8px;">
+      <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex:none;"></span>
+      <span>${esc(st || 'unknown')}</span>
+      ${node.provider ? `<span style="color:var(--dim);font-size:0.72rem;">· ${esc(node.provider)}</span>` : ''}
+    </div>`;
+    html += `<div style="font-size:0.75rem;color:var(--dim);margin-bottom:10px;">
+      ${node.task ? esc(node.task) : 'no card in flight'}</div>`;
+    html += `<button id="graph-side-open"
+      style="width:100%;min-height:34px;padding:7px 10px;background:var(--accent);color:#fff;border:none;
+      border-radius:6px;font-size:0.75rem;font-family:inherit;cursor:pointer;">Open session</button>`;
+    body.innerHTML = html;
+    // The session name is passed through a closure, never interpolated into an
+    // onclick attribute. esc() deliberately does NOT escape "'" (see its own
+    // comment), so esc(name) inside a single-quoted JS string is a breakout the
+    // moment a name carries a quote — escJs() is the helper for that shape.
+    // _VALID_SESSION_NAME_RE keeps quotes out today, but it is enforced on the
+    // API's creation paths, while this projection reads the sessions DIRECTORY;
+    // a file placed there by any other means never meets that regex. Binding
+    // the handler needs no escaping to be correct, so it cannot rot if that
+    // coupling changes.
+    const _ob = document.getElementById('graph-side-open');
+    if (_ob) _ob.addEventListener('click', () => _graphOpenSession(node.session));
+    document.getElementById('graph-side-links').innerHTML = '';
+    panel.classList.add('open');
+    return;
+  }
   if (node.source_path) {
     html += `<div style="font-size:0.68rem;color:var(--dim);margin-bottom:10px;word-break:break-all;font-family:monospace;padding:4px 8px;background:var(--bg);border-radius:4px;">${node.source_path}</div>`;
   }
@@ -48954,7 +53071,7 @@ function _graphOpenPanel(node) {
   const nodeMap = {}; _graphData.nodes.forEach(n => nodeMap[n.id] = n);
   links.innerHTML = connected.filter(id => nodeMap[id]).map(id => {
     const n = nodeMap[id];
-    const cc = _GRAPH_FOLDER_COLORS[n.folder] || '#888';
+    const cc = _graphNodeColor(n);
     return `<span class="chip" style="border-color:${cc}40;color:${cc}" onclick="_graphFocusNode('${n.id}')">${n.label}</span>`;
   }).join('');
   panel.classList.add('open');
@@ -49041,7 +53158,28 @@ async function _bwLoadProfiles() {
       sel.appendChild(o);
     });
     if (cur) sel.value = cur;
+    // Backend picker only appears where there is a real choice. A hosted
+    // container has no Chrome of the user's to drive, so CDP is not offered
+    // there rather than offered and always failing.
+    const bs = document.getElementById('bw-backend');
+    if (bs) bs.style.display = (d.backends || []).includes('live') ? '' : 'none';
   } catch(e) {}
+}
+
+function _bwBackend() {
+  const el = document.getElementById('bw-backend');
+  return (el && el.style.display !== 'none') ? el.value : '';
+}
+
+function _bwOnBackend() {
+  // Live Chrome drives the user's own browser, which brings its own logins —
+  // a profile would be meaningless, so grey it out instead of silently
+  // ignoring whatever is selected.
+  const live = _bwBackend() === 'live';
+  const p = document.getElementById('bw-profile');
+  if (p) { p.disabled = live; p.style.opacity = live ? 0.45 : 1; }
+  _bwStatus(live ? 'Live: your own Chrome (first use of a tab needs the "Allow debugging?" click)'
+                 : 'Playwright: isolated, profile-backed browser');
 }
 
 function _bwStatus(msg) {
@@ -49070,7 +53208,9 @@ async function _bwGo() {
   _bwStatus('Loading…');
   try {
     const body = { url, session: _bwSession };
-    if (profile) body.profile = profile;   // empty = auto-select by URL
+    const backend = _bwBackend();
+    if (backend) body.backend = backend;
+    else if (profile) body.profile = profile;   // empty = auto-select by URL
     const r = await fetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.error) { _bwStatus('Error: ' + d.error); return; }
@@ -49866,7 +54006,6 @@ async function _jrnlSaveConfig() {
   document.getElementById('jrnl-config-overlay')?.remove();
   _jrnlRenderEditor();
 }
-window.addEventListener('load', _pinnedNotesRefresh);
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -49897,7 +54036,6 @@ window.addEventListener('load', _pinnedNotesRefresh);
       <button id="ws-save-ok" class="btn" onclick="wsSaveProfileConfirm()" style="display:none;font-size:0.75rem;padding:4px 10px;background:var(--green);color:#fff;border-color:var(--green);">&#x2713;</button>
     </div>
     <div class="ws-note-dropdown" id="ws-note-dropdown">
-      <button class="ws-preset-btn" onclick="wsToggleNoteMenu()" title="Add a note pane">&#x1F4DD; Note</button>
       <div class="ws-note-menu" id="ws-note-menu"></div>
     </div>
     <button class="ws-preset-btn" onclick="wsAddTermPane()" title="Add an interactive terminal pane">&gt;_ Term</button>
@@ -49989,7 +54127,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.226';
+const CACHE = 'amux-v0.9.382';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -50244,6 +54382,155 @@ def _media_prepare_job(src: Path, out: Path, key: str):
             pass
 
 
+# ── Fleet graph (projection over sessions) ───────────────────────────────────
+# The org chart is DERIVED on every read and never synced into graph_nodes. A
+# stored copy of "who works here" drifts from what the sessions actually do,
+# and a chart that disagrees with the fleet is worse than no chart, because
+# nothing on screen tells you which of the two is lying. So the only thing that
+# persists is the user's LAYOUT (x/y/pinned under graph_id='fleet'); labels,
+# departments, status and current card are projected from list_sessions() —
+# the same call the dashboard's session list uses, so the two cannot disagree.
+#
+# Edges are deliberately empty here. Derived handoffs (who actually messaged
+# whom, which card moved between sessions) are the next phase of #71; an empty
+# list is the honest answer until that lands, and is distinguishable from
+# "computed and found none" only because this comment says so.
+_FLEET_GRAPH_ID = "fleet"
+
+# Eight categorical slots, stepped for a DARK surface and validated rather than
+# chosen by eye. The first cut of this list was fourteen hand-picked hues and it
+# failed four objective checks against the dashboard's #0a0a0c background:
+# ten sat outside the dark lightness band, two dropped below the chroma floor
+# and read as gray, the worst adjacent pair separated by only ΔE 5.5 under
+# protanopia, and one pair (#8fd14f/#d4a017) by ΔE 14.4 for NORMAL vision — two
+# departments a full-sighted reader cannot tell apart, which defeats the entire
+# point of colouring by department.
+#
+# These eight pass all five: lightness band, chroma floor, CVD separation
+# (worst adjacent ΔE 8.4 protan), normal-vision floor (19.3) and ≥3:1 contrast.
+# Eight is the cap on purpose — a ninth department reuses a slot rather than
+# inventing a hue, which is safe here because every node also carries its
+# department label, so identity is never colour-alone.
+_FLEET_PALETTE = ("#3987e5", "#d95926", "#199e70", "#c98500",
+                  "#d55181", "#008300", "#9085e9", "#e66767")
+
+
+def _fleet_dept_of(name: str) -> str:
+    """The leading segment of a session name — `Amux-gtm` → `Amux`.
+
+    A THROWAWAY heuristic that exists only until missions land (#69), which is
+    why it is one line and not a configurable rule. Do not build on it.
+    """
+    return re.split(r"[-_ ]", name.strip(), 1)[0] or name.strip()
+
+
+def _fleet_departments(names) -> dict:
+    """{session_name: department_label}.
+
+    Grouping is case-insensitive so `Amux-gtm`, `Amux-inspector` and
+    `amux-helper` land in ONE department instead of three; the label shown is
+    the casing of the first session (sorted) that claimed it, so the department
+    does not rename itself when an unrelated session is added or removed.
+    """
+    canon: dict = {}
+    for n in sorted(names):
+        seg = _fleet_dept_of(n)
+        canon.setdefault(seg.casefold(), seg)
+    return {n: canon.get(_fleet_dept_of(n).casefold(), _fleet_dept_of(n)) for n in names}
+
+
+def _fleet_colors(depts) -> dict:
+    """{department: colour}, taking palette slots IN ORDER.
+
+    Two earlier attempts were wrong in instructive ways.
+
+    Hashing each department name to a slot collides — five departments in eight
+    slots collide over half the time (birthday problem), and two teams sharing
+    a colour destroys the one thing the colour is FOR.
+
+    Adding collision-probing fixed that and introduced a subtler failure: the
+    palette's separation guarantees hold for slots taken IN ORDER, and a hash
+    picks an arbitrary SUBSET. On the live fleet it chose slots 3 and 6 — aqua
+    #199e70 next to green #008300, ΔE 11.9 for *normal* vision, below the 15
+    floor. Two departments a full-sighted reader cannot tell apart, which is
+    the same defect the probing was added to prevent, just harder to see.
+
+    So: sorted by name, slots consumed 1,2,3… — the order the palette was
+    validated in. Sorting makes it identical on every machine and restart, with
+    no hashing involved (the builtin hash() would have been salted per process
+    and repainted the chart on every restart anyway).
+
+    Known cost: inserting a department that sorts early shifts the colours of
+    those after it. Acceptable only because this whole department heuristic is
+    scaffolding — missions (#69) carry an explicit, user-owned colour, which
+    ends both the shifting and the guessing. Past eight departments a slot is
+    reused rather than a hue invented; every node also renders its department
+    label, so identity is never colour-alone.
+    """
+    return {d: _FLEET_PALETTE[i % len(_FLEET_PALETTE)]
+            for i, d in enumerate(sorted(set(depts), key=lambda s: s.casefold()))}
+
+
+def _fleet_graph() -> dict:
+    """{"nodes": [...], "edges": []} for the fleet org chart."""
+    sessions = list_sessions()
+
+    # Layout the user has already arranged, if anything has stored it yet.
+    # Keyed by node id, which is why the id must stay stable across reads.
+    saved: dict = {}
+    try:
+        for r in get_db().execute(
+                "SELECT id, x, y, pinned FROM graph_nodes WHERE graph_id=?",
+                (_FLEET_GRAPH_ID,)).fetchall():
+            saved[r["id"]] = r
+    except Exception as e:
+        slog(f"[fleet] layout load failed: {e}")
+
+    names = [s.get("name") or "" for s in sessions if s.get("name")]
+    depts = _fleet_departments(names)
+    colors = _fleet_colors(depts.values())
+
+    nodes = []
+    for s in sessions:
+        name = s.get("name") or ""
+        if not name:
+            continue
+        nid = f"sess:{name}"
+        dept = depts.get(name) or _fleet_dept_of(name)
+        status = (s.get("status") or "").strip() or ("running" if s.get("running") else "stopped")
+        task = (s.get("task_name") or "").strip()
+        pos = saved.get(nid)
+        node = {
+            "id": nid,
+            "label": name,
+            # What this agent is doing right now, in the field the graph client
+            # already renders — not a new one the client would have to learn.
+            "body": f"{status} — {task}" if task else status,
+            "color": colors.get(dept, _FLEET_PALETTE[0]),
+            "folder": dept,          # drives the existing department filter chips
+            "source_path": "",
+            "x": pos["x"] if pos else None,
+            "y": pos["y"] if pos else None,
+            "pinned": (pos["pinned"] if pos else 0) or 0,
+            # Projection-only extras; the default graph has no equivalent.
+            "session": name,
+            "status": status,
+            "running": bool(s.get("running")),
+            "task": task,
+            "provider": s.get("provider") or "",
+        }
+        nodes.append(node)
+
+    # color_authority tells the client these colours are DELIBERATE and must be
+    # rendered as sent. Without it the graph client falls back to its own
+    # _GRAPH_FOLDER_COLORS map and auto-assigns unknown folders from a local
+    # palette — which would silently discard the validated department palette
+    # above and repaint the fleet in whatever hues happened to be free. The
+    # Obsidian graph keeps the old behaviour, where node.color is a per-note
+    # default that folder colouring is meant to override.
+    return {"nodes": nodes, "edges": [], "color_authority": True}
+
+
 class CCHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # Suppressed — we do our own timing-aware logging in _route()
@@ -50463,12 +54750,14 @@ class CCHandler(BaseHTTPRequestHandler):
         except Exception:
             return body, False
 
-    def _json(self, data, status=200):
+    def _json(self, data, status=200, headers=None):
         body = json.dumps(data).encode()
         body, gz = self._gzip_out(body)
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json")
+        for _hk, _hv in (headers or {}).items():
+            self.send_header(_hk, _hv)
         if gz:
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
@@ -50624,7 +54913,6 @@ class CCHandler(BaseHTTPRequestHandler):
         heartbeat_counter = 0
         log_cursor = len(_event_log)  # start from current position
         alert_cursor = len(_sse_alerts)  # start from current position
-        last_notes_version = _notes_version
         last_crm_version   = _crm_version
         last_journal_version = _journal_version
         # AMUX-LOCAL:session-chat — chat SSE cursor + reconciliation on connect
@@ -50723,11 +55011,8 @@ class CCHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 # /AMUX-LOCAL:session-chat
 
-                # Invalidation signals for notes and CRM — lightweight, no payload
+                # Invalidation signals for CRM/journal — lightweight, no payload
                 invalidated = []
-                if _notes_version != last_notes_version:
-                    last_notes_version = _notes_version
-                    invalidated.append("notes")
                 if _crm_version != last_crm_version:
                     last_crm_version = _crm_version
                     invalidated.append("crm")
@@ -51132,6 +55417,14 @@ class CCHandler(BaseHTTPRequestHandler):
             _proc = psutil_process_info()
             return self._json({
                 "status": "ok",
+                # WHICH BUILD is this. Without it, "is the fix live here?" is
+                # unanswerable: two sessions spent today reading prod fields that
+                # came back wrong, unable to tell a real negative from a container
+                # still on the previous image. uptime_s only says the process is
+                # young, not what code it is running.
+                # Map it to a commit with:
+                #   git show <sha>:amux-server.py | shasum -a 256 | cut -c1-12
+                "build": _build_id(),
                 "pid": os.getpid(),
                 "uptime_s": int(time.time() - _server_start_time),
                 "requests": _server_request_count,
@@ -51140,6 +55433,17 @@ class CCHandler(BaseHTTPRequestHandler):
                 "memory_mb": _proc.get("memory_mb", -1),
                 "fd_count": _proc.get("fd_count", -1),
                 "sessions": _proc.get("session_count", -1),
+                # /health USED TO LIE. It answered 200 in 60ms straight through
+                # windows where /api/board and /api/email/* hung indefinitely —
+                # TCP connecting in 2ms, then never returning — because it never
+                # touched the store those endpoints are backed by. Anything
+                # watching it, com.amux.watchdog included, reported amux HEALTHY
+                # while the fleet's shared source of truth was unavailable to
+                # every session, and `amux alert` posts to this same server, so
+                # the fire alarm was down exactly when it was needed (AC-164).
+                # A liveness ping that cannot observe the failure is not a health
+                # check; it is a green light wired to nothing.
+                **_health_store_probe(),
             })
 
         # GET /release-notes — standalone SEO-indexable release notes page
@@ -51362,25 +55666,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     pass
                 return self._json(items)
 
-            if method == "GET" and action == "notes" and "notes" in perms:
-                if not CC_NOTES.is_dir():
-                    return self._json([])
-                notes = []
-                for f in sorted(CC_NOTES.glob("**/*.md")):
-                    rel = str(f.relative_to(CC_NOTES))
-                    notes.append({"path": rel, "size": f.stat().st_size})
-                return self._json(notes)
-
-            if method == "GET" and action.startswith("note/") and "notes" in perms:
-                note_rel = action[len("note/"):]
-                if not note_rel.endswith(".md"):
-                    note_rel += ".md"
-                note_path = _safe_note_path(note_rel)
-                if not note_path:
-                    return self._json({"error": "invalid path"}, 400)
-                if note_path.exists():
-                    return self._json({"content": note_path.read_text(errors="replace"), "path": note_rel})
-                return self._json({"error": "not found"}, 404)
+            return self._json({"error": "not found"}, 404)
 
             return self._json({"error": "not found"}, 404)
 
@@ -51497,6 +55783,18 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # GET /api/sessions
         if method == "GET" and path == "/api/sessions":
+            _scoped, _ctags, _cname = _caller_scope(self.headers)
+            if _scoped:
+                # Tag isolation: session callers get the filtered view built
+                # from cache-or-fresh; the raw-json fast path below is
+                # dashboard-only because the payload differs per caller.
+                _data = _sse_cache["sessions"]["data"] or list_sessions()
+                def _vis(x):
+                    if x.get("name") == _cname:
+                        return True
+                    _st = {t.lower() for t in (x.get("tags") or [])}
+                    return bool(_ctags and _st & _ctags)
+                return self._json([x for x in _data if _vis(x)])
             # Shared cache with stale-while-revalidate. Only ONE thread ever
             # runs list_sessions() at a time. Other threads return stale data
             # immediately (if any) or wait briefly then return whatever the
@@ -51561,20 +55859,27 @@ class CCHandler(BaseHTTPRequestHandler):
                 from concurrent.futures import ThreadPoolExecutor
                 sc = _sse_cache["sessions"]
                 sess_list = sc["data"] if sc["data"] is not None else []
-                def _get_git(s):
-                    name = s.get("name", "")
+                # Deduplicate by work_dir: run git once per unique dir,
+                # then fan the result to all sessions that share it.
+                dir_to_names: dict[str, list[str]] = {}
+                for s in sess_list:
                     wd = s.get("dir", "")
-                    if not wd:
-                        return None
+                    name = s.get("name", "")
+                    if wd and name:
+                        dir_to_names.setdefault(wd, []).append(name)
+                unique_dirs = list(dir_to_names.keys())
+                def _get_git_dir(wd):
                     info = _git_info(wd)
                     if info.get("branch"):
-                        return {"name": name, **info}
+                        return (wd, info)
                     return None
                 results = {}
                 with ThreadPoolExecutor(max_workers=4) as pool:
-                    for r in pool.map(_get_git, sess_list):
+                    for r in pool.map(_get_git_dir, unique_dirs):
                         if r:
-                            results[r["name"]] = r
+                            wd, info = r
+                            for name in dir_to_names[wd]:
+                                results[name] = {"name": name, **info}
                 sgc["data"] = results
                 sgc["time"] = time.time()
                 return self._json(results)
@@ -51879,149 +56184,6 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception:
                 return self._json([])
 
-        # Notes API (/api/notes)
-        if method == "POST" and path.startswith("/api/notes/") and path.endswith("/pin"):
-            note_rel = path[len("/api/notes/"):-len("/pin")]
-            if not note_rel.endswith(".md"):
-                note_rel += ".md"
-            pins = set()
-            if CC_NOTES_PINS.exists():
-                try: pins = set(json.loads(CC_NOTES_PINS.read_text()))
-                except Exception: pass
-            if note_rel in pins:
-                pins.discard(note_rel); pinned = False
-            else:
-                pins.add(note_rel); pinned = True
-            CC_NOTES_PINS.write_text(json.dumps(list(pins)))
-            return self._json({"ok": True, "pinned": pinned})
-
-        if method == "GET" and path == "/api/notes":
-            pins = set()
-            if CC_NOTES_PINS.exists():
-                try: pins = set(json.loads(CC_NOTES_PINS.read_text()))
-                except Exception: pass
-            notes = []
-            if CC_NOTES.exists():
-                for f in sorted((p for p in CC_NOTES.rglob("*.md") if ".trash" not in p.parts), key=lambda p: -p.stat().st_mtime):
-                    rel = str(f.relative_to(CC_NOTES))
-                    stat = f.stat()
-                    try:
-                        with open(f, "rb") as _fh: chunk = _fh.read(512).decode("utf-8", errors="replace")
-                        import re as _re
-                        m_html = _re.search(r'<h1[^>]*>(.*?)</h1>', chunk, _re.IGNORECASE)
-                        if m_html:
-                            h1 = _re.sub(r'<[^>]+>', '', m_html.group(1)).strip()
-                        else:
-                            first_line = chunk.split('\n')[0].strip()
-                            h1 = first_line[2:].strip() if first_line.startswith("# ") else ""
-                    except Exception:
-                        h1 = ""
-                    name = h1 or f.stem
-                    notes.append({"path": rel, "name": name, "size": stat.st_size,
-                                  "updated": int(stat.st_mtime), "pinned": rel in pins})
-            notes.sort(key=lambda n: (0 if n["pinned"] else 1, -n["updated"]))
-            return self._json(notes)
-
-        if method == "GET" and path == "/api/notes-source":
-            # Where notes are read/written from — drives the notes-tab source
-            # indicator. Set via AMUX_NOTES_DIR in ~/.amux/server.env.
-            d = str(CC_NOTES)
-            custom = bool(os.environ.get("AMUX_NOTES_DIR"))
-            return self._json({
-                "dir": d,
-                "name": CC_NOTES.name or d,
-                "exists": CC_NOTES.is_dir(),
-                "custom": custom,
-                "env_var": "AMUX_NOTES_DIR",
-            })
-
-        if method == "GET" and path == "/api/notes/trash":
-            trash_dir = CC_NOTES_TRASH
-            items = []
-            if trash_dir.exists():
-                for f in sorted(trash_dir.glob("*.md"), key=lambda p: -p.stat().st_mtime):
-                    items.append({"name": f.stem, "file": f.name, "updated": int(f.stat().st_mtime)})
-            return self._json(items)
-
-        if method == "POST" and path.startswith("/api/notes/trash/") and path.endswith("/restore"):
-            fname = path[len("/api/notes/trash/"):-len("/restore")]
-            src = _safe_note_path(fname, CC_NOTES_TRASH)
-            if not src:
-                return self._json({"error": "invalid"}, 400)
-            if not src.exists():
-                return self._json({"error": "not found"}, 404)
-            dst = CC_NOTES / fname
-            if dst.exists():
-                stem, ext = src.stem, src.suffix
-                i = 1
-                while (CC_NOTES / f"{stem}-{i}{ext}").exists(): i += 1
-                dst = CC_NOTES / f"{stem}-{i}{ext}"
-            src.rename(dst)
-            return self._json({"ok": True, "path": str(dst.relative_to(CC_NOTES))})
-
-        if method == "DELETE" and path.startswith("/api/notes/trash/"):
-            fname = path[len("/api/notes/trash/"):]
-            f = _safe_note_path(fname, CC_NOTES_TRASH)
-            if not f:
-                return self._json({"error": "invalid"}, 400)
-            if f.exists(): f.unlink()
-            return self._json({"ok": True})
-
-        if path.startswith("/api/notes/"):
-            note_rel = path[len("/api/notes/"):]
-            if not note_rel.endswith(".md"):
-                note_rel += ".md"
-            note_path = _safe_note_path(note_rel)
-            if not note_path:
-                return self._json({"error": "invalid path"}, 400)
-            if method == "GET":
-                if note_path.exists():
-                    return self._json({"content": note_path.read_text(errors="replace"), "path": note_rel})
-                return self._json({"error": "not found"}, 404)
-            if method == "POST":
-                global _notes_version
-                body = self._read_body()
-                content = body.get("content", "")
-                note_path.parent.mkdir(parents=True, exist_ok=True)
-                note_path.write_text(content)
-                _notes_version += 1
-                return self._json({"ok": True, "path": note_rel})
-            if method == "PATCH":
-                body = self._read_body()
-                new_rel = body.get("move_to", "").strip()
-                if not new_rel.endswith(".md"):
-                    new_rel += ".md"
-                new_path = _safe_note_path(new_rel)
-                if not new_path:
-                    return self._json({"error": "invalid"}, 400)
-                if new_path != note_path and note_path.exists():
-                    new_path.parent.mkdir(parents=True, exist_ok=True)
-                    note_path.rename(new_path)
-                    if CC_NOTES_PINS.exists():
-                        try:
-                            pins = set(json.loads(CC_NOTES_PINS.read_text()))
-                            if note_rel in pins:
-                                pins.discard(note_rel)
-                                pins.add(new_rel)
-                                CC_NOTES_PINS.write_text(json.dumps(list(pins)))
-                        except Exception: pass
-                    _notes_version += 1
-                return self._json({"ok": True, "path": new_rel})
-            if method == "DELETE":
-                if note_path.exists():
-                    trash_dir = CC_NOTES_TRASH
-                    trash_dir.mkdir(parents=True, exist_ok=True)
-                    dest = trash_dir / note_path.name
-                    if dest.exists():
-                        stem, ext = note_path.stem, note_path.suffix
-                        i = 1
-                        while (trash_dir / f"{stem}-{i}{ext}").exists():
-                            i += 1
-                        dest = trash_dir / f"{stem}-{i}{ext}"
-                    note_path.rename(dest)
-                _notes_version += 1
-                return self._json({"ok": True})
-
         # GET /api/skills — list skills from SQLite
         if method == "GET" and path == "/api/skills":
             db = get_db()
@@ -52127,9 +56289,29 @@ class CCHandler(BaseHTTPRequestHandler):
             statuses = {st.get("id"): (st.get("gate") or [])
                         for st in _load_board_statuses()}
             return self._json({
+                "board_is_source_of_truth": "All activity flows TO the card. Ask a session for status with POST /api/board/<id>/status-request (or `amux board ask <id>`); the SESSION answers via status-update, which appends a model-AUTHORED status to the card history. amux routes and records — it does NOT scrape the terminal or summarize with a helper model. This is the durable inverse of watching: as the session's model improves, its status reports improve, for free. A chat reply alone never updates the card; only a status-update does.",
+                "monitor_cards": "A card CREATED BY A MONITOR must set source_ref (what it derives from: a thread id, CRM record, alert name) and update last_verified_at (unix) each time the monitor re-checks the source. Cards with a source_ref unverified for 24h+ show STALE in the detail and match is:sourcestale — they may assert a state the source already resolved. An escalation from a stale card wastes the human's attention (3 of 4 did, 2026-08-02).",
+                "state_capture_best_practices": {
+                    "one_status": "A card has ONE status (backlog/todo/doing/review/done/verified/discarded), moved through type-derived gates. Never invent parallel status fields.",
+                    "done_ne_verified": "done = implemented/merged. verified = confirmed in prod with evidence. Never mark verified on faith.",
+                    "blocked_is_a_marker_not_a_status": "A card can be doing AND blocked-on-human at once. Do NOT park it back in todo. Mark it: `amux board needsyou <ID> \"the exact question\"` — adds a needs:you tag (surfaces in is:needsyou / Focus) and records the ask. Clear the tag when answered.",
+                    "record_the_ask": "Parking on the human without saying WHAT is needed is not a captured state. Always include the question/decision so Focus mode shows it at a glance.",
+                    "live_session_state": "Live activity (active/idle/waiting) is the session's to REPORT via POST /api/sessions/<n>/report — do not infer it onto the card.",
+                    "history_is_the_audit": "The append-only log (visible History) is where the card's story lives: status transitions, claims, commits, decisions. It survives desc rewrites; desc is narrative and replaceable.",
+                    "append_dont_replace": "Use desc_append to add to desc; plain {desc:...} REPLACES (pair with expect_rev). System history goes to the log, never desc.",
+                },
+                "desc_append": "PATCH {desc_append: \"text\"} or {desc: \"text\", desc_append: true} appends to the existing desc instead of replacing it. Plain {desc: ...} REPLACES — pair it with expect_rev, and remember system history lives in the append-only log, not desc.",
+                "concurrency": {
+                    "rev": "Monotonic revision on every item; bumps on each PATCH and system log-append.",
+                    "read": "GET /api/board/<id> returns rev (and ETag W/\"<id>-<rev>\"); the list GET includes rev per item.",
+                    "write": "PATCH with body expect_rev (or If-Match) applies ONLY if rev is unchanged; mismatch returns 409 with current_rev and the current item to re-merge from. Omit expect_rev for legacy last-writer-wins.",
+                    "why": "Read-modify-write on desc destroyed content silently (AMUX-1711); with expect_rev the interleaved write is DETECTED instead of lost.",
+                },
                 "fields": {
                     "session": "OWNER — accountable for the item MOVING. Must be a lane that can execute it.",
                     "shepherd": "WATCHER — holding the thread for a rested lane. NOT accountable for execution.",
+                    "depends_on": "JSON list of card ids this card is BLOCKED by while they are open; the autonomy loop skips blocked cards and routes nudges to the dependency.",
+                    "reviewer": "Session whose X-Amux-Session must ack review->done when set (cross-session verification; force is the logged escape).",
                     "type": f"Item type; DERIVES the gate. One of {list(_ITEM_TYPES)}. Default '{_DEFAULT_ITEM_TYPE}'.",
                     "status": f"One of {list(statuses)}.",
                 },
@@ -52355,6 +56537,175 @@ class CCHandler(BaseHTTPRequestHandler):
                         "Install Tailscale, or run `mkcert` and restart amux."),
             })
 
+        # ── MCP registry API ──────────────────────────────────────────────────
+        # GET /api/mcp — servers + which credentials each needs and whether they
+        # resolve. "configured" is not "working": four of the shipped servers
+        # were configured and unusable because nothing supplied MIXPEEK_API_KEY,
+        # so the missing-var list is the useful part of this response.
+        if method == "GET" and path == "/api/mcp":
+            reg, servers = CC_MCP_REGISTRY, {}
+            try:
+                if reg.exists():
+                    servers = json.loads(reg.read_text()).get("mcpServers") or {}
+                elif (Path(__file__).parent / "mcp.json").exists():
+                    servers = json.loads((Path(__file__).parent / "mcp.json").read_text()).get("mcpServers") or {}
+            except Exception as e:
+                return self._json({"error": f"registry unreadable: {e}", "servers": []})
+            env = {}
+            if CC_AMUX_ENV.exists():
+                for ln in CC_AMUX_ENV.read_text().splitlines():
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#") and "=" in ln:
+                        k, _, v = ln.partition("=")
+                        env[k.strip()] = v.strip()
+            out = []
+            for nm, cfg_ in servers.items():
+                blob = json.dumps(cfg_)
+                needs = sorted(set(re.findall(r"\$\{?([A-Z_][A-Z0-9_]*)\}?", blob)))
+                # A var counts as satisfied by EITHER amux.env or the server's own
+                # environment — otherwise a key exported in the shell reads as missing.
+                missing = [v for v in needs if not (env.get(v) or os.environ.get(v))]
+                out.append({"name": nm, "type": "http" if cfg_.get("url") else "stdio",
+                            "url": cfg_.get("url", ""), "command": cfg_.get("command", ""),
+                            "needs": needs, "missing": missing, "ready": not missing})
+            return self._json({"path": str(reg), "seeded": reg.exists(),
+                               "env_file": str(CC_AMUX_ENV), "env_exists": CC_AMUX_ENV.exists(),
+                               "env_keys": sorted(env.keys()), "servers": out})
+
+        # POST /api/mcp — import/replace one server: {"name":..,"config":{...}}
+        # or paste a whole {"mcpServers":{...}} blob with {"bulk": {...}}.
+        if method == "POST" and path == "/api/mcp":
+            body = self._read_body()
+            try:
+                reg = CC_MCP_REGISTRY
+                cur = {}
+                if reg.exists():
+                    cur = json.loads(reg.read_text()).get("mcpServers") or {}
+                elif (Path(__file__).parent / "mcp.json").exists():
+                    cur = json.loads((Path(__file__).parent / "mcp.json").read_text()).get("mcpServers") or {}
+                bulk = body.get("bulk")
+                if isinstance(bulk, dict):
+                    incoming = bulk.get("mcpServers") if "mcpServers" in bulk else bulk
+                    if not isinstance(incoming, dict) or not incoming:
+                        return self._json({"error": "bulk must be a non-empty object of servers"}, 400)
+                    cur.update(incoming)
+                    added = sorted(incoming.keys())
+                else:
+                    nm = (body.get("name") or "").strip()
+                    cfgv = body.get("config")
+                    if not nm or not isinstance(cfgv, dict):
+                        return self._json({"error": "name and config required"}, 400)
+                    cur[nm] = cfgv
+                    added = [nm]
+                reg.parent.mkdir(parents=True, exist_ok=True)
+                reg.write_text(json.dumps({"mcpServers": cur}, indent=2) + "\n")
+                _ilog("mcp", "import", actor=self.headers.get("X-Amux-Session", "") or "human",
+                      target="registry", detail={"added": added})
+                # Running sessions launched with the OLD file. Say so rather than
+                # implying a live change — the flag is read once, at start.
+                return self._json({"ok": True, "added": added, "servers": sorted(cur.keys()),
+                                   "note": "Running sessions keep the registry they started with; "
+                                           "restart a session to pick this up."})
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
+
+        # DELETE /api/mcp/<name>
+        if method == "DELETE" and path.startswith("/api/mcp/"):
+            nm = unquote(path[len("/api/mcp/"):])
+            try:
+                reg = CC_MCP_REGISTRY
+                if not reg.exists():
+                    return self._json({"error": "no registry"}, 404)
+                d = json.loads(reg.read_text())
+                srv = d.get("mcpServers") or {}
+                if nm not in srv:
+                    return self._json({"error": "not found"}, 404)
+                srv.pop(nm)
+                reg.write_text(json.dumps({"mcpServers": srv}, indent=2) + "\n")
+                _ilog("mcp", "delete", actor=self.headers.get("X-Amux-Session", "") or "human",
+                      target="registry", detail={"removed": nm})
+                return self._json({"ok": True, "removed": nm, "servers": sorted(srv.keys())})
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
+
+        # GET /api/interactions — the unified ledger.
+        #   ?kind=browser|session|inter_session  ?target=  ?actor=  ?since=<ms>
+        #   ?limit=  ?q=<substring over action/url/detail>
+        # Newest-first for browsing; ?order=asc for REPLAY, where the sequence
+        # only means anything in the order it actually happened.
+        if method == "GET" and path == "/api/interactions":
+            db = get_db()
+            where, params = ["1=1"], []
+            for col, key in (("kind", "kind"), ("target", "target"), ("actor", "actor")):
+                v = (qs.get(key, [""])[0] or "").strip()
+                if v:
+                    where.append(f"{col}=?"); params.append(v)
+            since = (qs.get("since", [""])[0] or "").strip()
+            if since.isdigit():
+                where.append("ts>=?"); params.append(int(since))
+            q = (qs.get("q", [""])[0] or "").strip()
+            if q:
+                where.append("(action LIKE ? OR url LIKE ? OR detail LIKE ?)")
+                params += [f"%{q}%"] * 3
+            try:
+                limit = max(1, min(2000, int(qs.get("limit", ["200"])[0])))
+            except Exception:
+                limit = 200
+            order = "ASC" if (qs.get("order", [""])[0] or "").lower() == "asc" else "DESC"
+            rows = db.execute(
+                f"SELECT id,ts,kind,actor,target,action,url,detail,before,result,ok,ms,seq "
+                f"FROM interaction_log WHERE {' AND '.join(where)} "
+                f"ORDER BY id {order} LIMIT ?", params + [limit]).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                for f in ("detail", "before", "result"):
+                    try:
+                        d[f] = json.loads(d[f]) if d[f] else None
+                    except Exception:
+                        pass    # keep the raw string; a truncated blob is still evidence
+                out.append(d)
+            return self._json(out)
+
+        # GET /api/interactions/replay?target=<browser session>&since=&until=
+        # One browser sequence as an ordered, self-contained script: each step
+        # with the page it ran against and the state before it — what you need
+        # to re-run it, or to walk it back.
+        if method == "GET" and path == "/api/interactions/replay":
+            db = get_db()
+            target = (qs.get("target", [""])[0] or "").strip()
+            if not target:
+                return self._json({"error": "target required"}, 400)
+            where, params = ["kind='browser'", "target=?"], [target]
+            for key, op in (("since", ">="), ("until", "<=")):
+                v = (qs.get(key, [""])[0] or "").strip()
+                if v.isdigit():
+                    where.append(f"ts{op}?"); params.append(int(v))
+            rows = db.execute(
+                f"SELECT ts,action,url,detail,before,ok,ms,seq FROM interaction_log "
+                f"WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT 2000", params).fetchall()
+            steps, start_url = [], ""
+            for r in rows:
+                d = dict(r)
+                for f in ("detail", "before"):
+                    try:
+                        d[f] = json.loads(d[f]) if d[f] else None
+                    except Exception:
+                        pass
+                if not start_url and isinstance(d.get("before"), dict):
+                    start_url = d["before"].get("url") or ""
+                steps.append(d)
+            return self._json({
+                "target": target, "steps": len(steps),
+                # Where to put the browser before step 1. Without it a replay
+                # starts from whatever page happens to be open.
+                "start_url": start_url,
+                "rollback_hint": ("Restore start_url, then re-run steps in order. A step whose "
+                                  "before.url differs from the previous step's before.url marks a "
+                                  "navigation you must reproduce before replaying it."),
+                "sequence": steps,
+            })
+
         # GET /api/prefs — read all prefs (or ?key=X for one)
         if method == "GET" and path == "/api/prefs":
             key = qs.get("key", [""])[0]
@@ -52464,12 +56815,14 @@ class CCHandler(BaseHTTPRequestHandler):
                     ors = []
                     for k in want:
                         if k == "human":
-                            ors.append("type NOT IN ('session','schedule')")
+                            ors.append("type NOT IN ('session','schedule','system')")
+                        elif k == "amux":
+                            ors.append("type='system'")
                         else:
                             ors.append("type=?")
                             params.append(k)
                     where.append("(" + " OR ".join(ors) + ")")
-                sql = "SELECT id, text, type, session, ts, origin FROM cmd_history"
+                sql = "SELECT id, text, type, session, ts, origin, card_id FROM cmd_history"
                 if where:
                     sql += " WHERE " + " AND ".join(where)
                 sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
@@ -53376,9 +57729,14 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"error": "invalid multipart"}, 400)
             # find target directory field
             target_dir = None
+            overwrite = False
             for part in parts:
-                if part.get_param("name", header="content-disposition") == "dir":
+                pname = part.get_param("name", header="content-disposition")
+                if pname == "dir":
                     target_dir = (part.get_payload(decode=True) or b"").decode("utf-8", errors="replace").strip()
+                elif pname == "overwrite":
+                    v = (part.get_payload(decode=True) or b"").decode("utf-8", errors="replace").strip().lower()
+                    overwrite = v in ("1", "true", "yes", "on")
             if not target_dir:
                 return self._json({"error": "missing 'dir' field"}, 400)
             dest_dir = Path(target_dir).expanduser().resolve()
@@ -53399,7 +57757,15 @@ class CCHandler(BaseHTTPRequestHandler):
                 if _is_dangerous_write(dest):
                     saved.append({"name": safe_name, "error": "refused: could execute code"})
                     continue
-                if dest.exists():
+                # Never clobber by default — a person dragging a file into the
+                # dashboard must not lose the one already there. But a caller
+                # applying a DECLARATION (cloud/seed.py writing a plan's context
+                # docs) means "this file should have these bytes", and suffixing
+                # turned every re-seed into another copy: a prospect workspace
+                # ended up with compliance.md, compliance_1.md, compliance_2.md
+                # and compliance_3.md sitting next to each other. overwrite=1 is
+                # opt-in, so the human path is unchanged.
+                if dest.exists() and not overwrite:
                     stem, suffix, i = dest.stem, dest.suffix, 1
                     while dest.exists():
                         dest = dest_dir / f"{stem}_{i}{suffix}"
@@ -53432,6 +57798,80 @@ class CCHandler(BaseHTTPRequestHandler):
             try:
                 src.rename(dst)
                 return self._json({"ok": True, "path": str(dst)})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
+        # ── File read / directory list ──
+        # /api/fs could write, move and delete but never read anything back, so a
+        # caller had no way to confirm its own upload landed. A session reading
+        # the 404 from a GET that was simply never routed concluded the files
+        # were gone and the container had been recycled, and went looking for an
+        # infrastructure fault that did not exist — the documents were sitting in
+        # /root/demo the whole time. Verifying workspace contents otherwise meant
+        # a GitHub Actions run that docker-execs `find` on the host (AC-152).
+        # Same containment as write and delete: _is_path_allowed decides.
+        if method == "GET" and path == "/api/fs/read":
+            target_path = (qs.get("path", [""])[0] or "").strip()
+            if not target_path:
+                return self._json({"error": "missing 'path'"}, 400)
+            target = Path(target_path).expanduser()
+            if not _is_path_allowed(target):
+                return self._json({"error": "access denied"}, 403)
+            target = target.resolve()
+            if not target.exists():
+                return self._json({"error": "not found", "path": str(target)}, 404)
+            if target.is_dir():
+                return self._json({"error": "is a directory — use /api/fs/list",
+                                   "path": str(target)}, 400)
+            try:
+                size = target.stat().st_size
+                # Cap the body rather than refusing outright: a caller checking
+                # "did my write land" needs the head of a big file, not an error.
+                cap = min(int(qs.get("max_bytes", ["1048576"])[0] or 1048576), 8 * 1024 * 1024)
+                raw = target.open("rb").read(cap)
+                try:
+                    text, binary = raw.decode("utf-8"), False
+                except UnicodeDecodeError:
+                    text, binary = base64.b64encode(raw).decode("ascii"), True
+                return self._json({
+                    "path": str(target), "size": size, "returned": len(raw),
+                    "truncated": size > len(raw),
+                    "encoding": "base64" if binary else "utf-8",
+                    "content": text,
+                    "modified": int(target.stat().st_mtime),
+                })
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
+        if method == "GET" and path == "/api/fs/list":
+            target_path = (qs.get("path", [""])[0] or "").strip()
+            if not target_path:
+                return self._json({"error": "missing 'path'"}, 400)
+            target = Path(target_path).expanduser()
+            if not _is_path_allowed(target):
+                return self._json({"error": "access denied"}, 403)
+            target = target.resolve()
+            if not target.exists():
+                return self._json({"error": "not found", "path": str(target)}, 404)
+            if not target.is_dir():
+                return self._json({"error": "not a directory — use /api/fs/read",
+                                   "path": str(target)}, 400)
+            try:
+                entries = []
+                for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                    try:
+                        st = p.stat()
+                        entries.append({"name": p.name, "dir": p.is_dir(),
+                                        "size": st.st_size, "modified": int(st.st_mtime)})
+                    except OSError:
+                        entries.append({"name": p.name, "error": "unreadable"})
+                # count is emitted separately from the (capped) list so a
+                # truncated listing can never read as a complete short one.
+                out = {"path": str(target), "count": len(entries),
+                       "entries": entries[:1000]}
+                if len(entries) > 1000:
+                    out["truncated"] = True
+                return self._json(out)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
 
@@ -53610,6 +58050,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 ".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8",
                 ".md": "text/plain; charset=utf-8", ".csv": "text/csv; charset=utf-8",
                 ".json": "application/json", ".log": "text/plain; charset=utf-8",
+                ".mp3": "audio/mpeg", ".wav": "audio/wav",
             }
             ct = ct_map.get(ext, "application/octet-stream")
             data = fpath.read_bytes()
@@ -53629,6 +58070,25 @@ class CCHandler(BaseHTTPRequestHandler):
             # ?done_limit=N  limits returned done/discarded items (default 100, 0=all)
             if method == "GET" and path == "/api/board":
                 done_limit = int(qs.get("done_limit", ["100"])[0])
+                _scoped, _ctags, _cname = _caller_scope(self.headers)
+                if _scoped:
+                    # Tag isolation (Ethan 2026-08-02): a session sees its OWN
+                    # cards plus cards owned by same-tag sessions; untagged
+                    # sees own only. Unowned cards are visible to no session
+                    # caller (they are the human's to route). Dashboard
+                    # (no header) is unfiltered below.
+                    _bd = _sse_cache["board"]["data"] or _load_board(done_limit=done_limit or 100)
+                    _sess_data = _sse_cache["sessions"]["data"] or []
+                    _tagmap = {x.get("name"): {t.lower() for t in (x.get("tags") or [])}
+                               for x in _sess_data}
+                    def _bvis(it):
+                        _own = it.get("session") or ""
+                        if _own == _cname:
+                            return True
+                        if not _own or not _ctags:
+                            return False
+                        return bool(_tagmap.get(_own, set()) & _ctags)
+                    return self._json([it for it in _bd if _bvis(it)])
                 if done_limit == 0:
                     return self._json(_load_board(done_limit=0))
                 # Default done_limit=100 → use the shared SSE board cache
@@ -53640,9 +58100,26 @@ class CCHandler(BaseHTTPRequestHandler):
                         try:
                             if time.time() - bc["time"] > _SSE_CACHE_TTL:
                                 if bc["data"] is not None:
+                                    # Capture the generation BEFORE reading. A write
+                                    # landing while _load_board() is in flight bumps
+                                    # it, and committing this now-stale result would
+                                    # silently undo that invalidation AND stamp it
+                                    # fresh — which is exactly how a just-created card
+                                    # stayed missing across repeated writes.
+                                    _gen0 = bc.get("gen", 0)
                                     def _bg_board():
                                         try:
-                                            data = _load_board()
+                                            # Rebuild-until-stable (2026-08-02 outage): under a
+                                            # write BURST every gen bump discarded the in-flight
+                                            # build, the cache never became fresh, and every
+                                            # client full-built its own board — 2 cores pinned,
+                                            # 90s reads. A build STARTED after the latest bump
+                                            # is correct to commit; loop bounded.
+                                            for _ in range(4):
+                                                _gen0 = bc.get("gen", 0)
+                                                data = _load_board()
+                                                if bc.get("gen", 0) == _gen0:
+                                                    break
                                             bc["data"] = data
                                             bc["json"] = json.dumps(data, sort_keys=True)
                                             bc["time"] = time.time()
@@ -53651,7 +58128,11 @@ class CCHandler(BaseHTTPRequestHandler):
                                     threading.Thread(target=_bg_board, daemon=True).start()
                                     released_to_bg = True
                                     return self._json_raw(bc["json"], etag=_cache_etag(bc))
-                                data = _load_board()
+                                for _ in range(4):
+                                    _g0 = bc.get("gen", 0)
+                                    data = _load_board()
+                                    if bc.get("gen", 0) == _g0:
+                                        break
                                 bc["data"] = data
                                 bc["json"] = json.dumps(data, sort_keys=True)
                                 bc["time"] = time.time()
@@ -53659,12 +58140,36 @@ class CCHandler(BaseHTTPRequestHandler):
                             if not released_to_bg:
                                 _sse_cache_lock.release()
                     else:
+                        # Lock held by an in-flight refresh. Serving bc["json"] here
+                        # hands back PRE-WRITE data purely because a refresh happened
+                        # to be running — the last hole in read-after-write, and the
+                        # reason a just-created card still went missing under rapid
+                        # writes even with the generation guard. When an explicit
+                        # write has invalidated the cache (data is None), read
+                        # through instead: correctness beats the cache on the rare
+                        # request that collides with a refresh.
+                        if bc["data"] is None:
+                            # SINGLE-FLIGHT (second leg of the 2026-08-02
+                            # outage): under sustained fleet writes every
+                            # lock-losing reader built its OWN full board —
+                            # the pile-up returned at 15s within minutes of
+                            # the first fix. Wait for the one builder (their
+                            # build post-dates the invalidating write, so
+                            # read-your-write holds); build ourselves only if
+                            # the wait times out.
+                            for _ in range(200):
+                                time.sleep(0.1)
+                                if bc["json"] and bc["data"] is not None:
+                                    return self._json_raw(bc["json"], etag=_cache_etag(bc))
+                            return self._json(_load_board())
                         if bc["json"]:
                             return self._json_raw(bc["json"], etag=_cache_etag(bc))
                         for _ in range(100):
                             time.sleep(0.1)
                             if bc["json"]:
                                 break
+                if bc["data"] is None:
+                    return self._json(_load_board())
                 return self._json_raw(bc["json"], etag=_cache_etag(bc)) if bc["json"] else self._json([])
 
             # POST /api/board — create issue
@@ -53674,6 +58179,17 @@ class CCHandler(BaseHTTPRequestHandler):
                 if not title:
                     return self._json({"error": "missing title"}, 400)
                 session = body.get("session", "").strip()
+                # MO-3038: X-Amux-Session set `creator` but not `session`, so a
+                # header-only create landed unassigned with the generic AMUX-
+                # prefix — attribution not lost, but in a different field than
+                # every consumer reads (88 of 250 session=None cards carried a
+                # creator). When the body OMITS the key and the verified header
+                # is present, the card is for the sender's own lane. An
+                # EXPLICIT session in the body — including explicit "" for a
+                # deliberately unassigned card — is always respected, and the
+                # header-less dashboard path is unchanged.
+                if "session" not in body:
+                    session = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
                 prefix = _prefix_from_session(session)
                 item_id = _next_issue_id(prefix)
                 now = int(time.time())
@@ -53692,7 +58208,10 @@ class CCHandler(BaseHTTPRequestHandler):
                 elif not creator:
                     creator = _chdr or self.headers.get("X-Amux-User-Email", "").strip()
                 desc = body.get("desc", "").strip()
-                tags = [t for t in body.get("tags", []) if t]
+                _tags_in = body.get("tags", [])
+                if isinstance(_tags_in, str):   # same coercion as PATCH (SP-539)
+                    _tags_in = [_tags_in] if _tags_in.strip() else []
+                tags = [t for t in _tags_in if t]
                 owner_type = body.get("owner_type", "agent" if session else "human")
                 if owner_type not in ("human", "agent"):
                     owner_type = "human"
@@ -53706,11 +58225,24 @@ class CCHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 new_pos = (min_pos_row["m"] if min_pos_row else 0) - 1024.0
                 db.execute(
-                    """INSERT INTO issues (id, title, desc, status, session, shepherd, type, creator, due, due_time, created, updated, owner_type, pos, gate)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    # `reviewer` belongs in this INSERT. It was accepted by the
+                    # API and silently DISCARDED — the card read back
+                    # reviewer=None and only a follow-up PATCH would set it. That
+                    # mattered the moment AC-165 made a reviewer required for any
+                    # close: a session filing a reviewer-gated card in one call
+                    # got an UNPROTECTED card and was told nothing, and could then
+                    # legitimately close it, because as far as the server was
+                    # concerned no reviewer existed. It also produced a false
+                    # negative while verifying AC-165 itself — the probe set
+                    # reviewer at POST, the gate correctly did not fire, and the
+                    # fix briefly looked broken. Accepting a field and dropping it
+                    # is worse than rejecting it.
+                    """INSERT INTO issues (id, title, desc, status, session, shepherd, type, creator, due, due_time, created, updated, owner_type, pos, gate, reviewer)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (item_id, title, desc, status, session or None, (body.get("shepherd") or None),
                      (body.get("type") or _DEFAULT_ITEM_TYPE), creator, due, due_time, now, now,
-                     owner_type, new_pos, gate_json),
+                     owner_type, new_pos, gate_json,
+                     ((body.get("reviewer") or "").strip() or None)),
                 )
                 for tag in tags:
                     db.execute(
@@ -53724,10 +58256,31 @@ class CCHandler(BaseHTTPRequestHandler):
                     _gcal_sync_bg(item_id, title=title, due=due, due_time=due_time or "", desc=desc, status=status)
                 _req_tl.event = {"type": "board", "action": "created", "target": item_id,
                                  "session": session, "detail": f"{item_id}: {title}"}
+                # Duplicate-investigation guard (AMUX-2202): surface open
+                # cards from OTHER sessions with similar titles at the moment
+                # of filing — the only moment the overlap is cheap to act on.
+                # Recorded on the card History (where the filer looks) and in
+                # the response (for CLI/API filers).
+                try:
+                    _sims = _similar_open_cards(title, session)
+                    if _sims:
+                        item["similar_open"] = _sims
+                        _append_board_log(item_id,
+                            "possible duplicate of: " + ", ".join(
+                                f"{x['id']} ({x['session']}, {int(x['sim']*100)}%)" for x in _sims)
+                            + " — check before investigating independently")
+                        slog(f"[board] {item_id} similar to open: "
+                             + ", ".join(x["id"] for x in _sims))
+                except Exception:
+                    pass
                 # Auto-notify the assignee session if this is an agent task waiting for pickup.
                 # Skip if creator==session (the session created its own task).
+                # 'todo' only (MG/AMUX-2205): backlog is deliberate parking —
+                # a backlog move must stop the claim AND the routing. Dormant
+                # types never route (arming is not an assignment).
                 if (session and owner_type == "agent"
-                        and status in ("todo", "backlog")
+                        and status == "todo"
+                        and (body.get("type") or "") not in ("tripwire", "watch")
                         and creator != session):
                     _notify_session_of_task(session, item_id, title)
                 return self._json(item, 201)
@@ -53735,13 +58288,18 @@ class CCHandler(BaseHTTPRequestHandler):
             # POST /api/board/clear-done — soft-delete all done issues
             if method == "POST" and path == "/api/board/clear-done":
                 now = int(time.time())
-                done_ids = [r["id"] for r in db.execute(
-                    "SELECT id FROM issues WHERE status = 'done' AND deleted IS NULL"
-                ).fetchall()]
+                done_rows = db.execute(
+                    "SELECT id, title FROM issues WHERE status = 'done' AND deleted IS NULL"
+                ).fetchall()
+                done_ids = [r["id"] for r in done_rows]
                 db.execute(
                     "UPDATE issues SET deleted = ? WHERE status = 'done' AND deleted IS NULL", (now,)
                 )
                 db.commit()
+                # Stamp survivors that referenced the evicted cards (MO-3049).
+                _n = _stamp_evicted_dependents([(r["id"], r["title"]) for r in done_rows])
+                if _n:
+                    slog(f"[board] clear-done: stamped {_n} open card(s) referencing evicted ids")
                 _board_changed()
                 remaining = db.execute(
                     "SELECT COUNT(*) FROM issues WHERE deleted IS NULL"
@@ -53859,6 +58417,91 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"tag": tag, "total": total, "done": done, "complete": total > 0 and done == total})
 
             # POST /api/board/<id>/claim — atomic task claim for multi-agent coordination
+            # GET /api/board/<id>/history — the mutation audit, readable where
+            # the consumer already looks (AMUX-2141; ethos #4 second layer: a
+            # record in a store nobody opens is the same failure as no record).
+            hist_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/history$", path)
+            if hist_m and method == "GET":
+                _hid = hist_m.group(1)
+                _rows = db.execute(
+                    "SELECT ts, actor, action, detail, before, ok FROM interaction_log "
+                    "WHERE kind='board' AND target=? ORDER BY ts DESC LIMIT 200",
+                    (_hid,)).fetchall()
+                def _j(v):
+                    try:
+                        return json.loads(v) if isinstance(v, str) and v else v
+                    except Exception:
+                        return v
+                return self._json({"id": _hid, "history": [
+                    {"ts": r["ts"], "actor": r["actor"], "action": r["action"],
+                     "changed": _j(r["detail"]), "before": _j(r["before"]),
+                     "ok": bool(r["ok"])} for r in _rows]})
+
+            # POST /api/board/<id>/status-request {question?} — ask the OWNING
+            # session to report this card's status onto the board (AMUX-2174).
+            # The ethos inverse of scraping (D1): amux does not infer status; it
+            # routes a request and the session's model AUTHORS the answer, so
+            # quality improves as models improve. Board stays the source of
+            # truth because the session pushes its status HERE.
+            sr_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/status-request$", path)
+            if sr_m and method == "POST":
+                bid = sr_m.group(1)
+                body = self._read_body()
+                q = (body.get("question") or "").strip()[:400]
+                it = _item_by_id(bid)
+                if not it:
+                    return self._json({"error": "item not found"}, 404)
+                sess = (it.get("session") or "").strip()
+                requester = (self.headers.get("X-Amux-Session", "")
+                             or self.headers.get("X-Amux-User-Email", "") or "Ethan").strip()
+                if not sess:
+                    return self._json({"ok": False, "delivered": False,
+                                       "reason": "card has no owning session to ask"}, 409)
+                if not is_running(sess):
+                    # Honest offline path (ethos #7): no faking a live answer.
+                    _last = ""
+                    for _l in reversed((it.get("log") or "").splitlines()):
+                        if "STATUS" in _l or "commit " in _l:
+                            _last = _l.strip(); break
+                    return self._json({"ok": False, "delivered": False,
+                                       "reason": f"session '{sess}' is not running",
+                                       "last_known": _last,
+                                       "hint": "the request is not queued; ask again when the session runs"})
+                _prompt = (f"[amux status request on {bid}: {(it.get('title') or '')[:80]}] "
+                           f"{requester} asks for a status update"
+                           + (f": {q}" if q else "") + ".\n"
+                           f"Reply by running:  amux board status-update {bid} \"<what's done, what's next, any blocker>\"\n"
+                           f"That posts to the BOARD, which is the source of truth — a chat reply alone does not update the card.")
+                # Dispatch the send in the background: send_text can block on the
+                # target's settle state, and an HTTP handler must not hang on it
+                # (the request timed out at 15s in the first live test). The
+                # record and the delivery are both guaranteed; the return is
+                # immediate. defer_if_busy so it lands at the next turn boundary
+                # rather than interrupting a working session mid-task.
+                threading.Thread(target=send_text, args=(sess, _prompt),
+                                 kwargs={"defer_if_busy": True}, daemon=True).start()
+                _append_board_log(bid, f"status requested by {requester}"
+                                       + (f" — \"{q}\"" if q else "") + f" (routed to {sess})")
+                _ilog("board", "status_request", actor=requester, target=bid,
+                      detail={"session": sess, "question": q}, ok=True)
+                return self._json({"ok": True, "delivered": True, "session": sess,
+                                   "message": f"asked {sess} to post a status update to {bid}"})
+
+            # POST /api/board/<id>/status-update {text} — the owning session's
+            # model-authored answer, appended to the card history AND stored as
+            # the card's latest status (AMUX-2174).
+            su_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/status-update$", path)
+            if su_m and method == "POST":
+                bid = su_m.group(1)
+                body = self._read_body()
+                txt = (body.get("text") or "").strip()[:1200]
+                if not txt:
+                    return self._json({"error": "text required"}, 400)
+                actor = (self.headers.get("X-Amux-Session", "") or "session").strip()
+                _append_board_log(bid, f"STATUS ({actor}): {txt}")
+                _ilog("board", "status_update", actor=actor, target=bid, detail={"text": txt}, ok=True)
+                return self._json({"ok": True, "id": bid})
+
             claim_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/claim$", path)
             if claim_m and method == "POST":
                 bid = claim_m.group(1)
@@ -53890,6 +58533,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     return self._json({"error": "claim failed — taken by another session"}, 409)
                 _board_changed()
                 _emit_event(session_name, "task.claimed", {"issue": bid}, source="api-claim")
+                _append_board_log(bid, f"claimed by {session_name} (todo/backlog \u2192 doing)")  # AMUX-2164
                 return self._json(_item_by_id(bid))
 
             # PATCH/DELETE /api/board/<id>
@@ -53902,9 +58546,44 @@ class CCHandler(BaseHTTPRequestHandler):
                 if not exists:
                     return self._json({"error": "item not found"}, 404)
 
+                # GET /api/board/<id> — read ONE card. There was no GET branch
+                # here, so the request fell through this block to the generic
+                # 404, and every card in the board answered "not found" while
+                # sitting in the list and accepting PATCH on the same URL. The
+                # workaround is to fetch the whole board and filter it in the
+                # client, which is what callers have been doing: ~1700 cards to
+                # read one, and a scripted `desc` append that assumed the read
+                # worked died mid-run instead.
+                if method == "GET":
+                    _it = _item_by_id(bid)
+                    # Weak etag for read-modify-write callers (AMUX-1711):
+                    # echo it back via If-Match or body expect_rev on PATCH.
+                    return self._json(_it, headers={
+                        "ETag": f'W/"{bid}-{(_it or {}).get("rev", 0)}"'})
+
                 if method == "PATCH":
                     body = self._read_body()
                     now = int(time.time())
+                    # Optimistic concurrency (AMUX-1711): opt-in. A caller that
+                    # read rev N can require the write to only apply against N;
+                    # anyone else's interleaved write bumps rev, so the stale
+                    # writer gets a 409 WITH the current item to re-merge from,
+                    # instead of a silent last-writer-wins 200.
+                    _ifm = (self.headers.get("If-Match", "") or "").strip()
+                    _exp_rev = body.get("expect_rev")
+                    if _exp_rev is None and _ifm:
+                        _m_rev = re.search(r"-(\d+)\"?$", _ifm)
+                        _exp_rev = int(_m_rev.group(1)) if _m_rev else None
+                    if _exp_rev is not None:
+                        _cur = _item_by_id(bid) or {}
+                        if int(_exp_rev) != int(_cur.get("rev", 0)):
+                            return self._json({
+                                "error": "rev mismatch",
+                                "expected": int(_exp_rev),
+                                "current_rev": int(_cur.get("rev", 0)),
+                                "item": _cur,
+                                "hint": "re-read, re-apply your change to the current item, retry with the new rev",
+                            }, 409)
                     # Canonicalise BEFORE anything reads it, so the one-doing cap,
                     # the clean-tree check, the gate and the write all see the same
                     # value. A caller sending 'in_review' or 'resolved' otherwise
@@ -53917,6 +58596,29 @@ class CCHandler(BaseHTTPRequestHandler):
                         "SELECT session, status, owner_type FROM issues WHERE id = ?", (bid,)
                     ).fetchone()
                     prior_session = prior["session"] if prior else None
+                    # Full prior item for the mutation audit (AMUX-2141): the
+                    # ledger held only commit_attached and gate_force, so a
+                    # PATCH that destroyed a 2112-char desc left no recovery
+                    # path. before-values make the next MHC-267 recoverable.
+                    _audit_prior = _item_by_id(bid) or {}
+                    # desc_append is HONOURED (homepage-claude, 2026-08-01):
+                    # the field was accepted, ignored, and the destructive
+                    # replace ran anyway — 200 at the call site, ~20 silent
+                    # wipes in one day, nine cards rebuilt from /history.
+                    # Silently ignoring an unknown field while performing a
+                    # destructive default is the worst option; the obvious
+                    # guess now simply works. Both natural shapes:
+                    #   {desc_append: "text"}            -> old + "\n" + text
+                    #   {desc: "text", desc_append: true} -> old + "\n" + text
+                    _da = body.get("desc_append")
+                    if _da is not None:
+                        _new_txt = _da if isinstance(_da, str) else (body.get("desc") or "")
+                        if isinstance(_da, bool) and not _da:
+                            pass  # explicit false = plain replace semantics
+                        elif _new_txt:
+                            _old_desc = (_audit_prior.get("desc") or "").rstrip()
+                            body["desc"] = (_old_desc + "\n" + _new_txt).strip()
+                        body.pop("desc_append", None)
                     # ── One-doing-per-session soft cap (AMUX-1707) ──────────────
                     # `doing` is only meaningful if it's HARD TO HOLD. Taking a 2nd
                     # doing item is how 164 of them accumulated. Soft by design:
@@ -53954,9 +58656,25 @@ class CCHandler(BaseHTTPRequestHandler):
                         wd = _session_work_dir(eff_session) if eff_session else None
                         if wd:
                             dirty = _session_dirty_files(eff_session, wd)
-                            # Don't block on dirt we can't attribute: if a peer is
-                            # actively working the same checkout, the uncommitted
-                            # files may be theirs, not this task's.
+                            # Per-FILE attribution first (AMUX-2145): in a
+                            # many-cotenant checkout, IDLE peers' dirt used to
+                            # block every verify here, and the 409's own text
+                            # prescribed force — so honest verifications were
+                            # recorded as full-gate bypasses (backend on
+                            # BACKE-3024, the only force of the night, HAD its
+                            # prod evidence on the card). Same discrimination
+                            # the commit guard already uses: dirt edited by a
+                            # DIFFERENT session is not this task's to commit.
+                            if dirty:
+                                try:
+                                    _att = _staged_guard_check(eff_session, wd, dirty)
+                                    _foreign = set(_att.get("foreign") or [])
+                                    if _foreign:
+                                        dirty = [f for f in dirty if f not in _foreign]
+                                except Exception:
+                                    pass
+                            # Blanket fallback for UNATTRIBUTED dirt: a peer
+                            # actively working the same checkout may own it.
                             if dirty and _checkout_busy_cotenant(eff_session, wd):
                                 dirty = []
                             if dirty:
@@ -53984,11 +58702,73 @@ class CCHandler(BaseHTTPRequestHandler):
                         gate_item = _item_by_id(bid) or {}
                         if "session" in body:
                             gate_item["session"] = body.get("session") or None
+                        if "type" in body:
+                            # Type feeds the gate (_item_type_gate), so a PATCH that
+                            # reclassifies AND moves must be judged by the NEW type.
+                            # Without this, correcting a mistyped card is impossible in
+                            # one call: reclassifying a decision card from `code` to
+                            # `ops` was rejected for lacking a diff — which is the very
+                            # reason it was being reclassified. The ethos says fix the
+                            # type rather than bypass the gate; this makes that
+                            # instruction followable.
+                            gate_item["type"] = (body.get("type") or "").strip() or None
                         if "gate" in body:
                             _g = body.get("gate")
                             gate_item["gate"] = ([str(x).strip() for x in _g if str(x).strip()]
                                                  if isinstance(_g, list) else [])
                         eff_gate = _effective_gate(gate_item, new_status)
+                        # Reviewer edge (opt-in per card): when set, closing out of
+                        # review must be acked BY the reviewer session — the author
+                        # self-acking its own review is exactly the voluntary-only
+                        # cross-checking this field exists to replace. force stays
+                        # the logged escape.
+                        # The `status == "review"` condition used to be here and was
+                        # a silent bypass: the requirement only fired when the card
+                        # was ALREADY in review, so an author could close their own
+                        # reviewer-gated card by never entering it — doing ->
+                        # verified skipped the check entirely. AMUX-2217 reached
+                        # `verified` naming a reviewer who never acked it, and the
+                        # peer-review routing now being built assumes this field
+                        # binds. A gate that any author can step around by choosing
+                        # a different transition is a gate that cannot fail.
+                        # Now: a reviewer, once set, is required for ANY close.
+                        _rev = (gate_item.get("reviewer") or "").strip()
+                        if (_rev and new_status in ("done", "verified")
+                                and not body.get("force")):
+                            _acker = (self.headers.get("X-Amux-Session", "") or "").strip()
+                            if _acker != _rev:
+                                return self._json({
+                                    "error": "review sign-off required from the reviewer",
+                                    "blocked": True, "reviewer": _rev,
+                                    "acker": _acker or "(no X-Amux-Session)",
+                                    "how": (f"this card names '{_rev}' as reviewer; the review->done ack "
+                                            f"must come from that session (X-Amux-Session), or pass "
+                                            f"force=true (logged) if the human overrides."),
+                                }, 409)
+                        # The contract advertises force as "logged" in two places and
+                        # NOTHING logged it — the one escape hatch from the gate system
+                        # was the one action leaving no trace, while claiming otherwise.
+                        # An unauditable bypass that says it is audited is worse than an
+                        # honest one, because it is trusted.
+                        if eff_gate and body.get("force"):
+                            _ilog("board", "gate_force",
+                                  actor=_sched_mutation_by(self.headers, self.client_address, body),
+                                  target=bid, ok=True,
+                                  detail={"from": gate_item.get("status"),
+                                          "to": new_status,
+                                          "type": gate_item.get("type") or "code",
+                                          "bypassed_gate": eff_gate,
+                                          # Discriminator (AMUX-2145): a force
+                                          # WITH honest acks (escaping only the
+                                          # dirt check) reads very differently
+                                          # from a naked bypass — record which
+                                          # this was, or the ledger overstates.
+                                          "acks_provided": (body.get("gate_checked")
+                                                            if isinstance(body.get("gate_checked"), list)
+                                                            else bool(body.get("gate_ack"))),
+                                          "title": (gate_item.get("title") or "")[:120]})
+                            slog(f"[board] GATE FORCED {bid} -> {new_status} "
+                                 f"(bypassed {len(eff_gate)} criteria)")
                         if eff_gate and not body.get("force"):
                             # AMUX-1719: gate_checked must actually MATCH the effective
                             # gate. It used to be `isinstance(..., list)` — so
@@ -54056,8 +58836,43 @@ class CCHandler(BaseHTTPRequestHandler):
                             slog(f"[board-gate] {bid} {prior['status']}->{new_status} "
                                  f"acknowledged (force={bool(body.get('force'))}, "
                                  f"checked={len(_chk) if isinstance(_chk, list) else 0}/{len(eff_gate)})")
+                    # An unrecognised type silently inherits the CODE gate ("Implemented
+                    # and merged", "Tests / lint pass"). Seven live cards typed
+                    # 'decision'/'bug' were sitting behind a merge gate they can never
+                    # honestly satisfy — which is precisely the situation that pushes a
+                    # session to force or to ack something false. Reject it at the door
+                    # and name the valid set, rather than accepting it and mis-gating.
+                    if "type" in body:
+                        _t = str(body.get("type") or "").strip().lower()
+                        if _t and _t not in _ITEM_TYPES:
+                            return self._json({
+                                "error": f"unknown type {_t!r}",
+                                "valid_types": list(_ITEM_TYPES),
+                                "why": ("The gate is DERIVED from type. An unknown type would "
+                                        "silently fall back to the strictest (code) gate, which "
+                                        "non-code work cannot satisfy without asserting a merge "
+                                        "that never happened."),
+                            }, 400)
+                        if _t:
+                            body["type"] = _t
                     set_clauses, params = [], []
-                    for k in ("title", "desc", "status", "session", "shepherd", "type", "due", "due_time", "owner_type", "pinned", "pos"):
+                    if "depends_on" in body:
+                        _dep = body.get("depends_on")
+                        if not isinstance(_dep, list):
+                            return self._json({"error": "depends_on must be a list of card ids"}, 400)
+                        _dep = [str(x).strip() for x in _dep if str(x).strip()]
+                        if bid in _dep:
+                            return self._json({"error": "a card cannot depend on itself"}, 400)
+                        _missing_dep = [x for x in _dep
+                                        if not db.execute("SELECT 1 FROM issues WHERE id=? AND deleted IS NULL", (x,)).fetchone()]
+                        if _missing_dep:
+                            return self._json({"error": f"unknown card id(s) in depends_on: {_missing_dep}"}, 400)
+                        set_clauses.append("depends_on = ?")
+                        params.append(json.dumps(_dep) if _dep else None)
+                    if "reviewer" in body:
+                        set_clauses.append("reviewer = ?")
+                        params.append((str(body.get("reviewer") or "").strip() or None))
+                    for k in ("title", "desc", "status", "session", "shepherd", "type", "due", "due_time", "owner_type", "pinned", "pos", "source_ref", "last_verified_at"):
                         if k in body:
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
@@ -54073,6 +58888,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     # If session is being changed, reset notified so the new assignee gets pinged
                     if "session" in body and (body.get("session") or None) != prior_session:
                         set_clauses.append("notified = 0")
+                    set_clauses.append("rev = COALESCE(rev, 0) + 1")
                     set_clauses.append("updated = ?")
                     params.append(now)
                     params.append(bid)
@@ -54081,6 +58897,12 @@ class CCHandler(BaseHTTPRequestHandler):
                             f"UPDATE issues SET {', '.join(set_clauses)} WHERE id = ?", params
                         )
                     if "tags" in body:
+                        # A bare-string tags value is coerced to [string]: iterating
+                        # a str explodes it into one tag PER CHARACTER — 200, no
+                        # error, silently corrupted card (studio-plg, SP-539). Same
+                        # design call as desc_append: the obvious shape works.
+                        if isinstance(body.get("tags"), str):
+                            body["tags"] = [body["tags"]] if body["tags"].strip() else []
                         db.execute("DELETE FROM issue_tags WHERE issue_id = ?", (bid,))
                         for tag in (body["tags"] or []):
                             if tag:
@@ -54102,6 +58924,44 @@ class CCHandler(BaseHTTPRequestHandler):
                         pass
                     try:
                         updated_item = _item_by_id(bid)
+                        try:
+                            _AUDIT_FIELDS = ("title", "desc", "status", "session", "shepherd",
+                                             "type", "owner_type", "reviewer", "depends_on",
+                                             "due", "due_time", "pinned", "archived")
+                            _chg = {k: updated_item.get(k) for k in _AUDIT_FIELDS
+                                    if k in body and _audit_prior.get(k) != updated_item.get(k)}
+                            _actor = (self.headers.get("X-Amux-Session", "")
+                                      or self.headers.get("X-Amux-User-Email", "")
+                                      or "unattributed")
+                            if _chg:
+                                _ilog("board", "patch", actor=_actor, target=bid,
+                                      detail=_chg,
+                                      before={k: _audit_prior.get(k) for k in _chg},
+                                      ok=True)
+                                # Status transitions are the STORY of the card;
+                                # surface them in the visible append-only History
+                                # (AMUX-2164), not only in interaction_log which
+                                # the detail panel never shows. Reviewer-acks and
+                                # forces annotate the line so the History reads as
+                                # a narrative, not a diff.
+                                if "status" in _chg:
+                                    _frm = _audit_prior.get("status") or "?"
+                                    _to = _chg["status"]
+                                    # Verbose entry (AMUX-2175): the actor, the
+                                    # transition, and HOW it passed the gate —
+                                    # which criteria were acknowledged, or the
+                                    # force, so the History reads as an audit
+                                    # trail, not a bare diff.
+                                    _extra = ""
+                                    if body.get("force"):
+                                        _extra = " [FORCED — gate bypassed]"
+                                    elif isinstance(body.get("gate_checked"), list) and body.get("gate_checked"):
+                                        _gc = body.get("gate_checked")
+                                        _extra = f" [gate: {', '.join(str(x) for x in _gc[:4])}]"
+                                    _role = "human" if _audit_prior.get("owner_type") != "agent" or _actor == "Ethan" else "session"
+                                    _append_board_log(bid, f"status: {_frm} \u2192 {_to} (by {_actor}/{_role}){_extra}")
+                        except Exception as _ae:
+                            slog(f"[board] patch audit failed for {bid}: {_ae}")
                     except Exception:
                         updated_item = None
                     if not updated_item:
@@ -54122,12 +58982,38 @@ class CCHandler(BaseHTTPRequestHandler):
                                       due_time=updated_item.get("due_time", "") or "",
                                       desc=updated_item.get("desc", ""),
                                       status=updated_item.get("status", ""))
-                        # Auto-notify the (possibly new) assignee if the card is now an
-                        # agent task waiting for pickup. Idempotent via the notified flag.
+                        # Auto-notify the assignee — but only when THIS patch is
+                        # assignment-shaped: the session changed, or the status moved
+                        # INTO the pickup states from somewhere else. It used to fire on
+                        # the card's STATE (agent+todo), so any first-ever patch of a
+                        # card born notified=0 announced it — auto-filed cards are born
+                        # that way on purpose (the session already received the prompt
+                        # as its command), and a desc-only cleanup pass re-announced 17
+                        # of them, hours stale, to the session that created them
+                        # (2026-07-31). Notification belongs to the assignment EVENT,
+                        # not the state; the notified flag stays as the race dedupe.
                         new_session = updated_item.get("session") or ""
+                        _prior_status = prior["status"] if prior else None
+                        _assigned_now = ("session" in body and (body.get("session") or None) != prior_session)
+                        # Loop 1 (throughput plan): entering review with no
+                        # reviewer -> a live peer is assigned automatically.
+                        if (updated_item.get("status") == "review"
+                                and _prior_status != "review"
+                                and updated_item.get("owner_type") == "agent"
+                                and not (updated_item.get("reviewer") or "").strip()):
+                            threading.Thread(target=_auto_assign_reviewer,
+                                             args=(bid, dict(updated_item)),
+                                             daemon=True).start()
+                        # 'todo' only (MG/AMUX-2205): a doing->backlog park
+                        # fired "New board task assigned" at the mover —
+                        # backlog stops the claim, so it must stop the routing.
+                        _entered_queue = (updated_item.get("status") == "todo"
+                                          and _prior_status != "todo")
                         if (new_session
                                 and updated_item.get("owner_type") == "agent"
-                                and updated_item.get("status") in ("todo", "backlog")):
+                                and updated_item.get("status") == "todo"
+                                and (updated_item.get("type") or "") not in ("tripwire", "watch")
+                                and (_assigned_now or _entered_queue)):
                             _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
                     except Exception as _e:
                         slog(f"[board-patch] post-commit side effect failed for {bid} "
@@ -54136,8 +59022,10 @@ class CCHandler(BaseHTTPRequestHandler):
 
                 if method == "DELETE":
                     now = int(time.time())
+                    _del_row = db.execute("SELECT title FROM issues WHERE id = ?", (bid,)).fetchone()
                     db.execute("UPDATE issues SET deleted = ? WHERE id = ?", (now, bid))
                     db.commit()
+                    _stamp_evicted_dependents([(bid, (_del_row["title"] if _del_row else ""))])
                     _board_changed()
                     _gcal_sync_bg(bid, deleted=True)
                     return self._json({"ok": True, "deleted": bid})
@@ -54178,14 +59066,31 @@ class CCHandler(BaseHTTPRequestHandler):
                     "SELECT * FROM schedules WHERE deleted IS NULL ORDER BY next_run ASC, created ASC"
                 ).fetchall()
                 cols = _sched_cols(db)
-                self._json([_sched_row_to_dict(r, cols) for r in rows])
+                out = [_sched_row_to_dict(r, cols) for r in rows]
+                # MEASURED fires/day + fleet share (MG audit #1 interim):
+                # run_count 1667 sat invisible in this API while ONE 5-minute
+                # canary was 51% of all fleet wake-ups. Counted from actual
+                # runs in the last 24h — measured, not parsed from the expr —
+                # so the next runaway schedule is self-evident in the list.
+                try:
+                    _fd = {r[0]: r[1] for r in db.execute(
+                        "SELECT schedule_id, COUNT(*) FROM schedule_runs "
+                        "WHERE ran_at >= ? GROUP BY schedule_id",
+                        (int(_time.time()) - 86400,)).fetchall()}
+                    _tot = sum(_fd.values()) or 1
+                    for o in out:
+                        o["fires_day"] = _fd.get(o.get("id"), 0)
+                        o["fleet_share"] = round(100 * _fd.get(o.get("id"), 0) / _tot, 1)
+                except Exception:
+                    pass
+                self._json(out)
                 return
 
             # GET /api/schedules/runs — recent runs across all schedules
             if method == "GET" and path == "/api/schedules/runs":
                 db = get_db()
                 rows = db.execute(
-                    "SELECT sr.id, sr.schedule_id, sr.ran_at, sr.status, sr.note, s.title "
+                    "SELECT sr.id, sr.schedule_id, sr.ran_at, sr.status, sr.note, sr.source, s.title "
                     "FROM schedule_runs sr LEFT JOIN schedules s ON s.id = sr.schedule_id "
                     "ORDER BY sr.ran_at DESC LIMIT 50"
                 ).fetchall()
@@ -54226,12 +59131,26 @@ class CCHandler(BaseHTTPRequestHandler):
                     "sched_type": stype,
                     "recurrence": data.get("recurrence"),
                     "run_at": run_at, "next_run": run_at,
-                    "last_run": None, "enabled": 1, "run_count": 0,
+                    "last_run": None,
+                    # Honor an EXPLICIT enabled from the caller; default 1 so the
+                    # dashboard (whose create payload omits the field) is
+                    # unchanged. This used to be a literal 1, which silently
+                    # discarded the caller's intent: cloud/seed.py posts
+                    # enabled:0 and documents that seeded demos stay disabled
+                    # until someone turns them on, and every seeded schedule
+                    # came up running anyway. A Wexus prospect workspace burned
+                    # its entire $25 trial budget on schedules its own plan
+                    # declared disabled (AC-139).
+                    "enabled": 1 if data.get("enabled", 1) else 0,
+                    "run_count": 0,
                     "schedule_expr": schedule_expr or None,
                     "watch": int(data.get("watch") or 0),
                     "watch_timeout": int(data.get("watch_timeout") or 120),
                     "done_pattern": data.get("done_pattern") or None,
                     "done_action": data.get("done_action") or "disable",
+                    "exit_actions": (json.dumps(data["exit_actions"])
+                                     if isinstance(data.get("exit_actions"), dict)
+                                     else (data.get("exit_actions") or None)),
                     "trigger_on": (data.get("trigger_on") or "").strip() or None,
                     "trigger_cooldown": int(data.get("trigger_cooldown") or 120),
                     "trigger_sessions": (data.get("trigger_sessions") or "").strip() or None,
@@ -54248,8 +59167,8 @@ class CCHandler(BaseHTTPRequestHandler):
                     """INSERT INTO schedules (id,title,session,command,kind,sched_type,recurrence,
                        run_at,next_run,last_run,enabled,run_count,schedule_expr,
                        watch,watch_timeout,done_pattern,done_action,trigger_on,trigger_cooldown,trigger_sessions,
-                       created,updated,deleted)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       exit_actions,created,updated,deleted)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (sched["id"], sched["title"], sched["session"], sched["command"], sched["kind"],
                      sched["sched_type"], sched["recurrence"], sched["run_at"],
                      sched["next_run"], sched["last_run"], sched["enabled"],
@@ -54257,7 +59176,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["watch"], sched["watch_timeout"],
                      sched["done_pattern"], sched["done_action"],
                      sched["trigger_on"], sched["trigger_cooldown"], sched["trigger_sessions"],
-                     sched["created"], sched["updated"], sched["deleted"])
+                     sched.get("exit_actions"), sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
                 # Creation is a mutation too — unaudited creates were half of
@@ -54266,6 +59185,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 _sched_audit(sid, "created", "",
                              json.dumps({"title": sched["title"], "session": sched["session"],
                                          "expr": sched["schedule_expr"] or sched["run_at"],
+                                         # created-enabled is the discriminator that
+                                         # cost a trial budget (AC-139) — record it,
+                                         # or "why was this firing?" is unanswerable
+                                         # from the trail that exists to answer it.
+                                         "enabled": sched["enabled"],
                                          "kind": sched["kind"]}),
                              "api-create",
                              _sched_mutation_by(self.headers, self.client_address, data))
@@ -54280,7 +59204,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 sid_for_runs = sched_id[:-5]  # strip "/runs"
                 db = get_db()
                 rows = db.execute(
-                    "SELECT id, schedule_id, ran_at, status, note FROM schedule_runs "
+                    "SELECT id, schedule_id, ran_at, status, note, source FROM schedule_runs "
                     "WHERE schedule_id=? ORDER BY ran_at DESC LIMIT 20",
                     (sid_for_runs,)
                 ).fetchall()
@@ -54296,7 +59220,11 @@ class CCHandler(BaseHTTPRequestHandler):
                     self._json({"error": "not found"}, 404); return
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
-                _run_schedule(sched)
+                # Attribute the tap. `{}` for body on purpose: this endpoint takes no
+                # payload, and a claimed 'by' from a body we never parse would be a
+                # fabricated attribution. Header (verified) → cloud email → IP.
+                _run_schedule(sched, source="manual:" + _sched_mutation_by(
+                    self.headers, self.client_address, {}))
                 _run_ts = int(_time.time())
                 db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
                            (_run_ts, _run_ts, sid_for_run))   # last_run = UTC unix (AMUX-1736)
@@ -54352,9 +59280,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 # guardian. Now every flip carries at least its origin.
                 _by = _sched_mutation_by(self.headers, self.client_address, body)
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
-                          "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
+                          "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions",
+                          "exit_actions"):
                     if k in body:
-                        sched[k] = body[k]
+                        sched[k] = (json.dumps(body[k]) if k == "exit_actions" and isinstance(body[k], dict)
+                                    else body[k])
                 expr = (sched.get("schedule_expr") or "").strip()
                 if expr:
                     sched["sched_type"] = "recurring"
@@ -54368,7 +59298,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     """UPDATE schedules SET title=?,session=?,command=?,kind=?,sched_type=?,recurrence=?,
                        run_at=?,next_run=?,enabled=?,schedule_expr=?,
                        watch=?,watch_timeout=?,done_pattern=?,done_action=?,trigger_on=?,trigger_cooldown=?,trigger_sessions=?,
-                       updated=? WHERE id=?""",
+                       exit_actions=?,updated=? WHERE id=?""",
                     (sched["title"], sched["session"], sched["command"], sched.get("kind") or "tmux",
                      sched["sched_type"],
                      sched["recurrence"], sched["run_at"], sched["next_run"],
@@ -54376,7 +59306,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      int(sched.get("watch") or 0), int(sched.get("watch_timeout") or 120),
                      sched.get("done_pattern"), sched.get("done_action") or "disable",
                      _trig, int(sched.get("trigger_cooldown") or 120), _trig_sess,
-                     sched["updated"], sched_id)
+                     sched.get("exit_actions"), sched["updated"], sched_id)
                 )
                 db.commit()
                 # Attribution/audit — log every changed tracked field (esp. enabled)
@@ -54607,6 +59537,86 @@ class CCHandler(BaseHTTPRequestHandler):
         # GET /api/usage — Claude subscription usage (5h + weekly + per-model
         # scoped limits). Proxied server-side because the OAuth token can't be
         # exposed to the browser and api.anthropic.com blocks cross-origin.
+        # GET /api/review/week?days=7 — the weekly-synthesis DATA ENGINE
+        # (AMUX-2179): joins human messages, the board cards they became, and
+        # per-session tokens/cost/time for the window. The EPIC clustering is
+        # left to the consumer's model (a scheduled session summarizes this
+        # into themes) — the endpoint supplies the exact numbers, not the
+        # judgment, so it stays right and improves as models improve.
+        # GET /api/debug/threads — live thread stacks (2026-08-02 outage: the
+        # server pinned 2 cores with 47 threads and NOTHING could say which;
+        # py-spy needs root on macOS. The instrument the next spin needs.)
+        if method == "GET" and path == "/api/debug/threads":
+            import traceback as _tb
+            _names = {t.ident: t.name for t in threading.enumerate()}
+            _out = []
+            for _tid, _frm in sys._current_frames().items():
+                _out.append({"tid": _tid, "name": _names.get(_tid, "?"),
+                             "stack": _tb.format_stack(_frm)[-5:]})
+            return self._json({"count": len(_out), "threads": _out})
+
+        # GET /api/review/digest — the latest committed weekly-review markdown
+        # (the model-authored epic synthesis), for the Review tab to render.
+        if method == "GET" and path == "/api/review/digest":
+            # The running series of weekly task-theme summaries, latest first,
+            # so Trends can browse prior weeks (AMUX-2179 / Ethan: "a summary
+            # running every 7 days of the theme of tasks I've sent").
+            try:
+                d = Path(__file__).resolve().parent / "docs" / "weekly-review"
+                files = sorted(d.glob("*.md"), reverse=True) if d.is_dir() else []
+                which = qs.get("file", [""])[0]
+                weeks = [{"file": f.name} for f in files]
+                if not files:
+                    return self._json({"markdown": "", "file": "", "weeks": []})
+                target = next((f for f in files if f.name == which), files[0])
+                return self._json({"markdown": target.read_text()[:20000],
+                                   "file": target.name, "weeks": weeks})
+            except Exception as e:
+                return self._json({"markdown": "", "weeks": [], "error": str(e)[:200]})
+
+        if method == "GET" and path == "/api/review/week":
+            try:
+                days = max(1, min(90, int(qs.get("days", ["7"])[0])))
+            except Exception:
+                days = 7
+            now = int(time.time()); since = now - days * 86400; since_ms = since * 1000
+            db = get_db()
+            per = {}
+            def _slot(sess):
+                return per.setdefault(sess or "(none)", {
+                    "session": sess or "(none)", "messages": 0, "cards_created": 0,
+                    "cards_done": 0, "cards_verified": 0, "tokens": 0, "cost_usd": 0.0,
+                    "samples": []})
+            for r in db.execute(
+                    "SELECT session, text, card_id FROM cmd_history WHERE ts>=? "
+                    "AND (type IS NULL OR type NOT IN ('session','schedule','system')) ORDER BY ts",
+                    (since_ms,)).fetchall():
+                sl = _slot(r["session"]); sl["messages"] += 1
+                if len(sl["samples"]) < 5 and r["text"]:
+                    sl["samples"].append(re.sub(r"^\[.*?\]\s*", "", r["text"]).strip()[:140])
+            for r in db.execute(
+                    "SELECT session, status FROM issues WHERE created>=? AND deleted IS NULL",
+                    (since,)).fetchall():
+                sl = _slot(r["session"]); sl["cards_created"] += 1
+                if r["status"] == "done": sl["cards_done"] += 1
+                elif r["status"] == "verified": sl["cards_verified"] += 1
+            for r in db.execute(
+                    "SELECT session, SUM(COALESCE(input,0)+COALESCE(output,0)) tk, "
+                    "SUM(COALESCE(cost_usd,0)) c FROM token_ledger WHERE ts>=? GROUP BY session",
+                    (since,)).fetchall():
+                sl = _slot(r["session"]); sl["tokens"] = int(r["tk"] or 0); sl["cost_usd"] = round(r["c"] or 0.0, 2)
+            rows = sorted(per.values(), key=lambda x: -(x["messages"] + x["cards_created"]))
+            totals = {
+                "messages": sum(x["messages"] for x in rows),
+                "cards_created": sum(x["cards_created"] for x in rows),
+                "cards_done": sum(x["cards_done"] for x in rows),
+                "cards_verified": sum(x["cards_verified"] for x in rows),
+                "tokens": sum(x["tokens"] for x in rows),
+                "cost_usd": round(sum(x["cost_usd"] for x in rows), 2),
+                "active_sessions": len([x for x in rows if x["messages"] or x["cards_created"]]),
+            }
+            return self._json({"days": days, "since": since, "totals": totals, "per_session": rows})
+
         if method == "GET" and path == "/api/usage":
             now = time.time()
             if not _usage_cache["data"] or now - _usage_cache["time"] > _USAGE_TTL:
@@ -54997,7 +60007,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     html = f"<html><body><h2>Auth failed: {error}</h2><p>Close this tab.</p></body></html>"
                     self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
                     self.wfile.write(html.encode()); return
-                entry = _gmail_pending.pop(state, None)
+                entry = _gmail_pending.pop(state, None) or _gmail_pending_restore(state)
                 if not entry or not code:
                     html = "<html><body><h2>Invalid or expired auth request.</h2><p>Close this tab and try again.</p></body></html>"
                     self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
@@ -55027,6 +60037,12 @@ class CCHandler(BaseHTTPRequestHandler):
                         "token_uri": creds.token_uri, "client_id": creds.client_id,
                         "client_secret": creds.client_secret,
                     }))
+                    # A fresh grant must clear every cached failure state for the
+                    # account, or the negative cache keeps answering not_connected
+                    # for up to its TTL AFTER a successful re-auth — the user
+                    # reconnects and the API still says broken (hello@amux.io,
+                    # 2026-07-31, minutes after the cache shipped).
+                    _gmail_creds_fail.pop(account, None)
                     html = f"<html><body><h2>✓ {account} connected!</h2><p>You can close this tab.</p></body></html>"
                     self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
                     self.wfile.write(html.encode()); return
@@ -55301,11 +60317,20 @@ class CCHandler(BaseHTTPRequestHandler):
                 _tts_ctx = _tts_ssl._create_unverified_context()
 
             elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "")
+            piper_id = f"piper:{_PIPER_VOICE_NAME}"
 
-            # GET /api/tts/voices — list available voices
+            # GET /api/tts/voices — list available voices. Local Piper is listed
+            # first (free, no key) when present; ElevenLabs voices are appended
+            # if a key is configured. Neither being present is the only error.
             if method == "GET" and path == "/api/tts/voices":
+                voices = []
+                if _piper_available():
+                    voices.append({"voice_id": piper_id, "name": f"{_PIPER_VOICE_NAME} (local, free)", "category": "local"})
                 if not elevenlabs_key:
-                    return self._json({"error": "ELEVENLABS_API_KEY not set in ~/.amux/server.env"}, 400)
+                    if not voices:
+                        return self._json({"error": "No TTS backend available: Piper isn't installed locally, "
+                                                      "and ELEVENLABS_API_KEY isn't set in ~/.amux/server.env"}, 400)
+                    return self._json({"voices": voices})
                 # Try API first, fall back to built-in defaults
                 _default_voices = [
                     {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George", "category": "premade"},
@@ -55328,20 +60353,33 @@ class CCHandler(BaseHTTPRequestHandler):
                     )
                     resp = _tts_ureq.urlopen(req, timeout=10, context=_tts_ctx)
                     data = json.loads(resp.read())
-                    voices = [{"voice_id": v["voice_id"], "name": v["name"], "category": v.get("category", "")} for v in data.get("voices", [])]
+                    voices += [{"voice_id": v["voice_id"], "name": v["name"], "category": v.get("category", "")} for v in data.get("voices", [])]
                     return self._json({"voices": voices})
                 except Exception:
-                    return self._json({"voices": _default_voices})
+                    return self._json({"voices": voices + _default_voices})
 
-            # POST /api/tts — generate speech, return audio file URL
+            # POST /api/tts — generate speech, return audio file URL. Piper
+            # (free, local) is used whenever it's installed and the caller asked
+            # for it (or asked for nothing, since it's the free default);
+            # ElevenLabs only runs for a voice_id that's actually one of its own.
             if method == "POST" and path == "/api/tts":
-                if not elevenlabs_key:
-                    return self._json({"error": "ELEVENLABS_API_KEY not set in ~/.amux/server.env"}, 400)
                 body = self._read_body()
                 text = body.get("text", "").strip()
                 if not text:
                     return self._json({"error": "text is required"}, 400)
-                voice_id = body.get("voice_id", "JBFqnCBsd6RMkjVDRZzb")  # default: George
+                voice_id = body.get("voice_id", "")
+                if (not voice_id or voice_id == piper_id) and _piper_available():
+                    wav = _piper_generate(text)
+                    if wav is None:
+                        return self._json({"error": "Piper generation failed — see server log"}, 500)
+                    fname = f"tts-{int(time.time())}.wav"
+                    (CC_UPLOADS / fname).write_bytes(wav)
+                    return self._json({"url": f"/api/uploads/{fname}", "size": len(wav),
+                                       "voice_id": piper_id, "backend": "piper"})
+                if not elevenlabs_key:
+                    return self._json({"error": "No TTS backend available: Piper isn't installed locally, "
+                                                  "and ELEVENLABS_API_KEY isn't set in ~/.amux/server.env"}, 400)
+                voice_id = voice_id or "JBFqnCBsd6RMkjVDRZzb"  # default: George
                 model = body.get("model", "eleven_multilingual_v2")
                 try:
                     payload = json.dumps({
@@ -55361,11 +60399,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     resp = _tts_ureq.urlopen(req, timeout=60, context=_tts_ctx)
                     audio_data = resp.read()
                     fname = f"tts-{int(time.time())}.mp3"
-                    out_path = _amux_home / "uploads" / fname
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_bytes(audio_data)
+                    (CC_UPLOADS / fname).write_bytes(audio_data)
                     return self._json({
-                        "url": f"/uploads/{fname}",
+                        "url": f"/api/uploads/{fname}",
                         "size": len(audio_data),
                         "voice_id": voice_id,
                     })
@@ -56354,14 +61390,23 @@ return "not_found"
             # has_api_key: True only if a valid-looking key exists in server.env.
             # We do NOT count Docker-injected env vars — those should not exist for cloud.
             has_key_in_env = False
+            has_proxy = False
             if _server_env_file.exists():
+                _base, _tok = "", ""
                 for _l in _server_env_file.read_text().splitlines():
                     _l = _l.strip()
                     if _l.startswith("ANTHROPIC_API_KEY="):
                         _val = _l[len("ANTHROPIC_API_KEY="):].strip()
                         if _val and not _is_placeholder_api_key(_val):
                             has_key_in_env = True
-                        break
+                    elif _l.startswith("ANTHROPIC_BASE_URL="):
+                        _base = _l[len("ANTHROPIC_BASE_URL="):].strip()
+                    elif _l.startswith("ANTHROPIC_AUTH_TOKEN="):
+                        _tok = _l[len("ANTHROPIC_AUTH_TOKEN="):].strip()
+                # A managed upstream (amux cloud's Anthropic proxy) is fully
+                # configured auth — the workspace can talk to Claude without the
+                # user ever holding a key, so do NOT prompt them for one.
+                has_proxy = bool(_base and _tok)
             # Also check for OAuth login in ~/.claude.json
             has_oauth = False
             try:
@@ -56373,8 +61418,9 @@ return "not_found"
             # Include cached key validation result
             key_valid, key_error = _api_key_status.get("valid", None), _api_key_status.get("error", "")
             return self._json({"email": email, "is_cloud": bool(email),
-                               "has_api_key": has_key_in_env or has_oauth,
+                               "has_api_key": has_key_in_env or has_oauth or has_proxy,
                                "has_oauth": has_oauth,
+                               "managed_upstream": has_proxy,
                                "key_valid": key_valid, "key_error": key_error})
 
         # ── Layout presets ────────────────────────────────────────────────────
@@ -56709,6 +61755,13 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
         if path.startswith("/api/graph"):
             db = get_db()
             now = int(time.time())
+
+            # GET /api/graph/fleet — the org chart, PROJECTED from live sessions.
+            # Must precede the generic /api/graph/:id read below, which would
+            # otherwise answer with the (empty) stored rows for this graph_id
+            # and look like a fleet of nobody.
+            if method == "GET" and path == f"/api/graph/{_FLEET_GRAPH_ID}":
+                return self._json(_fleet_graph())
 
             # GET /api/graph/:id — get full graph (nodes + edges)
             m = re.match(r"^/api/graph/([^/]+)$", path)
@@ -57385,6 +62438,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     "profiles": profiles,
                     "registry": reg,
                     "chrome_profiles": _bu_list_profiles_cached(),
+                    # Which execution backends this deployment can actually
+                    # offer. The picker hides "My Chrome" where CDP cannot work
+                    # (hosted container, no display) instead of showing an
+                    # option that always fails.
+                    "backends": (["playwright"] if _cdp_local_only()
+                                 else ["playwright", "live"]),
                 })
 
             # POST /api/browser/start  {"url":"...","session":"...","profile":"...","fresh":false}
@@ -57450,6 +62509,19 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     if not r.get("ok"):
                         return self._json(r, 502)
                     return self._json({"ok": True, "backend": "live", "path": _f, "url": _live_url(session)})
+                if session in _bu_drivers:
+                    d = _bu_drivers[session]
+                    if url_param:
+                        _bu_driver_call(session, d["profile"], "open", {"url": url_param})
+                    shot = _bu_driver_call(session, d["profile"], "screenshot", {})
+                    if shot.get("ok") and shot.get("b64"):
+                        import base64 as _b64
+                        _sp = Path.home() / ".amux" / "browser-screenshots"
+                        _sp.mkdir(parents=True, exist_ok=True)
+                        _f = _sp / f"driver-{session}.png"
+                        _f.write_bytes(_b64.b64decode(shot["b64"]))
+                        return self._json({"ok": True, "backend": "driver", "path": str(_f)})
+                    return self._json({"error": shot.get("error", "driver screenshot failed")}, 502)
                 if url_param:
                     _bu_call(["open", url_param], session=session, timeout_s=20)
                     import time as _t; _t.sleep(2)
@@ -57468,6 +62540,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         return self._json(r, 502)
                     return self._json({"ok": True, "backend": "live", "url": _live_url(session),
                                        "a11y": _obs_cap(r.get("output", ""), _OBS_STATE_CAP)})
+                if session in _bu_drivers:
+                    d = _bu_drivers[session]
+                    st = _bu_driver_call(session, d["profile"], "state", {})
+                    if st.get("ok"):
+                        return self._json({"ok": True, "backend": "driver",
+                                           "url": st.get("url", ""), "title": st.get("title", ""),
+                                           "text": st.get("text", ""),
+                                           "elements_unavailable":
+                                               "driver backend has no indexed elements — "
+                                               "click by coordinates or use eval"})
+                    return self._json({"error": st.get("error", "driver state failed")}, 502)
                 res = _bu_call(["state"], session=session)
                 try:
                     raw = (res.get("data") or {}).get("_raw_text", "") if isinstance(res, dict) else ""
@@ -57628,7 +62711,27 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _cdp_call(["close", tid], 10)   # browser-level closeTarget — window.close() can't close our tab
                     _cdp_call(["stop", tid], 8)
                     return self._json({"ok": True, "backend": "live", "closed": tid})
-                return self._json(_bu_call(["close"], session=session, timeout_s=10))
+                if session in _bu_drivers:
+                    _prof = _bu_drivers[session].get("profile", "")
+                    _bu_driver_stop(session)
+                    return self._json({"ok": True, "backend": "driver",
+                                       "closed": True, "profile": _prof,
+                                       "note": "store writes persisted (no copy)"})
+                # Read the profile BEFORE closing — the session meta that records
+                # it goes away with the session, and after that there is nothing
+                # left to tell us which user-data-dir to wait on.
+                prof = _bu_session_profile(session)
+                res = _bu_call(["close"], session=session, timeout_s=10)
+                # Then WAIT for Chrome to finish exiting. browser-use returns as
+                # soon as it has asked it to close, which is before Cookies and
+                # Local Storage are flushed; returning there is what let the next
+                # session open a profile whose login had never reached disk.
+                # wait_s:0 opts out.
+                w = body.get("wait_s")
+                if isinstance(res, dict):
+                    res = dict(res)
+                    res.update(_bu_wait_for_exit(prof, timeout_s=8.0 if w is None else float(w)))
+                return self._json(res)
 
             # GET /api/browser/sessions
             if method == "GET" and path == "/api/browser/sessions":
@@ -57764,6 +62867,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
 
 
         if method == "GET":
+            if not action:
+                # Bare GET /api/sessions/<name> -> the SAME record the list
+                # endpoint serves for this session (gtm-media-assets got a 404
+                # error body here and read every field as None — the natural
+                # URL should answer with the natural shape, not make callers
+                # fetch the whole fleet for one session).
+                _one = next((x for x in list_sessions() if x.get("name") == name), None)
+                if _one is not None:
+                    return self._json(_one)
+                return self._json({"error": f"session '{name}' not found"}, 404)
             if action == "tasks":
                 # Claude Code's native task list (read-only) — the agent's live plan.
                 return self._json(_session_cc_tasks(name))
@@ -58235,6 +63348,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 if body.get("record_history"):
                     _cmd_hist_record(name, text, "user",
                                      self.headers.get("X-Amux-User-Email", ""))
+                    # Same capture as /send (AMUX-2132): a QUEUED human prompt is
+                    # still an instruction — steering is a delivery mechanism, not
+                    # a different kind of message. This branch recorded history but
+                    # skipped autotask, so every prompt sent while its session was
+                    # BUSY left zero board trace (both 15:46 MHC dictations; the
+                    # busier the lane, the likelier its instructions vanished).
+                    _autotask_from_command(name, text)
+                    _summarize_task_bg(name, text)
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
@@ -58307,6 +63428,13 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     # re-deriving them — and the board outlives the conversation that
                     # would have corrected it (social-media, 2026-07-27).
                     if not _defer_busy:
+                        # Every command lands on the board (toggle: board_autotask).
+                        # The throttled model-labeller below only updates the
+                        # session's task_summary label when autotask is on —
+                        # letting it also create cards double-filed every
+                        # prompt as raw-title + invented-title twins
+                        # (AMUX-2114).
+                        _autotask_from_command(name, _orig_text)
                         _summarize_task_bg(name, _orig_text)  # the human's prompt
                     if not str(msg).startswith("queued"):   # steering enqueue emits message.queued itself
                         _emit_event(name, "message.sent",
@@ -58627,6 +63755,50 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if action == "wake":
                 ok, msg = wake_session(name)
                 return self._json({"ok": ok, "message": msg}, 200 if ok else 500)
+            # POST /api/sessions/<name>/reset — fresh conversation, same lane.
+            # The context is what fills up; the lane is not, so this is the verb
+            # that was missing every time a session said "I am out of context".
+            if action == "reset":
+                ok, msg = reset_session(name)
+                return self._json({"ok": ok, "message": msg}, 200 if ok else 500)
+            # POST /api/sessions/<name>/report — the harness reports its OWN state
+            # (ethos dev-1). Fired by Claude Code hooks: UserPromptSubmit -> active,
+            # Stop -> idle. This is the interface that replaces regex-over-terminal
+            # as the control plane; the scrapers remain only as its fallback.
+            # POST /api/sessions/<name>/commit-report — attach a commit to the
+            # session's in-flight card (AMUX-2015). A card should carry its code
+            # history; a session reading it later sees WHAT shipped, not just
+            # that something did. No in-flight card = silently accepted and
+            # dropped: not everything needs a commit, and not every commit has
+            # a card.
+            if action == "commit-report":
+                body = self._read_body()
+                sha = str(body.get("sha") or "").strip()[:16]
+                subj = str(body.get("subject") or "").strip()[:140]
+                if not sha:
+                    return self._json({"error": "sha required"}, 400)
+                row = get_db().execute(
+                    "SELECT id FROM issues WHERE session=? AND deleted IS NULL "
+                    "AND COALESCE(archived,0)=0 AND status IN ('doing','review') "
+                    "AND owner_type='agent' ORDER BY updated DESC LIMIT 1", (name,)).fetchone()
+                if not row:
+                    return self._json({"ok": True, "attached": None})
+                _append_board_log(row["id"], f"commit {sha} — {subj}")
+                _ilog("board", "commit_attached", actor=name, target=row["id"],
+                      detail={"sha": sha, "subject": subj})
+                return self._json({"ok": True, "attached": row["id"], "sha": sha})
+            if action == "report":
+                body = self._read_body()
+                st = str(body.get("state") or "").strip().lower()
+                _ALIAS = {"working": "active", "busy": "active", "done": "idle", "blocked": "waiting"}
+                st = _ALIAS.get(st, st)
+                if st not in ("active", "idle", "waiting", "error"):
+                    return self._json({"error": f"state must be one of active|idle|waiting|error (got {st!r})"}, 400)
+                _session_reported[name] = {"state": st,
+                                           "detail": str(body.get("detail") or "")[:200],
+                                           "source": str(body.get("source") or "hook")[:40],
+                                           "ts": time.time()}
+                return self._json({"ok": True, "state": st})
             if action == "apply-template":
                 body = self._read_body()
                 tmpl_id = re.sub(r'[^a-z0-9\-]', '', body.get("template_id", ""))
@@ -59340,6 +64512,54 @@ def _cleanup_recordings():
 
 
 def _db_maintenance():
+    # Loop 2 of the throughput plan: daily verification batches (pref-gated
+    # inside — cheap no-op on every other maintenance pass).
+    _verification_sweep()
+    _age_archive_sweep()
+    # Single-char-tag canary (studio-plg, SP-539): a string tags value once
+    # char-exploded silently, and the retro sweep's ">=5 singles" threshold was
+    # blind to short tags ("wip" -> 3 singles). The STRUCTURAL predicate — a
+    # single-char tag is essentially never legitimate, so >=2 on one card —
+    # needs no threshold judgement. Detect-and-report only; repair is a human
+    # or owning-session call (ethos #8).
+    try:
+        _sc = get_db().execute(
+            "SELECT issue_id, COUNT(*) n FROM issue_tags WHERE LENGTH(tag)=1 "
+            "GROUP BY issue_id HAVING n >= 2").fetchall()
+        for _row in _sc:
+            slog(f"[board] tag-explosion signature on {_row[0]}: "
+                 f"{_row[1]} single-char tags — inspect/repair (SP-539 class)")
+    except Exception:
+        pass
+    # Stranded-claim self-revert (MG audit follow-up, their shape (b)): a
+    # `doing` card with no update activity for N hours is indistinguishable
+    # from active work, and every session reads the lie — 16 cards sat
+    # falsely 'active' for 13h after the pre-WIP-cap burst, and a session
+    # dying mid-card produces the same state with no bug anywhere. AGENT
+    # cards only (a human's stalled doing is theirs to hold, ethos #8);
+    # reverts to todo with the reason in the visible History.
+    try:
+        _stale_h = int(os.environ.get("AMUX_DOING_STALE_REVERT_HOURS", "24") or 24)
+        if _stale_h > 0:
+            _cut = int(time.time()) - _stale_h * 3600
+            _stranded = get_db().execute(
+                "SELECT id, session FROM issues WHERE status='doing' "
+                "AND owner_type='agent' AND deleted IS NULL AND updated < ?",
+                (_cut,)).fetchall()
+            for _sr in _stranded:
+                get_db().execute(
+                    "UPDATE issues SET status='todo', updated=? WHERE id=?",
+                    (int(time.time()), _sr[0]))
+                _append_board_log(_sr[0],
+                    f"auto-reverted doing \u2192 todo: no activity for {_stale_h}h "
+                    f"(stranded claim or dead session; re-claim to resume)")
+                slog(f"[board] stranded doing card {_sr[0]} ({_sr[1]}) "
+                     f"auto-reverted to todo after {_stale_h}h idle")
+            if _stranded:
+                get_db().commit()
+                _board_changed()
+    except Exception as _swe:
+        slog(f"[board] stranded-doing sweep failed: {_swe}")
     """Periodic database maintenance: WAL checkpoint, optimize, and board cleanup."""
     try:
         conn = get_db()
@@ -59349,12 +64569,57 @@ def _db_maintenance():
         # Skip gh-linked tasks until their GH issue is also closed (checked by tag)
         seven_days_ago = int(time.time()) - 7 * 86400
         now = int(time.time())
+        _evict_rows = conn.execute(
+            "SELECT id, title FROM issues "
+            "WHERE status = 'done' AND deleted IS NULL AND updated < ? "
+            "AND id NOT IN (SELECT issue_id FROM issue_tags WHERE tag LIKE 'gh:%')",
+            (seven_days_ago,),
+        ).fetchall()
         archived = conn.execute(
             "UPDATE issues SET deleted = ? "
             "WHERE status = 'done' AND deleted IS NULL AND updated < ? "
             "AND id NOT IN (SELECT issue_id FROM issue_tags WHERE tag LIKE 'gh:%')",
             (now, seven_days_ago),
         ).rowcount
+        if _evict_rows:
+            _n = _stamp_evicted_dependents([(r["id"], r["title"]) for r in _evict_rows])
+            if _n:
+                slog(f"[cleanup] auto-archive: stamped {_n} open card(s) referencing evicted ids")
+        # Retro-sweep STRUCTURED ghost edges only (MO-3049): depends_on ids
+        # with no row at all — cards evicted before stamping existed. Exact
+        # set, no estimation; prose references stay with their lanes (the 68
+        # -> 15-17 retraction is why nothing here guesses at prose semantics).
+        # Titles are gone, which is the tragedy the stamp now prevents.
+        try:
+            _ghost_stamped = 0
+            for _r in conn.execute(
+                    "SELECT id, depends_on, COALESCE(log,'') AS l FROM issues "
+                    "WHERE deleted IS NULL AND depends_on IS NOT NULL "
+                    "AND status NOT IN ('done','verified','discarded')").fetchall():
+                try:
+                    _deps = json.loads(_r["depends_on"] or "[]")
+                except Exception:
+                    continue
+                _dead = [d for d in _deps
+                         if not conn.execute("SELECT 1 FROM issues WHERE id=?", (d,)).fetchone()]
+                for _d in _dead:
+                    if f"EVICTED-DEPENDENCY: {_d}" in _r["l"]:
+                        continue
+                    _append_board_log(_r["id"],
+                        f"EVICTED-DEPENDENCY: {_d} — id no longer resolves anywhere; it was "
+                        f"evicted before eviction stamping existed, so its meaning is not "
+                        f"recoverable from the board (check the lane's messages/git history "
+                        f"if re-pointing matters). Edge stripped; this card is unblocked.")
+                    _ghost_stamped += 1
+                if _dead:
+                    _keep = [d for d in _deps if d not in _dead]
+                    conn.execute("UPDATE issues SET depends_on=? WHERE id=?",
+                                 (json.dumps(_keep) if _keep else None, _r["id"]))
+            if _ghost_stamped:
+                conn.commit()
+                slog(f"[cleanup] ghost-edge sweep: stamped {_ghost_stamped} dead depends_on reference(s)")
+        except Exception as _e:
+            slog(f"[cleanup] ghost-edge sweep failed: {_e}")
         # Hard-delete tasks soft-deleted >30 days ago
         thirty_days_ago = int(time.time()) - 30 * 86400
         purged = conn.execute(
@@ -59492,47 +64757,6 @@ def _watch_server_env():
             slog(f"[env-reload] error: {e}")
 
 
-def _watch_notes_dir():
-    """Poll CC_NOTES for filesystem changes (Obsidian edits, new files, deletions).
-
-    Bumps _notes_version so SSE pushes an invalidation to all clients.
-    """
-    global _notes_version
-    prev_snapshot: dict[str, float] = {}
-    while True:
-        time.sleep(4)
-        try:
-            if not CC_NOTES.is_dir():
-                continue
-            snapshot = {}
-            for f in CC_NOTES.rglob("*.md"):
-                if ".trash" in f.parts:
-                    continue
-                try:
-                    snapshot[str(f)] = f.stat().st_mtime
-                except OSError:
-                    pass
-            if prev_snapshot and snapshot != prev_snapshot:
-                _notes_version += 1
-            prev_snapshot = snapshot
-        except Exception:
-            pass
-
-
-# Obvious placeholder/template values that are not real API keys. Lets us avoid
-# treating a templated env file (e.g. ANTHROPIC_API_KEY=changeme) as configured,
-# which would otherwise suppress the onboarding prompt.
-_PLACEHOLDER_API_KEYS = frozenset({
-    "changeme", "change-me", "change_me",
-    "your-api-key", "your_api_key", "your-key", "yourkey",
-    "your_key_here", "your-key-here", "your-api-key-here",
-    "placeholder", "dummy", "example", "sample",
-    "test", "test-key", "testkey",
-    "replace-me", "replace_me",
-    "xxx", "xxxx",
-    "sk-ant-xxx", "sk-ant-your-key", "sk-ant-example", "sk-ant-placeholder",
-})
-
 
 def _is_placeholder_api_key(val: str) -> bool:
     """Return True if ``val`` is an obvious placeholder/template, not a real key."""
@@ -59545,8 +64769,12 @@ def _validate_api_key() -> tuple[bool, str]:
 
     Returns (is_valid, error_message). Skips validation if OAuth or custom API base is configured.
     """
-    # Skip if custom API base is configured (third-party provider)
-    if os.environ.get("ANTHROPIC_API_BASE", "").strip():
+    # Skip if a custom API base is configured — a third-party provider, or amux
+    # cloud's Anthropic proxy, which authenticates with ANTHROPIC_AUTH_TOKEN and
+    # holds the real key host-side. There is no local key to validate, and
+    # reporting "no_api_key" would nag a correctly configured workspace.
+    if (os.environ.get("ANTHROPIC_API_BASE", "").strip()
+            or os.environ.get("ANTHROPIC_BASE_URL", "").strip()):
         return True, ""
     # Skip if OAuth is present — key isn't needed
     try:
@@ -59618,7 +64846,20 @@ def _watch_self(server):
     except ValueError:
         _DEBOUNCE = 30  # seconds to wait for edits to settle
     script = Path(__file__).resolve()
+    # Baseline from PROCESS START, not thread start. The watcher thread comes up
+    # ~11s into boot; an edit landing in that window used to be captured INTO the
+    # baseline and silently swallowed — the server ran new-briefing/old-version
+    # code for 15+ minutes on 2026-07-31 with no reload ever firing, and the
+    # "poll APP_VER after every edit" ritual exists because of this class.
+    # _server_start_time is set at import, milliseconds after this source was read.
     mtime = script.stat().st_mtime
+    try:
+        if mtime > _server_start_time:
+            slog(f"[restart] source changed during boot window ({mtime - _server_start_time:.1f}s after start) — reloading now")
+            new_mtime = mtime
+            mtime = 0  # force the change-detected branch on the first tick
+    except Exception:
+        pass
     while True:
         time.sleep(1)
         try:
@@ -60127,7 +65368,7 @@ def main():
     _init_db()
     _migrate_flat_to_sqlite()
     _init_default_sessions()
-    _attach_log_streaming()  # re-attach pipe-pane for sessions surviving os.execv
+    threading.Thread(target=_attach_log_streaming, daemon=True).start()
 
     # Pre-configure ~/.claude.json to skip interactive setup wizard
     _init_claude_config()
@@ -60191,6 +65432,8 @@ def main():
     # Tunnels are opt-in per target now (managed from the Proxies tab). Only
     # auto-start on boot when a specific target port is explicitly configured
     # (AMUX_TUNNEL_PORT) — never default to exposing amux's own control plane.
+    if _AUTOSTART_SESSIONS:
+        threading.Thread(target=_autostart_sessions_bg, daemon=True).start()
     if _TUNNEL_TOKEN and _TUNNEL_TARGET_PORT:
         threading.Thread(target=lambda: _tunnel_start(target_port=_TUNNEL_TARGET_PORT),
                          daemon=True).start()
@@ -60280,6 +65523,7 @@ def main():
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
     schedule_job(_steering_fast_tick,    interval=2,                    name="steering_fast", initial_delay=8)
     schedule_job(_index_token_ledger,    interval=60,                   name="token_ledger",  initial_delay=12)
+    schedule_job(_ilog_prune,            interval=3600,                 name="ilog_prune",    initial_delay=300)
     schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
@@ -60316,12 +65560,12 @@ def main():
     # Watch server.env for key changes (catches gateway pushes, manual edits)
     threading.Thread(target=_watch_server_env, daemon=True).start()
     # Watch notes directory for external edits (Obsidian, other editors)
-    threading.Thread(target=_watch_notes_dir, daemon=True).start()
     # Install the commit-stamping hook into all existing session repos
     threading.Thread(target=_install_hooks_all_sessions, daemon=True).start()
     # AMUX-LOCAL:session-chat — background Haiku reply-summary worker (docs/reply-summary.md)
     threading.Thread(target=_chat_summary_worker_loop, daemon=True).start()
     # /AMUX-LOCAL:session-chat
+    threading.Thread(target=_install_state_report_hooks, daemon=True).start()
 
     # Resume sessions that were running before a reboot/crash — runs in
     # background so the server is already accepting requests while sessions spin up.

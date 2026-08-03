@@ -3,31 +3,55 @@
 # Receives JSON on stdin with tool_input.file_path
 set -euo pipefail
 
-REPO="/Users/ethan/Dev/amux"
+# The repo root is wherever THIS script lives (<repo>/.claude/check-and-commit.sh),
+# never a hardcoded path. A hardcoded checkout path matches on exactly one machine;
+# everywhere else the path comparison below fails and the script exits 0 — reporting
+# success while checking nothing. That is ethos rule 7 ("can your check actually
+# fail?") in its worst form, because the silence looks like a pass.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SERVER="$REPO/amux-server.py"
 
-# Read the file path from hook input
-FILE_PATH=$(cat | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
+# Read the edited path from hook input, resolved, so a symlinked checkout or a
+# relative path still matches the file we are about to check.
+FILE_PATH=$(cat | python3 -c "
+import sys, json, os
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+p = d.get('tool_input', {}).get('file_path', '')
+print(os.path.realpath(p) if p else '')
+" 2>/dev/null || echo "")
+
+SERVER_REAL=$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$SERVER")
 
 # Only check if amux-server.py was edited
-if [ "$FILE_PATH" != "$SERVER" ]; then
+if [ "$FILE_PATH" != "$SERVER_REAL" ]; then
   exit 0
 fi
 
-# Check Python syntax
-if ! python3 -c "import ast; ast.parse(open('$SERVER').read())" 2>/tmp/amux-check-err.txt; then
-  echo "Python syntax error in amux-server.py:" >&2
-  cat /tmp/amux-check-err.txt >&2
+# Check Python syntax. The path goes in as argv, not interpolated into the source,
+# so a checkout path containing a quote can't break (or rewrite) the check.
+if ! python3 -c "
+import ast, sys
+ast.parse(open(sys.argv[1]).read())
+" "$SERVER"; then
+  echo "Python syntax error in amux-server.py (see traceback above)" >&2
   exit 2  # blocks the action
 fi
 
-# Extract JS and check with node
-python3 -c "
+# Extract JS and check with node.
+# This runs under `if !` rather than a post-hoc `$?` test: with `set -e` the script
+# aborts the moment the checker returns non-zero, so a trailing `[ $? -ne 0 ]` is
+# unreachable — and the abort carries the checker's exit code (1), which Claude Code
+# treats as a non-blocking error. Only exit 2 blocks, so a JS syntax error used to
+# sail straight through the one gate meant to stop it.
+if ! python3 -c "
 import re, subprocess, sys, tempfile, os
-with open('$SERVER') as f:
-    content = f.read()
+content = open(sys.argv[1]).read()
 m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
 if not m:
+    print('WARNING: no <script> block found in amux-server.py', file=sys.stderr)
     sys.exit(0)
 fd, path = tempfile.mkstemp(suffix='.js')
 os.write(fd, m.group(1).encode())
@@ -38,8 +62,7 @@ if r.returncode != 0:
     print('JS syntax error in amux-server.py:', file=sys.stderr)
     print(r.stderr, file=sys.stderr)
     sys.exit(1)
-"
-if [ $? -ne 0 ]; then
+" "$SERVER"; then
   exit 2  # blocks the action
 fi
 

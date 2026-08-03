@@ -42,7 +42,7 @@
     "description": "How amux's SQLite-backed kanban board coordinates parallel AI coding agents without duplicated work. Atomic claiming, verified status lifecycle, iCal sync, phone management, REST API reference.",
     "url": "https://amux.io/guides/kanban-board-for-agents/",
     "datePublished": "2026-02-26",
-    "dateModified": "2026-07-05",
+    "dateModified": "2026-07-31",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "image": "https://amux.io/og-image.png",
@@ -166,7 +166,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Kanban Board for AI Agents</span></div>
 
     <h1>Kanban Board for AI Agents</h1>
-    <p class="subtitle">Post tasks. Agents claim them atomically. The board is the single source of truth for your AI engineering team. Updated July 2026.</p>
+    <p class="subtitle">Post tasks. Agents claim them atomically. The board is the single source of truth for your AI engineering team. Updated July 2026 — now with mobile column snap, task dependencies, and automatic prompt decomposition.</p>
 
     <p>When you run 10 or 20 parallel AI coding agents, the hardest coordination problem isn't launching them — it's ensuring no two agents pick up the same task. amux solves this with a SQLite-backed kanban board and a single atomic endpoint: <code>POST /api/board/:id/claim</code>. You post tasks; agents claim them atomically; the board shows who has what in real time, on your phone or browser. This is the coordination layer that turns a fleet of independent agents into a functioning AI engineering team.</p>
 
@@ -319,13 +319,62 @@ s = os.getenv('AMUX_SESSION','')
  if t.get('session')==s and t['status']=='todo']
 "</code></pre>
 
+    <h2>Task dependencies and reviewer assignments</h2>
+    <p>Board cards support two graph edge fields that express real team coordination structures:</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Field</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Type</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>depends_on</code></td>
+          <td style="padding:0.6rem 0.75rem">Board card ID</td>
+          <td style="padding:0.6rem 0.75rem">Card is not claimable until the dependency reaches <code>done</code>. Agents polling for todo work skip gated cards automatically — no manual coordination needed.</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem"><code>reviewer</code></td>
+          <td style="padding:0.6rem 0.75rem">Session name or human</td>
+          <td style="padding:0.6rem 0.75rem">A card with a reviewer field gates completion on that session (or human) signing off. Done is blocked until the reviewer clears it — prevents premature verified marking.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Create a task with a dependency — auth must be done before the dashboard
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Build dashboard — requires auth","depends_on":"TASK-1","status":"todo"}' \
+  $AMUX_URL/api/board
+
+# Create a task that needs human review before closing
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Refactor payment module","reviewer":"human","status":"todo"}' \
+  $AMUX_URL/api/board</code></pre>
+
+    <p>The <code>depends_on</code> field is checked atomically on every claim request. If the dependency is not yet <code>done</code>, the claim returns 409 (same as a race condition — the agent moves on and tries another task). This gives you a linear execution guarantee with no coordination overhead in your agent prompts.</p>
+
+    <h2>Automatic prompt decomposition</h2>
+    <p>When a session receives a prompt that contains more than one distinct task, amux now automatically creates one board card per unit of work — each in <code>todo</code> status, each trackable and gateable independently.</p>
+
+    <p>The decomposition rule is strict: a card is one unit of work — something that can be honestly done or not done. If no single state would finish it, it should not be one card. amux enforces this by creating one card per clause it identifies in the prompt, not one umbrella card covering everything.</p>
+
+    <p>This means overnight agent runs are self-organizing: the orchestrator sends a multi-task prompt, the board fills with individual cards, agents claim them atomically, and the board reflects real progress (not a single "sprint" card that's forever in progress).</p>
+
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+      <strong>Why one card per task matters:</strong> At 451 tasks folded into a single card, the board cannot tell you what's done and what isn't. Gates can't govern it, and no model can reason about a card that contains half a sprint. The decomposition hook prevents accumulation from the start.
+    </div>
+
     <h2>Monitoring the board from your phone</h2>
     <p>The amux board view is designed for one-handed phone use. From the iOS app (App Store: amux) or the PWA on Android:</p>
     <ul>
-      <li>Swipe between columns (todo / doing / done / verified)</li>
-      <li>Tap any task to see the full description, session owner, and timestamps</li>
+      <li><strong>Column snap-scroll</strong> — columns snap horizontally so each column fills the viewport; swipe left/right to move between todo, doing, done, and verified</li>
+      <li>Tap any card to open a full-screen peek with description, session owner, depends_on links, and timestamps</li>
       <li>Add new tasks with a single tap — the title field opens directly</li>
       <li>Move tasks between statuses by tapping the status pill</li>
+      <li>Off-screen cards are virtualized for smooth scrolling on large boards</li>
       <li>The board updates live via Server-Sent Events — you see changes from all agents within ~2 seconds</li>
     </ul>
 
@@ -364,12 +413,12 @@ curl -sk -X POST -H 'Content-Type: application/json' \
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem"><code>POST</code></td>
           <td style="padding:0.6rem 0.75rem"><code>/api/board</code></td>
-          <td style="padding:0.6rem 0.75rem">Create a task — body: <code>{title, status?, desc?, session?, due?}</code></td>
+          <td style="padding:0.6rem 0.75rem">Create a task — body: <code>{title, status?, desc?, session?, due?, depends_on?, reviewer?}</code></td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem"><code>PATCH</code></td>
           <td style="padding:0.6rem 0.75rem"><code>/api/board/:id</code></td>
-          <td style="padding:0.6rem 0.75rem">Update any field — status, title, desc, session, due</td>
+          <td style="padding:0.6rem 0.75rem">Update any field — status, title, desc, session, due, depends_on, reviewer</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem"><code>DELETE</code></td>

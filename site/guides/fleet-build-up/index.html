@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>The amux Build-Up: From One Repo to a Coordinated Agent Fleet (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Where do instructions live so every future agent inherits them? How does work move from todo to doing to done? How do sessions coordinate? A sequential build-up of amux orchestration: nine steps, each mapped to the component that implements it.">
+  <meta name="keywords" content="amux orchestration, agent fleet setup, CLAUDE.md instructions, multi-session coordination, agent task management, where do agent instructions live, define what good looks like for AI agents, amux board gates, agent autonomy setup">
+  <link rel="canonical" href="https://amux.io/guides/fleet-build-up/">
+  <meta property="og:title" content="The amux Build-Up: From One Repo to a Coordinated Agent Fleet">
+  <meta property="og:description" content="Nine sequential steps from a single session to a self-coordinating fleet, each step tied to the amux component that makes it work for every session you spin up afterward.">
+  <meta property="og:url" content="https://amux.io/guides/fleet-build-up/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "The amux Build-Up", "item": "https://amux.io/guides/fleet-build-up/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "The amux Build-Up: From One Repo to a Coordinated Agent Fleet",
+    "description": "Nine sequential steps from a single session to a self-coordinating fleet, each mapped to the amux component that implements it: instruction files, sessions, the board, gates, messaging, dependency edges, autonomy, schedules, and observability.",
+    "url": "https://amux.io/guides/fleet-build-up/",
+    "datePublished": "2026-07-31",
+    "dateModified": "2026-07-31",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["amux orchestration", "agent fleet setup", "CLAUDE.md", "agent task management", "board gates", "agent coordination", "agent autonomy"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {"@type": "Question", "name": "Where do I put instructions so every session I spin up inherits them?", "acceptedAnswer": {"@type": "Answer", "text": "In files in your repo, not in amux. Agent CLIs read a CLAUDE.md (or AGENTS.md) hierarchy natively: a global file for you-level rules, a repo-root file for project rules, and scoped rule files for specifics. amux launches every session inside a working directory, so every current and future session reads the same files automatically. amux Memory adds per-project facts on top, injected into each session that works in that project."}},
+      {"@type": "Question", "name": "How does work move from todo to doing to done in amux?", "acceptedAnswer": {"@type": "Answer", "text": "On the shared board. Cards move backlog, todo, doing, review, done, verified. Agents move their own cards over the REST API or the amux board CLI as they work; humans drag cards in the dashboard. Status changes are gated: a code card cannot be marked done without acknowledging it is implemented, merged, and passing tests, so the column an item sits in stays truthful."}},
+      {"@type": "Question", "name": "How do amux sessions coordinate with each other?", "acceptedAnswer": {"@type": "Answer", "text": "Three mechanisms. The board is the shared ledger every session reads before starting work. amux send delivers messages between sessions with a server-verified origin stamp, so a message can never be misattributed. Peek lets any session read another session's terminal history to check real state instead of asking. Dependency and reviewer edges on cards add structure: a card blocks until the cards it depends on close, and a card with a reviewer cannot close until that reviewer signs off."}},
+      {"@type": "Question", "name": "How do I define what good looks like for an agent?", "acceptedAnswer": {"@type": "Answer", "text": "Twice. Durable quality rules go in your instruction files, where every session reads them. Per-task acceptance lives on the board card: its type derives a gate checklist, and the verified status is reserved for work confirmed in production with evidence. done means implemented; verified means proven. Agents cannot skip the distinction because the gates reject dishonest transitions."}},
+      {"@type": "Question", "name": "How do I set which model every new session uses?", "acceptedAnswer": {"@type": "Answer", "text": "Per session at creation, with defaults. Each amux session records its working directory, agent CLI, and model flags; new sessions start from your defaults so you set the model policy once. Sessions running different models coexist in one fleet, and the same board, gates, and messaging apply to all of them."}}
+    ]
+  }
+  </script>
+
+  <style>
+    .bu-step { border:1px solid var(--line,#2a3040); border-radius:10px; padding:1.1rem 1.3rem; margin:1.2rem 0; }
+    .bu-step h3 { margin-top:0; }
+    .bu-comp { display:inline-block; background:var(--surface-2); border:1px solid var(--line,#2a3040); border-radius:6px; padding:.15rem .55rem; font-family:'JetBrains Mono',monospace; font-size:.78rem; margin:.15rem .25rem .15rem 0; }
+    .bu-why { border-left:3px solid var(--accent,#c75b2e); padding:.6rem 1rem; margin-top:.8rem; background:var(--surface-2); border-radius:0 6px 6px 0; font-size:.92rem; }
+    .bu-q { color:var(--muted,#8b94a7); font-style:italic; margin:.2rem 0 .8rem; }
+    /* No colors here: the site's `pre` rule is theme-safe (var(--bg-2) +
+       var(--line-2)); a hardcoded dark hex made light mode dark-on-dark. */
+    pre.bu-code { padding: .8rem 1rem; font-size: .82rem; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>The amux Build-Up</span></div>
+
+    <h1>The amux Build-Up: From One Repo to a Coordinated Agent Fleet</h1>
+    <p class="subtitle">Published July 2026. Nine sequential steps, each mapped to the component that implements it.</p>
+
+    <p>The most common question after seeing a fleet run is not "how do I start a session." It is the meta-level: <em>where do the instructions live that apply to every session? How does a task actually move from todo to done? Where do I define what good looks like, so I don't have to repeat it to each agent I spin up?</em></p>
+
+    <p>The answer has a shape, and the shape is a build-up. Each step below adds one layer, names the amux component that implements it, and explains why the layer automatically applies to every session you create afterward. Do them in order. You can stop at any step and have a working setup; each later step is what you reach for when the previous one starts to strain.</p>
+
+    <div class="bu-step">
+      <h3>Step 1 — Put your instructions in the repo, not in a chat</h3>
+      <p class="bu-q">"Where do I put the instructions at the high level that work across all the different sessions I spin up?"</p>
+      <span class="bu-comp">CLAUDE.md hierarchy</span> <span class="bu-comp">.claude/rules/</span>
+      <p>In files, versioned in git. Agent CLIs read an instruction hierarchy natively, before your first prompt:</p>
+      <pre class="bu-code">~/.claude/CLAUDE.md      # you-level: applies in every project ("never force-push", "email = the email API")
+your-repo/CLAUDE.md      # project-level: build commands, conventions, what done means here
+your-repo/.claude/rules/ # scoped rules: one file per concern (css.md, deploy.md, testing.md)</pre>
+      <p>This is deliberately not an amux control panel. Instructions live where your code lives, so they are reviewed in PRs, versioned, and identical for humans and agents. amux's job is to launch every agent inside the right working directory so this hierarchy loads.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> a session created three weeks from now, on your phone, for a task you have not imagined yet, reads the same files. You never re-brief.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 2 — Hire your first session</h3>
+      <p class="bu-q">"How do I make sure every session knows which model to use?"</p>
+      <span class="bu-comp">Sessions</span> <span class="bu-comp">session defaults</span>
+      <p>A session is one agent CLI (Claude Code, Codex, Gemini) in its own terminal, pointed at a working directory, with a model and flags recorded at creation. Create it from the dashboard or CLI; amux remembers your defaults, so model policy is a decision you make once and override per hire when a task needs a bigger or cheaper brain.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> the session record is the employment contract: directory, model, flags, creator. Every later feature (board attribution, messaging, cost) keys off it.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 3 — File work on the board, not in the prompt</h3>
+      <p class="bu-q">"How do you go from todo to in-progress to done?"</p>
+      <span class="bu-comp">Board</span> <span class="bu-comp">amux board CLI</span> <span class="bu-comp">REST API</span>
+      <p>The board is the shared ledger: cards move <code>backlog → todo → doing → review → done → verified</code>. Both sides write to it. You add and drag cards in the dashboard; agents claim, advance, and close their own cards through the API as they work. Prompts you send a session are auto-captured as cards, so the ledger stays complete even when you forget to file.</p>
+      <p>The rule that makes it work: one card is one unit of work, something that can be honestly done or not done. Agents read the whole board before starting anything, which is how duplicated and conflicting work gets caught before it happens.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> the board is the answer to "what is everyone doing" without reading any logs. A reviewer can reconstruct the fleet's day from cards alone.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 4 — Define what good looks like, as gates</h3>
+      <p class="bu-q">"How do I define what good looks like for the agent? Where do I do that?"</p>
+      <span class="bu-comp">Card types</span> <span class="bu-comp">Status gates</span> <span class="bu-comp">done ≠ verified</span>
+      <p>Two places, by lifetime. Durable standards ("tests pass before any merge") go in the instruction files from Step 1. Per-task acceptance lives on the card: its <em>type</em> (code, research, ops, doc...) derives a gate checklist, and the server rejects a status change until the agent explicitly acknowledges each gate. A code card cannot reach <code>done</code> without "implemented and merged" plus "tests pass".</p>
+      <p>The last column is the sharpest tool: <code>done</code> means implemented, <code>verified</code> means proven in production with evidence recorded on the card. Agents cannot blur the two, because the gate rejects the transition without the receipts.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> quality stops being a per-prompt plea. It is enforced at the ledger, identically for every session, every model, every task type.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 5 — Let sessions talk, with provenance</h3>
+      <p class="bu-q">"I want the agents to interact with each other."</p>
+      <span class="bu-comp">amux send</span> <span class="bu-comp">Peek</span> <span class="bu-comp">Steering queue</span>
+      <p>Three primitives cover coordination:</p>
+      <ul>
+        <li><strong>amux send</strong> delivers a message from one session to another, stamped server-side with the true sender. No agent can impersonate another, and every handoff is auditable.</li>
+        <li><strong>Peek</strong> lets a session read another session's terminal history: check real state instead of asking and waiting.</li>
+        <li><strong>Steering</strong> queues a message to land only when the target finishes its current task: a note on the desk, not an interruption.</li>
+      </ul>
+      <div class="bu-why"><strong>Why it scales:</strong> agents negotiate handoffs themselves ("I'm pushing, hold your deploy") and the origin stamps mean a message trail you can trust after the fact.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 6 — Wire structure: dependencies and reviewers</h3>
+      <span class="bu-comp">depends_on</span> <span class="bu-comp">reviewer edges</span>
+      <p>Cards can reference each other. A card with <code>depends_on</code> set is blocked while its dependencies are open, and the autonomy loop skips it rather than starting doomed work. A card with a <code>reviewer</code> cannot pass from review to done unless the acknowledging session <em>is</em> that reviewer, which makes cross-agent verification structural instead of voluntary.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> the graph replaces prose like "blocked on X" that only humans could read. Orchestration logic runs on edges, not vibes.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 7 — Turn on autonomy, bounded by everything above</h3>
+      <span class="bu-comp">Auto-pickup</span> <span class="bu-comp">Advance nudges</span> <span class="bu-comp">WIP-1</span>
+      <p>This is the payoff step, and it only works because Steps 1 through 6 exist. An idle session automatically picks up the next unblocked <code>todo</code> card on its lane, works it through the gates, and closes it. Sessions holding a stalled card get nudged to advance it, park it with an honest blocker, or split it. One card in <code>doing</code> per session keeps "what is being worked on" true.</p>
+      <p>Autonomy is bounded by the same rules as manual work: gates still reject dishonest transitions, dependency edges still block, and guards refuse cards that name irreversible operations without a human.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> you stop dispatching. You file work; the fleet drains the queue; the ledger shows what happened, with evidence.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 8 — Recurring duties</h3>
+      <span class="bu-comp">Scheduler</span>
+      <p>Anything you would put on a human's recurring calendar becomes a schedule: a prompt fired at a session on a cadence ("every weekday at 8am: triage the inbox and email me a digest", "every 15m: check CI health"). Runs are recorded with their source, so a scheduled fire and a manual run are distinguishable later.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> standing duties stop depending on you remembering to ask.</div>
+    </div>
+
+    <div class="bu-step">
+      <h3>Step 9 — Watch it run</h3>
+      <span class="bu-comp">Dashboard filters</span> <span class="bu-comp">Cost</span> <span class="bu-comp">Alerts</span>
+      <p>Observability closes the loop. Board filters answer fleet questions directly: <code>is:working</code>, <code>is:gated</code> (sessions blocked on rate or credit limits), <code>is:rotting</code> (in-flight cards going stale). The Cost tab prices every turn by task, session, model, and day. Alerts escalate the rare thing that genuinely needs you now, with provenance and dedupe.</p>
+      <div class="bu-why"><strong>Why it scales:</strong> the meta-level you manage is the ledger and its filters, not terminals. Ten sessions read like a team standup, not ten screens.</div>
+    </div>
+
+    <h2>The build-up in one paragraph</h2>
+    <p>Instructions live in versioned files every agent reads (1). Sessions are hires with a recorded model and directory (2). Work lives on a shared, gated board that agents move honestly (3, 4). Sessions coordinate through stamped messages, peeks, and steering (5), structured by dependency and reviewer edges (6). Autonomy drains the queue inside those rails (7), schedules cover the recurring (8), and the dashboard is where you manage the meta-level (9).</p>
+
+    <p><a class="btn" href="/guides/amux-mental-model/">The amux mental model →</a> <a class="btn" href="/guides/getting-started/">Getting started →</a></p>
+
+    <h2>FAQ</h2>
+    <h3>Where do I put instructions so every future session inherits them?</h3>
+    <p>In the CLAUDE.md hierarchy in your repo and home directory (Step 1). amux launches each session in the right working directory; the agent CLI loads the files natively. Nothing to configure per session.</p>
+    <h3>Is there an amux control panel for instructions?</h3>
+    <p>Deliberately minimal. Durable rules belong in git-versioned files, and amux Memory adds per-project facts injected into every session in that project. The control panel manages sessions, the board, schedules, and observability, not your standards.</p>
+    <h3>How does a task move from todo to done?</h3>
+    <p>An agent claims the card (or auto-picks it up when idle), moves it to doing, works, and advances it through review to done by acknowledging the type-derived gates. verified is reserved for work proven in production with evidence on the card.</p>
+    <h3>Can agents close their own work dishonestly?</h3>
+    <p>The gates reject transitions whose acknowledgements are missing, forced bypasses are logged, and a reviewer edge requires a different session to sign off. The design goal is that the truthful path is always the easiest one.</p>
+    <h3>Do I need all nine steps?</h3>
+    <p>No. Steps 1 to 3 are a complete working setup. Add gates when quality needs teeth, messaging when you run more than two sessions, edges and autonomy when dispatching becomes your bottleneck.</p>
+  </main>
+
+  <footer>
+    <div class="footer-top">
+      <div class="footer-col">
+        <div class="footer-col-label">Product</div>
+        <a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Resources</div>
+        <a href="/blog/">Blog</a><a href="/faq/">FAQ</a><a href="/glossary/">Glossary</a><a href="/compare/">Compare</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Project</div>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="/press/">Press</a><a href="/privacy/">Privacy</a>
+      </div>
+    </div>
+    <div class="sub-footer">amux — open-source control plane for AI agents · MIT</div>
+  </footer>
+</body>
+</html>
