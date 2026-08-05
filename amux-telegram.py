@@ -59,6 +59,14 @@ LIVE_PATH = os.path.join(AMUX_DIR, "telegram-live.json")
 # longer than the server's yolo auto-responder cooldown, so recognized/auto-
 # answerable prompts self-clear and never reach Jan (plan B.2).
 PERM_GRACE_SECS = float(os.environ.get("TG_PERM_GRACE_SECS", "10") or 10)
+# Suppress the "input needed / permission prompt" Telegram ping for a session
+# while a human tmux client is attached to it — Jan is sitting at the CLI and
+# sees the prompt live, so pinging his phone is pure spam. He detaches ⇒ the next
+# poll pings normally (he walked away from a still-open prompt). tmux failure ⇒
+# empty attached-set ⇒ nothing suppressed (fail toward notifying — never hide a
+# prompt he might need to answer remotely). TG_SUPPRESS_ATTACHED=0 disables.
+SUPPRESS_ATTACHED = os.environ.get("TG_SUPPRESS_ATTACHED", "1") != "0"
+TMUX_PREFIX = os.environ.get("AMUX_TMUX_PREFIX", "amux-")
 PERM_PEEK_LINES = 40
 PERM_PROMPT_MAX_CHARS = 1500
 
@@ -69,6 +77,26 @@ DEFAULT_AMUX_BASE = "https://localhost:8822"
 # for every topic (new and pre-existing) unless overridden by /mode or
 # TG_DEFAULT_MODE.
 VALID_MODES = ("smart", "brief", "full")
+
+
+def parse_attached_sessions(tmux_output, prefix=TMUX_PREFIX):
+    """Parse `tmux list-sessions -F '#{session_name} #{session_attached}'` output
+    into the set of amux session names (prefix stripped) that have >=1 client
+    attached. Malformed lines are skipped; a session_attached of "" or "0" counts
+    as detached."""
+    out = set()
+    for line in (tmux_output or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.rsplit(" ", 1)
+        if len(parts) != 2:
+            continue
+        tmux_name, attached = parts[0].strip(), parts[1].strip()
+        if attached in ("", "0"):
+            continue
+        out.add(tmux_name[len(prefix):] if tmux_name.startswith(prefix) else tmux_name)
+    return out
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -2264,12 +2292,31 @@ class Bot:
             log.info("typing action for %s failed (cosmetic): %s", session, e)
         self._last_typing[session] = now
 
+    def _attached_sessions(self):
+        """Session names (prefix stripped) that currently have a tmux client
+        attached — i.e. Jan is at the CLI. Returns an empty set when suppression
+        is disabled or tmux can't be queried, so a failure never hides a prompt."""
+        if not SUPPRESS_ATTACHED:
+            return set()
+        try:
+            r = subprocess.run(
+                ["tmux", "list-sessions", "-F", "#{session_name} #{session_attached}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                return set()
+            return parse_attached_sessions(r.stdout)
+        except Exception as e:
+            log.debug("tmux attached-session probe failed (no suppression): %s", e)
+            return set()
+
     # ── outbound: permission-prompt detection + notify (plan B.1/B.2/B.3/B.5) ────
     def _check_permission_prompts(self, sessions):
         """Once per poll: drive each session's continuous-waiting timer, notify
         when the grace window elapses on a fresh prompt, and clean up pending
         state when a session leaves waiting or disappears entirely."""
         now = time.time()
+        attached = self._attached_sessions()
         live = set()
         for s in sessions:
             if s.get("archived"):
@@ -2282,6 +2329,11 @@ class Bot:
             self.waiting.observe(name, label, now)
             if label != "waiting":
                 self._resolve_pending(name, "resolved")
+                continue
+            # Jan is attached at the CLI in this session — he sees the prompt live,
+            # so don't ping his phone. Keep the waiting timer running above so that
+            # if he detaches with the prompt still open, the next poll pings at once.
+            if name in attached:
                 continue
             if self.waiting.due(name, now, PERM_GRACE_SECS):
                 self._maybe_notify_prompt(name, now)

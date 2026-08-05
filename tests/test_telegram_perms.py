@@ -550,6 +550,52 @@ tg.time.time = _t
 print("supersede ok — a distinct prompt edits the old message to 'superseded' and notifies anew")
 
 
+# ── 19. parse_attached_sessions: tmux list-sessions -> attached name set ────────
+# `#{session_attached}` is a client count: 0 = detached, >=1 = a human at the CLI.
+out = ("amux-s1 1\n"
+       "amux-test 0\n"
+       "amux-fidoo-orchestrator 2\n"
+       "amux-amux-helper 0\n")
+got = tg.parse_attached_sessions(out)
+assert got == {"s1", "fidoo-orchestrator"}, got
+# prefix stripped; a non-amux session keeps its raw name; blanks/malformed skipped
+assert tg.parse_attached_sessions("scratch 1\n\nbroken\namux-x 3\n") == {"scratch", "x"}, \
+    tg.parse_attached_sessions("scratch 1\n\nbroken\namux-x 3\n")
+# empty / None input -> empty set (the tmux-failure fallback shape)
+assert tg.parse_attached_sessions("") == set()
+assert tg.parse_attached_sessions(None) == set()
+# a name containing spaces: rsplit on the last field keeps the count separate
+assert tg.parse_attached_sessions("amux-my sess 4\n") == {"my sess"}, \
+    tg.parse_attached_sessions("amux-my sess 4\n")
+print("parse_attached_sessions ok — only client-count>=1 rows, prefix stripped, malformed dropped")
+
+
+# ── 20. attach-suppression gate: attached session is NOT pinged; detached is ────
+# Jan at the CLI (attached) must never get a Telegram prompt ping; a detached
+# waiting session on the same poll still pings normally.
+bot, mt, ma = make_bot(topics_state={"topics": {"att": 800, "det": 801}})[:3]
+ma.peek_text["att"] = MENU_2
+ma.peek_text["det"] = MENU_2
+bot._attached_sessions = lambda: {"att"}  # att has a live tmux client, det doesn't
+_t = tg.time.time
+tg.time.time = lambda: 9000.0
+bot.waiting._since["att"] = 8980.0   # both past grace
+bot.waiting._since["det"] = 8980.0
+n0 = len(mt.sent)
+bot._check_permission_prompts([sess_row("att", "waiting"), sess_row("det", "waiting")])
+assert bot.prompts.get("att") is None, "attached session must NOT create a pending prompt"
+assert bot.prompts.get("det") is not None, "detached session must still notify"
+assert len(mt.sent) == n0 + 1, "exactly one ping (the detached one)"
+# the waiting timer still ran for the attached session, so on detach the next
+# poll fires immediately (grace already satisfied)
+bot._attached_sessions = lambda: set()
+bot._check_permission_prompts([sess_row("att", "waiting"), sess_row("det", "waiting")])
+assert bot.prompts.get("att") is not None, "on detach the standing prompt pings at once"
+tg.time.time = _t
+print("attach-suppression ok — CLI-attached session suppressed, detached pings, "
+      "detach re-arms immediately")
+
+
 print("\nALL TELEGRAM-PERMS CHECKS PASSED")
 
 
