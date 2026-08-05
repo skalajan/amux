@@ -161,6 +161,12 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
                     not in ("0", "false", "no", "off"),
         "presence_react": (get("TG_PRESENCE_REACT", "0") or "0").strip().lower()
                           in ("1", "true", "yes", "on"),
+        # Quiet mode (plan .omc/plans/telegram-quiet-mode.md, design A): default ON
+        # (1) — while quiet, only questions, failures, and the latch-armed answer to
+        # a Telegram turn ring; autonomous finals land silently in the live box.
+        # TG_QUIET_DEFAULT=0 forces the legacy route_reply behavior (kill switch).
+        "quiet_default": (get("TG_QUIET_DEFAULT", "1") or "1").strip().lower()
+                         not in ("0", "false", "no", "off"),
     }
 
 
@@ -383,11 +389,27 @@ class LiveStore:
       * body                — the last rendered body text, so a header-only poll
                               (status change, no new reply) re-renders header+body
                               without re-summarizing.
+      * awaiting_tg_reply   — the answer-latch (plan telegram-quiet-mode.md): True
+                              once Jan acts on this session via Telegram; the next
+                              final that post-dates latch_arm_key rings even while
+                              quiet, then clears it.
+      * latch_arm_key       — the thread-order boundary [ts, seq] at arm time (the
+                              latest known key). Only a strictly-later final is the
+                              real answer; an in-flight autonomous final recorded
+                              at-or-before it can't consume the latch (post-dating
+                              guard).
+      * latest_key          — the most recent thread-order key [ts, seq] observed
+                              for this session; the source of latch_arm_key at arm.
+      * limit_rung          — shared episode key: set when a usage-limit ring fires
+                              (either the limit-status check or the usage-limit
+                              system row) so the episode rings exactly once; cleared
+                              when the session leaves `limit` status.
     Persisted (atomic 0600) so a sidecar restart keeps editing the same box
     (no re-create badge) and never re-rings an already-settled final."""
 
     _FIELDS = ("message_id", "text_hash", "candidate_reply_id", "rung_reply_id",
-               "read_ts", "done_ts", "idle_phase", "body")
+               "read_ts", "done_ts", "idle_phase", "body",
+               "awaiting_tg_reply", "latch_arm_key", "latest_key", "limit_rung")
 
     def __init__(self, path=LIVE_PATH, state=None):
         self.path = path
@@ -990,25 +1012,59 @@ def session_status_label(s):
     return "idle"
 
 
-# ── pure logic: silent-updates routing + presence predicates (plan M1) ─────────
-def route_reply(is_final, origin_is_telegram, ring_off):
-    """Option B decision core (plan .omc/plans/telegram-silent-updates.md). Given
-    a session reply's finality, whether its governing origin is telegram, and the
-    topic's /ring-off flag, return the routing action:
+# ── pure logic: quiet-mode routing + presence predicates (plan M1 + quiet mode) ─
+def notify_class(kind, is_final, ring_off, latch_armed, window_open,
+                 origin_is_telegram):
+    """Unified quiet-mode router (plan .omc/plans/telegram-quiet-mode.md, design
+    A). `kind` in {"reply", "question", "failure"}; returns "ring" | "live" |
+    "suppress". /mute is handled upstream (is_muted) — it is absolute and never
+    reaches here.
 
       * "suppress" — no Telegram footprint at all (dashboard + /last hold it).
       * "ring"     — a fresh, ringing sendMessage (disable_notification=False).
       * "live"     — a silent edit into the rolling live box.
 
-    The finality gate PRECEDES ring_off: a non-final reply always suppresses,
-    regardless of origin or /ring off. Only a FINAL reply can ring (telegram
-    origin, ring on) or land silently in the live box (origin-muted, or ring
-    off). /mute is handled upstream (is_muted) before routing is consulted."""
-    if not is_final:
-        return "suppress"
-    if origin_is_telegram and not ring_off:
+    Questions (Phase B prompts) and failures (limit / system rows) are actionable
+    and ALWAYS ring — they precede the ring_off check, so /ring off cannot silence
+    them (only /mute does, upstream). For a reply: the finality gate comes first
+    (a non-final always suppresses); then /ring off diverts to the live box; then
+    the answer-latch rings the answer to Jan's Telegram turn no matter how slow;
+    then (design B only) an open window rings continuous mid-chat progress; else
+    the quiet default sends the final silently to the live box."""
+    if kind == "question":          # Phase B — actionable, never gated
         return "ring"
-    return "live"
+    if kind == "failure":           # limit / system rows — never silenced (mute aside)
+        return "ring"
+    # kind == "reply"
+    if not is_final:                # finality gate precedes everything (unchanged)
+        return "suppress"
+    if ring_off:                    # explicit per-session silence wins for replies
+        return "live"
+    if latch_armed:                 # THE answer to Jan's Telegram turn — any delay
+        return "ring"
+    if window_open and origin_is_telegram:   # design B: continuous mid-chat progress
+        return "ring"
+    return "live"                   # quiet default: routine final -> silent live box
+
+
+def route_reply(is_final, origin_is_telegram, ring_off):
+    """Legacy Option-B shim (plan .omc/plans/telegram-silent-updates.md): the
+    pre-quiet decision core, preserved verbatim for regression. Equivalent to
+    quiet-default OFF — latch off, window permanently open — so with
+    (latch_armed=False, window_open=True) the reply branch reduces to
+    `ring iff (¬ring_off ∧ origin_tg)`, exactly the shipped truth table."""
+    return notify_class("reply", is_final, ring_off, latch_armed=False,
+                        window_open=True, origin_is_telegram=origin_is_telegram)
+
+
+def _thread_key_after(candidate_key, boundary_key):
+    """True iff `candidate_key` strictly post-dates `boundary_key` in thread order.
+    Keys are (ts, seq) — tuples fresh from _thread_order_key or lists after a JSON
+    reload; both are normalized to list so a tuple-vs-list comparison never raises.
+    A None boundary means "nothing known at arm time" -> any reply post-dates."""
+    if boundary_key is None:
+        return True
+    return list(candidate_key) > list(boundary_key)
 
 
 def should_type(status_label, origin_is_telegram):
@@ -1454,6 +1510,9 @@ class Bot:
         stamp = time.strftime("%H:%M")
         label = {"allow": "✅ Allowed", "always": "✅ Always-allowed",
                  "deny": "⛔ Denied"}.get(action, action)
+        # A permission tap is a Telegram inbound action: arm the answer-latch so
+        # the session's next post-boundary final rings even while quiet.
+        self._arm_latch(session)
         pending = self.prompts.get(session)
         try:
             if pending:
@@ -1485,7 +1544,11 @@ class Bot:
 
     def _callback_peek(self, cb_id, session):
         """Peek button: no state change — toast an ack and post the current pane
-        tail into the session topic (answerCallbackQuery text is too short for it)."""
+        tail into the session topic (answerCallbackQuery text is too short for it).
+        A peek is a Telegram inbound action (Jan looked), so it arms the
+        answer-latch — its own arm site because a peek returns here BEFORE
+        _finalize_callback (plan §1)."""
+        self._arm_latch(session)
         try:
             out = self.amux.peek(session, lines=PERM_PEEK_LINES)
             tail = "\n".join(out.splitlines()[-15:]) or "(empty)"
@@ -1619,12 +1682,13 @@ class Bot:
         self._reply(topic_id, f"{'muted' if mute else 'unmuted'} {session}")
 
     def _cmd_ring(self, topic_id, args):
-        """/ring off forces disable_notification on EVERY forwarded reply for
-        this topic regardless of governing origin — a full mute-of-sound,
-        distinct from /mute's content suppression (the reply still arrives,
-        just silently). /ring on restores the origin rule (docs/telegram-chat.md
-        "Notifications"). Command responses (this ack included) always ring —
-        only the outbound reply-forward path in forward_session reads this flag."""
+        """/ring off forces disable_notification on every routine reply forward for
+        this topic — a full mute-of-sound, distinct from /mute's content suppression
+        (the reply still arrives, just silently). Questions and failures OVERRIDE
+        ring_off and still ring (they precede the ring_off check in notify_class —
+        plan telegram-quiet-mode.md §4). /ring on restores the quiet default
+        (latch-armed answers ring; routine finals stay silent). Command responses
+        (this ack included) always ring — only the reply-routing path reads this flag."""
         session = self.topics.session_for_topic(topic_id)
         if not session:
             self._reply(topic_id, "Run /ring inside a mapped session topic.")
@@ -1717,8 +1781,9 @@ class Bot:
                 "/wake <session> — resume a session\n"
                 "/create <session> [dir] — create a session\n"
                 "/mute · /unmute — stop/resume forwarding in this topic\n"
-                "/ring on|off — force-silence every forward regardless of origin "
-                "(on restores the default: ring only for replies to a Telegram-originated message)\n"
+                "/ring on|off — force-silence routine reply forwards for this topic "
+                "(questions + failures still ring; on restores the quiet default: ring the "
+                "latch-armed answer to your Telegram turn, routine finals stay silent)\n"
                 "/mode [smart|brief|full] — show or set this topic's reply display mode\n"
                 "/last [n] — full text of the n-th most recent reply (default 1)\n"
                 "/type <text> — raw-inject text into the pane (owner-only)\n"
@@ -1781,12 +1846,14 @@ class Bot:
           session/system row is sent immediately, ringing per the governing-origin
           rule (docs/telegram-chat.md "Notifications") — the pre-finality behavior.
         * `status_label` provided (the outbound loop always passes it): silent-
-          updates Option B (plan .omc/plans/telegram-silent-updates.md). SYSTEM
-          rows keep the legacy immediate origin-routed path (explicitly out of
-          scope — alerts/pings still ring). SESSION reply rows are NOT sent here:
-          each new one is deduped and recorded as the promotion candidate; the
-          separate presence/promotion tail (`_presence_tail`, run EVERY poll —
-          Hazard 1) decides suppress/live/ring once finality settles.
+          updates Option B (plan .omc/plans/telegram-silent-updates.md) + quiet
+          mode (plan telegram-quiet-mode.md). SYSTEM rows are the FAILURE class —
+          they ring regardless of origin / ring_off (only /mute silences, via the
+          loop break), deduped against a usage-limit episode by the shared
+          limit_rung key. SESSION reply rows are NOT sent here: each new one is
+          deduped and recorded as the promotion candidate; the separate
+          presence/promotion tail (`_presence_tail`, run EVERY poll — Hazard 1)
+          decides suppress/live/ring once finality settles.
 
         Owner rows are walked on every poll (never marked "seen") to keep the
         governing origin current — amux-server.py's incremental window for them is
@@ -1831,7 +1898,16 @@ class Bot:
                 continue
             # Legacy path (status unknown) + all system rows: immediate send.
             tid = self._ensure_topic(session)
-            silent = ring_off or self.outbound.governing_origin(session) != "telegram"
+            if role == "system" and status_label is not None:
+                # Quiet mode: a system row is the FAILURE class — ring regardless
+                # of origin / ring_off, unless this usage-limit episode already
+                # rang (shared limit_rung dedup with the per-poll limit check).
+                already = bool((self.live.get(session) or {}).get("limit_rung"))
+                klass = "live" if already else notify_class(
+                    "failure", True, ring_off, False, False, False)
+                silent = (klass != "ring")
+            else:
+                silent = ring_off or self.outbound.governing_origin(session) != "telegram"
             try:
                 self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid,
                                      disable_notification=silent)
@@ -1840,10 +1916,31 @@ class Bot:
                 break  # leave item un-marked; retried next poll
             self.outbound.mark_sent(session, item)
             self._save_outbound()
+            if role == "system" and status_label is not None and not silent:
+                # This failure ring owns the episode — set the shared key so the
+                # per-poll limit-status check does not double-ring.
+                self.live.set_fields(session, limit_rung=True)
+                self._save_live()
+        self._observe_latest_key(session, thread)
         if status_label is not None:
             if newest_reply is not None:
                 self._record_candidate(session, newest_reply)
             self._presence_tail(session, status_label, time.time())
+
+    def _observe_latest_key(self, session, thread):
+        """Advance the session's persisted latest-known thread-order key from the
+        current thread. This is the monotonic marker the answer-latch stamps as its
+        arm boundary, so a just-recorded autonomous final can never post-date a
+        later arm (post-dating guard)."""
+        if not thread:
+            return
+        mx = max((_thread_order_key(it) for it in thread), default=None)
+        if mx is None:
+            return
+        cur = (self.live.get(session) or {}).get("latest_key")
+        if cur is None or list(mx) > list(cur):
+            self.live.set_fields(session, latest_key=list(mx))
+            self._save_live()
 
     def _render_outbound(self, session, item):
         """Render one outbound item per the session's display mode. System
@@ -1896,12 +1993,38 @@ class Bot:
         with self._save_lock:
             self.live.save()
 
+    def _quiet_default(self):
+        """Quiet mode master switch (plan telegram-quiet-mode.md). Default ON.
+        OFF forces the legacy route_reply path (latch off, window permanently
+        open) — exact backward-compatible behavior."""
+        return bool(self.cfg.get("quiet_default", True))
+
+    def _arm_latch(self, session):
+        """Arm the answer-latch on a Telegram inbound action (message, permission
+        tap, peek). The boundary is the session's latest known thread-order key at
+        arm time, so an in-flight autonomous final already recorded at-or-before it
+        cannot consume the latch (post-dating guard) — only a strictly-later final,
+        the real answer to Jan's turn, rings and clears it. Self-guarded: latch
+        arming is core routing and must never raise into the inbound path, but it
+        also must not depend on presence being on."""
+        try:
+            live = self.live.get(session) or {}
+            self.live.set_fields(session, awaiting_tg_reply=True,
+                                 latch_arm_key=live.get("latest_key"))
+            self._save_live()
+        except Exception as e:
+            log.info("arm latch for %s failed: %s", session, e)
+
     def _on_inject(self, session, in_message_id):
         """Presence read-receipt on a durable telegram-origin inject (E1/E2).
         Best-effort — never raises into handle_update. Creates the live box once
         (silent, guarded by the persisted message_id so a re-inject never
         re-creates), stamps '👀 přečteno', and — only when TG_PRESENCE_REACT=1 —
-        adds the opt-in 👀 reaction to Jan's own message."""
+        adds the opt-in 👀 reaction to Jan's own message.
+
+        Also arms the answer-latch (quiet mode) FIRST — before the presence gate —
+        so a Telegram inbound rings its slow answer even when presence is off."""
+        self._arm_latch(session)
         if not self._presence_on():
             return
         try:
@@ -1965,16 +2088,38 @@ class Bot:
 
     def _promote_final(self, session, status_label, now, cand):
         """Promote a settled final candidate. Returns True iff it consumed the
-        poll's live-box edit. Ring only for (telegram-origin ∧ ¬ring_off); else a
-        silent live-box edit (origin-muted / ring-off final)."""
-        origin_tg = self.outbound.governing_origin(session) == "telegram"
-        ring_off = self.topics.is_ring_off(session)
-        route = route_reply(True, origin_tg, ring_off)
+        poll's live-box edit.
+
+        Quiet mode (plan telegram-quiet-mode.md, design A): the answer-latch is
+        EFFECTIVE only when it is armed AND this candidate strictly post-dates the
+        arm boundary (post-dating guard — an in-flight autonomous final recorded
+        at-or-before the boundary must not consume the latch meant for the real
+        answer). An effective latch rings and CLEARS; a predating candidate routes
+        by ordinary reply rules and leaves the latch armed. window_open is always
+        False here (design A has no wall-clock window). With quiet OFF the latch is
+        forced off and the window forced open -> exact legacy route_reply behavior."""
         item = self._candidate_items.get(session) or self._refetch_reply(session, cand)
         if item is None:
             return False
+        origin_tg = self.outbound.governing_origin(session) == "telegram"
+        ring_off = self.topics.is_ring_off(session)
+        live = self.live.get(session) or {}
+        if self._quiet_default():
+            latch_effective = bool(live.get("awaiting_tg_reply")) and _thread_key_after(
+                _thread_order_key(item), live.get("latch_arm_key"))
+            window_open = False
+        else:
+            latch_effective = False
+            window_open = True
+        route = notify_class("reply", True, ring_off, latch_effective, window_open, origin_tg)
         if route == "ring":
-            return self._ring_final(session, item, cand, now)
+            consumed = self._ring_final(session, item, cand, now)
+            # Clear the latch only on an EFFECTIVE latched ring that actually sent
+            # (rung_reply_id == cand is the durable success guard set by _ring_final).
+            if latch_effective and (self.live.get(session) or {}).get("rung_reply_id") == cand:
+                self.live.set_fields(session, awaiting_tg_reply=False, latch_arm_key=None)
+                self._save_live()
+            return consumed
         # "live": silent edit into the box (create if missing), mark rung.
         self._live_edit(session, self._live_render(session, item, status_label, now))
         self.live.set_fields(session, rung_reply_id=cand, idle_phase="done",
@@ -2217,6 +2362,52 @@ class Bot:
         self._edit_message(pending.get("message_id"),
                            f"{pending.get('body') or '🔐'}\n\n♻️ Superseded by a newer prompt.")
 
+    # ── outbound: usage-limit failure ring (plan telegram-quiet-mode.md §3) ──────
+    def _check_limit_rings(self, sessions):
+        """Once per poll: ring EXACTLY once when a session transitions into `limit`
+        status (usage/credit/rate limit), and clear the shared episode key when it
+        leaves. This check lives OUTSIDE forward_session's per-item loop, so it does
+        NOT inherit that loop's /mute break — it MUST call is_muted itself so a muted
+        flaky session's limit never rings (plan §3). Deduped against the usage-limit
+        system row via the shared limit_rung LiveStore key (first-writer-wins in the
+        single-threaded poll) -> one ring per limit episode regardless of path order."""
+        for s in sessions:
+            if s.get("archived"):
+                continue
+            name = s.get("name")
+            if not name:
+                continue
+            label = session_status_label(s)
+            already = bool((self.live.get(name) or {}).get("limit_rung"))
+            if label == "limit":
+                if self.topics.is_muted(name):
+                    continue  # explicit mute guard (this loop has no is_muted break)
+                if already:
+                    continue  # this episode already rang
+                # notify_class("failure") is unconditionally "ring" — failures
+                # override /ring off (only /mute silences, checked above).
+                if notify_class("failure", True, self.topics.is_ring_off(name),
+                                False, False, False) == "ring" and self._ring_failure(
+                        name, f"⛔ {name} @ {self.machine} — usage limit reached"):
+                    self.live.set_fields(name, limit_rung=True)
+                    self._save_live()
+            elif already:
+                # Left `limit` — re-arm the next episode.
+                self.live.set_fields(name, limit_rung=False)
+                self._save_live()
+
+    def _ring_failure(self, session, text):
+        """Fresh ringing sendMessage for a failure (usage limit). Returns True on a
+        successful send so the caller can set the shared dedup key; a send failure
+        leaves the key unset so the ring is retried next poll (one ring guaranteed)."""
+        tid = self._ensure_topic(session)
+        try:
+            self.tg.send_message(self.chat_id, text, tid, disable_notification=False)
+            return True
+        except TelegramError as e:
+            log.warning("limit ring for %s failed: %s — retry next poll", session, e)
+            return False
+
     def outbound_loop(self):
         backoff = self.cfg["poll_secs"]
         while not self._stop.is_set():
@@ -2239,6 +2430,10 @@ class Bot:
                     log.warning("forward %s failed: %s", s.get("name"), e)
                 except Exception as e:
                     log.exception("forward %s crashed: %s", s.get("name"), e)
+            try:
+                self._check_limit_rings(sessions)
+            except Exception as e:
+                log.exception("limit-ring check crashed: %s", e)
             try:
                 self._check_permission_prompts(sessions)
             except Exception as e:

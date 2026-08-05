@@ -318,7 +318,10 @@ print("Hazard 2 ok — 'not found' recreates once; other errors skip+retry; unch
 
 
 # ── 10. Hazard 1: a poll with NO new rows still promotes a settled candidate ────
-bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))
+# quiet_default=0 isolates the Option-B promotion mechanics (settle/candidate/rung)
+# under legacy route_reply routing; quiet-mode latch routing is covered separately
+# in the "quiet mode" section below.
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), quiet_default=0)
 bot.outbound.observe_owner("s", "telegram")
 # poll 1 (active): a reply row appears -> recorded as candidate, NO send/ring
 ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10),
@@ -349,7 +352,9 @@ print("Hazard 1 ok — the promotion tail fires on a row-less poll after settle;
 
 
 # ── 11. a newer row before settle replaces the candidate (no premature ring) ────
-bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))
+# quiet_default=0: legacy routing so the mechanics assertion (only the latest
+# settled candidate rings) is isolated from quiet-mode latch gating.
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), quiet_default=0)
 bot.outbound.observe_owner("s", "telegram")
 saved = _patch_time(1000.0)
 ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10),
@@ -459,7 +464,11 @@ print("TG_PRESENCE_REACT ok — off: no reaction; on: one 👀; a reaction error
 
 
 # ── 16. autonomous loop: idle gaps < settle -> no ring; one ring after settle ───
-bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), presence=False)
+# quiet_default=0: legacy routing isolates the finality-settle mechanics (sub-settle
+# idle gaps never settle; one ring on the final continuous-idle). Under quiet mode an
+# autonomous (non-latched) final goes SILENT instead — see the "quiet mode" section.
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), presence=False,
+                       quiet_default=0)
 bot.outbound.observe_owner("s", "telegram")
 saved = _patch_time(1000.0)
 # a sequence of turns with sub-settle idle gaps
@@ -514,6 +523,214 @@ bot.forward_session("s", status_label="active")   # active -> non-final
 assert mt.sent == [] and mt.edits == [], "a non-final reply produces no send and no edit (full suppress)"
 tg.time.time = saved
 print("suppress ok — an active (non-final) reply is fully suppressed: no send, no edit")
+
+
+# ══ QUIET MODE (plan .omc/plans/telegram-quiet-mode.md, design A: latch-only) ═══
+# Layers on top of Option B above. Default policy: while quiet, only questions,
+# failures, and the latch-armed answer to a Telegram turn ring; every other final
+# lands silently in the live box.
+
+# ── Q1. notify_class grid — the single classifier ──────────────────────────────
+NC = tg.notify_class
+# Questions + failures ALWAYS ring — they precede the ring_off/finality checks, so
+# /ring off never silences them (only /mute does, upstream). is_final is irrelevant.
+for _ro in (True, False):
+    for _lat in (True, False):
+        for _win in (True, False):
+            for _otg in (True, False):
+                for _fin in (True, False):
+                    assert NC("question", _fin, _ro, _lat, _win, _otg) == "ring"
+                    assert NC("failure", _fin, _ro, _lat, _win, _otg) == "ring"
+# Reply: finality gate precedes everything (a non-final always suppresses).
+assert NC("reply", False, False, True, True, True) == "suppress"
+assert NC("reply", False, True, False, False, False) == "suppress"
+# /ring off diverts a reply to the live box and WINS over the latch.
+assert NC("reply", True, True, True, False, True) == "live", "ring_off wins over the latch"
+# The latch core: the answer rings after ANY delay, window closed, origin irrelevant.
+assert NC("reply", True, False, True, False, False) == "ring", "latch rings even a desk-origin final"
+assert NC("reply", True, False, True, False, True) == "ring"
+# Latch consumed (armed False) + window closed -> autonomous final is SILENT.
+assert NC("reply", True, False, False, False, True) == "live", "post-latch autonomous final is silent"
+# Design-B window layer (only reachable via the shim/quiet-off): window ∧ telegram.
+assert NC("reply", True, False, False, True, True) == "ring", "window+telegram-origin rings (shim path)"
+assert NC("reply", True, False, False, True, False) == "live", "window but desk-origin -> silent"
+print("notify_class ok — questions/failures always ring; reply gated by finality>ring_off>latch>window")
+
+
+# ── Q2. route_reply shim == notify_class(reply, latch off, window open) ─────────
+for _fin in (True, False):
+    for _otg in (True, False):
+        for _ro in (True, False):
+            assert tg.route_reply(_fin, _otg, _ro) == NC(
+                "reply", _fin, _ro, False, True, _otg), (_fin, _otg, _ro)
+print("route_reply-shim ok — the legacy shim exactly equals notify_class with latch off, window open")
+
+
+# ── Q3. latch lifecycle: arm -> slow answer rings + clears -> autonomous silent
+#        -> re-arm -> rings again (quiet ON, the default) ────────────────────────
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))   # quiet default ON
+saved = _patch_time(1000.0)
+bot.handle_update(owner_msg(1, "do it", topic_id=100, message_id=11))   # Telegram inbound -> arms
+assert bot.live.get("s")["awaiting_tg_reply"] is True, "a Telegram inbound arms the latch"
+# The agent works a LONG time (a wall-clock window would have expired), then settles.
+tg.time.time = lambda: 1100.0
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("R:1", "the slow answer", 1050, 1)]}
+bot.forward_session("s", status_label="active")
+tg.time.time = lambda: 1101.0
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1106.0
+bot.forward_session("s", status_label="idle")            # settle -> latched ring
+rings = [x for x in mt.sent if x[3] is False]
+assert len(rings) == 1 and rings[0][1] == "the slow answer", f"the slow latched answer rings: {mt.sent}"
+assert bot.live.get("s")["awaiting_tg_reply"] is False, "an effective latched ring clears the latch"
+assert bot.live.get("s")["latch_arm_key"] is None
+# A second AUTONOMOUS final (no new inbound) -> silent live box, no ring.
+tg.time.time = lambda: 1110.0
+ma.threads["s"] = {"cursor": 2, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("R:2", "autonomous chatter", 1108, 2)]}
+bot.forward_session("s", status_label="active")
+tg.time.time = lambda: 1111.0
+ma.threads["s"] = {"cursor": 2, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1116.0
+bot.forward_session("s", status_label="idle")
+assert len([x for x in mt.sent if x[3] is False]) == 1, "an autonomous final after the latch cleared is silent"
+# Jan speaks again -> re-arms -> the next final rings again.
+bot.handle_update(owner_msg(2, "now this", topic_id=100, message_id=12))
+assert bot.live.get("s")["awaiting_tg_reply"] is True, "a new inbound re-arms the latch"
+tg.time.time = lambda: 1120.0
+ma.threads["s"] = {"cursor": 3, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("R:3", "second answer", 1118, 3)]}
+bot.forward_session("s", status_label="active")
+tg.time.time = lambda: 1121.0
+ma.threads["s"] = {"cursor": 3, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1126.0
+bot.forward_session("s", status_label="idle")
+rings = [x for x in mt.sent if x[3] is False]
+assert len(rings) == 2 and rings[-1][1] == "second answer", f"the re-armed latch rings the next answer: {rings}"
+tg.time.time = saved
+print("latch-lifecycle ok — arm rings the slow answer & clears; autonomous finals stay silent; re-arm rings again")
+
+
+# ── Q4. busy-session post-dating guard: an in-flight autonomous final recorded
+#        at-or-before the arm boundary does NOT consume the latch; the later
+#        post-inbound answer does (r3 race) ─────────────────────────────────────
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), presence=False)
+bot.outbound.observe_owner("s", "telegram")
+saved = _patch_time(1000.0)
+# (1) a busy autonomous session emits F0 -> recorded, advances latest_key.
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("F0", "in-flight autonomous", 20, 1)]}
+bot.forward_session("s", status_label="active")
+assert bot.live.get("s")["latest_key"] == [20, 1], "F0 advances the latest known key"
+# (2) Jan's inbound arms AFTER F0 was recorded -> boundary = F0's key.
+bot.handle_update(owner_msg(1, "answer me", topic_id=100, message_id=11))
+assert bot.live.get("s")["latch_arm_key"] == [20, 1], "the arm boundary is the latest known key (F0's)"
+assert bot.live.get("s")["awaiting_tg_reply"] is True
+# (3) F0 settles + promotes -> it PREDATES the boundary -> must NOT ring, must NOT clear.
+tg.time.time = lambda: 1001.0
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1006.0
+bot.forward_session("s", status_label="idle")
+assert [x for x in mt.sent if x[3] is False] == [], "the predating in-flight final must NOT ring"
+assert bot.live.get("s")["awaiting_tg_reply"] is True, "a predating final leaves the latch armed"
+# (4) the real answer A (post-dates the boundary) rings once and clears.
+tg.time.time = lambda: 1010.0
+ma.threads["s"] = {"cursor": 2, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("A", "the real answer", 40, 2)]}
+bot.forward_session("s", status_label="active")
+tg.time.time = lambda: 1011.0
+ma.threads["s"] = {"cursor": 2, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1016.0
+bot.forward_session("s", status_label="idle")
+rings = [x for x in mt.sent if x[3] is False]
+assert len(rings) == 1 and rings[0][1] == "the real answer", f"only the post-inbound answer rings: {rings}"
+assert bot.live.get("s")["awaiting_tg_reply"] is False, "the effective post-boundary answer clears the latch"
+tg.time.time = saved
+print("post-dating ok — an in-flight final at-or-before the boundary can't consume the latch; the later answer does")
+
+
+# ── Q5. a question rings while quiet with the latch CLEAR (Phase B is independent)
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))   # quiet ON
+assert not (bot.live.get("s") or {}).get("awaiting_tg_reply"), "the latch starts clear"
+ma.peek = lambda session, lines=40: "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+bot.waiting._since["s"] = 1000.0
+saved = _patch_time(1011.0)   # past the 10s grace window
+bot._check_permission_prompts([{"name": "s", "status": "waiting"}])
+qrings = [x for x in mt.sent if x[3] is False]
+assert len(qrings) == 1 and "🔐 s" in qrings[0][1], f"a permission question rings while quiet + latch clear: {mt.sent}"
+tg.time.time = saved
+print("question-quiet ok — a Phase B permission prompt rings while quiet with no latch armed (independent path)")
+
+
+# ── Q6. limit episode: rings once via the shared limit_rung key; the usage-limit
+#        system row in the same episode is deduped; leave+re-enter rings again;
+#        a MUTED session's limit does NOT ring ──────────────────────────────────
+def limit_row(name):
+    return {"name": name, "rate_limit_banner": "Claude usage limit reached"}
+
+
+def idle_row(name):
+    return {"name": name, "status": "idle"}
+
+
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))
+# (1) enter limit -> exactly one ring, sets the shared key.
+bot._check_limit_rings([limit_row("s")])
+lrings = [x for x in mt.sent if x[3] is False]
+assert len(lrings) == 1 and "usage limit reached" in lrings[0][1], f"entering limit rings once: {mt.sent}"
+assert bot.live.get("s")["limit_rung"] is True
+# (2) still in limit next poll -> no second ring.
+bot._check_limit_rings([limit_row("s")])
+assert len([x for x in mt.sent if x[3] is False]) == 1, "staying in limit must not re-ring"
+# (3) the usage-limit SYSTEM row in the same episode is deduped -> silent (shared key).
+saved = _patch_time(1000.0)
+ma.threads["s"] = {"cursor": 0, "thread": [
+    owner_item("o1", "telegram", 10),
+    {"id": "sys-1", "role": "system", "text": "usage limit", "ts": 20, "seq": None}]}
+bot.forward_session("s", status_label="limit")
+sysdup = [x for x in mt.sent if "usage limit" in x[1] and "reached" not in x[1]]
+assert len(sysdup) == 1 and sysdup[0][3] is True, f"the usage-limit system row is deduped to silent: {sysdup}"
+tg.time.time = saved
+# (4) leave limit -> clears the key; re-enter -> rings again.
+bot._check_limit_rings([idle_row("s")])
+assert bot.live.get("s")["limit_rung"] is False, "leaving limit clears the shared key"
+bot._check_limit_rings([limit_row("s")])
+assert len([x for x in mt.sent if x[3] is False and "reached" in x[1]]) == 2, "re-entering limit rings again"
+print("limit-dedup ok — one ring per limit episode across the status-check and the system-row path; re-enter re-rings")
+
+# a MUTED session's limit must NOT ring (explicit is_muted guard, outside the loop break).
+bot2, mt2, ma2 = make_bot(topics={"m": 100}, outbound_state=seeded("m"))
+bot2.topics.mute("m")
+bot2._check_limit_rings([limit_row("m")])
+assert mt2.sent == [], "a muted session's limit must NOT ring"
+assert not (bot2.live.get("m") or {}).get("limit_rung"), "a muted limit does not consume the shared key"
+print("limit-mute ok — a muted session's limit transition is silent (mute is absolute, fails included)")
+
+
+# ── Q7. TG_QUIET_DEFAULT=0 -> legacy: a telegram-origin autonomous final rings
+#        (latch forced off, window forced open) — the kill switch ───────────────
+bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"), presence=False,
+                       quiet_default=0)
+bot.outbound.observe_owner("s", "telegram")
+saved = _patch_time(1000.0)
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10),
+                                           reply_item("R:1", "legacy answer", 20, 1)]}
+bot.forward_session("s", status_label="active")
+tg.time.time = lambda: 1001.0
+ma.threads["s"] = {"cursor": 1, "thread": [owner_item("o1", "telegram", 10)]}
+bot.forward_session("s", status_label="idle")
+tg.time.time = lambda: 1006.0
+bot.forward_session("s", status_label="idle")
+rings = [x for x in mt.sent if x[3] is False]
+assert len(rings) == 1 and rings[0][1] == "legacy answer", f"quiet off -> legacy telegram final rings (no latch): {rings}"
+tg.time.time = saved
+print("quiet-off-legacy ok — TG_QUIET_DEFAULT=0 restores the exact legacy ring-on-telegram-final behavior")
 
 
 print("\nALL TELEGRAM-SILENT CHECKS PASSED")
