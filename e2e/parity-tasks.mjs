@@ -25,7 +25,12 @@ const SERVERS = [
   { name: 'python', base: 'https://localhost:8822' },
   { name: 'rust', base: 'https://localhost:8824' },
 ];
-const PROBE_SESSIONS = ['backend', 'amux', 'gtm-engine', 'social-media', 'mixpeek-general'];
+// Fork-local calibration (skalajan/amux, 2026-08-17): upstream's probe names
+// ('backend', 'gtm-engine', 'social-media', 'mixpeek-general') do not exist on
+// this fleet, so every probe resolved to null and step A compared nothing on
+// both sides — identical nulls read as PARITY. A probe that cannot observe the
+// thing it names is theatre (ethos rule 7), so these are OUR live session names.
+const PROBE_SESSIONS = ['amux-helper', 'p1', 's1', 's3', 'seventyy-ci'];
 const ts = Date.now();
 const PARITY_TITLE = `PARITY-${ts}`;
 const results = {}; // step -> { python: fact, rust: fact }
@@ -114,7 +119,12 @@ async function runSeries(server) {
     // B. Board in-memory + rendered columns. `fields` compared as a full
     // sorted key set (rust-extra = parity, python-only = gap).
     await page.waitForFunction(
-      "typeof boardItems !== 'undefined' && Array.isArray(boardItems) && boardItems.length > 50",
+      // Fork-local calibration: upstream waited for >50 because their board
+      // carried 1000+ cards. This fork's board has 7, so >50 could never be
+      // satisfied and the whole harness died here on a timeout before running
+      // a single comparison. Waiting for >0 keeps the "board actually loaded"
+      // guarantee without encoding someone else's data volume.
+      "typeof boardItems !== 'undefined' && Array.isArray(boardItems) && boardItems.length > 0",
       { timeout: 20000 },
     );
     const boardFacts = await page.evaluate(() => {
