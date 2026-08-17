@@ -160,6 +160,14 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
     except OSError:
         log.warning("write token not readable at %s — amux writes may 401", write_token_path)
 
+    # Shared auth token (~/.amux/auth_token) — the file BOTH servers read. Needed
+    # on every request, reads included, once AMUX_RS_NO_LOOPBACK_BYPASS=1 is set.
+    auth_token = ""
+    try:
+        auth_token = open(os.path.join(AMUX_DIR, "auth_token"), encoding="utf-8").read().strip()
+    except OSError:
+        log.warning("auth token not readable — reads will 401 if the loopback bypass is off")
+
     chat_id = (get("TG_CHAT_ID") or "").strip()
 
     default_mode = (get("TG_DEFAULT_MODE") or "smart").strip().lower()
@@ -174,6 +182,12 @@ def load_config(config_path=CONFIG_PATH, write_token_path=WRITE_TOKEN_PATH, envi
         "chat_id": chat_id,
         "tg_api_base": (get("TG_API_BASE") or DEFAULT_TG_API_BASE).rstrip("/"),
         "amux_base": (get("AMUX_BASE") or DEFAULT_AMUX_BASE).rstrip("/"),
+        # Where /api/chat lives. Empty = same host as amux_base (pre-cutover, when
+        # the python server still served it). Post-cutover this points at the
+        # amux-chat.py sidecar, because upstream's rust server has no such route.
+        "chat_base": (get("AMUX_CHAT_BASE") or "").rstrip("/") or None,
+        # Read on EVERY request once the rust loopback bypass is off.
+        "auth_token": (get("AMUX_AUTH_TOKEN") or auth_token),
         "write_token": write_token,
         "poll_secs": float(get("TG_POLL_SECS", "2.0") or 2.0),
         "long_poll_secs": int(get("TG_LONG_POLL_SECS", "25") or 25),
@@ -764,9 +778,19 @@ class AmuxError(Exception):
 
 
 class AmuxClient:
-    def __init__(self, base, write_token, opener=None):
+    def __init__(self, base, write_token, opener=None, chat_base=None, auth_token=""):
         self.base = base.rstrip("/")
+        # /api/chat moved OUT of the server at the rust cutover: upstream's server
+        # has no such route (404), so it lives in the amux-chat.py sidecar. Every
+        # other path still goes to the main server. Defaults to `base` so a
+        # pre-cutover setup, where the python server still owned /api/chat, keeps
+        # working with no config change.
+        self.chat_base = (chat_base or base).rstrip("/")
         self.write_token = write_token
+        # Rust's loopback auth bypass is off on this fork
+        # (AMUX_RS_NO_LOOPBACK_BYPASS=1), so locality no longer authenticates and
+        # READS need a token too — not just writes.
+        self.auth_token = auth_token
         if opener is not None:
             self._opener = opener
         else:
@@ -776,7 +800,8 @@ class AmuxClient:
             self._opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
     def _call(self, method, path, params=None, body=None, timeout=20):
-        url = self.base + path
+        base = self.chat_base if path.startswith("/api/chat") else self.base
+        url = base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         headers = {}
@@ -786,6 +811,11 @@ class AmuxClient:
             headers["Content-Type"] = "application/json"
         if method not in ("GET", "HEAD"):
             headers["X-Amux-Write-Token"] = self.write_token
+        # Sent on EVERY request, reads included: with the loopback bypass off a
+        # bare GET is a 401, and the pre-cutover python server simply ignores a
+        # header it does not use — so one shape works on both sides.
+        if self.auth_token:
+            headers["Authorization"] = "Bearer " + self.auth_token
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with self._opener.open(req, timeout=timeout) as resp:
@@ -2536,7 +2566,9 @@ class Bot:
 
 def build_bot(config):
     telegram = TelegramClient(config["tg_api_base"], config["bot_token"])
-    amux = AmuxClient(config["amux_base"], config["write_token"])
+    amux = AmuxClient(config["amux_base"], config["write_token"],
+                      chat_base=config.get("chat_base"),
+                      auth_token=config.get("auth_token", ""))
     topics = TopicStore.load()
     offset = OffsetStore.load()
     outbound = OutboundTracker.load()
