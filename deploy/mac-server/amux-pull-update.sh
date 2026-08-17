@@ -53,6 +53,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ALLOWLIST="$ROOT/deploy/mac-server/pull-reconcile-allowlist.txt"
 AMUX_STATE_DIR="${CC_HOME:-$HOME/.amux}"
+ALERT_STATE_FILE="$AMUX_STATE_DIR/pull-update-last-alert"
 
 cd "$ROOT"
 
@@ -112,11 +113,55 @@ _alert_telegram() {
   return 0
 }
 
+_alert_signature() {
+  # Stable fingerprint for an alert condition (subject+body). Used to tell
+  # "still the same problem" from "something new" without caring how many
+  # lines the body (e.g. a dirt listing) contains.
+  printf '%s\x1e%s' "$1" "$2" | shasum -a 256 2>/dev/null | awk '{print $1}'
+}
+
 alert() {
   local subject="$1" body="${2:-}"
   log "ALERT: $subject${body:+ -- $body}"
+
+  # Dedup/backoff: a REPEATING identical condition alerts once, then stays
+  # quiet until the signature changes or a clean run clears the state file
+  # (see _alert_clear at the success exits below). This exists because a
+  # stuck condition (e.g. dirt outside the allowlist nobody has fixed yet)
+  # used to file a board task + send a Telegram note on every 5-minute
+  # cadence, unbounded — 3,125 identical board cards and 3,124 Telegram
+  # notes over 11 days for one unchanged line of dirt. The FIRST occurrence
+  # of any condition, and any DIFFERENT condition, always alerts — only an
+  # exact repeat of the immediately-preceding alert is suppressed. If the
+  # signature can't be computed (e.g. shasum missing), fail open: skip dedup
+  # rather than risk silently swallowing every future alert.
+  local sig prev_sig="" prev_ts=""
+  sig="$(_alert_signature "$subject" "$body" 2>/dev/null || true)"
+  if [[ -n "$sig" && -r "$ALERT_STATE_FILE" ]]; then
+    prev_sig="$(sed -n '1p' "$ALERT_STATE_FILE" 2>/dev/null || true)"
+    prev_ts="$(sed -n '2p' "$ALERT_STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$sig" && "$sig" == "$prev_sig" ]]; then
+    log "alert suppressed — unchanged since ${prev_ts:-unknown}"
+    return 0
+  fi
+
   _alert_board "$subject" "$body" || true
   _alert_telegram "$subject" "$body" || true
+
+  if [[ -n "$sig" ]]; then
+    printf '%s\n%s\n' "$sig" "$(date '+%Y-%m-%d %H:%M:%S')" > "$ALERT_STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+_alert_clear() {
+  # Called from every exit path that completed a cycle without hitting
+  # alert() above. A clean cycle means whatever was last alerted (if
+  # anything) is no longer active, so the next time it — or anything else —
+  # fires, it alerts immediately instead of comparing against a stale
+  # signature.
+  rm -f "$ALERT_STATE_FILE" 2>/dev/null || true
 }
 
 # ── Load the allowlist into a bash array, stripping blanks/comments ─────────
@@ -223,6 +268,7 @@ fi
 NEW_HEAD="$(git rev-parse HEAD)"
 if [[ "$NEW_HEAD" == "$PREV_HEAD" ]]; then
   log "already up to date at $PREV_HEAD — nothing to do"
+  _alert_clear
   exit 0
 fi
 
@@ -256,4 +302,5 @@ if [[ "$BOUNCE_TELEGRAM" -eq 1 ]]; then
 fi
 
 log "done"
+_alert_clear
 exit 0
