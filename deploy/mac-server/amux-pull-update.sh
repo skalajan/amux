@@ -76,17 +76,45 @@ _alert_board() {
   local subject="$1" body="$2"
   local tokfile="$AMUX_STATE_DIR/write_token"
   [[ -r "$tokfile" ]] || { log "alert: no write_token at $tokfile — skipping board task"; return 0; }
-  local token payload
+  local token payload auth_token base
   token="$(cat "$tokfile" 2>/dev/null || true)"
   [[ -n "$token" ]] || { log "alert: empty write_token — skipping board task"; return 0; }
+  auth_token="$(cat "$AMUX_STATE_DIR/auth_token" 2>/dev/null || true)"
+  # Resolve the server address instead of hardcoding it. The rust server
+  # publishes ~/.amux/endpoint.json with its canonical port on every boot, so
+  # this follows the host across the 8822 -> 8824 cutover on its own. A
+  # hardcoded 8822 here would have made the alerter — the thing whose whole job
+  # is to be heard — the first thing to go silent after cutover.
+  base="${AMUX_URL:-}"
+  if [[ -z "$base" && -r "$AMUX_STATE_DIR/endpoint.json" ]]; then
+    # Key names verified against a live endpoint.json (2026-08-17):
+    # {"canonical_port":8824,"canonical_url":"https://localhost:8824",
+    #  "legacy_port":8822,"retired_ports":[8822],...}. Prefer canonical_url —
+    # it is the whole address, so it survives a scheme or host change too.
+    base="$(python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    u=d.get("canonical_url")
+    if not u and d.get("canonical_port"):
+        u="https://localhost:%s" % d["canonical_port"]
+    print(u or "")
+except Exception:
+    print("")' "$AMUX_STATE_DIR/endpoint.json" 2>/dev/null || true)"
+  fi
+  base="${base:-https://localhost:8824}"
   payload="$(TITLE="amux-pull-update: $subject" BODY="$body" python3 -c '
 import json, os
 print(json.dumps({"title": os.environ["TITLE"], "desc": os.environ["BODY"], "status": "todo"}))
 ' 2>/dev/null || true)"
   [[ -n "$payload" ]] || { log "alert: failed to build board payload — skipping"; return 0; }
+  # Both auth shapes: the python server gates writes on X-Amux-Write-Token, the
+  # rust server on Authorization: Bearer. Each ignores the other's header, so
+  # one request works on both sides of the cutover.
   if curl -sk -m 10 -X POST -H 'Content-Type: application/json' \
-      -H "X-Amux-Write-Token: $token" -d "$payload" \
-      "https://localhost:8822/api/board" >/dev/null 2>&1; then
+      -H "X-Amux-Write-Token: $token" \
+      ${auth_token:+-H "Authorization: Bearer $auth_token"} -d "$payload" \
+      "$base/api/board" >/dev/null 2>&1; then
     log "alert: board task filed"
   else
     log "alert: board task POST failed (server down?) — logged locally only"
@@ -281,10 +309,19 @@ printf '%s\n' "$CHANGED" | while IFS= read -r _l; do [[ -n "$_l" ]] && log "  $_
 
 BOUNCE_TELEGRAM=0
 SAW_SERVER=0
+BOUNCE_CHAT=0
+REBUILD_RUST=0
 while IFS= read -r _f; do
   case "$_f" in
     amux-telegram.py) BOUNCE_TELEGRAM=1 ;;
     amux-server.py) SAW_SERVER=1 ;;
+    amux-chat.py) BOUNCE_CHAT=1 ;;
+    # The rust server is a COMPILED artifact: pulling source changes nothing
+    # that is running. Without this the updater would report a successful
+    # deploy while the old binary kept serving — a green check that cannot
+    # fail. Cargo.lock is included because a dependency bump changes the
+    # binary without touching a single .rs file.
+    crates/*|Cargo.toml|Cargo.lock) REBUILD_RUST=1 ;;
   esac
 done <<< "$CHANGED"
 
@@ -298,6 +335,40 @@ if [[ "$BOUNCE_TELEGRAM" -eq 1 ]]; then
     log "amux-telegram.py changed — kickstarted com.amux.telegram"
   else
     log "warn: amux-telegram.py changed but kickstart of com.amux.telegram failed (is it loaded?): $(tr -d '\n' < "$ERR_TMP" | head -c 200)"
+  fi
+fi
+
+if [[ "$BOUNCE_CHAT" -eq 1 ]]; then
+  UID_NUM="$(id -u)"
+  if launchctl kickstart -k "gui/${UID_NUM}/com.amux.chat" >"$ERR_TMP" 2>&1; then
+    log "amux-chat.py changed — kickstarted com.amux.chat"
+  else
+    log "warn: amux-chat.py changed but kickstart of com.amux.chat failed (is it loaded?): $(tr -d '\n' < "$ERR_TMP" | head -c 200)"
+  fi
+fi
+
+if [[ "$REBUILD_RUST" -eq 1 ]]; then
+  # Rebuild BEFORE restarting, and only restart if the build went green — a
+  # failed build must leave the previous working binary serving, not swap in a
+  # broken one or leave the service down. The build runs from the checkout so
+  # rust-toolchain.toml pins the same compiler CI uses.
+  UID_NUM="$(id -u)"
+  export PATH="$HOME/.cargo/bin:$PATH"
+  log "rust sources changed — rebuilding (this takes a few minutes)"
+  if (cd "$ROOT" && cargo build --release -p amux-server -p amux-cli) >"$ERR_TMP" 2>&1; then
+    install -m 0755 "$REPO_DIR/target/release/amux-server" "$HOME/.local/bin/amux-server-rs" 2>>"$ERR_TMP" || true
+    install -m 0755 "$REPO_DIR/target/release/amux-cli" "$HOME/.local/bin/amux-rs" 2>>"$ERR_TMP" || true
+    if launchctl kickstart -k "gui/${UID_NUM}/com.amux.server-rs" >>"$ERR_TMP" 2>&1; then
+      log "rust rebuilt + installed — kickstarted com.amux.server-rs"
+    else
+      log "warn: rust rebuilt but kickstart of com.amux.server-rs failed: $(tr -d '\n' < "$ERR_TMP" | tail -c 200)"
+    fi
+  else
+    # Loud, not silent: the checkout has moved but the running binary has not,
+    # so the host is now serving code that does not match its own git HEAD.
+    alert "amux-pull-update: rust build FAILED after pull" \
+          "$(tail -c 800 "$ERR_TMP")"
+    log "ALERT: rust build failed — previous binary left running, host is behind its checkout"
   fi
 fi
 
