@@ -6,7 +6,7 @@ argument-hint: [task title or description]
 
 # Add to amux board
 
-You are adding an item to the **amux local kanban board** at `https://localhost:8822/api/board`.
+You are adding an item to the **amux local kanban board** at `$AMUX_URL/api/board` (`$AMUX_URL` defaults to `https://localhost:8822` when unset).
 
 ## Board API
 
@@ -14,17 +14,17 @@ You are adding an item to the **amux local kanban board** at `https://localhost:
 # Add item
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"...","desc":"...","status":"todo","session":"..."}' \
-  https://localhost:8822/api/board
+  $AMUX_URL/api/board
 
 # List all items
-curl -sk https://localhost:8822/api/board
+curl -sk $AMUX_URL/api/board
 
 # Update item
 curl -sk -X PATCH -H 'Content-Type: application/json' \
-  -d '{"status":"doing"}' https://localhost:8822/api/board/ITEM_ID
+  -d '{"status":"doing"}' $AMUX_URL/api/board/ITEM_ID
 
 # Delete item
-curl -sk -X DELETE https://localhost:8822/api/board/ITEM_ID
+curl -sk -X DELETE $AMUX_URL/api/board/ITEM_ID
 ```
 
 ## Fields

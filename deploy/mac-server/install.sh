@@ -303,6 +303,6 @@ echo "      launchctl bootstrap gui/$UID_NUM $LAUNCH_AGENTS_DIR/com.amux.pull-up
 echo "      launchctl enable    gui/$UID_NUM/com.amux.pull-update"
 echo ""
 echo "  Verify once FDA is granted:"
-echo "    curl -sk https://localhost:8822/api/sessions"
+echo "    curl -sk \${AMUX_URL:-https://localhost:8822}/api/sessions"
 echo ""
 ok "install.sh done — see docs/mac-server-deploy.md for the full P3-P6 runbook"

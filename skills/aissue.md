@@ -8,6 +8,8 @@ argument-hint: [ITEM-ID or leave empty to pick next open issue]
 
 Pull an open issue from the local amux issue tracker, transition it through the board (`todo` → `doing` → `done`), and do the actual work in between.
 
+REST calls below hit `$AMUX_URL`, which defaults to `https://localhost:8822` when unset.
+
 ## Procedure
 
 ### 1. List open issues
@@ -36,7 +38,7 @@ Or via REST:
 ```bash
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"doing"}' \
-  https://localhost:8822/api/board/<ITEM-ID>
+  $AMUX_URL/api/board/<ITEM-ID>
 ```
 
 Verify the transition by re-querying the row, or by trusting a successful exit code from `amux board doing`.
@@ -60,13 +62,13 @@ Or via REST:
 ```bash
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"done"}' \
-  https://localhost:8822/api/board/<ITEM-ID>
+  $AMUX_URL/api/board/<ITEM-ID>
 ```
 
 ## Notes
 
 - The DB lives at `~/.amux/amux.db`. Read-only queries are safe; do not write to it directly — go through `amux board` or the REST API so audit trail / triggers fire.
-- The REST API uses a self-signed cert on `localhost:8822`, so `curl -k` (insecure) is required.
+- The REST API at `$AMUX_URL` (defaults to `https://localhost:8822` if unset) uses a self-signed cert, so `curl -k` (insecure) is required.
 - If both the CLI and REST endpoint fail, stop and report — don't fall back to writing to sqlite directly.
 - Only one issue per skill invocation. If the user wants several, run the skill multiple times so each transition is intentional.
 - Don't auto-commit when finishing. The user decides when to commit; the skill just flips the board.

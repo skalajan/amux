@@ -8,6 +8,9 @@ decision drivers, and rejected alternatives: `.omc/plans/mac-server-deploy.md`
 (this doc is the operational runbook; that plan is the design record — read it
 if something here seems surprising).
 
+Verification commands below use `$AMUX_URL`, which defaults to
+`https://localhost:8822` when unset.
+
 **Scope of this doc:** Phases 3-6 (everything that needs hands on mac-server).
 Phases 1-2 (the deploy kit itself: `install.sh`, plist templates,
 `amux-pull-update.sh`, the reconcile allowlist, `.env.example` files) are
@@ -166,7 +169,7 @@ python binary `install.sh` printed at the end of its run (typically
 4. `launchctl kickstart -k gui/$(id -u)/com.amux.serve` (or just wait — it's
    already `RunAtLoad`/`KeepAlive`).
 
-**AC:** `curl -sk https://localhost:8822/api/sessions` returns 200 over
+**AC:** `curl -sk $AMUX_URL/api/sessions` returns 200 over
 localhost **and** over the Tailscale IP; the dashboard loads; `chat.js`/
 `chat.css` are served (200).
 
@@ -291,7 +294,7 @@ change lands. This is a manual step, not a bug to fix here.
 | Milestone | Acceptance check |
 |---|---|
 | Preflight (P3) | Filled table above; explicit agents-vs-amux disjointness sentence recorded. |
-| Core install (P4) | `curl -sk https://localhost:8822/api/sessions` -> 200 on localhost **and** Tailscale IP; dashboard + `chat.*` load. |
+| Core install (P4) | `curl -sk $AMUX_URL/api/sessions` -> 200 on localhost **and** Tailscale IP; dashboard + `chat.*` load. |
 | Identity (P5) | Telegram round-trip works in "Amux Server"; `⌁` marker collapses correctly in both dashboard and Telegram; `readlink -f $(command -v amux)` resolves into the checkout. |
 | Fleet + auto-update (P6) | AC-1 through AC-4 below. |
 

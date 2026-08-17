@@ -28,10 +28,10 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>for i in $(seq 1 30); do curl -sk -o /dev/null https://localhost:8822/api/sessions &amp;&amp; break; sleep 2; done; TOK=$(cat "$HOME/.amux/write_token"); curl -sk https://localhost:8822/api/sessions | /usr/bin/python3 -c '
+        <string>for i in $(seq 1 30); do curl -sk -o /dev/null ${AMUX_URL:-https://localhost:8822}/api/sessions &amp;&amp; break; sleep 2; done; TOK=$(cat "$HOME/.amux/write_token"); curl -sk ${AMUX_URL:-https://localhost:8822}/api/sessions | /usr/bin/python3 -c '
 import json,sys
 print("\n".join(s["name"] for s in json.load(sys.stdin) if not s.get("running")))
-' | while read -r s; do [ -n "$s" ] &amp;&amp; curl -sk -o /dev/null -X POST -H "X-Amux-Write-Token: $TOK" "https://localhost:8822/api/sessions/$s/start"; echo "started $s"; sleep 1; done</string>
+' | while read -r s; do [ -n "$s" ] &amp;&amp; curl -sk -o /dev/null -X POST -H "X-Amux-Write-Token: $TOK" "${AMUX_URL:-https://localhost:8822}/api/sessions/$s/start"; echo "started $s"; sleep 1; done</string>
     </array>
 
     <key>EnvironmentVariables</key>

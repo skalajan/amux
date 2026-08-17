@@ -8,7 +8,7 @@ argument-hint: [board|memory|sessions|schedule|notes|email|browser|crm|help] [ar
 
 You are running inside an **amux** managed Claude Code session. amux is a local multiplexer that manages multiple Claude sessions, a shared kanban board, notes, CRM, scheduler, email, browser automation, and per-session memory.
 
-**Base URL:** `https://localhost:8822` (self-signed TLS — always use `curl -sk`)
+**Base URL:** `$AMUX_URL` (defaults to `https://localhost:8822` when unset; self-signed TLS — always use `curl -sk`)
 
 **Write auth:** state-changing requests (POST/PATCH/DELETE to `/api/…`) require a localhost write token, even on loopback. Add `-H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)"` to write curls (already shown in the examples below), or use the `amux` CLI, which includes it automatically. GET/read requests need no token.
 
@@ -18,23 +18,23 @@ You are running inside an **amux** managed Claude Code session. amux is a local 
 
 ```bash
 # List all items
-curl -sk https://localhost:8822/api/board | python3 -m json.tool
+curl -sk $AMUX_URL/api/board | python3 -m json.tool
 
 # Add item
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"title":"...", "desc":"...", "status":"todo", "session":"SESSION_NAME"}' \
-  https://localhost:8822/api/board
+  $AMUX_URL/api/board
 
 # Update item
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
-  -d '{"status":"doing"}' https://localhost:8822/api/board/ITEM_ID
+  -d '{"status":"doing"}' $AMUX_URL/api/board/ITEM_ID
 
 # Delete item
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE https://localhost:8822/api/board/ITEM_ID
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE $AMUX_URL/api/board/ITEM_ID
 
 # Claim a task atomically (prevents two sessions taking same task)
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"session":"SESSION_NAME"}' https://localhost:8822/api/board/ITEM_ID/claim
+  -d '{"session":"SESSION_NAME"}' $AMUX_URL/api/board/ITEM_ID/claim
 ```
 
 Statuses: `backlog` · `todo` · `doing` · `done` (plus any custom columns)
@@ -45,14 +45,14 @@ Statuses: `backlog` · `todo` · `doing` · `done` (plus any custom columns)
 
 ```bash
 # List sessions
-curl -sk https://localhost:8822/api/sessions | python3 -m json.tool
+curl -sk $AMUX_URL/api/sessions | python3 -m json.tool
 
 # Send a message to a session
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"text":"your message"}' https://localhost:8822/api/sessions/SESSION_NAME/send
+  -d '{"text":"your message"}' $AMUX_URL/api/sessions/SESSION_NAME/send
 
 # Peek at a session's terminal output
-curl -sk "https://localhost:8822/api/sessions/SESSION_NAME/peek?lines=100"
+curl -sk "$AMUX_URL/api/sessions/SESSION_NAME/peek?lines=100"
 ```
 
 ---
@@ -61,16 +61,16 @@ curl -sk "https://localhost:8822/api/sessions/SESSION_NAME/peek?lines=100"
 
 ```bash
 # Read this session's memory
-curl -sk https://localhost:8822/api/sessions/SESSION_NAME/memory
+curl -sk $AMUX_URL/api/sessions/SESSION_NAME/memory
 
 # Update this session's memory
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"# My Notes\n..."}' https://localhost:8822/api/sessions/SESSION_NAME/memory
+  -d '{"content":"# My Notes\n..."}' $AMUX_URL/api/sessions/SESSION_NAME/memory
 
 # Read/write global memory (shared across all sessions)
-curl -sk https://localhost:8822/api/memory/global
+curl -sk $AMUX_URL/api/memory/global
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"..."}' https://localhost:8822/api/memory/global
+  -d '{"content":"..."}' $AMUX_URL/api/memory/global
 ```
 
 ---
@@ -81,7 +81,7 @@ Schedule commands to run in sessions at specific times or on a cron schedule.
 
 ```bash
 # List all schedules
-curl -sk https://localhost:8822/api/schedules | python3 -m json.tool
+curl -sk $AMUX_URL/api/schedules | python3 -m json.tool
 
 # Create a one-time schedule
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
@@ -92,7 +92,7 @@ curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST
     "kind": "tmux",
     "sched_type": "once",
     "run_at": "2026-04-10T09:00"
-  }' https://localhost:8822/api/schedules
+  }' $AMUX_URL/api/schedules
 
 # Create a recurring schedule (cron expression)
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
@@ -103,20 +103,20 @@ curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST
     "kind": "tmux",
     "sched_type": "recurring",
     "schedule_expr": "0 9 * * 1"
-  }' https://localhost:8822/api/schedules
+  }' $AMUX_URL/api/schedules
 
 # Update a schedule
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
-  -d '{"enabled": 1}' https://localhost:8822/api/schedules/SCHED_ID
+  -d '{"enabled": 1}' $AMUX_URL/api/schedules/SCHED_ID
 
 # Delete a schedule
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE https://localhost:8822/api/schedules/SCHED_ID
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE $AMUX_URL/api/schedules/SCHED_ID
 
 # View recent runs
-curl -sk https://localhost:8822/api/schedules/runs | python3 -m json.tool
+curl -sk $AMUX_URL/api/schedules/runs | python3 -m json.tool
 
 # Trigger a schedule immediately
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST https://localhost:8822/api/schedules/SCHED_ID/run
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST $AMUX_URL/api/schedules/SCHED_ID/run
 ```
 
 **Fields:** `title`, `session` (target session name), `command` (text sent to session), `kind` (`tmux`), `sched_type` (`once`|`recurring`), `schedule_expr` (cron: `min hour dom month dow`), `run_at` (ISO datetime for one-time), `watch` (0/1 — watch output after send), `watch_timeout` (seconds), `done_pattern` (regex to detect completion), `done_action` (`disable`|`reschedule`)
@@ -127,21 +127,21 @@ curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST
 
 ```bash
 # List all notes
-curl -sk https://localhost:8822/api/notes | python3 -m json.tool
+curl -sk $AMUX_URL/api/notes | python3 -m json.tool
 
 # Read a note
-curl -sk https://localhost:8822/api/notes/my-note
+curl -sk $AMUX_URL/api/notes/my-note
 
 # Create or update a note (use slug as path)
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"content":"# Title\n\nBody text here"}' \
-  https://localhost:8822/api/notes/my-note
+  $AMUX_URL/api/notes/my-note
 
 # Delete a note (moves to trash)
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE https://localhost:8822/api/notes/my-note
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE $AMUX_URL/api/notes/my-note
 
 # Pin/unpin a note
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST https://localhost:8822/api/notes/my-note/pin
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST $AMUX_URL/api/notes/my-note/pin
 ```
 
 ---
@@ -152,24 +152,24 @@ Accounts: ethan@mixpeek.com · esteininger21@gmail.com
 
 ```bash
 # Read inbox (returns recent messages with subject, from, date, body, message_id)
-curl -sk "https://localhost:8822/api/email/inbox?account=ethan@mixpeek.com&count=20&days=7"
+curl -sk "$AMUX_URL/api/email/inbox?account=ethan@mixpeek.com&count=20&days=7"
 # Params: account (filter to one account), count (max messages, default 20), days (lookback, default 7)
 
 # Send email (validates email format, optional from account)
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"to":"x@example.com","subject":"Hi","body":"...","from":"ethan@mixpeek.com"}' \
-  https://localhost:8822/api/email/send
+  $AMUX_URL/api/email/send
 
 # Reply to an existing email (by message_id from inbox response)
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"message_id":"<msg-id-from-inbox>","body":"Thanks!","reply_all":false}' \
-  https://localhost:8822/api/email/reply
+  $AMUX_URL/api/email/reply
 
 # Sync email → calendar events (background AI extraction)
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST https://localhost:8822/api/email/sync
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST $AMUX_URL/api/email/sync
 
 # Get extracted calendar events
-curl -sk https://localhost:8822/api/email/events
+curl -sk $AMUX_URL/api/email/events
 ```
 
 **Workflow for replying:** call `/api/email/inbox` first to find the message, then use its `message_id` field in `/api/email/reply`.
@@ -191,38 +191,38 @@ Shared Playwright instance with saved auth profiles.
 # Start browser
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"profile":"default","url":"https://example.com"}' \
-  https://localhost:8822/api/browser/start
+  $AMUX_URL/api/browser/start
 
 # Navigate
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com"}' https://localhost:8822/api/browser/navigate
+  -d '{"url":"https://example.com"}' $AMUX_URL/api/browser/navigate
 
 # Screenshot (returns JSON with path — use Read tool to view)
-curl -sk https://localhost:8822/api/browser/screenshot
+curl -sk $AMUX_URL/api/browser/screenshot
 
 # Actions: click, type, key, scroll, eval
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"click","x":640,"y":400}' https://localhost:8822/api/browser/action
+  -d '{"action":"click","x":640,"y":400}' $AMUX_URL/api/browser/action
 
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"type","text":"hello"}' https://localhost:8822/api/browser/action
+  -d '{"action":"type","text":"hello"}' $AMUX_URL/api/browser/action
 
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"key","key":"Enter"}' https://localhost:8822/api/browser/action
+  -d '{"action":"key","key":"Enter"}' $AMUX_URL/api/browser/action
 
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"eval","script":"document.title"}' https://localhost:8822/api/browser/action
+  -d '{"action":"eval","script":"document.title"}' $AMUX_URL/api/browser/action
 
 # AI agent — autonomous browser task
 curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"task":"Find the latest invoice","profile":"default"}' \
-  https://localhost:8822/api/browser/agent
+  $AMUX_URL/api/browser/agent
 
 # List auth profiles
-curl -sk https://localhost:8822/api/browser/profiles
+curl -sk $AMUX_URL/api/browser/profiles
 
 # Stop browser
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST https://localhost:8822/api/browser/stop
+curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST $AMUX_URL/api/browser/stop
 ```
 
 ---
@@ -234,7 +234,7 @@ curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST
 amux crm add "Name" company=X email=Y role=Z phone=P linkedin=L
 # or: curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
 #   -d '{"name":"Name","company":"X","notes":"context"}' \
-#   https://localhost:8822/api/crm/contacts
+#   $AMUX_URL/api/crm/contacts
 
 # Update / view / log interaction / list / follow-ups
 amux crm update PPL-1 email=Y company=Z
