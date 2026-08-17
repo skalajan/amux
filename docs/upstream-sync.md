@@ -7,7 +7,7 @@ SOP for the recurring scheduler entry **"Sync fork with upstream"** (fires into 
 
 ## Procedure
 
-1. **Preflight.** `git -C ~/Desktop/Projects/amux fetch upstream origin` and check
+1. **Preflight.** `git -C ~/Desktop/Projects/amux fetch --all` and check
    `git rev-list --left-right --count main...upstream/main`. If not behind upstream,
    push any unpushed local commits to origin and stop — report "already in sync".
    If the working tree has uncommitted changes to files upstream touches, stop and report.
