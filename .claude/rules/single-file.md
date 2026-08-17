@@ -1,5 +1,5 @@
 ---
-description: amux-server.py is being retired — no fork-owned application file to split anymore
+description: amux-server.py is frozen (retained as rollback + parity oracle, not the live server) — no fork-owned application file to split anymore
 globs: ["amux-server.py", "crates/**"]
 ---
 
