@@ -12,11 +12,12 @@ before picking one:
   upstream's Python history exactly as it always has. Upstream stopped touching that file
   at `792ce1f4` (2026-08-09), so in practice these merges have been no-ops since — but the
   mechanism itself is unchanged and still correct. Use **Part A** below.
-- **Post-cutover (once plan phase P4 lands):** there is no more `amux-server.py` to merge,
-  and this fork is designed to carry effectively zero in-tree Rust deltas (phase P3's
-  gate). The weekly job stops merging application source entirely. Use **Part B** below —
-  a re-baseline onto a newer upstream Rust commit, gated by config-surface and parity
-  checks instead of textual grep landmarks.
+- **Post-cutover (once plan phase P4 lands):** this fork keeps `amux-server.py` in the repo
+  deliberately — frozen rollback path and the only surviving Python parity oracle — so the
+  job still runs a real `git merge upstream/main`, history-preserving, not a reset. What
+  changes is the shape of the conflicts: this fork is designed to carry effectively zero
+  in-tree Rust deltas (phase P3's gate), so `crates/` merges in cleanly every time, and the
+  handful of files that do conflict are a known, mostly-stable set — see **Part B** below.
 
 This doc doesn't track cutover status itself; the plan does. Don't run Part B until the
 plan says P4 has landed, and don't keep running Part A after it has.
@@ -98,59 +99,105 @@ local modifications documented in [`../MODIFICATIONS.md`](../MODIFICATIONS.md).
 - `AMUX_AUTO_UPDATE_REPO` must stay **unset** on this host, or point at
   `origin` (`skalajan/amux`) — **never** `upstream` (`mixpeek/amux`). This is a
   Python-server-only mechanism (`_auto_update_check`, controlling what repo
-  `amux-server.py` gets overwritten from) and is retired along with that file at
-  cutover — see [`../.claude/rules/extend-via-sidecar.md`](../.claude/rules/extend-via-sidecar.md)
+  `amux-server.py` gets overwritten from). It stops mattering once `amux-server.py`
+  stops being the *live* server at cutover (it's retained afterward, but frozen, so
+  nothing calls `_auto_update_check` against it anymore) — see
+  [`../.claude/rules/extend-via-sidecar.md`](../.claude/rules/extend-via-sidecar.md)
   for what, if anything, replaces it.
 
 ---
 
-## Part B — post-cutover: re-baseline onto Rust
+## Part B — post-cutover: `git merge upstream/main` (still a real merge, now smaller)
 
-Once `amux-server.py` is gone, "syncing with upstream" stops meaning "3-way-merge one
-file's text" and starts meaning "adopt a newer upstream commit/release and re-verify the
-fork's config-and-sidecar layer still holds against it." There is a structural reason the
-old merge machinery doesn't carry over: by design (phase P3's gate), this fork's surviving
-deltas live **outside** anything upstream tracks — config flags/env vars and standalone
-sidecar scripts — so there is no fork-owned text inside `crates/` to merge in the first
-place. As of 2026-08-17, this fork's Python-era base (`d42a8233`) sits **1,237 commits**
-behind `upstream/main` (`6ebef136`), moving at roughly 620 commits/week — a number that
-only grows and was never intended to be merged commit-by-commit.
+**Correction worth stating plainly, because an earlier draft of this section got it wrong:
+this is a normal, history-preserving `git merge`, not a reset-and-replay re-baseline.**
+Tested directly against this fork's post-cutover tree: `git merge upstream/main` touches
+682 files and produces exactly **10 conflicts** — everything else, including the entire
+`crates/` tree, merges automatically. History is preserved, so a later `git pull upstream`
+keeps working the ordinary way. The reason the conflict count is small despite 682 files
+and 1,237+ commits moving is structural, not luck: by design (phase P3's gate), this fork
+carries **zero in-file Rust deltas** — every surviving delta is config, a sidecar, or the
+unchanged bash CLI (see "Target placement" in [`../MODIFICATIONS.md`](../MODIFICATIONS.md))
+— so `crates/` has no fork-owned text for upstream's changes to collide with. The 10
+conflicts are exactly the files this fork keeps genuinely modifying in parallel with
+upstream. Verified against `upstream/main` directly (not against upstream's docs, per the
+standing principle below): all 10 paths exist upstream too, so every one is a real
+modify/modify or modify/delete conflict, not an artifact of the check.
 
-1. **Preflight.** `git fetch --all` (unchanged from Part A — this fix already landed and
-   still applies to any git remote, regardless of what's being fetched).
-2. **Adopt.** Pull the target upstream commit or release. Rebuild (or fetch a signed
-   binary — mac-server's deploy model for a compiled binary is still an open decision, plan
-   phase P5) and redeploy to a non-live port first if at all practical, the same "measure
-   before committing" posture the migration itself used (plan phase P2).
-3. **Freshness gate — replaces the old Tier-1/Tier-2 grep-landmark checks.** The old gate
-   asked "does the local delta's own inserted text still exist at a stable position in the
-   merged file?" That question doesn't apply anymore because there's no inserted text.
-   The equivalent question moves up a layer, from *text* to *behavior*:
-   - **Config-surface check (BLOCKING, replaces Tier 1).** For each of this fork's
-     permanent config-only deltas — write-auth's `AMUX_RS_NO_LOOPBACK_BYPASS`,
-     account-routing's worker-scoped `CLAUDE_CONFIG_DIR` env injection via `bootstrap.rs`,
-     and whatever the commit-stamp/yolo-guardrail open items (`MODIFICATIONS.md`) land on
-     — grep the new upstream source for the flag/var name and smoke-test that it still
-     does what this fork depends on. If it's gone or its semantics changed, that's the
-     blocking case: stop, don't guess, escalate. Same severity as old Tier 1, different
-     instrument.
-   - **Parity/E2E check (WARN-then-log, replaces Tier 2).** Re-run the recovered harness
-     (`e2e/parity-tasks.mjs`, recovered from `792ce1f4^` — see plan phase P0) against the
-     newly adopted build. New divergences versus the last dated report
-     (`docs/rust-migration/ux-parity-report.md`) get logged in the sync report for manual
-     triage — blocking (data-shaped: board/session facts) vs. cosmetic (additive
-     Rust-only fields), the same distinction plan phase P2 used.
-   - **Sidecar check (new — this tier didn't exist before).** Run each sidecar's own test
-     suite (`amux-telegram.py`'s `test_telegram_*`, `amux-chat.py`'s tests once it exists)
-     plus a live Telegram round-trip probe. Sidecars are now the only thing this fork
-     carries that can break silently against an upstream API change — a Python 3-way merge
-     used to catch a renamed function at merge time; a sidecar calling a reshaped HTTP
-     endpoint instead fails quietly at runtime. This check exists because that failure
-     mode is new, not because the old one got harder.
-4. **Report.** Dated summary: upstream commits absorbed (count + range), config-surface
-   gate result, parity divergences (new vs. carried-over), sidecar test + Telegram
-   round-trip results. On any blocking failure: stop, don't deploy, file a board task —
-   same posture as Part A.
+The procedure mirrors Part A's shape — preflight, worktree, resolve, verify, land — with a
+different, now much shorter, conflict list in place of the old registry-row freshness gate:
+
+1. **Preflight.** `git fetch --all` (same fix as Part A — applies to any remote).
+2. **Record the rollback point.** `PREV=$(git rev-parse main)`.
+3. **Merge in a temporary worktree — never in place**, same reasoning as Part A: don't let
+   a live process see conflict markers mid-resolution. `git worktree add <scratch>/merge-wt
+   -b tmp-upstream-merge main`, then `git merge upstream/main` inside it.
+4. **Resolve the known conflict set.** Two categories, because they behave differently on
+   repeat syncs:
+
+   **One-time conflicts** — already resolved once, at the first post-cutover merge; they
+   shouldn't recur, because the merge-base moves past the resolution:
+   - `amux-server.py` — modify/delete (upstream deleted it at `792ce1f4`; this fork keeps
+     modifying/retaining it). **Resolve: keep ours.** It's the frozen rollback + parity
+     oracle — see `.claude/rules/single-file.md`. This is a deliberate, permanent keep, not
+     a conflict to re-litigate each sync.
+   - `.claude/settings.json` — modify/delete the other way (upstream keeps adding their own
+     hook automation — `session-freshness.sh`, `auto-deploy.sh`, etc.; this fork's history
+     deliberately deleted its own copy). **Resolve: keep ours (deleted).** Upstream's hooks
+     are wired to their own workflow; don't resurrect them by accident during a merge.
+
+   **Recurring conflicts** — both sides keep independently editing these paths, expect to
+   resolve them again on every future sync:
+   - `.claude/rules/single-file.md` — upstream's own copy at the same path now describes
+     *their* post-migration shape (`crates/amux-dashboard` static files, `cargo check
+     --workspace`); ours describes this fork's specific migration story and the retained
+     Python oracle. **Resolve: keep ours**, permanently — the two files serve different
+     forks' realities and will never converge.
+   - `.claude/commands/aissue.md`, `.claude/commands/amux-board.md`, `skills/aissue.md`,
+     `skills/amux-board.md`, `skills/amux.md` — living command/skill docs both sides
+     actively maintain. **Resolve: real reconciliation, not a blanket side.** Keep this
+     fork's `$AMUX_URL`/account-routing-specific edits; fold in upstream's non-overlapping
+     improvements. Diff for substance each time.
+   - `amux` (bash CLI) — unchanged mechanism, per the existing
+     [Local Delta Registry](../MODIFICATIONS.md#local-delta-registry): keep the
+     MODIFICATIONS.md hunks (config-dir flags, yolo default, default model, remote-control)
+     **and** upstream's new commands — both sides.
+   - `docs/rust-migration/ux-parity-report.md` — a generated report; upstream happens to
+     produce one at the same conventional path from their own migration testing.
+     **Resolve: keep ours**, and regenerate it fresh by re-running
+     `e2e/parity-tasks.mjs` after the merge lands rather than trusting either committed
+     copy — it's a measurement, not a document.
+
+   A conflict **outside** this list that isn't trivially mechanical → abort: remove the
+   worktree, report what conflicted, and file a board task. Do not guess. If `crates/`
+   itself ever conflicts, that's a signal this fork accidentally picked up an in-tree Rust
+   delta somewhere — treat it as a Tier-1-style blocking failure and escalate; it should
+   never happen by design.
+5. **Verify in the worktree.** No `<<<<<<<`/`>>>>>>>` markers anywhere;
+   `cargo check --workspace` (upstream's own gate — confirmed present in their
+   `.claude/rules/single-file.md`); `python3 -c "import ast; ast.parse(open('amux-server.py').read())"`
+   (still worth checking the retained oracle wasn't corrupted by the merge); `bash -n amux`;
+   each sidecar's own test suite (`amux-telegram.py`'s `test_telegram_*`, `amux-chat.py`'s
+   tests once it exists); re-run `e2e/parity-tasks.mjs` and diff against the last dated
+   report — new divergences get logged for manual triage (blocking: data-shaped, e.g. board
+   or session facts; cosmetic: additive Rust-only fields — the same distinction plan phase
+   P2 used), not silently accepted.
+6. **Commit.** `AMUX_COMMIT_STAMP=0 git commit -m "chore: merge upstream/main (<version>)"`
+   — single line, no trailers.
+7. **Land it.** From the main checkout: `git merge --ff-only tmp-upstream-merge`. Rebuild
+   and redeploy the Rust binary (mac-server's deploy model — rebuild-on-pull vs. a signed
+   binary — is still undecided, plan phase P5; don't assume one until it's resolved). Wait
+   for the new process to come up, then verify `curl -sk $AMUX_URL/api/sessions` returns
+   200. Re-verify the Telegram round-trip — continuity through a sync is a release gate,
+   not an afterthought (plan pre-mortem S3).
+   **If broken:** `git reset --hard $PREV`, redeploy the previous binary, report the
+   failure, file a board task.
+8. **Push + clean up.** `git push origin main`; `git worktree remove <scratch>/merge-wt`;
+   `git branch -d tmp-upstream-merge`.
+9. **Report.** One-paragraph summary: commits merged, which of the 10 known conflicts
+   appeared and how each resolved, parity divergences (new vs. carried-over), sidecar +
+   Telegram verification results. On any abort/failure, add a board task titled "upstream
+   sync failed: <reason>".
 
 ### Notes (Part B)
 
@@ -158,6 +205,9 @@ only grows and was never intended to be merged commit-by-commit.
   self-update behavior until it's confirmed by reading `crates/amux-server` directly.
 - mac-server's deploy model (rebuild-on-pull vs. shipping a signed binary) is undecided —
   plan phase P5. Don't write a specific mechanism into automation until that's resolved.
+- If a merge ever produces a conflict in `crates/`, or a conflict outside the 10 known
+  paths that persists across syncs, update this list in the same commit — a stale conflict
+  list here is the same failure mode Part A's old Tier-1 gate existed to catch.
 
 ---
 
