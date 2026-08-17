@@ -1,6 +1,15 @@
 # amux
 
-Single-file project: everything lives in `amux-server.py` (Python server + inline HTML/CSS/JS dashboard).
+This fork is migrating from a single-file Python server (`amux-server.py`, Python + inline
+HTML/CSS/JS dashboard) onto upstream's Rust workspace — see
+[`.omc/plans/rust-migration.md`](.omc/plans/rust-migration.md) for the phased plan and
+current status. As of this writing (2026-08-17), `amux-server.py` is still what runs in
+production (port 8822) and cutover has not landed, but it is deprecated: dead upstream
+since `792ce1f4`, and not where new work goes. See
+[`.claude/rules/single-file.md`](.claude/rules/single-file.md) and
+[`.claude/rules/extend-via-sidecar.md`](.claude/rules/extend-via-sidecar.md) for what that
+means for where fork-local code belongs — new capability goes to a sidecar, not into that
+file, and never into the Rust workspace this fork doesn't own.
 
 ## The ethos — read before building anything
 
@@ -48,30 +57,48 @@ your task, not the platform.
 
 ## Structure
 
-- `amux-server.py` — the server + dashboard (single file)
+- `amux-server.py` — the current production server + dashboard (single file); deprecated,
+  not where new work goes (see `.claude/rules/single-file.md`).
+- `amux` — the bash CLI; survives the migration as a legacy client (`MODIFICATIONS.md`).
+- Fork-local sidecars (`amux-telegram.py`, `amux-chat.py`, `amux-drain-restart.py`, ...) —
+  talk to whichever server is live over its HTTP/SSE API. New fork-local functionality goes
+  here, per `.claude/rules/extend-via-sidecar.md`.
 - `mcp.json` — centralized MCP server config (shared by local and cloud)
 - `cloud/` — GCP VM provisioning (Terraform + setup script)
 
 ## Workflow
 
-- **Commit after every completed task.** When you finish a piece of work (bug fix, feature, refactor), immediately `git add amux-server.py && git commit` with a concise message. Don't batch multiple tasks into one commit.
-- The server auto-restarts on file save (watches its own mtime), so changes are live immediately.
-- Always verify Python syntax after edits: `python3 -c "import ast; ast.parse(open('amux-server.py').read())"`
+- **Commit after every completed task.** When you finish a piece of work (bug fix, feature, refactor), immediately `git add <changed files> && git commit` with a concise message. Don't batch multiple tasks into one commit.
+- Pre-cutover, `amux-server.py` auto-restarts on file save (watches its own mtime) — true today, but not a reason to build new capability there; see `.claude/rules/single-file.md`.
+- Verify syntax after edits, by file type:
+  - Python (`amux-server.py`, sidecars): `python3 -c "import ast; ast.parse(open('<file>').read())"`
+  - `amux` (bash CLI): `bash -n amux`
+  - Anything under `crates/`: it shouldn't exist as a fork-local edit — see `.claude/rules/extend-via-sidecar.md` before writing there.
 
 ## Deploy
 
 When the user says **"deploy"**, run the full pipeline:
-1. `git add` changed files (typically `amux-server.py`)
+1. `git add` changed files (typically sidecars, docs, or rules — see `.claude/rules/single-file.md` before adding new work to `amux-server.py`)
 2. `git commit` with a concise message
 3. `git push origin main`
 
 ## Single-codebase rule (CRITICAL)
 
-**`amux-server.py` is identical for both local (OSS) and cloud deployments — no exceptions.**
+This rule used to gate `amux-server.py` directly, since this fork owned and edited that
+file end to end. Post-migration this fork doesn't edit `crates/` at all (see
+`.claude/rules/single-file.md` / `.claude/rules/extend-via-sidecar.md`), so the concern
+moves from "don't fork `amux-server.py`'s behavior by build target" to "don't fork
+*sidecar* behavior by build target" — the underlying rule is unchanged, just aimed at
+different files now:
 
-- Never add cloud-only or OSS-only code branches (no `if IS_CLOUD`, no `if os.environ.get('CLOUD')`).
-- Features that differ between environments must be driven by headers/env vars injected by the gateway (e.g., `X-Amux-User-Email`) or by presence/absence of configuration, not by build-time flags.
-- `cloud/docker/amux-server.py` must never be committed — it is auto-generated during deploy. It is in `.gitignore`.
+- Never add cloud-only or OSS-only code branches (no `if IS_CLOUD`, no
+  `if os.environ.get('CLOUD')`) in any sidecar or fork-local script.
+- Features that differ between environments must be driven by headers/env vars injected by
+  the gateway (e.g., `X-Amux-User-Email`) or by presence/absence of configuration, not by
+  build-time flags.
+- Whatever replaces `cloud/docker/amux-server.py` for a compiled binary (mac-server's
+  deploy model is still undecided — `.omc/plans/rust-migration.md` phase P5) must never be
+  committed — generate it at deploy time, same as before, and keep it in `.gitignore`.
 
 ## Server config — `~/.amux/server.env`
 
@@ -120,4 +147,7 @@ node skills/chrome-cdp/scripts/cdp.mjs nav <target> <url>
 
 Requires Chrome remote debugging enabled (`chrome://inspect/#remote-debugging`) and Node.js 22+.
 
-Claude Code, the amux server, and Chrome all run on the same desktop machine. Use `https://localhost:8822` for amux dashboard URLs.
+Claude Code, the amux server, and Chrome all run on the same desktop machine. Use
+`$AMUX_URL` for amux dashboard URLs — defaults to `https://localhost:8822` today; moves to
+`:8824` after the Rust cutover (see `.omc/plans/rust-migration.md` phase P3b, "8822 is
+GONE").
