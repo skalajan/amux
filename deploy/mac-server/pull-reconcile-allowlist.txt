@@ -22,4 +22,3 @@
 # The two lines below are carried over from dirt observed on mac-brain at plan
 # time — they are a starting hypothesis, not verified evidence for mac-server.
 .claude/commands/*.md
-.claude/settings.json
