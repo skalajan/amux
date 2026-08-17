@@ -23,7 +23,7 @@
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Scheduling AI Agents","item":"https://amux.io/guides/scheduling-ai-agents/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Schedule AI Coding Agents to Run Automatically (2026)","description":"Run your AI engineering team on autopilot — morning code reviews, nightly test generation, weekly dependency audits — triggered by a schedule, not a human. amux's built-in scheduler sends prompts to any registered session on any cron expression.","url":"https://amux.io/guides/scheduling-ai-agents/","datePublished":"2026-07-12","dateModified":"2026-07-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Schedule AI Coding Agents to Run Automatically","description":"Set up recurring automated prompts to AI coding agent sessions using amux's built-in scheduler.","step":[{"@type":"HowToStep","position":1,"name":"Register and start a session","text":"amux register myproject --dir ~/Dev/myproject --yolo && amux start myproject --detach"},{"@type":"HowToStep","position":2,"name":"Create a schedule","text":"POST to /api/schedules with session, command (prompt text), and schedule_expr (e.g. 'daily at 8am')"},{"@type":"HowToStep","position":3,"name":"Verify the schedule","text":"Open the Scheduler tab in the amux dashboard or run: curl -sk https://localhost:8822/api/schedules"},{"@type":"HowToStep","position":4,"name":"Review runs from your phone","text":"Open the iOS app or mobile PWA, navigate to the Scheduler tab to see last run, next run, and status"},{"@type":"HowToStep","position":5,"name":"Skip a run without disabling","text":"Click 'Skip next' on the schedule card, or POST /api/schedules/SCHED-ID/skip-next"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Schedule AI Coding Agents to Run Automatically","description":"Set up recurring automated prompts to AI coding agent sessions using amux's built-in scheduler.","step":[{"@type":"HowToStep","position":1,"name":"Register and start a session","text":"amux register myproject --dir ~/Dev/myproject --yolo && amux start myproject --detach"},{"@type":"HowToStep","position":2,"name":"Create a schedule","text":"POST to /api/schedules with session, command (prompt text), and schedule_expr (e.g. 'daily at 8am')"},{"@type":"HowToStep","position":3,"name":"Verify the schedule","text":"Open the Scheduler tab in the amux dashboard or run: curl -sk https://localhost:8824/api/schedules"},{"@type":"HowToStep","position":4,"name":"Review runs from your phone","text":"Open the iOS app or mobile PWA, navigate to the Scheduler tab to see last run, next run, and status"},{"@type":"HowToStep","position":5,"name":"Skip a run without disabling","text":"Click 'Skip next' on the schedule card, or POST /api/schedules/SCHED-ID/skip-next"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can I schedule Claude Code to run automatically every day?","acceptedAnswer":{"@type":"Answer","text":"Yes. Register the session with amux (amux register myproject --dir ~/Dev/myproject --yolo), start it in detached mode (amux start myproject --detach), and create a schedule via the Scheduler tab in the dashboard or the /api/schedules API endpoint. The scheduler sends your prompt to the running session at the configured time."}},{"@type":"Question","name":"What happens if the agent session isn't running when the schedule fires?","acceptedAnswer":{"@type":"Answer","text":"The scheduler logs a skip for that occurrence. The session must be running for the prompt to be delivered. Combine amux start --detach with a launchd plist (macOS) or systemd unit (Linux) to ensure the session starts automatically at boot and stays running."}},{"@type":"Question","name":"How do I run an AI coding agent on a cron schedule?","acceptedAnswer":{"@type":"Answer","text":"amux supports both 5-field cron expressions (0 9 * * 1) and natural-language schedule expressions (daily at 8am, every 15m, weekly on Monday at 9am, monthly on 1 at 9am). Create a schedule via the Scheduler tab or POST to /api/schedules with the schedule_expr field."}},{"@type":"Question","name":"Can I pause a schedule for just one run without disabling it?","acceptedAnswer":{"@type":"Answer","text":"Yes. The Skip next button on each schedule card (or POST /api/schedules/SCHED-ID/skip-next) marks the next occurrence to be skipped. The skip auto-clears after that run — the schedule resumes normally without you having to remember to re-enable it."}},{"@type":"Question","name":"Can I monitor scheduled AI agent runs from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The iOS app (App Store: amux – Agent Multiplexer) and mobile PWA both show the Scheduler tab with last run time, next run time, and run status. You can also subscribe to the amux iCal feed to see scheduled agent runs in Google Calendar alongside your human team's calendar."}}]}</script>
 </head>
 <body>
@@ -73,18 +73,18 @@ amux start myproject --detach   # returns immediately, session runs in backgroun
     "command": "Review all TODO comments added in the last 24 hours, create board issues for each one, and give me a priority-sorted list.",
     "schedule_expr": "daily at 8am"
   }' \
-  https://localhost:8822/api/schedules</code></pre>
+  https://localhost:8824/api/schedules</code></pre>
 
     <p><strong>Step 3: Or use the dashboard UI</strong></p>
     <p>Open the amux dashboard &rarr; Scheduler tab &rarr; New Schedule. Fill in the title, session name, prompt text, and schedule expression. The UI validates the expression and shows the next run time before you save.</p>
 
     <p><strong>Step 4: Verify your schedules</strong></p>
-    <pre><code>curl -sk https://localhost:8822/api/schedules | python3 -m json.tool</code></pre>
+    <pre><code>curl -sk https://localhost:8824/api/schedules | python3 -m json.tool</code></pre>
 
     <p><strong>Step 5: Skip a single occurrence (without disabling the schedule)</strong></p>
     <pre><code># Dashboard: click "Skip next" on the schedule card
 # API:
-curl -sk -X POST https://localhost:8822/api/schedules/SCHED-ID/skip-next</code></pre>
+curl -sk -X POST https://localhost:8824/api/schedules/SCHED-ID/skip-next</code></pre>
     <p>The skip auto-clears after that run &mdash; the schedule resumes normally. Useful for weekends, holidays, or PR freeze windows.</p>
 
     <h2 id="expressions">Supported schedule expressions</h2>
@@ -221,11 +221,11 @@ curl -sk -X POST https://localhost:8822/api/schedules/SCHED-ID/skip-next</code><
 
     <div class="cta-box">
       <h3>Run your AI engineering team on autopilot</h3>
-      <p>amux is an open-source control plane for AI agent teams &mdash; self-healing, phone-first, single Python file, zero external dependencies, MIT licensed.</p>
+      <p>amux is an open-source control plane for AI agent teams &mdash; self-healing, phone-first, single Rust binary, zero external dependencies, MIT licensed.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject --detach
-amux serve  # → https://localhost:8822 — open Scheduler tab</code></pre>
+amux serve  # → https://localhost:8824 — open Scheduler tab</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#9733; Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>

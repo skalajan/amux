@@ -272,7 +272,7 @@ POST https://agent-b:8080/tasks/send
 {
   "mcpServers": {
     "shared-board": {
-      "url": "https://orchestrator:8822/mcp",
+      "url": "https://orchestrator:8824/mcp",
       "tools": ["create_task", "claim_task", "complete_task", "list_tasks"]
     }
   }
@@ -447,7 +447,7 @@ cat ~/Dev/myproject/.claude/settings.json
   <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # &rarr; https://localhost:8822</code></pre>
+amux serve  # &rarr; https://localhost:8824</code></pre>
   <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
     <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
     <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

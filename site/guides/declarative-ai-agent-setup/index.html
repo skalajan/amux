@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Declarative AI Agent Setup — Configure Your AI Engineering Team with YAML (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Learn how to configure an AI engineering team declaratively with a single YAML file. amux IaC applies idempotently — define workers, groups, schedules, and skills once, apply anywhere. August 2026.">
+  <meta name="keywords" content="declarative AI agent setup, AI agent infrastructure as code, AI agent YAML configuration, configure AI agents with code, AI agent GitOps, version control AI agents, amux IaC, AI engineering team configuration, declarative agent orchestration, AI agent vertical YAML">
+  <link rel="canonical" href="https://amux.io/guides/declarative-ai-agent-setup/">
+  <meta property="og:title" content="Declarative AI Agent Setup — Configure Your AI Engineering Team with YAML">
+  <meta property="og:description" content="Define your entire AI engineering team — workers, groups, schedules, skills — in a single YAML file. Apply idempotently with amux IaC. GitOps for AI agent teams.">
+  <meta property="og:url" content="https://amux.io/guides/declarative-ai-agent-setup/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Declarative AI Agent Setup with amux IaC — YAML-based AI Engineering Team Config">
+  <meta name="twitter:description" content="One YAML file defines your entire AI agent team. Apply it idempotently — amux reconciles to the declared state. GitOps for AI engineering teams.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Declarative AI Agent Setup", "item": "https://amux.io/guides/declarative-ai-agent-setup/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Declarative AI Agent Setup — Configure Your AI Engineering Team with YAML",
+    "description": "Learn how to configure an AI engineering team declaratively with a single YAML file. amux IaC applies idempotently — define workers, groups, schedules, and skills once, apply anywhere.",
+    "url": "https://amux.io/guides/declarative-ai-agent-setup/",
+    "datePublished": "2026-08-10",
+    "dateModified": "2026-08-10",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["declarative AI agent setup", "AI agent infrastructure as code", "AI agent YAML configuration", "GitOps AI agents", "amux IaC", "AI engineering team config", "declarative agent orchestration"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to configure an AI engineering team declaratively with amux IaC",
+    "description": "Define your entire AI agent team — workers, groups, schedules, skills, and personas — in a single YAML vertical file. Apply it idempotently with amux iac apply.",
+    "totalTime": "PT10M",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Install amux",
+        "text": "Install amux with Homebrew (brew install mixpeek/amux/amux), pip (pipx install amux), or from source (git clone https://github.com/mixpeek/amux && cd amux && ./install.sh). Run amux serve to start the dashboard at https://localhost:8824.",
+        "url": "https://amux.io/guides/declarative-ai-agent-setup/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Define your vertical YAML file",
+        "text": "Create a vertical.yaml file that declares your complete AI engineering team: workers (each with a name, directory, model runtime, and skill set), groups (how workers are organized), schedules (recurring tasks), and any shared environment variables. A vertical is the complete desired state of one AI engineering team.",
+        "url": "https://amux.io/guides/declarative-ai-agent-setup/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Apply the vertical idempotently",
+        "text": "Run amux iac apply vertical.yaml. amux reads the declared state, compares it to what is currently running, and reconciles — creating missing workers, updating changed configurations, and leaving unchanged resources untouched. Run it again and nothing changes if the state is already correct.",
+        "url": "https://amux.io/guides/declarative-ai-agent-setup/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Commit the YAML to version control",
+        "text": "Add vertical.yaml to your Git repository. Now your AI engineering team is version-controlled just like your application code. Roll back to a previous team configuration with git checkout. Branch for experiments. PR review for team changes. CI/CD pipelines can apply the configuration automatically on merge.",
+        "url": "https://amux.io/guides/declarative-ai-agent-setup/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Apply skins and personas (optional)",
+        "text": "Skins in amux are reusable persona templates — a set of CLAUDE.md instructions, environment variables, and skill sets that define how a worker behaves. Reference a skin in your vertical.yaml to apply a consistent persona (e.g., 'senior-backend', 'security-reviewer', 'documentation-writer') to multiple workers at once.",
+        "url": "https://amux.io/guides/declarative-ai-agent-setup/"
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is declarative AI agent setup?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Declarative AI agent setup means defining the desired state of your AI engineering team in a configuration file — rather than running a series of commands to create each worker, group, and schedule manually. You describe WHAT you want (10 workers, organized into 3 groups, with a daily standup schedule), and the tool figures out HOW to make that happen. amux IaC uses a single YAML file called a 'vertical' to represent the complete desired state of one AI engineering team. Run amux iac apply vertical.yaml to reconcile the current state to the declared state, idempotently."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is a 'vertical' in amux IaC?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A vertical in amux is a complete AI engineering team configuration captured in a single YAML file. It declares all workers (their names, working directories, model runtimes — Claude Code, Codex, or Gemini CLI), groups (how workers are organized for coordination and scoped board views), schedules (recurring automated tasks), shared skills and environment variables, and optional persona skins. The name 'vertical' reflects that it covers an entire product vertical or business function — one vertical.yaml for your backend team, another for your frontend team, another for your data pipeline team."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does 'idempotent' mean for AI agent configuration?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Idempotent means running the same command multiple times produces the same result as running it once. When you run amux iac apply vertical.yaml, amux compares the declared state in the YAML to what is currently running. Workers that already match the declaration are left untouched. Missing workers are created. Changed configurations are updated. If everything already matches, nothing happens. This makes it safe to run apply on every CI/CD deploy, every team provisioning step, and every environment setup — without worrying about duplicating workers or overwriting manual changes."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux IaC differ from Kubernetes or Terraform?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux IaC applies the same declarative, idempotent reconciliation principle as Kubernetes and Terraform — but for AI engineering teams rather than infrastructure. Where Kubernetes reconciles pod counts and container images, amux reconciles worker sessions, group memberships, and skill assignments. Where Terraform manages cloud resources, amux manages the cognitive resources of your AI coding team: which agents run, what they know (skills, CLAUDE.md), how they communicate (groups, channels), and what they do on a schedule. amux IaC runs locally with no cloud dependency — it is self-hosted infrastructure for your AI team."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use amux IaC with CI/CD pipelines?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Because amux iac apply is idempotent and reads from a YAML file, it can be called from any CI/CD system: GitHub Actions, GitLab CI, Jenkins, or a simple cron job. A common pattern: store vertical.yaml in your repository, add a step to your CI pipeline that runs amux iac apply on merge to main. Every time your team configuration changes — a new worker, a new group, a changed schedule — it is automatically applied without manual steps."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What are skins and how do they work with IaC?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Skins in amux are reusable persona templates stored on disk. A skin defines a worker's personality and capabilities: the CLAUDE.md instructions (how the agent thinks and communicates), environment variables (which APIs it can reach), and skill sets (slash commands and automations it can run). In your vertical.yaml, reference a skin by name to apply it to one or more workers. This lets you define 'senior-backend-engineer' as a skin once and apply it to all 8 backend workers in your team — consistent behavior, maintainable in one place, version-controlled with your config."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does declarative setup work with Claude Code, Codex, and Gemini CLI?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is multi-runtime: a single vertical.yaml can declare workers using Claude Code (Anthropic), Codex CLI (OpenAI), or Gemini CLI (Google). Specify the runtime per worker or set a default for the team. This means you can run a mixed fleet — Claude Code workers for complex reasoning tasks, Codex workers for fast code generation, Gemini CLI workers for long-context document processing — all managed from a single YAML file and monitored from one dashboard."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I version-control my AI agent team configuration?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — this is the primary value of declarative setup. Commit vertical.yaml to your repository. Now your AI engineering team configuration is version-controlled with full git history: who changed what, when, and why. Roll back a bad configuration with git revert. Review team changes in pull requests before applying. Branch to experiment with new team structures. Compare configurations across environments. The same practices you use to manage application code now apply to your AI agent team."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Declarative AI Agent Setup</span></div>
+
+    <!-- EXP-023: top-of-page CTA — 2026-08-10 -->
+    <div style="background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.9rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <span style="color:#6ee7b7;font-weight:600;font-size:.95rem;">Define your AI engineering team in one YAML file — apply it anywhere, idempotently.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp024_iac_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:#10b981;color:#fff;border-radius:5px;padding:.35rem .9rem;font-size:.85rem;font-weight:600;text-decoration:none;white-space:nowrap;">View amux on GitHub ★</a>
+    </div>
+
+    <h1>Declarative AI Agent Setup</h1>
+    <p class="subtitle">Configure your entire AI engineering team with a single YAML file — workers, groups, schedules, skills. Apply it idempotently. Commit it to git.</p>
+
+    <p class="answer-box">Declarative AI agent setup means defining your entire AI engineering team in a configuration file — what workers exist, how they are grouped, what skills they have, and when they run — and letting the tool reconcile the current state to the declared state automatically. <strong>amux IaC</strong> (Infrastructure as Code) does this with a single YAML file called a <em>vertical</em>. Run <code>amux iac apply vertical.yaml</code> to apply it idempotently: the team is created if it does not exist, updated if the configuration changed, and left untouched if it already matches. Commit vertical.yaml to git and your AI engineering team is version-controlled just like your application code.</p>
+
+    <p class="freshness-note"><strong>New in August 2026</strong> — <code>amux iac</code> shipped in amux v0.9.x. See the <a href="/changelog/">changelog</a> for details.</p>
+
+    <h2>What is declarative AI agent setup?</h2>
+    <p>There are two ways to configure an AI engineering team:</p>
+
+    <p><strong>Imperative (manual):</strong> Run a series of commands. <code>amux register worker-1</code>. <code>amux register worker-2</code>. Manually assign workers to groups. Configure schedules one at a time in the dashboard. Update CLAUDE.md on each worker. If you need to recreate the team on a new machine, you remember what you did (or you don't). No history. No rollback. No review.</p>
+
+    <p><strong>Declarative (amux IaC):</strong> Write a vertical.yaml that describes the desired state of your team. Run <code>amux iac apply vertical.yaml</code>. amux figures out what needs to be created, changed, or left alone. Run it again — nothing changes if the state already matches. Commit the file — your team configuration is now in version control with full history and review.</p>
+
+    <p>The declarative approach is how professional engineering teams manage infrastructure. Kubernetes, Terraform, and Ansible all apply the same principle. amux IaC brings it to AI agent teams.</p>
+
+    <h2>The vertical YAML format</h2>
+    <p>A <em>vertical</em> is the unit of AI engineering team configuration in amux. One vertical.yaml file describes a complete team — typically corresponding to one product area, one codebase, or one business function.</p>
+
+    <pre><code># vertical.yaml — a complete AI engineering team configuration
+name: backend-team
+description: "AI engineering team for the core API and data pipeline"
+
+workers:
+  - name: api-worker-1
+    dir: ~/Dev/myproject
+    runtime: claude-code        # claude-code | codex | gemini-cli
+    skin: senior-backend        # persona template (optional)
+    flags: ["--yolo"]
+
+  - name: api-worker-2
+    dir: ~/Dev/myproject
+    runtime: claude-code
+    skin: senior-backend
+
+  - name: doc-writer
+    dir: ~/Dev/myproject
+    runtime: gemini-cli         # long-context doc tasks
+    skin: documentation-writer
+
+  - name: security-reviewer
+    dir: ~/Dev/myproject
+    runtime: codex
+    skin: security-reviewer
+
+groups:
+  - name: backend-team
+    members: [api-worker-1, api-worker-2, doc-writer, security-reviewer]
+    description: "Core backend engineering group"
+
+schedules:
+  - name: daily-standup
+    cron: "0 9 * * 1-5"        # weekdays at 9am
+    target_group: backend-team
+    command: "Run standup: what did you complete yesterday, what are you working on today, any blockers?"
+
+  - name: weekly-review
+    cron: "0 17 * * 5"         # Fridays at 5pm
+    target_group: backend-team
+    command: "Create a weekly summary of completed tasks, open PRs, and next week priorities. Post to board."
+
+env:
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+  GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
+skills:
+  - pr-review
+  - code-review
+  - documentation</code></pre>
+
+    <h2>How to configure AI agents as code: step by step</h2>
+
+    <h3>Step 1 — Install amux</h3>
+    <pre><code># Homebrew (macOS)
+brew install mixpeek/amux/amux
+
+# pip (any platform)
+pipx install amux
+
+# From source
+git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+amux serve  # → https://localhost:8824</code></pre>
+
+    <h3>Step 2 — Write your vertical.yaml</h3>
+    <p>Start with the minimal form — just workers and a group. You can add schedules, skins, and environment variables incrementally:</p>
+
+    <pre><code># minimal-vertical.yaml — start here
+name: my-team
+
+workers:
+  - name: worker-1
+    dir: ~/Dev/myproject
+    runtime: claude-code
+
+  - name: worker-2
+    dir: ~/Dev/myproject
+    runtime: claude-code
+
+groups:
+  - name: my-team
+    members: [worker-1, worker-2]</code></pre>
+
+    <h3>Step 3 — Apply the vertical</h3>
+    <pre><code>amux iac apply minimal-vertical.yaml
+
+# Output:
+# ✓ Created worker: worker-1 (claude-code, ~/Dev/myproject)
+# ✓ Created worker: worker-2 (claude-code, ~/Dev/myproject)
+# ✓ Created group: my-team (2 members)
+# Applied in 0.4s</code></pre>
+
+    <p>Run it again immediately:</p>
+    <pre><code>amux iac apply minimal-vertical.yaml
+
+# Output:
+# ✓ worker-1 — no change
+# ✓ worker-2 — no change
+# ✓ group my-team — no change
+# Nothing to do (0.1s)</code></pre>
+
+    <p>This is idempotency. The second apply is a no-op because the current state already matches the declaration.</p>
+
+    <h3>Step 4 — Commit to git</h3>
+    <pre><code>git add vertical.yaml
+git commit -m "feat: add backend AI engineering team configuration"
+git push</code></pre>
+
+    <p>Your AI engineering team is now version-controlled. Every change to the team configuration goes through the same review process as your application code. New team members can clone the repo and apply the vertical to spin up the same configuration in minutes.</p>
+
+    <h3>Step 5 — Apply skins for consistent worker personas</h3>
+    <p>Skins are reusable persona templates stored on disk. A skin bundles a CLAUDE.md instruction set, environment variables, and skill assignments into a named template. Create skin files in your amux skills directory and reference them by name in the vertical:</p>
+
+    <pre><code># In vertical.yaml — reference skins by name
+workers:
+  - name: backend-lead
+    skin: senior-backend          # applies senior-backend skin to this worker
+    runtime: claude-code
+    dir: ~/Dev/myproject
+
+  - name: security-reviewer
+    skin: security-reviewer       # different persona for security tasks
+    runtime: codex
+    dir: ~/Dev/myproject</code></pre>
+
+    <p>Now <code>backend-lead</code> and <code>security-reviewer</code> behave consistently with their defined personas every time the vertical is applied — regardless of which machine or environment they run on.</p>
+
+    <h2>Declarative vs. manual AI agent setup</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Property</th><th>Manual / imperative setup</th><th>Declarative with amux IaC</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Reproducibility</td>
+            <td>Depends on tribal knowledge or runbooks</td>
+            <td>Full: apply vertical.yaml → same team, every time</td>
+          </tr>
+          <tr>
+            <td>Version control</td>
+            <td>No history of configuration changes</td>
+            <td>Complete git history; diff, blame, revert</td>
+          </tr>
+          <tr>
+            <td>Code review</td>
+            <td>Team changes happen ad hoc</td>
+            <td>Pull request review before any team change ships</td>
+          </tr>
+          <tr>
+            <td>Onboarding new teammates</td>
+            <td>Walk through setup; hope the runbook is current</td>
+            <td>git clone &amp;&amp; amux iac apply</td>
+          </tr>
+          <tr>
+            <td>Multiple environments</td>
+            <td>Manually reconcile dev vs. staging vs. production teams</td>
+            <td>One file per environment; apply on promote</td>
+          </tr>
+          <tr>
+            <td>Rollback</td>
+            <td>Manually undo changes — if you remember what you changed</td>
+            <td>git revert &amp;&amp; amux iac apply</td>
+          </tr>
+          <tr>
+            <td>CI/CD integration</td>
+            <td>Not possible without manual scripting</td>
+            <td>amux iac apply is a CLI command — add to any pipeline</td>
+          </tr>
+          <tr>
+            <td>Drift detection</td>
+            <td>No way to know if the live team matches the intended config</td>
+            <td>amux iac apply --dry-run shows what would change</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>GitOps for AI engineering teams</h2>
+    <p>GitOps is the practice of using a Git repository as the single source of truth for your operational state. Every change is proposed as a pull request, reviewed, merged, and then automatically applied by a pipeline. Infrastructure teams use GitOps with Terraform and Kubernetes to manage cloud resources. amux IaC brings GitOps to AI engineering teams.</p>
+
+    <p>A complete GitOps workflow for an AI engineering team:</p>
+    <ol>
+      <li><strong>All team configuration lives in vertical.yaml</strong> — committed to the same repository as the application code it builds</li>
+      <li><strong>Changes proposed as pull requests</strong> — adding a worker, changing a schedule, assigning a new skin — all go through review before being applied to the running team</li>
+      <li><strong>CI pipeline validates the YAML</strong> — syntax check, schema validation, <code>amux iac apply --dry-run</code> in CI to catch errors before merge</li>
+      <li><strong>Apply on merge</strong> — the pipeline runs <code>amux iac apply vertical.yaml</code> on merge to main, automatically reconciling the running team to the declared configuration</li>
+      <li><strong>Audit trail in git history</strong> — who made the change, when, why (commit message), reviewed by whom (PR review)</li>
+    </ol>
+
+    <h2>Version-controlling your AI engineering team</h2>
+    <p>The most immediate benefit of declarative setup is version control. When you store vertical.yaml in git, you get:</p>
+
+    <p><strong>History</strong> — who added the security-reviewer worker, and when. Who changed the daily standup schedule from 9am to 8:30am. Why the doc-writer was reassigned from Gemini CLI to Claude Code.</p>
+
+    <p><strong>Rollback</strong> — if a configuration change causes problems (a new worker is assigned a skin that produces bad output; a schedule fires too frequently), <code>git revert</code> and <code>amux iac apply</code> restores the previous state in seconds.</p>
+
+    <p><strong>Branching for experiments</strong> — test a new team structure on a feature branch before committing to it. Apply the branch's vertical.yaml to a staging environment. Merge if it works; discard if it doesn't.</p>
+
+    <p><strong>Onboarding</strong> — new engineers joining the team can apply the production team configuration to their local environment with two commands. No walking through setup. No "ask Alice what the flags were."</p>
+
+    <h2>Multi-runtime teams: Claude Code, Codex, and Gemini CLI</h2>
+    <p>amux is multi-runtime: a single vertical.yaml can declare workers using different AI runtimes for different tasks. Specify <code>runtime</code> per worker:</p>
+
+    <pre><code>workers:
+  - name: complex-reasoning
+    runtime: claude-code          # Claude Code (Anthropic) — best for complex reasoning
+    dir: ~/Dev/myproject
+
+  - name: fast-codegen
+    runtime: codex                # Codex CLI (OpenAI) — fast code generation
+    dir: ~/Dev/myproject
+
+  - name: long-context-docs
+    runtime: gemini-cli           # Gemini CLI (Google) — 1M token context for large docs
+    dir: ~/Dev/myproject</code></pre>
+
+    <p>amux monitors, self-heals, and manages all three runtimes from a single dashboard and mobile app — one team, one vertical.yaml, one control plane, regardless of which underlying model each worker uses.</p>
+
+    <h2>Frequently asked questions</h2>
+    <div class="faq-list">
+
+      <details open>
+        <summary><h3>What is declarative AI agent setup?</h3></summary>
+        <p>Declarative AI agent setup means defining the desired state of your AI engineering team in a configuration file rather than running commands manually. You describe WHAT you want — 10 workers, 3 groups, a daily standup schedule — and the tool reconciles the current state to your declaration. amux IaC uses a YAML file called a <em>vertical</em>. Run <code>amux iac apply vertical.yaml</code> to apply it idempotently: the team is created if missing, updated if changed, untouched if already correct.</p>
+      </details>
+
+      <details>
+        <summary><h3>How does amux IaC differ from Kubernetes or Terraform?</h3></summary>
+        <p>amux IaC applies the same declarative, idempotent reconciliation principle — but for AI engineering teams rather than infrastructure. Where Kubernetes reconciles pod counts, amux reconciles worker sessions. Where Terraform manages cloud resources, amux manages AI agent workers, groups, schedules, and skills. amux IaC runs entirely on your machine with no cloud dependency — it is self-hosted infrastructure-as-code for your AI team.</p>
+      </details>
+
+      <details>
+        <summary><h3>Can I use amux IaC in a CI/CD pipeline?</h3></summary>
+        <p>Yes. <code>amux iac apply</code> is a CLI command — add it to any CI/CD pipeline step. A common pattern: store vertical.yaml in your repository; add a step that runs <code>amux iac apply vertical.yaml</code> on merge to main. Every team configuration change is applied automatically after PR review. Use <code>--dry-run</code> in CI to validate changes without applying them.</p>
+      </details>
+
+      <details>
+        <summary><h3>What is a skin in amux?</h3></summary>
+        <p>A skin is a reusable persona template stored on disk. It bundles a CLAUDE.md instruction set, environment variables, and skill assignments into a named template. Reference skins in vertical.yaml to apply consistent personas to multiple workers — <code>senior-backend</code>, <code>security-reviewer</code>, <code>documentation-writer</code> — all defined once, applied everywhere, version-controlled with your config.</p>
+      </details>
+
+      <details>
+        <summary><h3>Does declarative setup work with Claude Code, Codex, and Gemini CLI?</h3></summary>
+        <p>Yes. amux is multi-runtime. Specify <code>runtime: claude-code</code>, <code>runtime: codex</code>, or <code>runtime: gemini-cli</code> per worker in your vertical.yaml. A single team can mix runtimes — Claude Code for complex reasoning, Codex for fast code generation, Gemini CLI for long-context document work. amux monitors and self-heals all three from one dashboard.</p>
+      </details>
+
+      <details>
+        <summary><h3>Can I version-control my AI team configuration?</h3></summary>
+        <p>Yes — this is the primary value of declarative setup. Commit vertical.yaml to git. Now your AI engineering team configuration has full version history, code review, rollback, and branching. Who changed what, when, and why. Roll back a bad configuration with <code>git revert &amp;&amp; amux iac apply</code>. Apply the same configuration on any machine with two commands.</p>
+      </details>
+
+      <details>
+        <summary><h3>How is amux IaC different from a shell script that registers workers?</h3></summary>
+        <p>A shell script is imperative: it runs commands in sequence. Run it twice and you get duplicate workers. Add a worker and the script doesn't know which workers already exist. amux IaC is declarative and idempotent: it compares the desired state (YAML) to the current state (running workers), and applies only the difference. Run it twice — nothing changes. Add a worker — only that worker is created. This makes it safe to apply on every deployment without side effects.</p>
+      </details>
+
+      <details>
+        <summary><h3>Is amux IaC only for local setups, or can it apply to cloud deployments?</h3></summary>
+        <p>amux runs locally and on cloud VMs (amux cloud). The vertical.yaml format is the same for both — the runtime environment (local vs. cloud container) is configured separately. Apply the same vertical.yaml to your local development environment and to a cloud amux deployment, and you get the same team configuration in both places. This makes environment parity straightforward for teams that test locally and run production agents in the cloud.</p>
+      </details>
+    </div>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team — declared in code, applied in seconds</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Define your team in a YAML vertical, apply it idempotently, commit it to git. Self-healing, multi-runtime (Claude Code, Codex, Gemini CLI), built-in kanban, CRM, email, browser automation, and scheduler. Single Rust binary, zero external dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux serve  # → https://localhost:8824
+amux iac apply vertical.yaml</code></pre>
+      <div class="cta-buttons">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Getting started guide</a>
+        <a class="btn" href="/guides/agent-fleet-operations/">Fleet operations guide</a>
+      </div>
+    </div>
+
+    <div class="related-guides">
+      <h3>Related guides</h3>
+      <ul>
+        <li><a href="/guides/agent-fleet-operations/">AI agent fleet operations — running and monitoring your team</a></li>
+        <li><a href="/guides/ai-agent-team-review/">Morning review: Trends view, Review dashboard, Fleet org chart</a></li>
+        <li><a href="/guides/context-engineering/">Context engineering for AI agent fleets</a></li>
+        <li><a href="/for/ai-engineers/">amux for AI engineers — fleet orchestration, GitOps, multi-runtime</a></li>
+        <li><a href="/for/startup-founders/">amux for startup founders — run your engineering team from your phone</a></li>
+        <li><a href="/docs/">amux documentation and install guide</a></li>
+      </ul>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 const INSTALL = `<pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>`;
+amux serve  # → https://localhost:8824</code></pre>`;
 
 const CTA = `<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p>${INSTALL}<a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>`;
 
@@ -577,7 +577,7 @@ const guides = [
 <pre><code>amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject</code></pre>
 <h2>Open the dashboard</h2>
-<pre><code>amux serve  # → https://localhost:8822</code></pre>
+<pre><code>amux serve  # → https://localhost:8824</code></pre>
 <p>Open the URL in your browser. You'll see your session with live status, token tracking, and a send bar.</p>
 <h2>Send your first task</h2>
 <p>Click the session card, type a prompt in the send bar, and hit Enter. Or from the CLI:</p>
@@ -666,7 +666,7 @@ ${CTA}`
 <p class="subtitle">Install amux on your phone. Manage agents from anywhere.</p>
 <h2>Install the PWA</h2>
 <ol>
-<li>Open <code>https://your-server:8822</code> in Safari (iOS) or Chrome (Android)</li>
+<li>Open <code>https://your-server:8824</code> in Safari (iOS) or Chrome (Android)</li>
 <li>Tap "Add to Home Screen"</li>
 <li>The app works offline — queued commands replay when you reconnect</li>
 </ol>
@@ -798,7 +798,7 @@ ${CTA}`
 <ol>
 <li>Install Tailscale on your amux server and devices</li>
 <li>amux auto-detects Tailscale and generates a valid TLS cert</li>
-<li>Open <code>https://your-tailscale-ip:8822</code> from any device</li>
+<li>Open <code>https://your-tailscale-ip:8824</code> from any device</li>
 <li>Install as PWA on your phone for quick access</li>
 </ol>
 ${CTA}`
@@ -1350,7 +1350,7 @@ const faqItems = [
   ['Can I use amux from my phone?', 'Yes. The dashboard is a PWA — install it on iOS or Android. Works offline with Background Sync.'],
   ['How do agents coordinate?', 'Via REST API. Every agent gets the API reference in global memory. They can send messages to peers, claim tasks from the board, and peek at each other\'s output.'],
   ['What does it cost?', 'amux is free and open source (MIT). You pay only for Claude API tokens. Running 10 agents typically costs $20-100/day depending on task complexity.'],
-  ['Is it secure?', 'amux is local-first with no auth built in. Use Tailscale or bind to localhost. Never expose port 8822 to the internet.'],
+  ['Is it secure?', 'amux is local-first with no auth built in. Use Tailscale or bind to localhost. Never expose port 8824 to the internet.'],
   ['Can I use it with models other than Claude?', 'amux is specifically built for Claude Code (the <code>claude</code> CLI). It relies on Claude Code\'s specific terminal output patterns for status detection and self-healing.'],
   ['How is amux different from Claude Code Agent Teams?', 'Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, self-healing, and shared task board. <a href="/compare/amux-vs-claude-code-agent-teams/">See detailed comparison</a>.'],
   ['Can I self-host it?', 'Yes — that\'s the only way to run it. amux runs on your own machine or server. No cloud service, no account needed.'],
@@ -1752,7 +1752,7 @@ amux register tests-agent --dir ~/myproject --yolo
 amux start auth-agent api-agent tests-agent
 
 # Assign tasks via the board
-curl -sk -X POST https://localhost:8822/api/board \\
+curl -sk -X POST https://localhost:8824/api/board \\
   -d '{"title":"Migrate auth/ to Pydantic v2","session":"auth-agent"}'</code></pre>
 <h2>Data Science and ML</h2>
 <p>Python is the lingua franca of ML. Use amux to run parallel agents for:</p>
@@ -2782,7 +2782,7 @@ REFAC-015-db</code></pre>
 <ul>
 <li>Use Tailscale to expose amux only on your team's private network</li>
 <li>Or bind amux to localhost and use SSH port forwarding for remote access</li>
-<li>Never expose port 8822 directly to the public internet</li>
+<li>Never expose port 8824 directly to the public internet</li>
 </ul>
 <h2>Session Isolation</h2>
 <p>If multiple developers share one amux instance, use separate working directories per developer and clear session ownership in naming. The amux board's <code>session</code> field shows which agent owns each task — use this to avoid two developers' agents working the same ticket.</p>

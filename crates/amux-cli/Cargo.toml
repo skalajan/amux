@@ -1,0 +1,22 @@
+[package]
+name = "amux-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `amux` command-line interface."
+
+[[bin]]
+name = "amux-rs"
+path = "src/main.rs"
+
+[dependencies]
+amux-core = { path = "../amux-core" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

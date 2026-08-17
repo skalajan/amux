@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — offline / sync states</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .banner { padding: 8px 16px; border-radius: 6px; margin: 8px 0; }
+  .banner-offline { background: #da3633; }
+  .banner-syncing { background: #9e6a03; }
+  .banner-conflict { background: #f85149; }
+  .card { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .meta { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+  .mutation-queue { border: 1px solid #9e6a03; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .conflict-panel { border: 1px solid #f85149; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .side { border: 1px solid #30363d; border-radius: 6px; padding: 8px; margin: 4px 0; }
+</style>
+</head>
+<body>
+<!-- Seed state: offline client, pending mutations, and sync conflict.
+     The crawler must discover: offline indicator, queued mutation list,
+     retry controls, conflict resolution UI (RR-0028c). -->
+
+<div class="shell" data-testid="dashboard-shell">
+
+  <!-- === Section 1: Offline client === -->
+  <div data-testid="offline-section">
+    <div class="banner banner-offline" data-testid="offline-banner">
+      <span>Offline</span>
+      <button data-testid="offline-retry">Retry connection</button>
+    </div>
+
+    <div class="card" data-testid="offline-cached-worker">
+      <div>alpha (cached)</div>
+      <div class="meta">Last seen: active, turn 14</div>
+      <div class="actions">
+        <button data-testid="offline-send-queued">Send (queued)</button>
+        <button data-testid="offline-peek-cached">Peek (cached)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Section 2: Pending offline mutations === -->
+  <div data-testid="mutations-section">
+    <h3>Pending mutations (3)</h3>
+
+    <div class="mutation-queue" data-testid="mutation-queue">
+      <div class="card" data-testid="mutation-1">
+        <div>PATCH /api/board/ARE-5 — status: done</div>
+        <div class="meta">queued 2m ago</div>
+        <div class="actions">
+          <button data-testid="mutation-1-discard">Discard</button>
+        </div>
+      </div>
+
+      <div class="card" data-testid="mutation-2">
+        <div>POST /api/sessions/alpha/send — "continue"</div>
+        <div class="meta">queued 1m ago</div>
+        <div class="actions">
+          <button data-testid="mutation-2-discard">Discard</button>
+        </div>
+      </div>
+
+      <div class="card" data-testid="mutation-3">
+        <div>POST /api/board — title: "New investigation"</div>
+        <div class="meta">queued 30s ago</div>
+        <div class="actions">
+          <button data-testid="mutation-3-discard">Discard</button>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button data-testid="mutations-flush">Flush all when online</button>
+        <button data-testid="mutations-discard-all">Discard all</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Section 3: Sync conflict === -->
+  <div data-testid="conflict-section">
+    <div class="banner banner-conflict" data-testid="conflict-banner">
+      Sync conflict on ARE-5: status diverged
+    </div>
+
+    <div class="conflict-panel" data-testid="conflict-panel">
+      <h4>ARE-5: Implement config loader</h4>
+
+      <div class="side" data-testid="conflict-local">
+        <strong>Local version (rev 7)</strong>
+        <div>status: done</div>
+        <div class="meta">changed by you, 2m ago</div>
+      </div>
+
+      <div class="side" data-testid="conflict-server">
+        <strong>Server version (rev 8)</strong>
+        <div>status: doing</div>
+        <div class="meta">changed by alpha, 1m ago</div>
+      </div>
+
+      <div class="actions">
+        <button data-testid="conflict-keep-local">Keep local</button>
+        <button data-testid="conflict-keep-server">Keep server</button>
+        <button data-testid="conflict-merge">Merge</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Section 4: Reconnecting (syncing) === -->
+  <div data-testid="syncing-section">
+    <div class="banner banner-syncing" data-testid="syncing-banner">
+      <span>Syncing... 2 of 3 mutations applied</span>
+      <button data-testid="syncing-cancel">Cancel sync</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

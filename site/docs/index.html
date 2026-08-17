@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Documentation","item":"https://amux.io/docs/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"amux Documentation","description":"Complete documentation for amux — the open-source control plane for AI agents.","datePublished":"2026-04-24","dateModified":"2026-04-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"amux Documentation","description":"Complete documentation for amux — the open-source control plane for AI agents.","datePublished":"2026-04-24","dateModified":"2026-08-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}}}</script>
   <style>
     .docs-toc { background: oklch(0.25 0.01 250); border-radius: 8px; padding: 20px 24px; margin: 24px 0 32px; }
     .docs-toc ul { list-style: none; margin: 0; padding: 0; columns: 2; }
@@ -52,6 +52,14 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <span>Documentation</span></div>
     <h1>Documentation</h1>
 <p class="subtitle">Everything you need to install, configure, and use amux.</p>
+
+<div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:1.25rem 1.5rem;margin:1.5rem 0 2rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+  <div>
+    <div style="font-weight:600;font-size:1rem;margin-bottom:0.25rem;">Run your first AI agent fleet in 5 minutes</div>
+    <div style="font-size:0.875rem;color:var(--text-muted,#8892a4);">amux is open source and free. 350+ GitHub stars.</div>
+  </div>
+  <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.ph)ph.capture('exp040_docs_index_topofpage_cta_click')" style="background:#10b981;color:#fff;font-weight:600;padding:0.6rem 1.25rem;border-radius:8px;text-decoration:none;white-space:nowrap;font-size:0.9rem;">Star on GitHub</a>
+</div>
 
 <div class="docs-toc">
 <strong>On this page</strong>
@@ -104,7 +112,7 @@
 <pre><code>git clone https://github.com/mixpeek/amux && cd amux
 ./install.sh</code></pre>
 
-<p>Source install symlinks <code>amux</code> and <code>amux-server.py</code> to <code>/usr/local/bin</code>. Also installs a <code>cc</code> alias for convenience.</p>
+<p>Source install symlinks <code>amux</code> and <code>amux-server-rs</code> to <code>/usr/local/bin</code>. Also installs a <code>cc</code> alias for convenience.</p>
 
 <p>Verify the installation:</p>
 
@@ -118,7 +126,7 @@ cd ~/path/to/amux && git pull && ./install.sh   # source installs</code></pre>
 
 <p>The server knows its install channel and the dashboard&rsquo;s update button points you at the right command.</p>
 
-<p>The server auto-restarts when <code>amux-server.py</code> changes, so updates take effect immediately if the dashboard is running.</p>
+<p>The server auto-restarts when <code>amux-server-rs</code> changes, so updates take effect immediately if the dashboard is running.</p>
 
 <h2 id="quickstart">Quick start</h2>
 
@@ -129,7 +137,7 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 
 # 3. Start the web dashboard
-amux serve  # → https://localhost:8822
+amux serve  # → https://localhost:8824
 
 # 4. Send a task to your agent
 amux send myproject "add unit tests for the auth module"
@@ -137,7 +145,7 @@ amux send myproject "add unit tests for the auth module"
 # 5. Check what the agent is doing
 amux peek myproject</code></pre>
 
-<p>That's it. Open <code>https://localhost:8822</code> in your browser to see the dashboard with live status, token tracking, and a send bar.</p>
+<p>That's it. Open <code>https://localhost:8824</code> in your browser to see the dashboard with live status, token tracking, and a send bar.</p>
 
 <h2 id="concepts">Core concepts</h2>
 
@@ -151,7 +159,7 @@ amux peek myproject</code></pre>
 <p>The <strong>web dashboard</strong> is a PWA that shows all sessions, the board, notes, CRM, email, files, and more. It works on desktop and mobile, installs as a home-screen app on iOS/Android, and supports offline queuing via Background Sync.</p>
 
 <h3>REST API</h3>
-<p>Every dashboard feature is accessible via a REST API at <code>https://localhost:8822/api/</code>. Agents use this API to communicate with each other, read/write board tasks, access notes, and more.</p>
+<p>Every dashboard feature is accessible via a REST API at <code>https://localhost:8824/api/</code>. Agents use this API to communicate with each other, read/write board tasks, access notes, and more.</p>
 
 <h2 id="cli">CLI reference</h2>
 
@@ -213,7 +221,7 @@ amux peek myproject</code></pre>
 <table class="data-table">
 <thead><tr><th>Command</th><th>Description</th></tr></thead>
 <tbody>
-<tr><td><code>amux serve [port]</code></td><td>Start the web dashboard (default: 8822)</td></tr>
+<tr><td><code>amux serve [port]</code></td><td>Start the web dashboard (default: 8824)</td></tr>
 </tbody>
 </table>
 
@@ -248,7 +256,7 @@ amux attach 3          # attach to session #3 from amux ls</code></pre>
 
 <h2 id="dashboard">Web dashboard</h2>
 
-<p>Start the dashboard with <code>amux serve</code>. It runs at <code>https://localhost:8822</code> by default.</p>
+<p>Start the dashboard with <code>amux serve</code>. It runs at <code>https://localhost:8824</code> by default.</p>
 
 <p>The dashboard provides:</p>
 
@@ -263,7 +271,7 @@ amux attach 3          # attach to session #3 from amux ls</code></pre>
 <li><strong>Scheduler</strong> &mdash; cron job management UI</li>
 </ul>
 
-<p>The dashboard is a single HTML page served from <code>amux-server.py</code>. It uses Server-Sent Events (SSE) for live updates &mdash; sessions, board changes, and notifications push to all connected clients within ~2 seconds.</p>
+<p>The dashboard is a single HTML page served from <code>amux-server-rs</code>. It uses Server-Sent Events (SSE) for live updates &mdash; sessions, board changes, and notifications push to all connected clients within ~2 seconds.</p>
 
 <h2 id="board">Kanban board</h2>
 
@@ -275,7 +283,7 @@ amux board add "Refactor auth module"
 # API
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Refactor auth module","status":"todo"}' \
-  https://localhost:8822/api/board</code></pre>
+  https://localhost:8824/api/board</code></pre>
 
 <h3>Board item fields</h3>
 
@@ -301,7 +309,7 @@ amux board done ITEM-ID
 # API
 curl -sk -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"done"}' \
-  https://localhost:8822/api/board/ITEM-ID</code></pre>
+  https://localhost:8824/api/board/ITEM-ID</code></pre>
 
 <h3>Atomic task claiming</h3>
 
@@ -309,7 +317,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
 <pre><code>curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"session":"worker-1"}' \
-  https://localhost:8822/api/board/ITEM-ID/claim</code></pre>
+  https://localhost:8824/api/board/ITEM-ID/claim</code></pre>
 
 <p>This uses SQLite CAS (compare-and-swap) to guarantee only one agent claims each task. If another agent already claimed it, the request returns a conflict error.</p>
 
@@ -319,11 +327,16 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
 <pre><code>curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"name":"review","color":"#f59e0b"}' \
-  https://localhost:8822/api/board/statuses</code></pre>
+  https://localhost:8824/api/board/statuses</code></pre>
 
 <h3>Clearing done items</h3>
 
-<pre><code>curl -sk -X POST https://localhost:8822/api/board/clear-done</code></pre>
+<p>Archives every card whose status is &ldquo;done&rdquo; &mdash; it does not delete them.
+They leave the default board view and stay readable under Archived, and the
+response says how many moved.</p>
+
+<pre><code>curl -sk -X POST https://localhost:8824/api/board/clear-done
+{"ok": true, "archived": 957, "action": "archived"}</code></pre>
 
 <h3>Importing from GitHub</h3>
 
@@ -333,7 +346,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
 <h2 id="api">REST API</h2>
 
-<p>All endpoints are at <code>https://localhost:8822/api/</code>. Use <code>curl -sk</code> (self-signed TLS cert).</p>
+<p>All endpoints are at <code>https://localhost:8824/api/</code>. Use <code>curl -sk</code> (self-signed TLS cert).</p>
 
 <h3>Sessions</h3>
 
@@ -360,7 +373,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 <tr><td>PATCH</td><td><code>/api/board/&lt;id&gt;</code></td><td>Update a board item (status, title, desc, etc.)</td></tr>
 <tr><td>DELETE</td><td><code>/api/board/&lt;id&gt;</code></td><td>Delete a board item</td></tr>
 <tr><td>POST</td><td><code>/api/board/&lt;id&gt;/claim</code></td><td>Atomically claim a task for a session</td></tr>
-<tr><td>POST</td><td><code>/api/board/clear-done</code></td><td>Delete all items with status &ldquo;done&rdquo;</td></tr>
+<tr><td>POST</td><td><code>/api/board/clear-done</code></td><td>Archive every item with status &ldquo;done&rdquo; (recoverable; returns how many)</td></tr>
 <tr><td>POST</td><td><code>/api/board/statuses</code></td><td>Add a custom status column</td></tr>
 </tbody>
 </table>
@@ -446,16 +459,16 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 <pre><code># Create or update a note
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"content":"# Migration Plan\n\nStep 1: ..."}' \
-  https://localhost:8822/api/notes/migration-plan
+  https://localhost:8824/api/notes/migration-plan
 
 # Read a note
-curl -sk https://localhost:8822/api/notes/migration-plan
+curl -sk https://localhost:8824/api/notes/migration-plan
 
 # List all notes
-curl -sk https://localhost:8822/api/notes
+curl -sk https://localhost:8824/api/notes
 
 # Delete a note (moves to trash)
-curl -sk -X DELETE https://localhost:8822/api/notes/migration-plan</code></pre>
+curl -sk -X DELETE https://localhost:8824/api/notes/migration-plan</code></pre>
 
 <p>The dashboard has a full rich-text editor (Quill) for creating and editing notes visually. Notes can also be pinned for quick access.</p>
 
@@ -469,7 +482,7 @@ amux crm add "Jane Smith" company=Acme email=jane@acme.com role=CTO
 # Add via API
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"name":"Jane Smith","company":"Acme","email":"jane@acme.com","role":"CTO"}' \
-  https://localhost:8822/api/crm/contacts
+  https://localhost:8824/api/crm/contacts
 
 # Log an interaction
 amux crm log PPL-1 "Discussed partnership. Follow up in 2 weeks."
@@ -489,13 +502,13 @@ amux crm update PPL-1 phone=555-0123 linkedin=linkedin.com/in/janesmith</code></
 <pre><code># Send an email
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"to":"alice@example.com","subject":"Hello","body":"Hi Alice, ..."}' \
-  https://localhost:8822/api/email/send
+  https://localhost:8824/api/email/send
 
 # Check inbox
-curl -sk https://localhost:8822/api/email/inbox
+curl -sk https://localhost:8824/api/email/inbox
 
 # Search emails
-curl -sk "https://localhost:8822/api/email/search?q=invoice"</code></pre>
+curl -sk "https://localhost:8824/api/email/search?q=invoice"</code></pre>
 
 <p>Email syncs automatically on a recurring interval. You can trigger a manual sync with <code>POST /api/email/sync</code>.</p>
 
@@ -506,41 +519,41 @@ curl -sk "https://localhost:8822/api/email/search?q=invoice"</code></pre>
 <pre><code># Start browser with default auth profile
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"profile":"default","url":"https://example.com"}' \
-  https://localhost:8822/api/browser/start
+  https://localhost:8824/api/browser/start
 
 # Take a screenshot
-curl -sk https://localhost:8822/api/browser/screenshot
+curl -sk https://localhost:8824/api/browser/screenshot
 # Returns {"path": "~/.amux/browser-screenshots/latest.jpg"}
 
 # Click at coordinates
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"action":"click","x":640,"y":400}' \
-  https://localhost:8822/api/browser/action
+  https://localhost:8824/api/browser/action
 
 # Type text
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"action":"type","text":"hello world"}' \
-  https://localhost:8822/api/browser/action
+  https://localhost:8824/api/browser/action
 
 # Run JavaScript
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"action":"eval","script":"document.title"}' \
-  https://localhost:8822/api/browser/action
+  https://localhost:8824/api/browser/action
 
 # AI agent mode — describe a task in plain English
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"task":"Find the latest invoice and download it","profile":"default"}' \
-  https://localhost:8822/api/browser/agent
+  https://localhost:8824/api/browser/agent
 
 # Stop browser
-curl -sk -X POST https://localhost:8822/api/browser/stop</code></pre>
+curl -sk -X POST https://localhost:8824/api/browser/stop</code></pre>
 
 <h3>Auth profiles</h3>
 
 <p>Auth profiles save cookies and local storage so the browser starts already logged in. Profiles are stored in <code>~/.amux/playwright-auth/</code>.</p>
 
 <pre><code># List available profiles
-curl -sk https://localhost:8822/api/browser/profiles</code></pre>
+curl -sk https://localhost:8824/api/browser/profiles</code></pre>
 
 <h2 id="scheduler">Scheduler</h2>
 
@@ -559,12 +572,12 @@ amux cron add "0 9 * * MON" "Check for outdated dependencies and create update P
 <p>Skills are project-level custom commands that any agent can invoke. They live in the <code>skills/</code> directory and appear as slash commands in the dashboard.</p>
 
 <pre><code># List available skills
-curl -sk https://localhost:8822/api/skills
+curl -sk https://localhost:8824/api/skills
 
 # Run a skill
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"args":"--fix"}' \
-  https://localhost:8822/api/skills/lint</code></pre>
+  https://localhost:8824/api/skills/lint</code></pre>
 
 <p>Skills can contain any logic &mdash; shell scripts, Python code, or complex multi-step workflows. They're the primary way to teach agents project-specific operations like &ldquo;deploy to staging&rdquo; or &ldquo;run the test suite.&rdquo;</p>
 
@@ -575,10 +588,10 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 <pre><code># Send a message from one session to another
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"Auth module refactor is done, you can start on the API tests now"}' \
-  https://localhost:8822/api/sessions/worker-2/send
+  https://localhost:8824/api/sessions/worker-2/send
 
 # Peek at another session's recent output
-curl -sk "https://localhost:8822/api/sessions/worker-1/peek?lines=50"</code></pre>
+curl -sk "https://localhost:8824/api/sessions/worker-1/peek?lines=50"</code></pre>
 
 <p>Sessions discover each other via <code>GET /api/sessions</code> and coordinate through a combination of messages and board tasks.</p>
 
@@ -594,13 +607,13 @@ curl -sk "https://localhost:8822/api/sessions/worker-1/peek?lines=50"</code></pr
 </ul>
 
 <pre><code># List files in a directory
-curl -sk "https://localhost:8822/api/ls?dir=/Users/you/Dev/myproject"
+curl -sk "https://localhost:8824/api/ls?dir=/Users/you/Dev/myproject"
 
 # Read a file
-curl -sk "https://localhost:8822/api/file?path=/Users/you/Dev/myproject/README.md"
+curl -sk "https://localhost:8824/api/file?path=/Users/you/Dev/myproject/README.md"
 
 # Upload a file
-curl -sk -X POST -F "file=@local.txt" https://localhost:8822/api/fs/upload</code></pre>
+curl -sk -X POST -F "file=@local.txt" https://localhost:8824/api/fs/upload</code></pre>
 
 <h2 id="self-healing">Self-healing</h2>
 
@@ -620,7 +633,7 @@ curl -sk -X POST -F "file=@local.txt" https://localhost:8822/api/fs/upload</code
 <p>The dashboard is a Progressive Web App. Install it on your phone:</p>
 
 <ol>
-<li>Open <code>https://localhost:8822</code> (or your Tailscale/LAN IP) in Safari or Chrome</li>
+<li>Open <code>https://localhost:8824</code> (or your Tailscale/LAN IP) in Safari or Chrome</li>
 <li>Tap &ldquo;Add to Home Screen&rdquo;</li>
 <li>The app works offline &mdash; queued actions (send message, create task) sync when connectivity returns via Background Sync</li>
 </ol>
@@ -669,7 +682,7 @@ AMUX_S3_BUCKET=ethan-personal
 AMUX_S3_KEY=amux/calendar.ics
 AMUX_S3_REGION=us-east-2</code></pre>
 
-<p>After editing <code>server.env</code>, touch <code>amux-server.py</code> to trigger a reload.</p>
+<p>After editing <code>server.env</code>, touch <code>amux-server-rs</code> to trigger a reload.</p>
 
 <h3>Global defaults</h3>
 
@@ -685,7 +698,7 @@ AMUX_S3_REGION=us-east-2</code></pre>
 
 <h2 id="architecture">Architecture</h2>
 
-<p>amux is a single Python file (<code>amux-server.py</code>) with no external dependencies beyond Python 3 and tmux. The same file runs locally and in the cloud.</p>
+<p>amux is a single Rust binary (<code>amux-server-rs</code>) with no external dependencies beyond Python 3 and tmux. The same file runs locally and in the cloud.</p>
 
 <ul>
 <li><strong>Server</strong> &mdash; Python HTTP server with threading, serves the dashboard + API</li>
@@ -718,7 +731,7 @@ AMUX_S3_REGION=us-east-2</code></pre>
   <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # &rarr; https://localhost:8822</code></pre>
+amux serve  # &rarr; https://localhost:8824</code></pre>
   <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
     <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
     <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

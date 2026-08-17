@@ -286,7 +286,7 @@
 
     <p>The control plane is what transforms a collection of terminal sessions into an actual team. Without it, you're manually watching tmux windows and hoping nothing crashes. With it, you have a real-time view of every agent, automatic crash recovery, and a shared task board.</p>
 
-    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (315★, MIT licensed, single Python file):</p>
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (315★, MIT licensed, single Rust binary):</p>
 
     <pre><code><span class="dim"># Install amux</span>
 git clone https://github.com/mixpeek/amux
@@ -297,7 +297,7 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux scale myproject --count 5
 
 <span class="dim"># Open the web dashboard</span>
-amux serve  <span class="dim"># → https://localhost:8822</span></code></pre>
+amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
     <p>Once the control plane is running, you get: a web dashboard showing all agents and their live output, a mobile PWA so you can check in from your phone, a shared kanban board for task distribution, and a watchdog that detects stalls and crashes and recovers automatically.</p>
 
@@ -439,7 +439,7 @@ git worktree add ../agent-2 main
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source control plane for AI engineering teams (315★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Launch, monitor, and self-heal your Claude Code, Codex, or Antigravity CLI fleet. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT licensed, single Python file, zero external dependencies.</div>
+        <div style="color:var(--muted);font-size:.9rem">Launch, monitor, and self-heal your Claude Code, Codex, or Antigravity CLI fleet. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT licensed, single Rust binary, zero external dependencies.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>

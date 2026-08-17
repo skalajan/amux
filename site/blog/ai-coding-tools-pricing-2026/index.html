@@ -41,7 +41,7 @@
     "author": { "@type": "Organization", "name": "amux" },
     "publisher": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
     "datePublished": "2026-05-16",
-    "dateModified": "2026-05-16",
+    "dateModified": "2026-08-12",
     "mainEntityOfPage": "https://amux.io/blog/ai-coding-tools-pricing-2026/"
   }
   </script>
@@ -93,9 +93,18 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> &rsaquo; <a href="/blog/">Blog</a> &rsaquo; AI Coding Tools Pricing 2026</div>
-    <span class="updated-badge">Updated May 2026</span>
+    <span class="updated-badge">Updated August 2026</span>
     <h1>AI Coding Tools Pricing Compared (2026): What Every Setup Actually Costs</h1>
     <p class="subtitle">Flat-rate subscriptions, usage-based billing, and open-source tools that cost nothing except your API key. We break down what you actually pay for <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a>, <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>, <a href="https://devin.ai" target="_blank" rel="noopener">Devin</a>, and every other major AI coding tool &mdash; including the real monthly cost of running multiple agents in parallel.</p>
+
+    <!-- EXP-029: top-of-page CTA — pricing blog, started 2026-08-12 -->
+    <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.2rem 1.6rem;margin:1.8rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+      <div>
+        <div style="font-weight:600;margin-bottom:4px;">The orchestration layer costs $0 — your API tokens do the work</div>
+        <div style="font-size:0.875rem;color:var(--dim);">amux is open-source and free. Run 5–20 parallel Claude Code, Codex, or Gemini CLI agents from your phone or browser. Pay only for tokens.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;font-size:.875rem;white-space:nowrap;flex-shrink:0;" onclick="typeof posthog!=='undefined'&&posthog.capture('exp029_pricing_topofpage_cta_click')">View amux on GitHub ★</a>
+    </div>
 
     <h2>The master pricing table</h2>
     <p>Every major AI coding tool and what it costs. Sorted from cheapest to most expensive at typical usage levels.</p>
@@ -277,7 +286,7 @@
       <h3><a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a></h3>
       <p class="maker">by <a href="https://www.anthropic.com" target="_blank" rel="noopener">Anthropic</a></p>
       <p class="price-tag">$20/mo <small>Pro &mdash; or pay-per-token via API</small></p>
-      <p><strong>What you get:</strong> Terminal-native coding agent. Reads your codebase, plans changes, writes code, runs tests, commits. Pro ($20/mo) includes rate-limited usage. Max ($100/mo or $200/mo) increases limits. API billing gives unlimited throughput at ~$3/M input tokens, $15/M output tokens (Sonnet 4).</p>
+      <p><strong>What you get:</strong> Terminal-native coding agent. Reads your codebase, plans changes, writes code, runs tests, commits. Pro ($20/mo) includes rate-limited usage. Max ($100/mo or $200/mo) increases limits. API billing gives unlimited throughput at ~$3/M input tokens, $15/M output tokens (Sonnet 5).</p>
       <p><strong>Overage risk:</strong> Low with subscription tiers (you hit rate limits, not charges). High with API billing &mdash; a long refactoring session can use 500K+ tokens ($5-15).</p>
       <p><strong>Multi-agent?</strong> Yes, with API billing. Each session is independent. Run 5-10+ in parallel with <a href="https://amux.io" target="_blank" rel="noopener">amux</a>.</p>
     </div>
@@ -287,7 +296,7 @@
       <p class="maker">by <a href="https://github.com" target="_blank" rel="noopener">GitHub</a> / <a href="https://www.microsoft.com" target="_blank" rel="noopener">Microsoft</a></p>
       <p class="price-tag">$10/mo <small>Pro &mdash; $39 Pro+ &mdash; $100 Max</small></p>
       <p><strong>What you get:</strong> Inline completions in VS Code, JetBrains, Neovim, and more. Copilot Chat for conversational coding. Agent features for PRs and multi-file edits. Completions are unlimited on all paid tiers. Chat and agent requests use <a href="https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" target="_blank" rel="noopener">AI Credits</a> (1 credit = $0.01). Pro includes $10/mo in credits, Pro+ $39, Max $100. Business is $19/seat/mo with pooled credits.</p>
-      <p><strong>Overage risk:</strong> Medium after June 1, 2026. All plans switch to usage-based billing &mdash; once credits run out, you need to purchase more or wait. Code completions stay unlimited.</p>
+      <p><strong>Overage risk:</strong> Medium. As of June 1, 2026, all plans moved to usage-based billing &mdash; once credits run out, you need to purchase more or wait. Code completions stay unlimited.</p>
       <p><strong>Multi-agent?</strong> No. IDE-bound, one editor at a time.</p>
     </div>
 
@@ -342,12 +351,12 @@
     <p>Running a single AI coding tool is cheap. Running five in parallel &mdash; the way teams increasingly work in 2026 &mdash; changes the math dramatically. Here's what common multi-agent configurations actually cost.</p>
 
     <div class="cost-scenario">
-      <h4>Scenario 1: Solo developer, 5 parallel Claude Code sessions via amux</h4>
-      <p><strong>Setup:</strong> <a href="https://amux.io" target="_blank" rel="noopener">amux</a> (free) + <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a> with API key. Each session runs Sonnet 4 on independent tasks &mdash; bug fixes, feature branches, test writing, documentation, refactoring.</p>
+      <h4>Scenario 1: Solo developer, 5 parallel AI coding agents via amux</h4>
+      <p><strong>Setup:</strong> <a href="https://amux.io" target="_blank" rel="noopener">amux</a> (free) + <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://openai.com/codex/" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://ai.google.dev/gemini-api/docs/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> with API keys. Mix runtimes — each agent works an independent task (bug fix, feature branch, test suite, docs, refactor) on its own branch.</p>
       <p><strong>Token usage:</strong> ~200K-500K tokens per session per day &times; 5 sessions = 1M-2.5M tokens/day</p>
-      <p><strong>Daily cost:</strong> $5-20 depending on task complexity</p>
+      <p><strong>Daily cost:</strong> $5-20 depending on task complexity and model (Sonnet 5 vs Haiku vs Gemini Pro)</p>
       <p class="total">Monthly cost: $100-400/mo</p>
-      <p><em>Equivalent to 5 Cursor seats ($100/mo) but with full agent autonomy and no throttling.</em></p>
+      <p><em>Equivalent to 5 Cursor seats ($100/mo) but with full agent autonomy, no throttling, and any runtime you choose.</em></p>
     </div>
 
     <div class="cost-scenario">
@@ -406,9 +415,9 @@
     <h3>Opportunity cost of single-threading</h3>
     <p>The biggest hidden cost isn't dollars &mdash; it's time. A developer using one AI tool on one task at a time is leaving 4x throughput on the table. If your time is worth $100/hour, running 4 extra parallel agents at $5/hour each is a 20x return on investment.</p>
 
-    <h2>GitHub Copilot's pricing shift</h2>
-    <p><a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> is <a href="https://github.blog/news-insights/company-news/github-copilot-is-moving-to-usage-based-billing/" target="_blank" rel="noopener">moving to usage-based billing</a> on June 1, 2026. Every plan will include a monthly allotment of AI Credits (1 credit = $0.01 USD), with usage calculated by token consumption. Pro gets $10 in credits, Pro+ gets $39, and a new Max tier ($100/mo) gets $100 in credits. Code completions and Next Edit Suggestions remain unlimited and free &mdash; credits only apply to chat, agent features, and premium model requests.</p>
-    <p>This is the biggest pricing shift in AI coding tools this year. Developers who used Copilot specifically because of predictable flat-rate pricing now face token-based billing for the features that matter most. If you're a heavy Copilot agent user, compare the effective per-token cost against using <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a> or <a href="https://aider.chat" target="_blank" rel="noopener">Aider</a> directly with an API key &mdash; Copilot's intermediary pricing may be more expensive than going direct.</p>
+    <h2>GitHub Copilot's pricing shift (now in effect)</h2>
+    <p><a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> <a href="https://github.blog/news-insights/company-news/github-copilot-is-moving-to-usage-based-billing/" target="_blank" rel="noopener">moved to usage-based billing</a> on June 1, 2026. Every plan now includes a monthly allotment of AI Credits (1 credit = $0.01 USD), with usage calculated by token consumption. Pro gets $10 in credits, Pro+ gets $39, and the Max tier ($100/mo) gets $100 in credits. Code completions and Next Edit Suggestions remain unlimited and free &mdash; credits only apply to chat, agent features, and premium model requests.</p>
+    <p>This was the biggest pricing shift in AI coding tools this year. Developers who chose Copilot specifically for predictable flat-rate pricing now face token-based billing for the features that matter most. If you're a heavy Copilot agent user, compare the effective per-token cost against using <a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a> or <a href="https://aider.chat" target="_blank" rel="noopener">Aider</a> directly with an API key &mdash; Copilot's intermediary pricing may be more expensive than going direct.</p>
 
     <h2>Best value by use case</h2>
 
@@ -510,7 +519,7 @@
     <h2>How to cut your AI coding costs</h2>
     <ol>
       <li><strong>Use short, focused sessions.</strong> Start a new session per task. Don't let a single conversation grow to 500K+ tokens. <a href="https://amux.io" target="_blank" rel="noopener">amux</a> makes this easy with task-based session management.</li>
-      <li><strong>Pick the right model for the task.</strong> Use Opus/Sonnet 4 for complex architecture decisions. Use Haiku for simple edits, tests, and documentation. The cost difference is 10-20x.</li>
+      <li><strong>Pick the right model for the task.</strong> Use Opus/Sonnet 5 for complex architecture decisions. Use Haiku for simple edits, tests, and documentation. The cost difference is 10-20x.</li>
       <li><strong>Write good CLAUDE.md files.</strong> Clear project context in <a href="/guides/claude-md-templates/">CLAUDE.md</a> reduces back-and-forth and wasted tokens. Agents get it right on the first try more often.</li>
       <li><strong>Don't pay for seat licenses you don't use.</strong> If you're coding 3 days/week, usage-based pricing is cheaper than a $40/mo subscription.</li>
       <li><strong>Run open-source tools when possible.</strong> <a href="https://aider.chat" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/cline/cline" target="_blank" rel="noopener">Cline</a>, and <a href="https://amux.io" target="_blank" rel="noopener">amux</a> are free. Your API key works the same in any of them.</li>
@@ -530,7 +539,7 @@
     <div class="cta-box"><h3>Run parallel AI agents for free</h3><p>amux is open source. Orchestrate 5, 10, or 20+ Claude Code sessions in parallel. Your API key, your machine, your code.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

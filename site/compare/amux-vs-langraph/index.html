@@ -240,7 +240,7 @@
       <li>You want a web dashboard and iOS app to monitor your fleet from anywhere</li>
       <li>Your agents are general-purpose coding sessions pulling tasks from a shared kanban board</li>
       <li>You want built-in CRM, email, browser automation, and scheduler as part of the same system</li>
-      <li>You want to self-host on your own machine with zero cloud dependencies (single Python file)</li>
+      <li>You want to self-host on your own machine with zero cloud dependencies (single Rust binary)</li>
     </ul>
 
     <h2>When to choose LangGraph</h2>
@@ -262,7 +262,7 @@
 import requests, os
 
 def coding_node(state):
-    amux_url = os.getenv("AMUX_URL", "https://localhost:8822")
+    amux_url = os.getenv("AMUX_URL", "https://localhost:8824")
     task = state["current_task"]
     # issue task to amux session
     requests.post(
@@ -347,7 +347,7 @@ def coding_node(state):
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Is amux self-hosted? What about LangGraph Platform?</summary>
-      <p style="margin:0.8rem 0 0;">amux is fully self-hosted by default — single Python file on your own machine, zero cloud dependency (MIT + Commons Clause). amux Cloud ($20/month) adds only a tunnel relay for public URL access; everything else runs locally. LangGraph itself (the library) is open source and self-hostable. LangGraph Platform is Anthropic's managed hosted deployment service for LangGraph applications — a separate paid product for teams who don't want to operate their own infrastructure.</p>
+      <p style="margin:0.8rem 0 0;">amux is fully self-hosted by default — single Rust binary on your own machine, zero cloud dependency (MIT + Commons Clause). amux Cloud ($20/month) adds only a tunnel relay for public URL access; everything else runs locally. LangGraph itself (the library) is open source and self-hostable. LangGraph Platform is Anthropic's managed hosted deployment service for LangGraph applications — a separate paid product for teams who don't want to operate their own infrastructure.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -357,10 +357,10 @@ def coding_node(state):
 
     <div class="cta-box">
       <h3>Run your AI agent fleet from one dashboard</h3>
-      <p>amux is the open-source control plane for Claude Code, Codex, and Gemini CLI sessions — self-healing watchdog, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Python file, MIT licensed.</p>
+      <p>amux is the open-source control plane for Claude Code, Codex, and Gemini CLI sessions — self-healing watchdog, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Rust binary, MIT licensed.</p>
       <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
       <a class="btn" href="/guides/agent-to-agent-communication/" style="margin-left:0.75rem;">Agent coordination guide →</a>
     </div>

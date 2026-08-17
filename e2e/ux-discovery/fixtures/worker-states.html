@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — worker states</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .worker { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .worker-header { display: flex; justify-content: space-between; align-items: center; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+  .badge-active { background: #238636; }
+  .badge-idle { background: #1f6feb; }
+  .badge-stopped { background: #484f58; }
+  .badge-starting { background: #9e6a03; }
+  .badge-waiting { background: #8957e5; }
+  .badge-ratelimited { background: #da3633; }
+  .badge-error { background: #f85149; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .indicator { font-size: 0.8rem; color: #f0883e; margin-top: 4px; }
+</style>
+</head>
+<body>
+<!-- Seed state: one worker in each WorkerState variant. The crawler must
+     discover the state-specific controls each variant exposes (RR-0028c).
+     Matches amux-core::worker::WorkerState exactly. -->
+
+<div class="shell" data-testid="dashboard-shell">
+  <h2>Workers</h2>
+
+  <!-- Stopped -->
+  <div class="worker" data-testid="worker-stopped">
+    <div class="worker-header">
+      <span data-testid="worker-stopped-name">alpha</span>
+      <span class="badge badge-stopped" data-testid="worker-stopped-badge">stopped</span>
+    </div>
+    <div class="actions">
+      <button data-testid="worker-stopped-start">Start</button>
+      <button data-testid="worker-stopped-configure">Configure</button>
+      <button data-testid="worker-stopped-delete">Delete</button>
+    </div>
+  </div>
+
+  <!-- Starting -->
+  <div class="worker" data-testid="worker-starting">
+    <div class="worker-header">
+      <span data-testid="worker-starting-name">bravo</span>
+      <span class="badge badge-starting" data-testid="worker-starting-badge">starting</span>
+    </div>
+    <div class="actions">
+      <button data-testid="worker-starting-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Active (mid-turn) -->
+  <div class="worker" data-testid="worker-active">
+    <div class="worker-header">
+      <span data-testid="worker-active-name">charlie</span>
+      <span class="badge badge-active" data-testid="worker-active-badge">active</span>
+    </div>
+    <div class="actions">
+      <button data-testid="worker-active-send">Send message</button>
+      <button data-testid="worker-active-peek">Peek</button>
+      <button data-testid="worker-active-stop">Stop</button>
+    </div>
+  </div>
+
+  <!-- Idle -->
+  <div class="worker" data-testid="worker-idle">
+    <div class="worker-header">
+      <span data-testid="worker-idle-name">delta</span>
+      <span class="badge badge-idle" data-testid="worker-idle-badge">idle</span>
+    </div>
+    <div class="actions">
+      <button data-testid="worker-idle-send">Send message</button>
+      <button data-testid="worker-idle-peek">Peek</button>
+      <button data-testid="worker-idle-stop">Stop</button>
+      <button data-testid="worker-idle-restart">Restart</button>
+    </div>
+  </div>
+
+  <!-- Waiting -->
+  <div class="worker" data-testid="worker-waiting">
+    <div class="worker-header">
+      <span data-testid="worker-waiting-name">echo</span>
+      <span class="badge badge-waiting" data-testid="worker-waiting-badge">waiting</span>
+    </div>
+    <p data-testid="worker-waiting-reason">Blocked on dependency: ARE-7</p>
+    <div class="actions">
+      <button data-testid="worker-waiting-peek">Peek</button>
+      <button data-testid="worker-waiting-unblock">Unblock</button>
+      <button data-testid="worker-waiting-stop">Stop</button>
+    </div>
+  </div>
+
+  <!-- RateLimited -->
+  <div class="worker" data-testid="worker-ratelimited">
+    <div class="worker-header">
+      <span data-testid="worker-ratelimited-name">foxtrot</span>
+      <span class="badge badge-ratelimited" data-testid="worker-ratelimited-badge">rate limited</span>
+    </div>
+    <p data-testid="worker-ratelimited-reset">Resets at 2026-08-09T14:30:00Z</p>
+    <div class="actions">
+      <button data-testid="worker-ratelimited-peek">Peek</button>
+      <button data-testid="worker-ratelimited-stop">Stop</button>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div class="worker" data-testid="worker-error">
+    <div class="worker-header">
+      <span data-testid="worker-error-name">golf</span>
+      <span class="badge badge-error" data-testid="worker-error-badge">error</span>
+    </div>
+    <p data-testid="worker-error-detail">Session crashed: context window exhausted</p>
+    <div class="actions">
+      <button data-testid="worker-error-retry">Retry</button>
+      <button data-testid="worker-error-view-log">View log</button>
+      <button data-testid="worker-error-stop">Stop</button>
+    </div>
+  </div>
+
+  <!-- Active with high context usage indicator -->
+  <div class="worker" data-testid="worker-high-context">
+    <div class="worker-header">
+      <span data-testid="worker-high-context-name">hotel</span>
+      <span class="badge badge-active" data-testid="worker-high-context-badge">active</span>
+    </div>
+    <div class="indicator" data-testid="worker-high-context-indicator">Context: 87% used</div>
+    <div class="actions">
+      <button data-testid="worker-high-context-send">Send message</button>
+      <button data-testid="worker-high-context-compact">Compact</button>
+      <button data-testid="worker-high-context-stop">Stop</button>
+    </div>
+  </div>
+
+  <!-- Active with unread messages -->
+  <div class="worker" data-testid="worker-unread">
+    <div class="worker-header">
+      <span data-testid="worker-unread-name">india</span>
+      <span class="badge badge-active" data-testid="worker-unread-badge">active</span>
+    </div>
+    <div class="indicator" data-testid="worker-unread-indicator">3 unread messages</div>
+    <div class="actions">
+      <button data-testid="worker-unread-send">Send message</button>
+      <button data-testid="worker-unread-view-messages">View messages</button>
+      <button data-testid="worker-unread-stop">Stop</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

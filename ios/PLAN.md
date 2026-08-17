@@ -28,7 +28,7 @@ ios/
 
 Two modes, configured on first launch:
 - **Cloud**: `https://cloud.amux.io` — Clerk auth via WKWebView cookie store
-- **Local**: any user-supplied URL (e.g. `https://your-machine.tail-xxxx.ts.net:8822`)
+- **Local**: any user-supplied URL (e.g. `https://your-machine.tail-xxxx.ts.net:8824`)
   - Self-signed cert accepted via `URLAuthenticationChallenge` delegate
 
 Stored in `UserDefaults`. Switchable from Settings (gear icon in toolbar).

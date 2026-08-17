@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>crawler self-test fixture</title>
+<style>
+  .hidden-until-hover { display: none; }
+  .hover-zone:hover .hidden-until-hover { display: inline-block; }
+  .drawer { display: none; }
+  .drawer.open { display: block; }
+  .below-fold { margin-top: 2400px; }
+</style>
+</head>
+<body>
+<!-- A discovery system that silently misses paths creates false confidence
+     (RR-0028d). Every control here exists to be FOUND; the self-test fails
+     if any expected id is absent from the crawl graph. -->
+
+<h1>Crawler self-test</h1>
+
+<!-- Plain controls: the baseline. -->
+<button data-testid="visible-button" onclick="show('clicked-visible')">Visible</button>
+<a href="#section" data-testid="visible-link">Anchor link</a>
+<input data-testid="visible-input" placeholder="type here">
+
+<!-- Control revealed only by opening a dropdown. -->
+<button data-testid="menu-opener" onclick="document.getElementById('menu').style.display='block'">Open menu</button>
+<div id="menu" style="display:none">
+  <button data-testid="nested-menu-item" onclick="show('clicked-nested')">Nested item</button>
+</div>
+
+<!-- Modal with a control inside. -->
+<button data-testid="modal-opener" onclick="document.getElementById('modal').style.display='block'">Open modal</button>
+<div id="modal" style="display:none; border: 1px solid black">
+  <button data-testid="modal-confirm" onclick="show('modal-confirmed')">Confirm</button>
+</div>
+
+<!-- Drawer toggled by a role=button div (no <button> tag). -->
+<div role="button" tabindex="0" data-testid="drawer-toggle"
+     onclick="document.getElementById('drawer').classList.toggle('open')">Toggle drawer</div>
+<div id="drawer" class="drawer">
+  <button data-testid="drawer-action" onclick="show('drawer-acted')">Drawer action</button>
+</div>
+
+<!-- Hover-revealed control (detected via inventory even when hidden-state
+     execution comes later — it is in the DOM). -->
+<div class="hover-zone">
+  Hover here
+  <button class="hidden-until-hover" data-testid="hover-only-button" onclick="show('hover-clicked')">Hover action</button>
+</div>
+
+<!-- Keyboard-only action: no visible control at all; documented gap the
+     inventory must REPORT (keyboard shortcuts registry, RR-0028b). -->
+<div data-action="keyboard:g" data-testid="keyboard-shortcut-target">Press g</div>
+
+<!-- Scroll-revealed control. -->
+<div class="below-fold">
+  <button data-testid="below-fold-button" onclick="show('fold-clicked')">Below the fold</button>
+</div>
+
+<!-- The failure case the CI check exists for: an interactive control with
+     NO data-testid. The self-test asserts this appears in
+     missingSemanticIds. -->
+<button id="anonymous" onclick="show('anon-clicked')">Anonymous button</button>
+
+<div id="result" data-testid="result-area"></div>
+
+<script>
+function show(what) {
+  document.getElementById('result').textContent = 'result: ' + what;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'g') show('keyboard-g');
+});
+</script>
+</body>
+</html>

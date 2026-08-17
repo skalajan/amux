@@ -11,14 +11,14 @@
  *      server-side; transient failures are RETAINED (never silently lost)
  *      with their original msg_id; online mutations pass through untouched.
  *
- * Run: node tests/e2e-offline-sync.mjs   (server must be running on :8822)
+ * Run: node tests/e2e-offline-sync.mjs   (server must be running on :8824)
  * Cleans up every board item it creates.
  */
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
-const URL = process.env.AMUX_E2E_URL || 'https://localhost:8822/';
+const URL = process.env.AMUX_E2E_URL || 'https://localhost:8824/';
 // A session that exists but cannot accept a send right now (archived/stopped)
 // exercises the retention path; if the send settles instead, the test degrades
 // gracefully and only asserts the queue reached a terminal state.

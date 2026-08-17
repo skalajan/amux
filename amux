@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
-# amux — phone-friendly Claude Code session manager built on tmux
+# amux — phone-friendly Claude Code worker manager built on tmux
 # Usage: amux [command] [args...]
+#
+# LEGACY CLIENT, pending amux-rs verb parity: this bash CLI is an HTTP client
+# of the Rust server — it is NOT part of the removed Python server, and the
+# fleet's muscle memory (amux send/board/alert) runs through it. Keep it working
+# until crates/amux-cli covers every verb.
+#
+# It talks to 8824, the canonical port (AMUX_RS_PORT, what install.sh sets).
+# 8822 is the RETIRED address, answered only by a countdown bind for pre-cutover
+# processes — see crates/amux-server/src/legacy_port.rs. Do not point anything
+# new at it. Override with AMUX_API for a non-default server.
+#
+# This file is symlinked from ~/.local/bin/amux and re-read on every invocation,
+# so editing the default here moves the whole fleet's bash-CLI traffic at once,
+# with no restart — which is why it is the cheapest lever in the migration.
 
 set -euo pipefail
 
@@ -19,12 +33,13 @@ if [[ ! -d "$HOME/.amux" ]]; then
 fi
 
 CC_HOME="${CC_HOME:-$HOME/.amux}"
+# AMUX-LOCAL:write-auth — localhost write token, sent on state-changing /api/
+# writes. This fork sets AMUX_RS_NO_LOOPBACK_BYPASS=1 on the rust server, so
+# loopback is NOT trusted and the token is required (MODIFICATIONS.md write-auth).
+CC_WRITE_TOKEN="$(cat "$CC_HOME/write_token" 2>/dev/null || cat "$CC_HOME/auth_token" 2>/dev/null || true)"
+# /AMUX-LOCAL:write-auth
 CC_SESSIONS="$CC_HOME/sessions"
 CC_DEFAULTS="$CC_HOME/defaults.env"
-# AMUX-LOCAL:write-auth — localhost write token, sent on state-changing /api/ writes
-# (the server requires it even on loopback; see MODIFICATIONS.md write-auth row).
-CC_WRITE_TOKEN="$(cat "$CC_HOME/write_token" 2>/dev/null || true)"
-# /AMUX-LOCAL:write-auth
 
 # ── Colors (disabled when not a tty or TERM is dumb) ────────────────────────
 if [[ -t 1 ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
@@ -84,14 +99,14 @@ resolve_session() {
       ((i++))
     done
   fi
-  die "session '$query' not found"
+  die "worker '$query' not found"
 }
 
 # Load session config into env vars
 load_session() {
   local name="$1"
   local file="$CC_SESSIONS/$name.env"
-  [[ -f "$file" ]] || die "session '$name' not found"
+  [[ -f "$file" ]] || die "worker '$name' not found"
   # shellcheck disable=SC1090
   source "$file"
 }
@@ -101,9 +116,9 @@ load_defaults() {
   [[ -f "$CC_DEFAULTS" ]] && source "$CC_DEFAULTS"
   # Load ~/.amux/server.env so CLI-spawned sessions see the same AMUX_* knobs
   # the server process uses (e.g. AMUX_CLAUDE_CMD). Parsed manually rather than
-  # `source`d so values are never shell-expanded — mirrors the Python loader at
-  # the top of amux-server.py, which treats entries as literal key=value pairs
-  # and is safe for values containing $, backticks, etc.
+  # `source`d so values are never shell-expanded — mirrors the server's env
+  # loader (crates/amux-server/src/config.rs), which treats entries as literal
+  # key=value pairs and is safe for values containing $, backticks, etc.
   local _se="$CC_HOME/server.env"
   if [[ -f "$_se" ]]; then
     local _k _v
@@ -133,12 +148,104 @@ migrate_tmux() {
   done
 }
 
+# ─── herdr backend helpers ───────────────────────────────────────────────────
+# Mirror of the server's _backend_of_cfg: CC_BACKEND in the session env wins,
+# then $AMUX_BACKEND, default tmux. herdr sessions live in one headless named
+# herdr session (AMUX_HERDR_SESSION, default "amux") that the SERVER owns, so
+# start/stop go through the server API; attach/peek can talk to herdr direct.
+
+herdr_session_name() { echo "${AMUX_HERDR_SESSION:-amux}"; }
+
+session_backend() {
+  local name="$1" b=""
+  if [[ -f "$CC_SESSIONS/$name.env" ]]; then
+    b=$(sed -n 's/^CC_BACKEND=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+  fi
+  [[ -n "$b" ]] || b=$(printf '%s' "${AMUX_BACKEND:-tmux}" | tr '[:upper:]' '[:lower:]')
+  if [[ "$b" == "herdr" ]]; then echo "herdr"; else echo "tmux"; fi
+}
+
+# Persisted herdr agent name for an amux session (server writes CC_HERDR_AGENT
+# on first start; empty until then).
+herdr_agent_of() {
+  local name="$1"
+  [[ -f "$CC_SESSIONS/$name.env" ]] || return 0
+  sed -n 's/^CC_HERDR_AGENT=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"'
+}
+
+need_herdr() {
+  command -v herdr &>/dev/null || die "herdr is required for herdr-backend workers. Install herdr or set AMUX_BACKEND=tmux"
+}
+
+_start_via_api() {
+  local name="$1"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local resp
+  resp=$(curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    "$AMUX_API/api/sessions/$name/start" 2>/dev/null) || resp=""
+  if [[ -z "$resp" ]]; then
+    # herdr AND codex/ollama start through the server now (AMUX-3164), so this is
+    # no longer herdr-specific. A stranded lane whose $AMUX_URL is the retired
+    # 8822 (AMUX-3046) hits this even when the server is up — use `$(amux url)`.
+    die "amux server unreachable at ${AMUX_API} — this worker starts through the server (amux serve). If the server IS up, your \$AMUX_URL may be the retired 8822 (AMUX-3046) — retry with: AMUX_URL=\$(amux url) amux start ${name}. NOTHING was started."
+  fi
+  local rc=0
+  RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+tgt = os.environ["TGT"]
+if d.get("error") or d.get("ok") is False:
+    print(f"start {tgt} FAILED: {d.get('error') or d.get('message')}")
+    sys.exit(1)
+print(f"started {tgt}: {d.get('message', 'ok')}")
+PYEOF
+  return $rc
+}
+
+_stop_via_api() {
+  local name="$1"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local resp
+  resp=$(curl -sk -m 15 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    "$AMUX_API/api/sessions/$name/stop" 2>/dev/null) || resp=""
+  if [[ -z "$resp" ]]; then
+    return 1
+  fi
+  # A non-empty body is NOT proof of success: an error JSON or a proxy's
+  # HTML page must fall through to the direct pane-close fallback, not
+  # masquerade as a graceful stop.
+  if ! RESP="$resp" python3 - <<'PYEOF'
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict) or d.get("error") or d.get("ok") is False:
+    sys.exit(1)
+PYEOF
+  then
+    return 1
+  fi
+  echo "${RED}stopping${RESET} $name (graceful, via server)"
+  return 0
+}
+
 # Check if tmux session is alive.
 # NOTE: tmux's -t prefix-matches session names by default, so a bare
 # "amux-foo" would also match a running "amux-foo-worker". Prefix the
 # target with '=' to force an exact match. Name resolution / abbreviation
 # is already handled safely upstream by resolve_session().
 is_running() {
+  if [[ "$(session_backend "$1")" == "herdr" ]]; then
+    local agent
+    agent=$(herdr_agent_of "$1")
+    [[ -n "$agent" ]] || return 1
+    herdr --session "$(herdr_session_name)" agent get "$agent" >/dev/null 2>&1
+    return $?
+  fi
   migrate_tmux "$1"
   tmux has-session -t "=$(tmux_name "$1")" 2>/dev/null
 }
@@ -177,8 +284,9 @@ _run_py_safe() {
 }
 
 # Tokenize a stored flag string and re-quote each token shell-safely.
-# Mirror of _shell_quote_flags() in amux-server.py — see that function for
-# full rationale. Required because zsh glob-expands unquoted '[1m]' in
+# Mirror of the server's shell_quote_flags (crates/amux-server/src/api/
+# session_verbs.rs) — see that function for full rationale. Required
+# because zsh glob-expands unquoted '[1m]' in
 # model IDs like 'claude-opus-4-6[1m]', failing with 'no matches found'
 # before claude is even invoked.
 #
@@ -248,12 +356,6 @@ parse_claude_flags() {
         fi
         shift
         ;;
-      # Opt-out of the implicit yolo default (see end of parse_claude_flags).
-      # Use this when you explicitly want Claude Code's normal permission prompts.
-      --no-yolo)
-        CC_NO_YOLO=1
-        shift
-        ;;
       # Working directory — resolve to absolute path, create if needed.
       # We previously fell back to the literal $2 if cd failed, which silently
       # let relative paths slip into the session env file (CC_DIR=./foo). On
@@ -265,9 +367,8 @@ parse_claude_flags() {
         CC_DIR="$(cd "$2" && pwd)" || die "cannot resolve --dir to absolute path: $2"
         shift 2
         ;;
-      # Claude config directory — selects which account to launch as.
-      # --config-dir specifies an absolute path; --work / --personal are
-      # shortcuts for the standard locations (see pick_default_config_dir).
+      # AMUX-LOCAL:account-routing — which Claude.ai account this session runs as.
+      # --config-dir takes an absolute path; --work/--personal are shortcuts.
       --config-dir)
         mkdir -p "$2" || die "cannot create --config-dir: $2"
         CC_CONFIG_DIR="$(cd "$2" && pwd)" || die "cannot resolve --config-dir to absolute path: $2"
@@ -281,6 +382,7 @@ parse_claude_flags() {
         CC_CONFIG_DIR="${AMUX_PERSONAL_CONFIG_DIR:-$HOME/.claude-personal}"
         shift
         ;;
+      # /AMUX-LOCAL:account-routing
       # Everything else goes to extra args
       *)
         CC_EXTRA_ARGS+=("$1")
@@ -288,30 +390,19 @@ parse_claude_flags() {
         ;;
     esac
   done
-  # Default: enable --dangerously-skip-permissions (a.k.a. --yolo). amux sessions
-  # run unattended inside tmux, so permission prompts deadlock them. Opt out per
-  # session with --no-yolo, or globally with AMUX_NO_YOLO=1.
-  if [[ "${CC_NO_YOLO:-}" != "1" && "${AMUX_NO_YOLO:-}" != "1" ]]; then
-    local already_yolo=0 f
-    for f in "${CC_FLAGS[@]:-}"; do
-      case "$f" in
-        --dangerously-skip-permissions|--allow-dangerously-skip-permissions) already_yolo=1; break ;;
-      esac
-    done
-    [[ $already_yolo -eq 0 ]] && CC_FLAGS+=("--dangerously-skip-permissions")
-  fi
   CC_FLAGS_STR="${CC_FLAGS[*]:-}"
 }
 
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+# AMUX-LOCAL:account-routing
 # pick_default_config_dir <resolved_dir> — decide which Claude config dir
-# (= which Claude.ai account) a new session should use when neither
-# --config-dir nor --work nor --personal was passed.
+# (= which Claude.ai account) a new session uses when neither --config-dir
+# nor --work nor --personal was passed.
 #
-# Rule: personal by default; work when the resolved working dir is under
-# any path listed in $AMUX_WORK_PATHS (colon-separated). Configurable via:
-#   AMUX_WORK_PATHS          (default: $HOME/Desktop/Projects/Fidoo)
-#   AMUX_WORK_CONFIG_DIR     (default: $HOME/.claude-work)
-#   AMUX_PERSONAL_CONFIG_DIR (default: $HOME/.claude-personal)
+# Rule: personal by default; work when the resolved working dir is under any
+# path listed in $AMUX_WORK_PATHS (colon-separated). Configurable via
+# AMUX_WORK_PATHS / AMUX_WORK_CONFIG_DIR / AMUX_PERSONAL_CONFIG_DIR.
 pick_default_config_dir() {
   local resolved="$1"
   local work_paths="${AMUX_WORK_PATHS:-$HOME/Desktop/Projects/Fidoo}"
@@ -326,12 +417,18 @@ pick_default_config_dir() {
   done
   echo "$personal_dir"
 }
-
-# ── Commands ─────────────────────────────────────────────────────────────────
+# /AMUX-LOCAL:account-routing
 
 cmd_register() {
   local name="${1:-}"
-  [[ -n "$name" ]] || die "usage: amux register <name> [--model opus] [--yolo] [--dir /path] [claude flags...]"
+  # A flag in the name slot is never a worker name (AMUX-3116). `amux register
+  # --help` used to register a worker literally named "--help" in the cwd instead
+  # of printing usage; a leading-dash name is a mistake, not an identifier. Same
+  # guard the board verbs carry (see the `-*) die` case there).
+  case "$name" in
+    ""|-h|--help|help) die "usage: amux register <name> [--model opus] [--yolo] [--dir /path] [claude flags...]" ;;
+    -*) die "amux register: '$name' looks like a flag, not a worker name. Put the name first: amux register <name> [flags]" ;;
+  esac
   shift
 
   parse_claude_flags "$@"
@@ -346,26 +443,56 @@ cmd_register() {
     *) die "CC_DIR must be absolute, got: $resolved_dir" ;;
   esac
 
-  # Auto-detect Claude config dir (account) if not explicitly set.
-  [[ -z "${CC_CONFIG_DIR:-}" ]] && CC_CONFIG_DIR="$(pick_default_config_dir "$resolved_dir")"
-
   local file="$CC_SESSIONS/$name.env"
-  cat > "$file" <<EOF
-# amux session: $name
-# registered: $(date -Iseconds)
-CC_NAME="$name"
-CC_DIR="$resolved_dir"
-CC_FLAGS="${CC_FLAGS_STR}"
-CC_CONFIG_DIR="$CC_CONFIG_DIR"
-EOF
+  # MERGE, do not truncate (AMUX-3117). Re-registering an existing worker used to
+  # `cat >` the file down to CC_NAME/CC_DIR/CC_FLAGS, SILENTLY WIPING every other
+  # CC_* key it does not manage — CC_DESC and CC_TAGS were lost this way, and
+  # re-register is the only path to set flags (the PATCH-flags gap, AMUX-3115), so
+  # the destructive path was on the happy path (gtm-engine, 2026-08-14). Preserve
+  # every existing CC_* assignment except the three this verb owns, verbatim (no
+  # re-parse, so quoting/JSON values survive intact).
+  local preserved=""
+  if [[ -f "$file" ]]; then
+    preserved=$(grep -E '^CC_[A-Za-z0-9_]+=' "$file" 2>/dev/null \
+                | grep -vE '^(CC_NAME|CC_DIR|CC_FLAGS)=' || true)
+  fi
+  {
+    echo "# amux session: $name"
+    echo "# registered: $(date -Iseconds)"
+    echo "CC_NAME=\"$name\""
+    echo "CC_DIR=\"$resolved_dir\""
+    echo "CC_FLAGS=\"${CC_FLAGS_STR}\""
+    # AMUX-LOCAL:account-routing — first-register default; re-register keeps
+    # whatever is already there via upstream's preserve pass.
+    [[ -z "${CC_CONFIG_DIR:-}" ]] && CC_CONFIG_DIR="$(pick_default_config_dir "$resolved_dir")"
+    echo "CC_CONFIG_DIR=\"$CC_CONFIG_DIR\""
+    # /AMUX-LOCAL:account-routing
+    [[ -n "$preserved" ]] && printf '%s\n' "$preserved"
+  } > "$file"
 
   echo "${GREEN}registered${RESET} ${BOLD}$name${RESET} → $resolved_dir"
-  echo "  config-dir: $CC_CONFIG_DIR"
+  [[ -n "$preserved" ]] && echo "  ${DIM}preserved: $(printf '%s\n' "$preserved" | sed -E 's/=.*//' | paste -sd, -)${RESET}"
   [[ -n "$CC_FLAGS_STR" ]] && echo "  flags: $CC_FLAGS_STR"
 }
 
 cmd_start() {
   local name dry_run=false detach=false
+  # AMUX_API is referenced bare below (the tmux `-e AMUX_URL=$AMUX_API` inject at
+  # the real-launch path, and the codex/ollama server delegation) but was never
+  # declared local here the way _api_start / _api_stop / send all do, so under
+  # `set -u` a real `amux start` (non-dry-run) died with "AMUX_API: unbound
+  # variable" whenever AMUX_API wasn't already exported. Dry-run returns before
+  # that line, which is why it hid.
+  #
+  # Resolve via cmd_url (the endpoint.json self-heal), NOT the raw $AMUX_URL. A
+  # pre-cutover lane carries the retired 8822 in $AMUX_URL for life (AMUX-3046),
+  # and since codex/ollama now DELEGATE their launch to this base (AMUX-3164), a
+  # raw-$AMUX_URL fallback made `amux start` fail "server unreachable" on a
+  # stranded lane even with the server up, and injected the dead 8822 into every
+  # NEW worker (the `-e AMUX_URL=` below). cmd_url ignores a retired-port env and
+  # falls to the canonical base, so both paths self-heal. An explicit AMUX_API
+  # (a non-default server) still wins.
+  local AMUX_API="${AMUX_API:-$(cmd_url)}"
   name=$(resolve_session "${1:-}")
   shift 2>/dev/null || true
   # Strip our own flags before inline claude args. Placed before `--` so
@@ -378,6 +505,29 @@ cmd_start() {
     esac
     shift
   done
+  # herdr backend: the server owns the herdr session, so start goes through
+  # the server API (herdr agent start + readiness detection live there).
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    if $dry_run; then
+      echo "${BOLD}$name${RESET} (herdr backend — started via server API: POST /api/sessions/$name/start)"
+      return
+    fi
+    _start_via_api "$name" || return 1
+    if $detach; then
+      echo "  ${DIM}detached — attach with: amux attach $name${RESET}"
+      return
+    fi
+    need_herdr
+    local agent
+    agent=$(herdr_agent_of "$name")
+    if [[ -n "$agent" ]]; then
+      herdr --session "$(herdr_session_name)" agent attach "$agent" \
+        || herdr --session "$(herdr_session_name)"
+    else
+      herdr --session "$(herdr_session_name)"
+    fi
+    return
+  fi
   # dry-run is a pure command preview — no tmux session is spawned, so the
   # tmux dependency only matters for the real start path.
   $dry_run || need_tmux
@@ -406,9 +556,36 @@ cmd_start() {
   # the wrong tree. Refuse instead. Re-register with --dir to fix.
   case "$dir" in
     /*) ;;
-    *) die "CC_DIR is not absolute ('$dir'). Re-register the session with: amux register $name --dir /absolute/path" ;;
+    *) die "CC_DIR is not absolute ('$dir'). Re-register the worker with: amux register $name --dir /absolute/path" ;;
   esac
   [[ -d "$dir" ]] || die "directory not found: $dir"
+
+  # codex/ollama: DELEGATE the launch to the server (POST /api/sessions/<n>/start)
+  # instead of building the command + tmux session here (AMUX-3164). The server's
+  # start_session seeds codex dir-trust (~/.codex/config.toml, AC-356) AND forces
+  # model_reasoning_effort=low — neither of which this bash path does, so a
+  # CLI-launched codex/ollama worker otherwise hits the trust prompt and runs at
+  # xhigh (which hangs local models). Mirrors the herdr delegation above and
+  # collapses the two launch constructions into one (D6), so the server-side fixes
+  # cannot be skipped by whichever door a worker is started through. The server
+  # creates the session as amux-<name> (same name tmux_name produces) — we attach.
+  local _provider="${CC_PROVIDER:-claude}"
+  if [[ "$_provider" == "codex" || "$_provider" == "ollama" ]]; then
+    if $dry_run; then
+      echo "${BOLD}$name${RESET} ($_provider — started via server API: POST /api/sessions/$name/start; the server builds the codex command, seeds ~/.codex trust, and forces model_reasoning_effort=low)"
+      return
+    fi
+    if [[ $# -gt 0 ]]; then
+      echo "${YELLOW}note:${RESET} inline args after -- are not forwarded through server-side launch — set them in CC_FLAGS (the server reads it). Ignoring: $*" >&2
+    fi
+    _start_via_api "$name" || return 1
+    if $detach; then
+      echo "  ${DIM}detached — attach with: amux attach $name${RESET}"
+      return
+    fi
+    tmux attach-session -t "=$tname"
+    return
+  fi
 
   # Build command. Check CC_PROVIDER to pick codex vs claude.
   local provider="${CC_PROVIDER:-claude}"
@@ -425,16 +602,23 @@ cmd_start() {
     else
       cmd="codex"
     fi
+  elif [[ "$provider" == "ollama" ]]; then
+    # Ollama workers run codex --oss --local-provider ollama so they get a full
+    # coding agent (file editing, hooks, structured events) backed by the local
+    # Ollama daemon. The model comes from CC_MODEL (default qwen3.8:27b) — CC_FLAGS
+    # can add extra codex flags (approval policy, add-dir, etc.) just like codex.
+    cmd="codex --oss --local-provider ollama --model ${CC_MODEL:-qwen3.8:27b}"
   else
     cmd="${AMUX_CLAUDE_CMD:-claude}"
   fi
-  # Apply global defaults from defaults.env (skip for codex — Claude flags don't apply)
-  if [[ "$provider" != "codex" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
+  # Apply global defaults from defaults.env (skip for codex/ollama — Claude flags don't apply)
+  if [[ "$provider" != "codex" && "$provider" != "ollama" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
     local q
     q=$(quote_flags "$CC_DEFAULT_FLAGS") || die "failed to quote CC_DEFAULT_FLAGS"
     [[ -n "$q" ]] && cmd="$cmd $q"
   fi
-  # Apply session flags from <name>.env
+  # Apply session flags from <name>.env. Ollama now uses codex under the hood
+  # so it accepts codex-style CC_FLAGS (e.g. --approve-for-me, --add-dir, etc.)
   if [[ -n "${CC_FLAGS:-}" ]]; then
     local q
     q=$(quote_flags "$CC_FLAGS") || die "failed to quote CC_FLAGS"
@@ -450,10 +634,17 @@ cmd_start() {
     [[ -n "$q" ]] && cmd="$cmd $q"
   fi
 
-  # Codex-specific defaults
-  if [[ "$provider" == "codex" ]]; then
-    [[ "$cmd" == *"--model"* || "$cmd" == *"-m "* ]] || cmd="$cmd --model gpt-5.5"
+  # Codex-specific defaults (apply to ollama too — it now runs codex under the hood)
+  if [[ "$provider" == "codex" || "$provider" == "ollama" ]]; then
+    # For codex (cloud): default to gpt-5.5 when no model is set.
+    # For ollama: model is already set from CC_MODEL above — no default needed.
+    if [[ "$provider" == "codex" ]]; then
+      [[ "$cmd" == *"--model"* || "$cmd" == *"-m "* ]] || cmd="$cmd --model gpt-5.5"
+    fi
     [[ "$cmd" == *"--full-auto"* || "$cmd" == *"--dangerously-bypass"* || "$cmd" == *"-a "* ]] || cmd="$cmd -a never"
+    # codex defaults to read-only sandbox; workers need workspace-write to edit files.
+    # Mirrors session_verbs.rs:4946 and OllamaAdapter::build_command (AH-82 / bb14642).
+    [[ "$cmd" == *"--dangerously-bypass"* || "$cmd" == *"--sandbox"* || "$cmd" == *"-s "* ]] || cmd="$cmd --sandbox workspace-write"
     if [[ "$cmd" != *"--add-dir"* ]]; then
       local git_root
       git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || true
@@ -463,15 +654,20 @@ cmd_start() {
       fi
     fi
   else
-    # Always enable Claude Code's per-session remote-control URL
-    # (claude.ai/code/session_XXX). Complementary to amux's dashboard — gives
-    # a stable per-session browser handle for that one session.
-    # Opt out per host with: AMUX_NO_REMOTE_CONTROL=1
+    # AMUX-LOCAL:cli-defaults — this fork's claude defaults, layered on
+    # upstream's branch rather than replacing it (MODIFICATIONS.md hunks 6-7).
+    # Model: upstream defaults to sonnet; this fork runs opus-1M.
+    [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model ${AMUX_DEFAULT_MODEL:-claude-opus-5[1m]}"
+    # Yolo BY DEFAULT: amux sessions run unattended in tmux, so a permission
+    # prompt deadlocks them. Upstream treats --yolo as opt-in; here it is on
+    # unless AMUX_NO_YOLO=1 or the session already carries the flag.
+    if [[ "${AMUX_NO_YOLO:-}" != "1" && "$cmd" != *"--dangerously-skip-permissions"* ]]; then
+      cmd="$cmd --dangerously-skip-permissions"
+    fi
+    # Remote-control so the session is reachable from the phone. Opt out per
+    # host with AMUX_NO_REMOTE_CONTROL=1.
     [[ "${AMUX_NO_REMOTE_CONTROL:-}" == "1" ]] || [[ "$cmd" == *"--remote-control"* ]] || cmd="$cmd --remote-control"
-    # Default model: override per-session with --model on amux register,
-    # or globally with $AMUX_DEFAULT_MODEL.
-    local default_model="${AMUX_DEFAULT_MODEL:-claude-opus-5[1m]}"
-    [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model $(printf '%q' "$default_model")"
+    # /AMUX-LOCAL:cli-defaults
   fi
 
   # Create tmux session and attach
@@ -480,20 +676,14 @@ cmd_start() {
   # to prevent auth conflict — BYO-key users don't have oauthAccount so they're
   # unaffected.
   local shell_setup=""
-  if [[ "$provider" != "codex" ]]; then
+  if [[ "$provider" != "codex" && "$provider" != "ollama" ]]; then
     shell_setup="unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-    # Per-session Claude config dir (account isolation: work vs personal vs ...).
-    # Injecting the export *inside* the tmux command ensures correctness
-    # regardless of whether the tmux server was started before or after amux
-    # itself had CLAUDE_CONFIG_DIR set — tmux server env doesn't update on
-    # client reconnect.
+    # AMUX-LOCAL:account-routing — env prefix selects the Claude.ai account.
     if [[ -n "${CC_CONFIG_DIR:-}" ]]; then
       shell_setup="${shell_setup}export CLAUDE_CONFIG_DIR=$(printf '%q' "$CC_CONFIG_DIR"); "
     fi
-    # OAuth check: look in the *session's* config dir so ANTHROPIC_API_KEY only
-    # gets unset when this session's target account actually has OAuth.
-    local oauth_file="${CC_CONFIG_DIR:-$HOME}/.claude.json"
-    if [[ -f "$oauth_file" ]] && grep -q '"oauthAccount"' "$oauth_file" 2>/dev/null; then
+    # /AMUX-LOCAL:account-routing
+    if [[ -f "$HOME/.claude.json" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null; then
       shell_setup="${shell_setup}unset ANTHROPIC_API_KEY; "
     fi
   fi
@@ -502,7 +692,31 @@ cmd_start() {
     echo "  ${DIM}$cmd${RESET}"
     return
   fi
-  tmux new-session -d -s "$tname" -n "$name" -c "$dir" "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
+  # -e AMUX_SESSION/AMUX_WORKER: without these the worker cannot attribute
+  # ANYTHING it writes (board-exp-1, 2026-08-06). The server's own start path
+  # passes them; this one never did, so a CLI-started worker running
+  # `amux board add` produced a card with session=None, creator='' and the
+  # fallback AMUX prefix — landing on another lane's board, owned by nobody, and
+  # therefore never driven by advance or pickup. Measured: a fresh worker
+  # completed its task and its card came back as AMUX-2471 with no owner.
+  # Every attribution header in this CLI reads ${AMUX_WORKER:-${AMUX_SESSION:-}},
+  # so both are set here rather than relying on one.
+  #
+  # AMUX_URL too (board accountability experiment, run 3). The lane had
+  # AMUX_SESSION and AMUX_WORKER but NOT the API base, so a fresh Sonnet worker
+  # reported "$AMUX_URL wasn't set in this shell" and hand-rolled curl against
+  # the default address instead of using `amux board`. Its create happened to
+  # carry X-Amux-Session; its later doing->done PATCH did not, and landed as
+  # `unattributed`.
+  #
+  # That is AMUX-2325's shape arriving through a new door: the sanctioned path
+  # was not unwalkable, it was merely un-configured, and an un-configured
+  # sanctioned path produces exactly the same unattributed writes as a broken
+  # one. Exporting the base is what makes `amux board` work without the worker
+  # having to discover the address.
+  tmux new-session -d -s "$tname" -n "$name" -c "$dir" \
+    -e "AMUX_SESSION=$name" -e "AMUX_WORKER=$name" -e "AMUX_URL=$AMUX_API" \
+    "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
   # Lock the window name so Claude can't overwrite it with escape sequences
   tmux set-option -t "=$tname" allow-rename off 2>/dev/null
   tmux set-window-option -t "=$tname" automatic-rename off 2>/dev/null
@@ -531,9 +745,6 @@ cmd_exec() {
     *) die "CC_DIR must be absolute, got: $resolved_dir" ;;
   esac
 
-  # Auto-detect Claude config dir (account) if not explicitly set.
-  [[ -z "${CC_CONFIG_DIR:-}" ]] && CC_CONFIG_DIR="$(pick_default_config_dir "$resolved_dir")"
-
   # Register if not exists, or update
   local file="$CC_SESSIONS/$name.env"
   cat > "$file" <<EOF
@@ -542,7 +753,6 @@ cmd_exec() {
 CC_NAME="$name"
 CC_DIR="$resolved_dir"
 CC_FLAGS="${CC_FLAGS_STR}"
-CC_CONFIG_DIR="$CC_CONFIG_DIR"
 EOF
 
   # Start
@@ -552,10 +762,20 @@ EOF
 cmd_attach() {
   local name
   name=$(resolve_session "${1:-}")
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    need_herdr
+    is_running "$name" || die "worker '$name' is not running. Start with: amux start $name"
+    local agent
+    agent=$(herdr_agent_of "$name")
+    if [[ -n "$agent" ]]; then
+      exec herdr --session "$(herdr_session_name)" agent attach "$agent"
+    fi
+    exec herdr --session "$(herdr_session_name)"
+  fi
   need_tmux
   local tname
   tname=$(tmux_name "$name")
-  is_running "$name" || die "session '$name' is not running. Start with: amux start $name"
+  is_running "$name" || die "worker '$name' is not running. Start with: amux start $name"
   tmux attach-session -t "=$tname"
 }
 
@@ -563,11 +783,24 @@ cmd_peek() {
   local name
   name=$(resolve_session "${1:-}")
   local lines="${2:-30}"
-  need_tmux
 
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    need_herdr
+    is_running "$name" || die "worker '$name' is not running"
+    local agent
+    agent=$(herdr_agent_of "$name")
+    echo "${BOLD}── $name ──${RESET}"
+    herdr --session "$(herdr_session_name)" agent read "$agent" \
+      --source recent-unwrapped --lines "$lines" --format text 2>/dev/null \
+      || echo "${DIM}(no output)${RESET}"
+    echo "${BOLD}── end ──${RESET}"
+    return
+  fi
+
+  need_tmux
   local tname
   tname=$(tmux_name "$name")
-  is_running "$name" || die "session '$name' is not running"
+  is_running "$name" || die "worker '$name' is not running"
 
   echo "${BOLD}── $name ──${RESET}"
   tmux capture-pane -t "=$tname:" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
@@ -578,10 +811,16 @@ _send_usage() {
   cat <<USAGE
 ${BOLD}amux send${RESET} — send a message to a session
 
-  amux send <session> --stdin        read the message from stdin ${GREEN}(preferred)${RESET}
-  amux send <session> --file <path>  read the message from a file
-  amux send <session> <text>         inline text (see the warning below)
-  amux send <session> --keys 'C-c'   send a raw key sequence
+  amux send <worker> --stdin        read the message from stdin ${GREEN}(preferred)${RESET}
+  amux send <worker> --file <path>  read the message from a file
+  amux send <worker> <text>         inline text (see the warning below)
+  amux send <worker> --keys 'C-c'   send a raw key sequence
+
+  ${BOLD}--no-board${RESET}  skip board-card creation for one-off questions and status
+              checks. Combines with any form above:
+                amux send <worker> --no-board --stdin <<'EOF'
+              Equivalent to the API's {"no_board": true}, or prefixing the
+              message with [no-board] (which the server strips before delivery).
 
 ${BOLD}Why --stdin is preferred${RESET}
   With inline text your SHELL evaluates the string before amux ever sees it, so
@@ -604,11 +843,23 @@ cmd_send() {
   local name
   name=$(resolve_session "${1:-}")
   shift
-  need_tmux
+  # --no-board (AC-183): skip board-card creation for one-off questions and status
+  # checks. The flag existed only in the thin /usr/local/bin stub the server writes,
+  # which is shadowed on PATH by THIS file (~/.local/bin comes first), so the
+  # documented invocation `amux send X --no-board ...` reached a CLI that had never
+  # heard of it. Consumed in a loop so it works before or after --stdin/--file.
+  local _nb=""
+  while [[ "${1:-}" == "--no-board" ]]; do _nb=1; shift; done
+  # herdr sessions deliver through the server API; tmux is only needed for the raw
+  # fallback path on tmux-backed sessions. BOTH sides of this conflict are wanted:
+  # main added the --no-board loop, #80 made need_tmux conditional on the backend.
+  if [[ "$(session_backend "$name")" != "herdr" ]]; then
+    need_tmux
+  fi
 
   local tname
   tname=$(tmux_name "$name")
-  is_running "$name" || die "session '$name' is not running"
+  is_running "$name" || die "worker '$name' is not running"
 
   # ── Payload via --stdin / --file: the text NEVER transits a shell-evaluated
   # string (AMUX-1888). Passing a message as a double-quoted argument lets the
@@ -621,14 +872,14 @@ cmd_send() {
   if [[ "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then
     local msg; msg=$(cat)
     [[ -n "$msg" ]] || die "no message on stdin"
-    _send_via_api "$name" "$msg"; return $?
+    _send_via_api "$name" "$msg" "$_nb"; return $?
   fi
   if [[ "${1:-}" == "--file" ]]; then
     local f="${2:-}"
-    [[ -n "$f" && -r "$f" ]] || die "usage: amux send <session> --file <path>"
+    [[ -n "$f" && -r "$f" ]] || die "usage: amux send <worker> --file <path>"
     local msg; msg=$(cat "$f")
     [[ -n "$msg" ]] || die "file is empty: $f"
-    _send_via_api "$name" "$msg"; return $?
+    _send_via_api "$name" "$msg" "$_nb"; return $?
   fi
 
   # Check for --keys flag
@@ -648,7 +899,7 @@ cmd_send() {
       echo "${YELLOW}note:${RESET} long/multi-line payload sent as a shell argument — your shell already" >&2
       echo "      expanded any \`backticks\`/\$(...) in it. Prefer: amux send $name --stdin <<'EOF'" >&2
     fi
-    _send_via_api "$name" "$text"
+    _send_via_api "$name" "$text" "$_nb"
   fi
 }
 
@@ -658,15 +909,90 @@ cmd_send() {
 # provenance, no record, could interrupt an in-flight turn — which is how the
 # 2026-07-22 ts-gke→mvs-infra→gtm-engine misroute happened (AMUX-1818). Raw
 # tmux is kept only as a loud last-resort fallback when the server is down.
+# ── Unstamped-send ledger (AMUX-2670) ───────────────────────────────────────
+#
+# A raw-tmux fallback happens precisely when the server cannot be told about it,
+# so the record has to be made locally and reconciled later. Otherwise an
+# unaudited send and a send that never happened look identical from the server,
+# which is the gap this ledger closes.
+#
+# Failure here must never break a send: every write is best-effort.
+_unstamped_ledger() { echo "${CC_HOME}/pending-unstamped.jsonl"; }
+
+_record_unstamped_send() {
+  local target="$1" body="$2"
+  local f; f=$(_unstamped_ledger)
+  TGT="$target" BODY="$body" FROM="${AMUX_SESSION:-}" python3 -c "
+import json, os, time, sys
+try:
+    print(json.dumps({
+        'target': os.environ['TGT'],
+        'text': os.environ['BODY'],
+        'from': os.environ.get('FROM', ''),
+        'ts': int(time.time()),
+    }))
+except Exception:
+    sys.exit(1)
+" >> "$f" 2>/dev/null || true
+}
+
+# Flush on reconnect. Called after a send that REACHED the server, which is the
+# only moment we know the server is answering. Each row goes to POST
+# /api/history (records, does not deliver — re-delivering would double-send a
+# message the pane already received) typed `raw-tmux-fallback`, so the audit
+# trail can tell an unstamped injection from an audited send instead of showing
+# neither.
+_flush_unstamped_ledger() {
+  local f; f=$(_unstamped_ledger)
+  [[ -s "$f" ]] || return 0
+  local api="${AMUX_API:-https://localhost:8824}"
+  local tmp; tmp=$(mktemp) || return 0
+  local sent=0 kept=0 line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    local body
+    body=$(LINE="$line" python3 -c "
+import json, os, sys
+try:
+    d = json.loads(os.environ['LINE'])
+except Exception:
+    sys.exit(1)   # unparseable row: drop it rather than retry forever
+print(json.dumps({
+    'text': d.get('text', ''),
+    'type': 'raw-tmux-fallback',
+    'session': d.get('target', ''),
+    'ts': d.get('ts'),
+    'origin': 'unstamped-fallback from ' + (d.get('from') or 'unknown'),
+}))" 2>/dev/null) || continue
+    if curl -sk -m 10 -X POST -H 'Content-Type: application/json' \
+         -d "$body" "$api/api/history" >/dev/null 2>&1; then
+      sent=$((sent+1))
+    else
+      # Server went away mid-flush: KEEP the row. Dropping it would lose the
+      # only record that the send happened at all.
+      printf '%s\n' "$line" >> "$tmp"; kept=$((kept+1))
+    fi
+  done < "$f"
+  if [[ "$kept" -eq 0 ]]; then rm -f "$f"; else mv "$tmp" "$f" 2>/dev/null || true; fi
+  rm -f "$tmp" 2>/dev/null || true
+  [[ "$sent" -gt 0 ]] && echo "${GREEN}reconciled${RESET} $sent previously-unstamped send(s) into the audit trail" >&2
+  return 0
+}
+
 _send_via_api() {
-  local name="$1" text="$2"
+  local name="$1" text="$2" nb="${3:-}"
   local tname; tname=$(tmux_name "$name")
-  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local body resp rc
-  body=$(MSG="$text" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
-  resp=$(curl -sk -m 15 -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
-    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-    -d "$body" "$AMUX_API/api/sessions/$name/send" 2>/dev/null) || resp=""
+  body=$(MSG="$text" NB="$nb" python3 -c "
+import json, os
+d = {'text': os.environ['MSG']}
+if os.environ.get('NB'):
+    d['no_board'] = True          # AC-183: server skips autotask card creation
+print(json.dumps(d))")
+  resp=$(curl -sk -m 15 -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+    -d "$body" "$AMUX_API/api/workers/$name/send" 2>/dev/null) || resp=""
   if [[ -n "$resp" ]]; then
     rc=0
     RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
@@ -681,8 +1007,43 @@ if d.get("error") or d.get("ok") is False:
     sys.exit(2)
 print(f"sent to {tgt} (origin-stamped): {d.get('message', 'ok')}")
 PYEOF
-    [[ $rc -eq 0 ]] && return 0
+    # A send that REACHED the server is the only moment we know it is
+    # answering — so it is the moment to reconcile anything sent unstamped
+    # while it was down (AMUX-2670). Best-effort: never let reconciliation
+    # affect the result of the send the user actually asked for.
+    [[ $rc -eq 0 ]] && { _flush_unstamped_ledger || true; return 0; }
     [[ $rc -eq 2 ]] && return 1   # server understood and refused — do NOT fall back
+  fi
+  # Retry: the server restarts when the builder installs a new binary (it
+  # self-adopts and relaunches); a 1-2s wait often recovers. Three tries over
+  # ~4s before falling back to raw tmux.
+  local _retry
+  for _retry in 1 2; do
+    sleep 2
+    resp=$(curl -sk -m 5 -X POST -H 'Content-Type: application/json' \
+      -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      -d "$body" "$AMUX_API/api/workers/$name/send" 2>/dev/null) || resp=""
+    if [[ -n "$resp" ]]; then
+      rc=0
+      RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+tgt = os.environ["TGT"]
+if d.get("error") or d.get("ok") is False:
+    sys.exit(2)
+print(f"sent to {tgt} (origin-stamped, retry {os.environ.get('_R','')}): {d.get('message', 'ok')}")
+PYEOF
+      # Same reconciliation point as the first attempt: the server answered.
+      [[ $rc -eq 0 ]] && { _flush_unstamped_ledger || true; return 0; }
+      [[ $rc -eq 2 ]] && return 1
+    fi
+  done
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    echo "${RED}FAILED${RESET} to send to $name: amux server unreachable after retries, and herdr workers can only be driven through the server. NOTHING was delivered." >&2
+    return 1
   fi
   # ── Raw-tmux last resort (AMUX-1987) ────────────────────────────────────
   # This path used to print a GREEN "sent to <name>" followed by the entire
@@ -710,17 +1071,43 @@ PYEOF
     echo "${RED}FAILED${RESET} to send to $name: body typed but Enter was rejected — the message is sitting UNSENT in the pane." >&2
     return 1
   fi
+  # RECORD IT LOCALLY SO IT CAN BE REPORTED LATER (AMUX-2670). Without this a
+  # fallback send is indistinguishable from one that never happened: the server
+  # was unreachable, so nothing server-side can know it occurred, and the only
+  # trace is a stderr line in whatever terminal ran it. The ledger is flushed to
+  # POST /api/history on the next send that reaches the server.
+  _record_unstamped_send "$name" "$text"
   # Deliberately does NOT echo the body, and deliberately does not say "sent".
   echo "${YELLOW}injected${RESET} into $name via raw tmux — DELIVERY UNVERIFIED, no origin stamp, no audit." >&2
   echo "  Keystrokes reached the pane. If a picker/modal was open they went there instead." >&2
   echo "  Confirm it arrived, or re-send with \`amux send\` once the server is back:" >&2
-  echo "    curl -sk \"\$AMUX_URL/api/sessions/$name/peek?lines=200\"" >&2
+  echo "    curl -sk \"\$AMUX_URL/api/workers/$name/peek?lines=200\"" >&2
   return 0
 }
 
 cmd_stop() {
   local name
   name=$(resolve_session "${1:-}")
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    if ! is_running "$name"; then
+      echo "${DIM}$name is not running${RESET}"
+      return
+    fi
+    # Prefer the server's graceful stop (transcript snapshot + /exit); if the
+    # server is down, close the pane directly — loud, like the tmux kill below.
+    if _stop_via_api "$name"; then
+      return
+    fi
+    need_herdr
+    local pane
+    pane=$(sed -n 's/^CC_HERDR_PANE_ID=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"')
+    if [[ -n "$pane" ]] && herdr --session "$(herdr_session_name)" pane close "$pane" >/dev/null 2>&1; then
+      echo "${RED}stopped${RESET} $name (pane closed — server was unreachable, no transcript snapshot)"
+    else
+      die "failed to stop $name: server unreachable and pane close failed"
+    fi
+    return
+  fi
   need_tmux
 
   local tname
@@ -794,7 +1181,13 @@ cmd_ls() {
     # Preview last output line if running
     local preview=""
     if is_running "$name" 2>/dev/null; then
-      preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      if [[ "$(session_backend "$name")" == "herdr" ]]; then
+        local agent
+        agent=$(herdr_agent_of "$name")
+        preview=$(herdr --session "$(herdr_session_name)" agent read "$agent" --source recent-unwrapped --lines 3 --format text 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      else
+        preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      fi
       [[ -n "$preview" ]] && preview=" ${DIM}│ $preview${RESET}"
     fi
 
@@ -804,7 +1197,7 @@ cmd_ls() {
   done
 
   if ! $has_any; then
-    echo "${DIM}No sessions registered. Run: amux register <name>${RESET}"
+    echo "${DIM}No workers registered. Run: amux register <name>${RESET}"
   fi
 }
 
@@ -916,6 +1309,162 @@ cmd_start_all() {
   done
 }
 
+# Build and send a status transition, INCLUDING the gate-satisfying fields.
+# AMUX-2325: the status verbs used to send only {"status":...}. There was no
+# CLI way to pass gate_ack / gate_checked / type / override_doing, so the
+# moment a gate fired — which is most cards — the only way forward was a
+# hand-rolled `curl -X PATCH`, and a hand-rolled curl usually omits
+# X-Amux-Session. The gate system was therefore MANUFACTURING the unattributed
+# writes it depends on being attributed (found by the Claude/Gemini test pair
+# on ATC-1, reproduced fleet-wide on RH-* and GE-*). The honest path has to be
+# the easy path; a rule saying "remember the header" is not a fix.
+# Reject a FLAG sitting in the ISSUE-ID slot, for every board verb that takes one.
+#
+# Without this, `amux board <verb> --help` sent the flag as the id: PATCH
+# /api/board/--help, answered {"error":"item not found","id":"--help"}. The help
+# request was spent as a failed WRITE and the caller got a not-found for a card
+# they never named.
+#
+# I fixed this on 2026-08-14 (d7d5509) — for ONE verb. The log sweep the next day
+# still found --help rows, timestamped AFTER that commit, because the other TEN
+# id-taking verbs (needsyou, status, type, archive, reviewer, retitle, ask,
+# status-update, claim, progress) each parse the id themselves and none of them
+# checked. That commit claimed to guard "the CLASS, not the literal --help" and it
+# did — within a single case arm. The class was the VERBS.
+#
+# So the check lives in one function now, called from every site, which is the
+# only shape that cannot drift back apart.
+_board_id_guard() {
+  local verb="$1" id="$2"
+  case "$id" in
+    --help|-h|help)
+      echo "Usage: amux board $verb <ISSUE-ID> [...]  — run 'amux board' for the full list" >&2
+      exit 0 ;;
+    -*)
+      die "amux board $verb: '$id' looks like a flag, not an ISSUE-ID." ;;
+  esac
+}
+
+
+_board_transition() {
+  local id="$1" status="$2"; shift 2
+  local ack="" newtype="" override="" rev="" outcome="" trigger="" force_reason=""
+  local reviewer="" want_stdin=""
+  local checked=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --outcome) outcome="${2:-}"; [[ -n "$outcome" ]] || die "--outcome needs text"; shift 2 ;;
+      # --outcome-stdin / --outcome-file: the same escape `send` has had since
+      # AMUX-1888, for the same reason. An inline double-quoted --outcome is
+      # evaluated by YOUR SHELL before amux sees it, so backticks and $(...)
+      # inside it are EXECUTED, not recorded. Outcomes are the field most likely
+      # to contain a command: on 2026-08-06 an outcome quoting a git invocation
+      # in backticks reached the card as "resolved the last commit with , which
+      # is a SUBSTRING search" — the command silently eaten, the sentence left
+      # dangling, and the shell erroring separately so the board write still
+      # looked like it succeeded. send and `board add` both had --stdin; the
+      # one field that routinely quotes shell did not.
+      # DEFERRED, not read here (AF-16). Reading stdin mid-parse meant a LATER
+      # unknown flag died with the heredoc already consumed, so the refusal
+      # destroyed the very outcome text needed to satisfy the retry — ethos
+      # rule 6, and it cost ~40 lines of re-authored review on AF-15. The read
+      # now happens after argv validates, so a bad invocation leaves stdin
+      # untouched and the same heredoc can simply be piped again.
+      --outcome-stdin) want_stdin=1; shift ;;
+      --outcome-file) [[ -r "${2:-}" ]] || die "--outcome-file needs a readable path"
+                      outcome="$(cat "$2")"; shift 2 ;;
+      # --trigger records the EXTERNAL condition a card is parked on, into
+      # source_ref/last_verified_at — the fields the board already has and
+      # already renders (is:sourcestale). Without a verb the only way to set
+      # them was a hand-rolled PATCH, which is the same unaudited back door
+      # AMUX-2325 was about, and it is the reason a parked card could sleep
+      # forever: nothing machine-readable said what it was waiting for.
+      --trigger) trigger="${2:-}"; [[ -n "$trigger" ]] || die "--trigger needs text"; shift 2 ;;
+      --ack) ack=1; shift ;;
+      --checked)
+        shift
+        # Consume criteria until the next flag. Quote each one; they are the
+        # gate strings the server handed back verbatim.
+        while [[ $# -gt 0 && "$1" != --* ]]; do checked+=("$1"); shift; done ;;
+      --type) newtype="${2:-}"; [[ -n "$newtype" ]] || die "--type needs a value"; shift 2 ;;
+      --override-doing) override=1; shift ;;
+      # --reviewer NAMES the peer a card is handed to (AF-16). `amux board
+      # review <ID>` could set the STATUS but not the reviewer, and the review
+      # gate rests entirely on the reviewer's own X-Amux-Session being the
+      # required sign-off ("the author cannot close it") — so a card could
+      # reach `review` with reviewer=None, which is a card nobody has been
+      # asked to look at. Completing the handoff meant a hand-rolled PATCH,
+      # i.e. the unattributed back door AMUX-2325 is about, reached from the
+      # audited path for want of one flag.
+      --reviewer) reviewer="${2:-}"; [[ -n "$reviewer" ]] || die "--reviewer needs a session name"; shift 2 ;;
+      --rev) rev="${2:-}"; shift 2 ;;
+      --force) force_reason="${2:-}"; [[ -n "$force_reason" ]] || die "--force requires a reason (why you are bypassing the gate)"; shift 2 ;;
+      *) die "amux board: unknown flag '$1'
+Usage: amux board <status> <ID> [--checked \"crit\" ...] [--ack] [--type T] [--reviewer W] [--override-doing] [--trigger \"cond\"] [--force \"reason\"]" ;;
+    esac
+  done
+  # Now that argv is known-good, drain stdin. See --outcome-stdin above: doing
+  # this inside the loop meant an unknown flag AFTER it swallowed the heredoc
+  # and then died, and the retry had nothing left to pipe.
+  if [[ -n "$want_stdin" ]]; then
+    outcome="$(cat)"; [[ -n "$outcome" ]] || die "--outcome-stdin got empty input"
+  fi
+  # Record the outcome as its OWN write, BEFORE attempting the transition.
+  # A PATCH is atomic, so `{"desc":...,"status":"done"}` that trips the gate
+  # discards the outcome text TOO — and the retry then has nothing to satisfy
+  # "Outcome recorded in the item" with, so it fails again for a new reason.
+  # mixpeek-orchestrator hit this three times on 2026-08-04 (MO-3076 x2,
+  # MO-3077). Two writes, not one: the outcome survives a refused transition.
+  if [[ -n "$outcome" ]]; then
+    local _obody
+    _obody=$(O="$outcome" python3 -c 'import json,os;print(json.dumps({"desc_append":os.environ["O"]}))')
+      # Do NOT discard this response. This write exists so the outcome survives
+      # a refused transition — piping it to /dev/null made a DROPPED outcome
+      # look identical to a saved one. AC-323 shape a third time (board
+      # progress, --trigger stamp, now here), found by the sweep
+      # mixpeek-frustrations suggested rather than by it being reported.
+    curl -sk -X PATCH -H 'Content-Type: application/json' \
+      -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d "$_obody" \
+      "${AMUX_API:-https://localhost:8824}/api/board/$id" \
+    | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("warning: outcome NOT recorded — server sent no JSON\n"); sys.exit(0)
+if d.get("error") or d.get("blocked"):
+    sys.stderr.write("warning: outcome NOT recorded: %s\n" % (d.get("error") or "blocked")); sys.exit(0)
+ign = [f for f in (d.get("ignored_fields") or []) if f]
+if ign:
+    sys.stderr.write("warning: outcome NOT recorded — server ignored %s\n" % ", ".join(ign))
+'
+  fi
+  local body
+  body=$(S="$status" A="$ack" T="$newtype" O="$override" R="$rev" G="$trigger" F="$force_reason" V="$reviewer" python3 -c '
+import json, os, sys, time
+b = {"status": os.environ["S"]}
+if os.environ.get("A"): b["gate_ack"] = True
+if os.environ.get("T"): b["type"] = os.environ["T"]
+if os.environ.get("V"): b["reviewer"] = os.environ["V"]
+if os.environ.get("O"): b["override_doing"] = True
+if os.environ.get("R"): b["rev"] = int(os.environ["R"])
+if os.environ.get("F"): b["force"] = True; b["desc_append"] = "[FORCED] " + os.environ["F"]
+# Stamp last_verified_at alongside source_ref: a trigger with no verification
+# time is indistinguishable from one checked a month ago, and the staleness
+# view keys on exactly that field. Setting one without the other would make
+# every parked card read as stale the instant it was parked.
+if os.environ.get("G"):
+    b["source_ref"] = os.environ["G"]
+    b["last_verified_at"] = int(time.time())
+crit = sys.argv[1:]
+if crit: b["gate_checked"] = crit
+print(json.dumps(b))' ${checked[@]+"${checked[@]}"})
+  curl -sk -X PATCH \
+    -H 'Content-Type: application/json' \
+    -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+    -d "$body" \
+    "${AMUX_API:-https://localhost:8824}/api/board/$id"
+}
+
 # Outcome-based exit for board mutations (AMUX-2140): the CLI used to report
 # the TRANSPORT (curl ok = exit 0) while the server refused the write — every
 # `$?` caller and every `&& echo moved` printed success on blocked mutations,
@@ -924,33 +1473,100 @@ cmd_start_all() {
 # 5 rev mismatch · 1 other refusal or malformed response. Refusals print the
 # server body to STDERR so pipelines keep clean stdout.
 _board_outcome() {
+  # Optional args: the id and status the CALLER attempted. Not decoration —
+  # the WIP-limit 409 body carries no `attempted_status`, so a hint derived
+  # only from the response could never fire on the refusal that needs it most
+  # (caught by running it, not by reading it). The caller always knows.
   python3 -c '
 import sys, json
+_argv = sys.argv[1:]
 raw = sys.stdin.read()
 try:
     d = json.loads(raw)
 except Exception:
-    sys.stderr.write((raw[:300] or "empty response") + "\n")
+    # STRIP FIRST. Every caller reaches this via `echo "$result" | ...`, and
+    # echo appends a newline unconditionally — so on an empty server reply
+    # `raw` was "\n", which is TRUTHY, so `or "empty response"` never fired and
+    # this wrote a bare newline to stderr. The command then exited 1 having
+    # printed nothing on either stream: a silent failure from the sanctioned
+    # path, which is the exact class this whole function exists to end.
+    # Caught 2026-08-11 when `amux board status-update` (a 405 with an empty
+    # body) failed in total silence.
+    body = raw.strip()[:300]
+    sys.stderr.write((body or "empty response from the server — the endpoint "
+                              "may not be routed on this build") + "\n")
     sys.exit(1)
 err = (d.get("error") or "") if isinstance(d, dict) else ""
 ok = isinstance(d, dict) and not err and d.get("ok") is not False
 if ok:
-    label = d.get("status") or d.get("title") or "ok"
+    # A caller whose write is NOT a status transition passes its own label
+    # (argv[2]). Without it this printed "<id> -> <current status>" for a
+    # tag-only write, which reads as a transition that silently did not
+    # happen \u2014 AC-222: I filed a bug against `needsyou` on exactly that
+    # misread, then routed around a working command with a raw PATCH.
+    label = (_argv[2] if len(_argv) > 2 else "") or d.get("status") or d.get("title") or "ok"
     print(d.get("id", "?"), "\u2192", label)
+    # A 200 does not mean the server applied everything you sent. Reported by
+    # mixpeek-frustrations: `board backlog --trigger` stored source_ref but
+    # silently dropped last_verified_at, so the card parked with a good trigger
+    # and NOTHING to expire it — the exact guard --trigger exists to arm. The
+    # success line and the silent skip were indistinguishable.
+    ign = [f for f in (d.get("ignored_fields") or []) if f]
+    if ign:
+        sys.stderr.write(
+            "warning: the server IGNORED %s on this write — the transition "
+            "happened, those field(s) did not.\n" % ", ".join(ign))
+        sys.exit(6)
     sys.exit(0)
 sys.stderr.write(json.dumps(d) + "\n")
 e = err.lower()
+# Name the ATTRIBUTED command that gets past this refusal (AMUX-2325). The
+# server body explains the escape in HTTP terms (gate_ack / override_doing),
+# which is how a blocked agent ends up hand-rolling an unattributed curl.
+# Print the honest `amux board` form instead, quoting the gate criteria the
+# server just handed back so they can be acknowledged individually rather
+# than blanket-acked.
+def _q(s):
+    return "\"" + str(s).replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+iid = d.get("item") or d.get("id") or (_argv[0] if _argv else "<ID>")
+tgt = d.get("attempted_status") or (_argv[1] if len(_argv) > 1 else "")
 if "gate" in e:
+    gate = d.get("gate") or []
+    if tgt and gate:
+        sys.stderr.write(
+            "\nSatisfy these, then acknowledge the ones that are TRUE:\n"
+            + "".join("   [ ] " + str(g) + "\n" for g in gate)
+            + "\n  amux board " + tgt + " " + iid + " --checked "
+            + " ".join(_q(g) for g in gate) + "\n"
+            "\nIf a criterion does not apply because the card is mistyped "
+            "(item_type=" + str(d.get("item_type") or "?") + "), correct the TYPE "
+            "rather than acking something untrue:\n"
+            # AC-249: derive from valid_types as published by the server. The
+            # hardcoded list named decision and task, neither of which the
+            # validator accepts, and omitted escalation/blocker/tripwire/watch,
+            # which it does accept -- wrong in BOTH directions from a string
+            # that had drifted from _ITEM_TYPES. No hardcoded fallback: a stale
+            # list that looks authoritative is the whole defect.
+            # NOTE: this block is inside python3 -c QUOTED-WITH-SINGLE-QUOTES,
+            # so an apostrophe here closes the bash string and breaks the CLI
+            # for every session. Keep this comment apostrophe-free.
+            "  " + (d.get("cli_wrong_type")
+                    or ("amux board type " + iid + " <"
+                        + ("|".join(d.get("valid_types") or [])
+                           or "see GET /api/board/contract") + ">")) + "\n")
     sys.exit(3)
 if "holding" in e or "doing" in e or "wip" in e:
+    if tgt:
+        sys.stderr.write("\nFinish or demote the held card, or hold both deliberately:\n"
+                         "  amux board " + tgt + " " + iid + " --override-doing\n")
     sys.exit(4)
 if "rev mismatch" in e:
     sys.exit(5)
-sys.exit(1)'
+sys.exit(1)' "${1:-}" "${2:-}" "${3:-}"
 }
 
 cmd_board() {
-  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local subcmd="${1:-help}"; shift 2>/dev/null || true
 
   case "$subcmd" in
@@ -959,39 +1575,297 @@ cmd_board() {
       # additive tag (no clobber) + the question into the History, so Focus
       # mode and the card both show WHAT is needed, not just that it's stuck.
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board needsyou <ISSUE-ID> [\"the question / decision needed\"]"
+      _board_id_guard "needsyou" "$id"
       shift 2>/dev/null || true
       local ask="$*"
+      # A FLAG IS NOT AN ASK. This verb takes free prose, so an unrecognised
+      # `--flag` was silently adopted AS the question: `amux board needsyou <id>
+      # --stdin < file` printed "tagged needs:you", discarded the file entirely,
+      # and wrote the literal ask "NEEDS-YOU: --stdin" onto the card. I did it
+      # twice (AMUX-2446, AMUX-2454) before noticing, and the second one buried
+      # the herdr measurement that was the whole point of the card.
+      # Reporting success while recording garbage is worse than refusing: the
+      # ledger looks written-to and a reviewer believes it.
+      case "$ask" in
+        --*) die "amux board needsyou: '$ask' looks like a flag, not a question.
+This verb takes free prose only:  amux board needsyou $id \"the decision needed\"
+For long text use:                amux board progress $id \"\$(cat file)\"" ;;
+      esac
+      # SIGN-IN ASK -> attach a resume deep link into THIS session's live browser
+      # (AMUX-3073). The reported gap was that even after raising needs-you, the
+      # note could not say "click here" — there was no route to a session's
+      # browser view. There is now (#browser=<session>), so a sign-in-shaped ask
+      # gets the link attached automatically: the capability reaches the agent by
+      # DEFAULT rather than requiring it to know the URL shape. Opt-out — if the
+      # agent already supplied its own #browser= link we leave the ask untouched.
+      local _signin_link=""
+      case "$(printf '%s' "$ask" | tr '[:upper:]' '[:lower:]')" in
+        *sign*in*|*signin*|*log*in*|*login*|*authenticat*|*captcha*|*2fa*|*mfa*|*credential*|*password*)
+          case "$ask" in
+            *'#browser='*) : ;;  # agent supplied its own resume link — respect it
+            *) _signin_link="${AMUX_API}/#browser=${AMUX_WORKER:-${AMUX_SESSION:-amux}}"
+               # SAME LINE, not a newline: Focus-mode and the server both extract
+               # the NEEDS-YOU marker with a single-line ([^\n]+) match, so a link
+               # on a second line would be dropped from the triage surface where
+               # Ethan actually reads the ask — it would survive only in the raw
+               # desc. Keep it on the marker line so it reaches Focus mode.
+               ask="${ask} · Resume (click to sign in): ${_signin_link}" ;;
+          esac ;;
+      esac
       local cur result
       cur=$(curl -sk "$AMUX_API/api/board/$id" | python3 -c "import sys,json;d=json.load(sys.stdin);i=d.get('item') or d;print(json.dumps(sorted(set((i.get('tags') or [])+['needs:you']))))" 2>/dev/null)
       [[ -n "$cur" ]] || die "card $id not found"
       local body
       body=$(TAGS="$cur" ASK="$ask" python3 -c "import os,json; b={'tags':json.loads(os.environ['TAGS'])}; a=os.environ['ASK'].strip(); b['desc_append']=('NEEDS-YOU: '+a) if a else b.get('desc_append'); print(json.dumps({k:v for k,v in b.items() if v is not None}))")
-      result=$(curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      result=$(curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id")
-      echo "$result" | _board_outcome; return $?
+      # Label it as the TAG write it is. Without this the printer rendered the
+      # card's unchanged status ("AC-221 -> todo"), which reads as a failed
+      # transition (AC-222).
+      echo "$result" | _board_outcome "$id" "" "tagged needs:you" || return $?
+      [[ -n "$_signin_link" ]] && echo "  attached resume link (click to sign in): $_signin_link" >&2
+      # AND MOVE IT. `needsyou` is also a real board STATUS — the one that
+      # takes the card out of review/todo queues and into the owner's view —
+      # and this verb tagging without moving left cards reading routed-to-
+      # owner while the idle nudge kept re-firing at the agent (frustrations
+      # 2026-08-11: the raw-PATCH workaround it forced is the unaudited path
+      # CLAUDE.md warns about). The tag write above stays: tag carries the
+      # ASK, status carries the QUEUE. If the transition bounces (gate), say
+      # so loudly — a tagged-but-unmoved card is exactly the half-action this
+      # verb used to hide.
+      local tresult
+      tresult=$(_board_transition "$id" "needsyou")
+      echo "$tresult" | _board_outcome "$id" "needsyou" || {
+        echo "amux board needsyou: tag applied but STATUS MOVE was refused (see above) — card is still in its old queue" >&2
+        return 1
+      }
+      return 0
       ;;
-    done|doing|todo|backlog|discarded|review)
+    done|doing|todo|backlog|discarded|review|verified)
       local status="$subcmd"
-      local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board $status <ISSUE-ID>"
+      local id="${1:-}"
+      # An ID that starts with '-' is a FLAG in the id slot, never an issue id.
+      # Without this, `amux board done --help` PATCHed /api/board/--help and the
+      # server answered {"error":"item not found","id":"--help"} — 6 of those in
+      # one 24h window (GET /api/logs/analyze?since_h=24). The help request was
+      # silently spent as a failed write against a nonexistent card, and the
+      # caller got a not-found for a card they never named. `send` already
+      # guards this exact shape (see _send_usage); the board verbs did not.
+      # Checking the CLASS (leading dash) rather than the literal --help, so
+      # `amux board done --checked "x"` with a forgotten id also stops here
+      # instead of PATCHing /api/board/--checked.
+      case "$id" in
+        --help|-h|help) _board_usage 2>/dev/null || true
+                        echo "Usage: amux board $status <ISSUE-ID> [--checked \"crit\" ...] [--ack] [--type T] [--reviewer W] [--override-doing] [--trigger \"cond\"] [--force \"reason\"]" >&2
+                        return 0 ;;
+        -*) die "amux board $status: '$id' looks like a flag, not an ISSUE-ID. Usage: amux board $status <ISSUE-ID> [--checked \"crit\" ...] [--ack] [--type T]" ;;
+      esac
+      [[ -n "$id" ]] || die "Usage: amux board $status <ISSUE-ID> [--checked \"crit\" ...] [--ack] [--type T] [--reviewer W] [--override-doing] [--trigger \"cond\"] [--force \"reason\"]"
+      shift
       local result
-      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
-        -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        -d "{\"status\":\"$status\"}" \
-        "$AMUX_API/api/board/$id")
-      echo "$result" | _board_outcome
+      result=$(_board_transition "$id" "$status" "$@")
+      echo "$result" | _board_outcome "$id" "$status"
       return $?
       ;;
     status)
       local id="${1:-}"; local new_status="${2:-}";
-      [[ -n "$id" && -n "$new_status" ]] || die "Usage: amux board status <ISSUE-ID> <status>"
+      _board_id_guard "status" "$id"
+      [[ -n "$id" && -n "$new_status" ]] || die "Usage: amux board status <ISSUE-ID> <status> [--checked \"crit\" ...] [--ack] [--type T] [--reviewer W] [--override-doing] [--trigger \"cond\"] [--force \"reason\"]"
+      # `archived` is a BOOLEAN FLAG, not a status column. Forwarding it verbatim
+      # PATCHed {status:"archived"} and 400'd ("unknown status") ~22x/day from lanes
+      # confusing the flag with a status (AMUX-3086 producer B / AMUX-3108). Route the
+      # clear intent to the dedicated verb instead of sending a doomed word. Only these
+      # two are intercepted; every real status (blocked/armed/needsyou/...) still passes
+      # through, and the server returns its own valid-status list for any other typo.
+      case "$new_status" in
+        archived|archive)
+          die "amux board status: 'archived' is a boolean flag, not a status. Use:  amux board archive $id" ;;
+        unarchive|unarchived)
+          die "amux board status: 'unarchive' is not a status. Use:  amux board unarchive $id" ;;
+      esac
+      shift 2
       local result
-      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
-        -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        -d "{\"status\":\"$new_status\"}" \
-        "$AMUX_API/api/board/$id")
-      echo "$result" | _board_outcome
+      result=$(_board_transition "$id" "$new_status" "$@")
+      echo "$result" | _board_outcome "$id" "$new_status"
+      return $?
+      ;;
+    type)
+      # The gate is DERIVED from the type, so correcting a mistyped card is the
+      # honest exit from a gate that does not fit — not --force (ethos rule 3).
+      # Without this verb the only way to retype was raw curl, which is how the
+      # attribution was being lost in the first place (AMUX-2325).
+      local id="${1:-}"; local new_type="${2:-}"
+      _board_id_guard "type" "$id"
+      if [[ -z "$id" || -z "$new_type" ]]; then
+        # Ask the SERVER for the list instead of carrying a copy. The hardcoded one
+        # had drifted: it advertised `task` and `decision` — both rejected — and
+        # omitted `tripwire`. Following this tool's own usage line produced
+        # "unknown type 'decision'", which is the worst kind of help: confidently
+        # wrong, and it sends you looking at your card instead of at the CLI.
+        # (Hit live on AMUX-2479, 2026-08-07.)
+        local _types
+        _types=$(curl -sk --max-time 3 "$AMUX_API/api/board/contract" 2>/dev/null \
+          | python3 -c 'import json,sys
+try: print(" ".join(json.load(sys.stdin)["fields"]["valid_types"]))
+except Exception: pass' 2>/dev/null)
+        [[ -n "$_types" ]] || _types="(server unreachable — see GET /api/board/contract)"
+        die "Usage: amux board type <ISSUE-ID> <type>
+types: $_types"
+      fi
+      local result
+      result=$(T="$new_type" python3 -c 'import json,os;print(json.dumps({"type":os.environ["T"]}))' \
+        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      # Label it as the TYPE write it is. Argument-less, _board_outcome renders
+      # the card's CURRENT status, so retyping a card printed "AMUX-2394 → doing"
+      # — a status-transition arrow for a write that touches no status. Same
+      # defect 1b667aa fixed for needsyou and status-update; this was the third
+      # site, and the card that fixed the other two said there were two.
+      echo "$result" | _board_outcome "$id" "" "type set to $new_type"
+      return $?
+      ;;
+    archive|unarchive)
+      # AMUX-2492. `archived` had no per-card setter anywhere — only the age-archive
+      # sweep and a per-session bulk update could touch it, so an automated action had
+      # no un-do and 17 cards across three cloud envs were stranded where no loop and
+      # no view could reach them. Same shape as the `type` and `reviewer` verbs above
+      # (AMUX-2325): a field the gates/visibility depend on, reachable only by raw curl
+      # — which drops X-Amux-Session and produces exactly the unattributed writes the
+      # ledger depends on not having.
+      local _av=1; [[ "$subcmd" == "unarchive" ]] && _av=0
+      local id="${1:-}"
+      _board_id_guard "archive" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board $sub <ISSUE-ID>
+archive   hides a card from every board view AND every autonomy loop (advance, pickup, rot)
+unarchive brings it back — this is the un-do that did not exist before AMUX-2492"
+      shift
+      local _auth=""
+      [[ "${1:-}" == "--authorized-by" ]] && { _auth="${2:-}"; shift 2; }
+      local result
+      result=$(A="$_av" W="$_auth" python3 -c 'import json,os
+b={"archived": int(os.environ["A"])}
+if os.environ.get("W"): b["authorized_by"]=os.environ["W"]
+print(json.dumps(b))' \
+        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "${subcmd}d"
+      return $?
+      ;;
+    reviewer)
+      # review->done is gated on a NAMED reviewer's sign-off, and until now nothing
+      # in the CLI could set that name — `amux board review <id> --reviewer X` died
+      # on "unknown flag". So the only way to route a card for review was a raw
+      # PATCH, which carries no X-Amux-Session. The review gate exists precisely to
+      # make cross-session sign-off attributable, and the missing verb was
+      # manufacturing the unattributed writes it depends on. Same defect as the
+      # `type` verb above (AMUX-2325); this is the second instance, which is the
+      # argument that every gate-relevant FIELD needs an attributed setter, not
+      # just the ones someone tripped over.
+      local id="${1:-}"; local who="${2:-}"
+      _board_id_guard "reviewer" "$id"
+      [[ -n "$id" && -n "$who" ]] || die "Usage: amux board reviewer <ISSUE-ID> <session>   (pass 'none' to clear)
+Sets the session whose sign-off is required for review -> done."
+      [[ "$who" == "none" ]] && who=""
+      local result
+      result=$(R="$who" python3 -c 'import json,os;print(json.dumps({"reviewer":os.environ["R"]}))' \
+        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "reviewer set to ${who:-none}"
+      return $?
+      ;;
+    show|cat)
+      # AF-66. Assignment/idle nudges tell agents to read a card with
+      # `amux board show <ID>` -- and the verb did not exist, so it fell through
+      # to the help text (exit 2). That instruction is emitted SPECIFICALLY when
+      # the card body is withheld from the nudge (it contains an at-mention or a
+      # leading slash, which opens Claude Code's file picker), i.e. exactly when
+      # `show` is the ONLY way to read the card. The sanctioned path was
+      # unwalkable in the one case it existed for, and the fallback is a raw
+      # curl, which is how attribution gets lost (AMUX-2325 / AMUX-2140).
+      local id="${1:-}"
+      _board_id_guard "show" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board show <ISSUE-ID>"
+      curl -sk "$AMUX_API/api/board/$id" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    sys.exit("amux board show: server returned no JSON (restarting?) -- retry in a moment")
+if d.get("error") or not d.get("id"):
+    sys.exit("amux board show: " + str(d.get("error") or "no such card"))
+print("%s  [%s]  type=%s" % (d["id"], d.get("status", "?"), d.get("type", "?")))
+print(d.get("title") or "(no title)")
+meta = [("session", d.get("session")), ("reviewer", d.get("reviewer")),
+        ("owner_type", d.get("owner_type")), ("depends_on", d.get("depends_on")),
+        ("source_ref", d.get("source_ref"))]
+line = "  ".join("%s=%s" % (k, v) for k, v in meta if v)
+if line:
+    print(line)
+desc = d.get("desc") or ""
+if desc:
+    print()
+    print(desc)
+log = d.get("log") or ""
+if log:
+    print()
+    print("--- log ---")
+    print(log)
+'
+      return $?
+      ;;
+    retitle)
+      # AMUX-2604. Capture flags a card whose title has no referent ("This
+      # should be one row", "Fix the logo") and asks the worker that received
+      # the prompt to rewrite it self-contained — the worker being the only
+      # party that ever had the missing context. That ask needs somewhere to
+      # land: until now TITLE and DESC had no attributed setter either, so the
+      # instruction would have read "fix your card" while the only route was a
+      # raw PATCH with no X-Amux-Session. That is the third instance of the
+      # `type`/`reviewer` defect above (AMUX-2325) and the one where the nudge
+      # itself would have been manufacturing the unattributed writes.
+      #
+      # --stdin/--file are the preferred forms: an inline title is evaluated by
+      # YOUR shell first, so `backticks` and $(...) in it are EXECUTED
+      # (AMUX-1888) — and a rewritten title very often quotes code.
+      local id="${1:-}"
+      _board_id_guard "retitle" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board retitle <ISSUE-ID> <title> | --stdin | --file <path>
+       amux board retitle <ISSUE-ID> --desc-stdin      (rewrite the body instead)
+Rewrites a card's title (and/or desc) so it stands alone without the
+conversation it was captured from."
+      shift
+      local new_title="" new_desc="" _mode=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --stdin|-)      new_title=$(cat); _mode=1; shift ;;
+          --file)         [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board retitle <ID> --file <path>"
+                          new_title=$(cat "$2"); _mode=1; shift 2 ;;
+          --desc-stdin)   new_desc=$(cat); _mode=1; shift ;;
+          --desc-file)    [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board retitle <ID> --desc-file <path>"
+                          new_desc=$(cat "$2"); _mode=1; shift 2 ;;
+          --desc)         new_desc="${2:-}"; _mode=1; shift 2 ;;
+          *)              new_title="$1"; _mode=1; shift ;;
+        esac
+      done
+      [[ -n "$_mode" ]] || die "Usage: amux board retitle <ISSUE-ID> <title> | --stdin | --file <path>"
+      [[ -n "$new_title" || -n "$new_desc" ]] && : || die "nothing to write: pass a title, --stdin, --file, or --desc*"
+      local result
+      result=$(T="$new_title" D="$new_desc" python3 -c 'import json,os
+b={}
+t=os.environ.get("T","").strip()
+d=os.environ.get("D","")
+if t: b["title"]=t
+# desc_append=False so a rewrite REPLACES the captured body rather than
+# appending to it — the whole point is that the original text lacked context.
+if d.strip(): b["desc"]=d; b["desc_append"]=False
+print(json.dumps(b))' \
+        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      local _what="title rewritten"
+      [[ -n "$new_desc" && -n "$new_title" ]] && _what="title + desc rewritten"
+      [[ -n "$new_desc" && -z "$new_title" ]] && _what="desc rewritten"
+      echo "$result" | _board_outcome "$id" "" "$_what"
       return $?
       ;;
     add|create)
@@ -1009,21 +1883,22 @@ cmd_board() {
       local body result
       body=$(T="$title" S="${AMUX_SESSION:-}" python3 -c \
         "import json,os; print(json.dumps({'title': os.environ['T'].strip(), 'status':'todo', 'session': os.environ['S']}))")
-      result=$(curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST \
+      result=$(curl -sk -X POST \
         -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" \
         "$AMUX_API/api/board")
       echo "$result" | _board_outcome
       return $?
       ;;
     ask|status-request)
-      # Ask the owning session to report a card's status onto the board.
+      # Ask the owning worker to report a card's status onto the board.
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board ask <ISSUE-ID> [question]"
+      _board_id_guard "ask" "$id"
       shift 2>/dev/null || true
       local q="$*" body result
       body=$(Q="$q" python3 -c "import os,json;print(json.dumps({'question':os.environ['Q'].strip()}))")
-      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id/status-request")
       echo "$result" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message') or d.get('reason') or json.dumps(d)); sys.exit(0 if d.get('delivered') else 1)"
       return $?
@@ -1031,24 +1906,29 @@ cmd_board() {
     status-update)
       # The owning session posts its status to the board (source of truth).
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board status-update <ISSUE-ID> \"<what's done, next, blockers>\""
+      _board_id_guard "status-update" "$id"
       shift 2>/dev/null || true
       local text="$*"
       if [[ "$text" == "--stdin" || "$text" == "-" ]]; then text=$(cat); fi
       [[ -n "$text" ]] || die "status text required"
       local body result
       body=$(T="$text" python3 -c "import os,json;print(json.dumps({'text':os.environ['T'].strip()}))")
-      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id/status-update")
-      echo "$result" | _board_outcome; return $?
+      # Same shape as the needsyou path: posting a status-UPDATE does not move
+      # the card, so printing its current status behind an arrow invites the
+      # same misread (AC-222).
+      echo "$result" | _board_outcome "$id" "" "status update posted"; return $?
       ;;
     claim)
       # Atomic claim (the assignment notifications tell every session to run
       # this — it fell through to help and exited 0 until AMUX-2140).
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board claim <ISSUE-ID>"
+      _board_id_guard "claim" "$id"
       local result
       result=$(curl -sk -X POST \
         -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "{\"session\":\"${AMUX_SESSION:-}\"}" \
         "$AMUX_API/api/board/$id/claim")
       echo "$result" | _board_outcome
@@ -1190,7 +2070,6 @@ if not tasks_to_create:
     }).encode()
     req = urllib.request.Request(api + '/api/board', data=payload, method='POST')
     req.add_header('Content-Type', 'application/json')
-    req.add_header('X-Amux-Write-Token', '$CC_WRITE_TOKEN')
     try:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             result = json.loads(resp.read())
@@ -1210,7 +2089,6 @@ else:
         }).encode()
         req = urllib.request.Request(api + '/api/board', data=payload, method='POST')
         req.add_header('Content-Type', 'application/json')
-        req.add_header('X-Amux-Write-Token', '$CC_WRITE_TOKEN')
         try:
             with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 result = json.loads(resp.read())
@@ -1225,24 +2103,79 @@ print(f'Imported {created} task(s) from {repo}#{issue_num}')
     progress)
       # amux board progress <ID> "message" — append progress note + post GH comment if gh-linked
       local id="${1:-}"; shift 2>/dev/null || true
-      local msg="$*"
-      [[ -n "$id" && -n "$msg" ]] || die "Usage: amux board progress <ISSUE-ID> <message>"
+      _board_id_guard "progress" "$id"
+      # ACCEPT --stdin/--file, and NEVER take a bare flag as the message (AMUX-2515).
+      #
+      # `amux board needsyou` already refuses a leading --flag and its error text
+      # recommends THIS verb for long text. But progress had no guard, so
+      # `amux board progress <id> --stdin <<EOF` appended the literal string
+      # "--stdin", discarded the entire heredoc, and printed "progress noted".
+      # A success line for a write that kept none of the body — and the silent verb
+      # is the one the loud verb sends you to.
+      #
+      # Supporting --stdin outright is the better fix than only guarding: the fleet
+      # convention in CLAUDE.md is to pass card text via stdin precisely because an
+      # inline "$msg" is evaluated by the SHELL first, so backticks and $(...) inside
+      # it are EXECUTED (AMUX-1888: a garbled message, a leaked credential, and a
+      # stray rebase on a shared checkout). I hit exactly that on this card an hour
+      # ago — two backticked identifiers were run as commands and silently dropped.
+      local msg
+      if [[ "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then
+        msg=$(cat)
+      elif [[ "${1:-}" == "--file" ]]; then
+        [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board progress <ISSUE-ID> --file <path>"
+        msg=$(cat "$2")
+      else
+        msg="$*"
+        case "$msg" in
+          --*) die "amux board progress: '${msg%% *}' looks like a flag, not a message.
+Supported:  amux board progress $id --stdin <<'EOF'   (heredoc; backticks stay literal)
+            amux board progress $id --file <path>
+            amux board progress $id \"plain text\"" ;;
+        esac
+      fi
+      [[ -n "$id" && -n "$msg" ]] || die "Usage: amux board progress <ISSUE-ID> <message>|--stdin|--file <path>"
       # Append progress note to board task description (desc_append preserves prior content;
       # a plain {"desc":...} REPLACES and silently destroys the card body — see MC-1219)
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH \
+      # X-Amux-Session (AMUX-2269). This was the ONE mutating board verb in this
+      # CLI that did not stamp the caller, so every `amux board progress` wrote
+      # an `unattributed` row into the ledger — including mine, which is how it
+      # was found. The whole reason sessions are told to use `amux board` rather
+      # than raw curl is that it supplies attribution for you; a write verb that
+      # silently does not is the sanctioned-instruction-is-the-theatre shape.
+      curl -sk -X PATCH \
         -H 'Content-Type: application/json' \
+        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "{\"desc_append\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$msg")}" \
-        "$AMUX_API/api/board/$id" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'],'— progress noted')" 2>/dev/null
+        "$AMUX_API/api/board/$id" | python3 -c "
+import sys, json
+# CONFIRM AT THE FIELD, NOT AT THE RESPONSE SHAPE (AC-323). This printed
+# 'progress noted' whenever the reply merely CONTAINED an id — so when the
+# rust cutover dropped desc_append, every progress note for weeks was
+# reported written and was not. The server names unapplied fields in
+# ignored_fields precisely so a caller can tell; not reading it is what
+# turned a recoverable server gap into a silent one.
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('progress NOT recorded: server sent no JSON', file=sys.stderr); sys.exit(1)
+if d.get('error') or d.get('blocked'):
+    print('progress NOT recorded: %s' % (d.get('error') or 'blocked'), file=sys.stderr); sys.exit(1)
+ign = d.get('ignored_fields') or []
+if 'desc_append' in ign:
+    print('progress NOT recorded: this server ignored desc_append (AC-323).\n'
+          '  Your text was NOT saved. Do not retry with {\"desc\":...} — that REPLACES\n'
+          '  the card body and destroys whatever is there (MC-1219).', file=sys.stderr)
+    sys.exit(1)
+if 'id' not in d:
+    print('progress NOT recorded: unexpected response %s' % str(d)[:200], file=sys.stderr); sys.exit(1)
+print(d['id'], '— progress noted')
+"
       # Check if task has a gh: tag — if so, post comment to GH issue
       local task_json
-      task_json=$(curl -sk "$AMUX_API/api/board" | python3 -c "
-import sys,json
-items=json.load(sys.stdin)
-match=[i for i in items if i['id']=='$id']
-if match:
-    import json as j
-    print(j.dumps(match[0]))
-" 2>/dev/null)
+      # Point read (AMUX-2223). This pulled the ENTIRE board — 4.7MB across
+      # 1624 cards — to find one card by id.
+      task_json=$(curl -sk "$AMUX_API/api/board/$id" 2>/dev/null)
       if [[ -n "$task_json" ]]; then
         local gh_tag
         gh_tag=$(echo "$task_json" | python3 -c "
@@ -1264,36 +2197,116 @@ for tag in item.get('tags',[]):
       fi
       ;;
     ls|list)
-      curl -sk "$AMUX_API/api/board" | python3 -c "
+      # Slim + non-archived by default (AMUX-2223): full board is 4.7MB and
+      # 97% of rows are archived, which `ls` then printed as a wall. Pass
+      # `amux board ls --all` for the archived rows too.
+      local _lsq="slim=1&archived=0"
+      [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]] && _lsq="slim=1"
+      # --mine: scoped, and a scoped query is UNCAPPED by the server, so this is
+      # the answer to "where are my done cards" rather than a filtered view of a
+      # truncated one.
+      [[ "${1:-}" == "--mine" || "${1:-}" == "-m" ]] && _lsq="slim=1&session=${AMUX_SESSION:-}&done_limit=0"
+      # SAY WHEN THE LIST IS TRUNCATED. This query is UNSCOPED, so the server
+      # caps terminal rows (done/verified/discarded) to the 100 most recently
+      # updated FLEET-WIDE — across ~50 lanes, that can be none of yours. The
+      # cap is right (uncapped is 5620 rows / 19.8MB and `ls` becomes a wall);
+      # the SILENCE was the bug. Three sessions independently reported "my
+      # cards are missing from the board" on 2026-08-11 — ts-gke, social-media
+      # and, downstream, a sweep that judged cards abandoned — and each had to
+      # discover the cap by experiment.
+      #
+      # The server has always sent x-amux-truncated / x-amux-terminal-total;
+      # nobody reads response headers from a pipe, which is ethos rule 4's
+      # second layer: a tag in a store the reader never opens. So read them
+      # here and print one line, in the place the reader is already looking.
+      local _hdr; _hdr=$(mktemp)
+      curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq" | python3 -c "
 import sys,json
 items=json.load(sys.stdin)
 for i in sorted(items, key=lambda x: x.get('updated',0), reverse=True):
-    status_sym = {'done':'✓','doing':'▶','todo':'○','backlog':'·','discarded':'✗','review':'◎'}.get(i['status'],'?')
+    status_sym = {'done':'✓','verified':'✅','doing':'▶','todo':'○','backlog':'·','discarded':'✗','review':'◎','archived':'⌁'}.get(i['status'],'?')
     tags = ' '.join(f'[{t}]' for t in i.get('tags',[])) if i.get('tags') else ''
     print(f\"{status_sym} {i['id']:12s} {i['title'][:50]:50s} [{i['status']}] {tags}\")
 "
+      # One line, only when rows were actually dropped.
+      if grep -qi '^x-amux-truncated: 1' "$_hdr" 2>/dev/null; then
+        local _tt _tr
+        _tt=$(grep -i '^x-amux-terminal-total:' "$_hdr" | tr -d '\r' | awk '{print $2}')
+        _tr=$(grep -i '^x-amux-terminal-returned:' "$_hdr" | tr -d '\r' | awk '{print $2}')
+        echo "${DIM}— showing ${_tr:-?} of ${_tt:-?} done/verified/discarded cards (newest first, fleet-wide cap)."
+        echo "  YOUR terminal cards may be entirely outside this list. To see them:"
+        echo "    amux board ls --mine        # this session, uncapped"
+        echo "    curl -sk \"\$AMUX_API/api/board?session=\$AMUX_SESSION&done_limit=0\"${RESET}"
+      fi
+      rm -f "$_hdr"
       ;;
     help|*)
+      # An UNKNOWN verb must not exit 0. `amux board note X "..."` printed this
+      # help and returned success — the exact AMUX-2140 shape, where following
+      # an instruction produces a success signal and no effect. Help asked for
+      # explicitly still exits 0; a typo'd or invented verb exits 2.
+      local _rc=0
+      if [[ -n "$subcmd" && "$subcmd" != "help" && "$subcmd" != "-h" && "$subcmd" != "--help" ]]; then
+        echo "amux board: unknown verb '$subcmd'" >&2
+        _rc=2
+      fi
       cat <<EOF
 ${BOLD}amux board${RESET} — manage board issues from the CLI
 
-  amux whoami                      Live session identity vs inherited env (mismatch warns)
-  amux board ls                    List all issues (with tags)
+  amux whoami                      Live worker identity vs inherited env (mismatch warns)
+  amux board ls [--all]            List open issues (--all includes archived)
   amux board add <title>           Create a new todo issue
-  amux board claim <ID>            Atomically claim a todo/backlog card for this session
-  amux board needsyou <ID>         Mark a card as blocked on the human (surfaces in Needs-you)
-  amux board ask <ID> [question]   Ask the owning session to post a status update
-  amux board status-update <ID> …  (for the owning session) post status to the board
+  amux board claim <ID>            Atomically claim a todo/backlog card for this worker
+  amux board needsyou <ID> [ask]   Mark a card as blocked on the human (surfaces in Needs-you).
+                                   A sign-in/login ask auto-gets a clickable resume link into
+                                   this session's live browser view (Ethan clicks to sign in).
+  amux board ask <ID> [question]   Ask the owning worker to post a status update
+  amux board status-update <ID> …  (for the owning worker) post status to the board
   amux board done <ID>             Move issue to done
   amux board doing <ID>            Move issue to doing (in progress)
   amux board review <ID>           Move issue to in review
   amux board todo <ID>             Move issue to todo
   amux board backlog <ID>          Move issue to backlog
   amux board status <ID> <status>  Set any status
+  amux board type <ID> <type>      Correct a card's type (the gate is DERIVED from it)
+  amux board retitle <ID> <title>  Rewrite a title/desc so the card stands alone
+                                   (--stdin/--file preferred; --desc-stdin for the body)
+
+  Every status verb above takes the gate-satisfying flags, so a gated move
+  never needs a hand-rolled curl (which is how attribution gets lost):
+    --checked "crit" ["crit" ...]  acknowledge the criteria that are TRUE
+    --ack                          acknowledge the whole gate at once
+    --outcome "what happened"      record the outcome FIRST, as its own write,
+                                   so a refused transition cannot discard it
+    --outcome-stdin                read the outcome from stdin ${GREEN}(preferred)${RESET}
+    --outcome-file <path>          read the outcome from a file
+                                   Inline text is evaluated by YOUR shell, so
+                                   \`backticks\` and \$(...) in an outcome are
+                                   EXECUTED, not recorded. Use stdin whenever the
+                                   text quotes a command:
+                                     amux board done ID --checked "..." --outcome-stdin <<'EOF'
+                                     ... \`git log --grep=x\` stays literal ...
+                                     EOF
+    --type T                       retype in the same write
+    --reviewer W                   name the peer this card is handed to. \`amux board review ID --reviewer W\`
+                                     sets the STATUS; the review gate rests on the
+                                     REVIEWER's sign-off, so a card in review with
+                                     no reviewer is one nobody was asked to look at
+    --override-doing               hold a second card in doing deliberately
+    --trigger "external condition"  park on an EXTERNAL blocker: records it as the
+                                   card's source_ref and stamps last_verified_at, so a
+                                   stale trigger is detectable (is:sourcestale) instead
+                                   of the card sleeping forever
+    --force "reason"               bypass a gate that cannot be satisfied honestly
+                                   (e.g. peer's dirt in a shared checkout). The reason
+                                   is recorded on the card and the bypass is audited.
+  e.g.  amux board review AC-12 --checked "Findings written up" "Ready for eyes"
+
   amux board import gh:owner/repo#N [--workspace W] [--project P]
                                    Import GH issue as board task(s)
   amux board progress <ID> <msg>   Add progress note (posts to GH if linked)
 EOF
+      return $_rc
       ;;
   esac
 }
@@ -1304,61 +2317,274 @@ cmd_serve() {
     case "$_a" in
       -h|--help|help)
         cat <<EOF
-${BOLD}amux serve${RESET} - start the web dashboard (HTTPS by default)
+${BOLD}amux serve${RESET} - start the web dashboard (Rust server, HTTPS)
 
 ${BOLD}Usage:${RESET}
-  amux serve [port] [--bind host[,host,...]] [--no-tls]
+  amux serve [port]
 
 ${BOLD}Args:${RESET}
-  port                  TCP port to listen on (default: 8822). Cert helper uses port+1.
-  --bind host[,host..]  Comma-separated list of interface IPs to bind. Default: 0.0.0.0
-                        (every interface). Pass 127.0.0.1 to restrict to loopback,
-                        or e.g. 127.0.0.1,172.17.0.1 for loopback + docker0.
-  --no-tls              Serve plain HTTP instead of HTTPS (offline mode/PWA needs HTTPS).
+  port                  TCP port to listen on. Optional; exported as AMUX_RS_PORT.
+                        Default 8823; the installed launchd service uses 8824.
+
+${BOLD}Environment:${RESET}
+  AMUX_RS_PORT          Port to listen on (a positional port just sets this).
+  AMUX_RS_LEGACY_PORT   Additionally answer the RETIRED port (8822) with the
+                        same router/TLS/auth, so pre-cutover sessions holding a
+                        baked-in AMUX_URL=https://localhost:8822 keep working.
+                        Set in ~/.amux/server.env. Being retired: check
+                        GET /api/debug/legacy-port for who still calls it, and
+                        drop the var when that reads zero for 7 days.
 
 ${BOLD}Examples:${RESET}
   amux serve
-  amux serve 8822
-  amux serve 8822 --bind 127.0.0.1
-  amux serve 8822 --bind 127.0.0.1,172.17.0.1
-  amux serve 9000 --no-tls
+  amux serve 8824
 
-${BOLD}Security note:${RESET} the default 0.0.0.0 bind exposes the dashboard on every
-network interface this host is connected to (including public Wi-Fi LANs and
-public IPs). Use --bind to restrict, or layer a firewall rule on top.
+${BOLD}Note:${RESET} \`--bind\` and \`--no-tls\` are GONE. They were Python-server flags;
+the Rust server takes no argv, always binds 0.0.0.0, and always serves HTTPS
+(plain HTTP is redirected). Passing them now exits with an error rather than
+being silently ignored. Normally you do not run this by hand at all — the
+launchd agent com.amux.server-rs owns the process.
+
+${BOLD}Security note:${RESET} the 0.0.0.0 bind exposes the dashboard on every network
+interface this host is connected to (including public Wi-Fi LANs and public IPs).
+Layer a firewall rule, or use Tailscale, for anything beyond localhost.
 EOF
         return 0
         ;;
     esac
   done
-  # Resolve cc-server.py relative to the real location of this script
-  local script_dir
-  script_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
-  local server="$script_dir/amux-server.py"
-  # Fall back to old name during migration
-  [[ -f "$server" ]] || server="$script_dir/cc-server.py"
-  [[ -f "$server" ]] || die "amux-server.py not found at $script_dir"
-  command -v python3 &>/dev/null || die "python3 is required for amux serve"
-  # Pass all args through: amux-server.py parses the positional port and any --bind flag.
-  exec python3 "$server" "$@"
+  # The server is the Rust binary (the Python amux-server.py was removed
+  # 2026-08-09; git history has it). It takes NO argv — port comes from
+  # AMUX_RS_PORT — so map the old positional-port spelling onto the env var.
+  local server="$HOME/.local/bin/amux-server-rs"
+  [[ -x "$server" ]] || server="$(command -v amux-server-rs 2>/dev/null || true)"
+  [[ -n "$server" && -x "$server" ]] || die "amux-server-rs not found — run ./install.sh from the amux checkout"
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    export AMUX_RS_PORT="$1"; shift
+  fi
+  [[ $# -gt 0 ]] && die "amux serve takes only an optional port now (extra args: $*)"
+  exec "$server"
+}
+
+
+# ---------------------------------------------------------------------------
+# amux iac — the instance as declarative YAML (AMUX-2679)
+#
+# NOT `amux config`: that is already an alias for `amux defaults`
+# (show|edit|reset), and shadowing a working user-facing verb to save four
+# characters is how a CLI acquires a surprise.
+#
+# The SERVER speaks JSON like every other amux contract; YAML lives here,
+# where the human is. python3 + pyyaml do the conversion, so no endpoint has
+# to be different from all the others just to be configurable.
+# ---------------------------------------------------------------------------
+cmd_config() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    export)
+      curl -sk "${AMUX_API:-https://localhost:8824}/api/config/export" \
+      | python3 -c '
+import sys, json, yaml
+d = json.load(sys.stdin)
+d.pop("note", None)
+sys.stdout.write(yaml.safe_dump(d, sort_keys=False, allow_unicode=True, default_flow_style=False))
+'
+      ;;
+    apply)
+      local f="${1:-}"
+      [[ -n "$f" && -r "$f" ]] || die "usage: amux iac apply <file.yaml>   (reads a file; use - for stdin)"
+      local body
+      body=$(python3 -c '
+import sys, json, yaml
+raw = sys.stdin.read() if sys.argv[1] == "-" else open(sys.argv[1]).read()
+doc = yaml.safe_load(raw) or {}
+if not isinstance(doc, dict):
+    sys.stderr.write("config must be a YAML mapping (got %s)\n" % type(doc).__name__); sys.exit(2)
+print(json.dumps(doc))
+' "$f") || die "could not parse $f as YAML"
+      curl -sk -X PUT -H 'Content-Type: application/json' -d "$body" \
+        "${AMUX_API:-https://localhost:8824}/api/config/apply" \
+      | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("apply failed: server sent no JSON\n"); sys.exit(1)
+if d.get("error"):
+    sys.stderr.write("apply refused: %s\n" % d["error"]); sys.exit(1)
+print(d.get("summary", "applied"))
+for c in d.get("changed", []): print("  changed   %s" % c)
+for u in d.get("unchanged", []): print("  unchanged %s" % u)
+errs = d.get("errors") or []
+for e in errs: sys.stderr.write("  ERROR %s: %s\n" % (e.get("item"), e.get("error")))
+sys.exit(1 if errs else 0)
+'
+      ;;
+    skin)
+      # What a given worker actually renders with, after the layer merge.
+      local w="${1:-}"
+      curl -sk "${AMUX_API:-https://localhost:8824}/api/skin?worker=${w}" \
+      | python3 -c '
+import sys, json, yaml
+d = json.load(sys.stdin)
+print("# layers applied: %s" % ", ".join(d.get("layers") or ["(none)"]))
+sys.stdout.write(yaml.safe_dump(d.get("skin") or {}, sort_keys=False, allow_unicode=True))
+'
+      ;;
+    *)
+      cat <<'USAGE'
+amux iac — the instance as declarative YAML
+
+  amux iac export             dump skins, columns and worker declarations
+  amux iac apply <file.yaml>  apply it (idempotent; says what changed)
+  amux iac skin [worker]      the RESOLVED skin, and which layers made it
+
+Apply DECLARES workers; it does not start them. `amux workers start <name>`
+is the separate verb, so a mistyped apply cannot spawn a fleet.
+USAGE
+      ;;
+  esac
+}
+
+
+# ── CRM ──────────────────────────────────────────────────────────────────────
+# AMUX-2932. Global ~/.claude/CLAUDE.md has documented `amux crm add` to every
+# session in every project for months; the verb did not exist and the HTTP API
+# behind it did not either (405, no route) until AMUX-2929 ported it.
+#
+# EVERY WRITE CARRIES X-Amux-Session. Python's version of this verb did NOT,
+# and that is the whole reason CLAUDE.md tells agents to prefer `amux <verb>`
+# over a hand-rolled curl: a raw curl is unattributed by construction. Adding
+# the verb without the header would have rebuilt the trap it exists to close.
+cmd_crm() {
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local sub="${1:-list}"; shift 2>/dev/null || true
+  # key=value pairs -> JSON, bare words -> the name. Done in python so a name
+  # with spaces, quotes or a `$` survives; building this JSON in bash is how
+  # you get a contact called `$(whoami)`.
+  _crm_json() {
+    python3 -c '
+import sys, json
+fields = {}; name = []
+for a in sys.argv[1:]:
+    if "=" in a and not a.startswith("="):
+        k, v = a.split("=", 1); fields[k] = v
+    else:
+        name.append(a)
+if name: fields["name"] = " ".join(name)
+print(json.dumps(fields))' "$@"
+  }
+  case "$sub" in
+    add)
+      [ $# -gt 0 ] || die "Usage: amux crm add \"Name\" [company=X] [email=Y] [role=Z] [phone=P]"
+      local json; json=$(_crm_json "$@")
+      curl -sk -X POST -H 'Content-Type: application/json' \
+        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
+print(d.get("id", "?"), "created")'
+      ;;
+    update|set)
+      local cid="${1:-}"; [ -n "$cid" ] || die "Usage: amux crm update PPL-1 company=X email=Y"
+      shift 2>/dev/null || true
+      [ $# -gt 0 ] || die "amux crm update: nothing to set. Give key=value pairs."
+      local json; json=$(_crm_json "$@")
+      curl -sk -X PATCH -H 'Content-Type: application/json' \
+        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", "failed"), file=sys.stderr); sys.exit(1)
+print("updated")'
+      ;;
+    get|show)
+      local cid="${1:-}"; [ -n "$cid" ] || die "Usage: amux crm get PPL-1"
+      curl -sk "$AMUX_API/api/crm/contacts/$cid" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+if c.get("error"): print("error:", c["error"], file=sys.stderr); sys.exit(1)
+print(c.get("id"), "-", c.get("name"))
+for f in ("company", "role", "email", "phone", "linkedin", "twitter"):
+    if c.get(f): print("  %-9s %s" % (f + ":", c[f]))
+if c.get("tags"): print("  %-9s %s" % ("tags:", ", ".join(c["tags"])))
+if c.get("notes"): print("  %-9s %s" % ("notes:", c["notes"]))
+for i in c.get("interactions", [])[:5]:
+    print("  %s  %-6s %s" % (i.get("date", ""), i.get("type", ""), (i.get("notes") or "")[:60]))'
+      ;;
+    log)
+      local cid="${1:-}"; [ -n "$cid" ] || die "Usage: amux crm log PPL-1 \"what happened\" [follow_up_date=YYYY-MM-DD]"
+      shift 2>/dev/null || true
+      local json; json=$(python3 -c '
+import sys, json
+fields = {"type": "other"}; notes = []
+for a in sys.argv[1:]:
+    if "=" in a and not a.startswith("="):
+        k, v = a.split("=", 1); fields[k] = v
+    else:
+        notes.append(a)
+if notes: fields["notes"] = " ".join(notes)
+print(json.dumps(fields))' "$@")
+      curl -sk -X POST -H 'Content-Type: application/json' \
+        -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -d "$json" "$AMUX_API/api/crm/contacts/$cid/interactions" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
+print("logged", d.get("id", ""))'
+      ;;
+    followups|fu)
+      curl -sk "$AMUX_API/api/crm/followups" | python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+if not items: print("No pending follow-ups"); sys.exit(0)
+for i in items:
+    print(i.get("follow_up_date", ""), i.get("name", ""), "-", i.get("follow_up_note", ""))'
+      ;;
+    list|ls|"")
+      curl -sk "$AMUX_API/api/crm/contacts$([ -n "${1:-}" ] && printf '?q=%s' "$1")" | python3 -c '
+import json, sys
+cs = json.load(sys.stdin)
+if not cs: print("No contacts"); sys.exit(0)
+for c in cs:
+    print("%-8s %-28s %s" % (c.get("id", ""), (c.get("name") or "")[:28], c.get("company", "")))'
+      ;;
+    help|--help|-h)
+      cat <<'EOH'
+amux crm — contacts, notes and follow-ups (HTTP: /api/crm/*)
+
+  amux crm list [query]                     List contacts (optional name/company/role search)
+  amux crm get PPL-1                        One contact with tags and recent interactions
+  amux crm add "Name" [company=X email=Y]   Create; extra key=value pairs set fields
+  amux crm update PPL-1 role=CTO            Update whitelisted fields
+  amux crm log PPL-1 "spoke re pricing" [follow_up_date=2026-09-01]
+  amux crm followups                        Pending follow-ups, soonest first
+
+Writes carry X-Amux-Session, so the audit trail names who made them.
+EOH
+      ;;
+    *) die "amux crm: unknown subcommand: $sub  (try: amux crm help)" ;;
+  esac
 }
 
 cmd_help() {
   cat <<EOF
-${BOLD}amux${RESET} — phone-friendly Claude Code session manager ${DIM}v${CC_VERSION}${RESET}
+${BOLD}amux${RESET} — phone-friendly Claude Code worker manager ${DIM}v${CC_VERSION}${RESET}
+${DIM}Legacy bash CLI: an HTTP client of the Rust server, kept until \`amux-rs\` reaches
+verb parity. New verbs land in amux-rs (crates/amux-cli).${RESET}
 
-${BOLD}Session management:${RESET}
-  amux register <name> [flags]   Register a session with Claude Code flags
-  amux start <name> [--detach]   Start a registered session in tmux (-d = don't attach)
+${BOLD}Worker management:${RESET}
+  amux register <name> [flags]   Register a worker with Claude Code flags
+  amux start <name> [--detach]   Start a registered worker in tmux (-d = don't attach)
                                 (--dry-run: print the command without spawning)
   amux exec <name> [flags]       Register + start in one step
-  amux stop <name>               Stop a running session
-  amux rm <name>                 Remove a session (stops if running)
-  amux start-all                 Start all registered sessions
-  amux stop-all                  Stop all running sessions
+  amux stop <name>               Stop a running worker
+  amux rm <name>                 Remove a worker (stops if running)
+  amux start-all                 Start all registered workers
+  amux stop-all                  Stop all running workers
 
 ${BOLD}Interaction:${RESET}
-  amux attach <name>             Attach to a running session (detach: Ctrl-b d)
+  amux attach <name>             Attach to a running worker (detach: Ctrl-b d)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
@@ -1371,15 +2597,28 @@ ${BOLD}Interaction:${RESET}
   amux send <name> --keys 'C-c'  Send raw key sequence (e.g., Ctrl-C)
 
 ${BOLD}Info:${RESET}
-  amux ls                        List all sessions with status and previews
-  amux info <name>               Show session config details
+  amux ls                        List all workers with status and previews
+  amux info <name>               Show worker config details
   amux defaults [show|edit|reset] Manage global default flags
+  amux whoami                    Live worker identity vs inherited env (mismatch warns)
+  amux url [--verify]            Print the canonical API base (use \$(amux url), not
+                                 \$AMUX_URL — self-heals a stale port; --verify probes)
 
 ${BOLD}Dashboard:${RESET}
   amux                           Interactive dashboard (optimized for phone)
 
 ${BOLD}Web Dashboard:${RESET}
-  amux serve [port] [--bind host[,host,...]]  Start web dashboard (default: 8822, all interfaces)
+  amux serve [port]              Start the Rust server (normally launchd's job;
+                                 installed service 8824, bare default 8823;
+                                 8822 is retired — the compat bind is gone)
+
+${BOLD}CRM:${RESET}
+  amux crm list [query]          List contacts (search name/company/role)
+  amux crm get PPL-1             One contact, with tags and recent interactions
+  amux crm add "Name" [k=v ...]  Create a contact (company=, email=, role=, phone=)
+  amux crm update PPL-1 k=v      Update whitelisted fields
+  amux crm log PPL-1 "notes"     Log an interaction (follow_up_date=YYYY-MM-DD)
+  amux crm followups             Pending follow-ups, soonest first
 
 ${BOLD}Board:${RESET}
   amux board ls                  List all board issues
@@ -1416,9 +2655,9 @@ ${BOLD}Claude Code flags (on register/exec):${RESET}
   --chrome / --no-chrome       Browser automation toggle
   ... and all other claude CLI flags pass through
 
-${BOLD}Session names support fuzzy matching:${RESET}
+${BOLD}Worker names support fuzzy matching:${RESET}
   amux peek api                  Matches 'api', 'api-server', etc.
-  amux 3                         Attach to session #3 from amux ls
+  amux 3                         Attach to worker #3 from amux ls
 
 ${BOLD}Examples:${RESET}
   amux register api --model opus --yolo --dir ~/Dev/myapp
@@ -1429,123 +2668,40 @@ ${BOLD}Examples:${RESET}
 EOF
 }
 
-# ── Server-API passthrough commands (ported from the server's CLI stub) ──────
-# These talk to the running amux server; used by Claude sessions (crm, share)
-# and remote control (restart, sessions).
-
-cmd_crm() {
-  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
-  local sub="${1:-}"; shift 2>/dev/null || true
-  case "$sub" in
-    add)
-      # Usage: amux crm add "Name" [company=X] [email=Y] [role=Z] [phone=P] [linkedin=L]
-      local json
-      json=$(python3 -c "
-import sys,json
-args=sys.argv[1:]; fields={}; name_parts=[]
-for a in args:
-    if '=' in a: k,v=a.split('=',1); fields[k]=v
-    else: name_parts.append(a)
-if name_parts: fields['name']=' '.join(name_parts)
-print(json.dumps(fields))" "$@")
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c "
-import json,sys; d=json.load(sys.stdin)
-print(d.get('id','error'),'-',d.get('error','created'))" ;;
-    update)
-      local cid="${1:-}"; shift 2>/dev/null || true
-      local json
-      json=$(python3 -c "
-import sys,json; fields={}
-for a in sys.argv[1:]:
-    if '=' in a: k,v=a.split('=',1); fields[k]=v
-print(json.dumps(fields))" "$@")
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X PATCH -H 'Content-Type: application/json' -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
-import json,sys; d=json.load(sys.stdin)
-print('updated' if d.get('ok') else d.get('error','failed'))" ;;
-    get)
-      local cid="${1:-}"
-      curl -sk "$AMUX_API/api/crm/contacts/$cid" | python3 -c "
-import json,sys
-c=json.load(sys.stdin)
-if 'error' in c: print('Error:',c['error']); sys.exit(1)
-print(c.get('id'),c.get('name'))
-for f in ('company','role','email','phone','linkedin','twitter'):
-    v=c.get(f,'')
-    if v: print('  '+f+':',v)
-tags=c.get('tags',[])
-if tags: print('  tags:',', '.join(tags))
-ixs=c.get('interactions',[])
-if ixs: print('  last interaction:',ixs[0].get('date'),'-',ixs[0].get('notes','')[:60])" ;;
-    log)
-      local cid="${1:-}"; shift 2>/dev/null || true; local notes="$*"
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
-        -d "{\"notes\":\"$notes\",\"date\":\"$(date +%Y-%m-%d)\",\"type\":\"other\"}" \
-        "$AMUX_API/api/crm/contacts/$cid/interactions" ;;
-    followups|fu)
-      curl -sk "$AMUX_API/api/crm/followups" | python3 -c "
-import json,sys
-items=json.load(sys.stdin)
-if not items: print('No pending follow-ups')
-for i in items: print(i.get('follow_up_date',''),i.get('name',''),'-',i.get('follow_up_note',''))" ;;
-    list|ls|"")
-      curl -sk "$AMUX_API/api/crm/contacts" | python3 -c "
-import json,sys
-cs=json.load(sys.stdin)
-if not cs: print('No contacts yet')
-for c in cs: print(c.get('id',''),c.get('name',''),c.get('company',''))" ;;
-    *) die "amux crm: unknown subcommand: $sub" ;;
-  esac
-}
-
-cmd_restart() {
-  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
-  local session="${1:-}"
-  [[ -n "$session" ]] || die "Usage: amux restart <session>"
-  echo "Stopping $session..."
-  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/sessions/$session/stop" >/dev/null
-  sleep 1
-  echo "Starting $session..."
-  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/sessions/$session/start" >/dev/null
-  echo "Restarted $session"
-}
-
-cmd_sessions_api() {
-  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
-  curl -sk "$AMUX_API/api/sessions" | python3 -c "
-import json,sys
-for s in json.load(sys.stdin): print(s['name'], '(running)' if s.get('running') else '')"
-}
-
-cmd_share() {
-  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
-  local session="${1:-}"; shift 2>/dev/null || true
-  local perms="${1:-output}"
-  [[ -n "$session" ]] || die "Usage: amux share <session> [perms]"
-  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
-    -d "{\"perms\":\"$perms\"}" "$AMUX_API/api/sessions/$session/share" | \
-    python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('url','error: '+d.get('error','unknown')))"
-}
-
-cmd_unshare() {
-  local AMUX_API="${AMUX_URL:-https://localhost:8822}"
-  local session="${1:-}"; shift 2>/dev/null || true
-  local token="${1:-}"
-  [[ -n "$session" ]] || die "Usage: amux unshare <session> [token]"
-  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X DELETE -H 'Content-Type: application/json' \
-    -d "{\"token\":\"$token\"}" "$AMUX_API/api/sessions/$session/share" >/dev/null
-  echo "revoked"
-}
-
 cmd_tunnel() {
-  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local subcmd="${1:-status}"; shift 2>/dev/null || true
+
+  # PREFLIGHT (AF-63). /api/tunnel/* is NOT routed in the rust server -- the
+  # endpoints were never ported at the python cutover, so every verb here hits a
+  # 404. Without this guard the CLI lies in two different directions:
+  #   status: the 404 body has no "configured" key, so `not d.get(configured)`
+  #           was true and it printed "not configured -- set AMUX_TUNNEL_TOKEN
+  #           in ~/.amux/server.env", exit 0. That sends the reader to add a
+  #           CREDENTIAL for a route that does not exist; they would edit
+  #           server.env, restart the server, and be exactly as broken.
+  #   stop:   `curl ... >/dev/null && echo "tunnel stopped"` -- curl exits 0 on
+  #           an HTTP 404 without -f, so it reported success for an operation
+  #           that reached no handler at all.
+  # Found by the 2026-08-16 log sweep via route.callers_have_routes, which names
+  # all 7 call sites; nothing else could see it, because a CLI that exits 0 is
+  # invisible to every check that looks at exit codes.
+  local _tunnel_code
+  _tunnel_code=$(curl -sk -o /dev/null -w '%{http_code}' "$AMUX_API/api/tunnel/status" 2>/dev/null || echo 000)
+  if [[ "$_tunnel_code" == "404" ]]; then
+    echo "amux tunnel: not available in this server build (HTTP 404 -- /api/tunnel/* is not routed)." >&2
+    echo "  The verb exists in this CLI but the endpoints were never ported to the rust server." >&2
+    echo "  Setting AMUX_TUNNEL_TOKEN will NOT help; that is a different failure." >&2
+    echo "  Tracked as AF-63." >&2
+    return 1
+  fi
 
   case "$subcmd" in
     start)
       local port="${1:-}"
       local payload='{}'
       [[ -n "$port" ]] && payload="{\"port\":$port}"
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' -d "$payload" \
+      curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
         "$AMUX_API/api/tunnel/start" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
@@ -1560,7 +2716,17 @@ print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.ge
 "
       ;;
     stop)
-      curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST "$AMUX_API/api/tunnel/stop" >/dev/null && echo "tunnel stopped"
+      # Check the STATUS, not curl's exit code: curl returns 0 for a 404/500
+      # unless -f is passed, which is how this printed "tunnel stopped" against
+      # a route that does not exist (AF-63).
+      local _stop_code
+      _stop_code=$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$AMUX_API/api/tunnel/stop" 2>/dev/null || echo 000)
+      if [[ "$_stop_code" == 2* ]]; then
+        echo "tunnel stopped"
+      else
+        echo "amux tunnel stop: server returned HTTP $_stop_code -- tunnel NOT stopped" >&2
+        return 1
+      fi
       ;;
     status|"")
       curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
@@ -1592,8 +2758,21 @@ except ValueError:
 print(u) if u else sys.exit('tunnel not running')
 "
       ;;
+    help|-h|--help)
+      _tunnel_help
+      ;;
     *)
-      cat <<EOF
+      # Same exit-0-on-unknown trap as `amux board` had: fail loudly instead,
+      # so a caller can distinguish "ran" from "silently printed help".
+      echo "${RED}unknown tunnel subcommand:${RESET} $subcmd" >&2
+      _tunnel_help >&2
+      exit 2
+      ;;
+  esac
+}
+
+_tunnel_help() {
+  cat <<EOF
 ${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
 
   amux tunnel status          Show tunnel state and public URL
@@ -1603,16 +2782,24 @@ ${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
 
 Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
 Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
-~/.amux/server.env, then \`touch amux-server.py\` to reload.
+~/.amux/server.env, then restart the server to reload:
+\`launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs\`.
 EOF
-      ;;
-  esac
 }
 
 cmd_alert() {
+  # NEVER fire on help/empty (the 38-SMS night, 2026-08-03): a session ran
+  # `amux alert --help` to LEARN the command and each probe sent Ethan a real
+  # iMessage — the sanctioned instruction was the failure (AMUX-2140 class).
+  case "${1:-}" in
+    -h|--help|"")
+      echo "Usage: amux alert \"<what happened + what you need>\" \"<short why-now>\""
+      echo "FIRE ALARM: pushes + texts the owner's PHONE. Not for status updates."
+      return 0 ;;
+  esac
   # Urgent owner alert — USE SPARINGLY. Fires an in-app push + iMessage to the
   # amux owner (Ethan). For anything a session needs the owner to see NOW.
-  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local msg="${1:-}"
   [[ -n "$msg" ]] || die "Usage: amux alert \"<message>\" [reason]
 This is a FIRE ALARM — only for things that need the owner immediately
@@ -1622,8 +2809,8 @@ This is a FIRE ALARM — only for things that need the owner immediately
   # Pass X-Amux-Session so the server stamps the TRUE origin (from the tmux
   # identity) into the owner_alerts ledger — the body 'session' is only a CLAIM.
   # This is what makes a safety-critical alert first-hand verifiable (AMUX-1795).
-  curl -sk -H "X-Amux-Write-Token: $CC_WRITE_TOKEN" -X POST -H 'Content-Type: application/json' \
-    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
     "$AMUX_API/api/alert/owner" | python3 -c "
 import sys, json
@@ -1633,7 +2820,21 @@ except ValueError: sys.exit('amux server not responding')
 if d.get('error'): sys.exit('alert failed: ' + str(d['error']))
 if d.get('deduped'): print('(deduped — an identical alert fired <60s ago)'); sys.exit(0)
 ch = d.get('channels', {})
-print('alert sent →', ', '.join('%s: %s' % (k, v) for k, v in ch.items()) or '(no channels)')
+detail = ', '.join('%s: %s' % (k, v) for k, v in ch.items()) or '(no channels)'
+# KEY OFF THE SERVER'S EXPLICIT VERDICT, never the presence of a channels map
+# (AMUX-3151/GCA-96): leading with 'sent' + exit 0 on a zero-channel delivery is
+# a lying fire alarm that swallowed real security escalations. delivered_any is
+# authoritative; the string fallback only covers an older server that predates it.
+delivered = d.get('delivered_any')
+if delivered is None:
+    delivered = any((str(v).lower() == 'sent') if k == 'push' else (str(v).lower() in ('twilio', 'imessage'))
+                    for k, v in ch.items())
+if not delivered:
+    sys.stderr.write('ALERT FAILED — the owner was NOT paged (reached no channel): %s\n' % detail)
+    fb = d.get('fallback') or 'no channel delivered — post to the board and say so in your turn output'
+    sys.stderr.write(fb + '\n')
+    sys.exit(3)
+print('alert delivered →', detail)
 "
 }
 
@@ -1667,6 +2868,59 @@ cmd_whoami() {
   return 0
 }
 
+# amux url — print the canonical amux API base, resolved from the server-written
+# ~/.amux/endpoint.json so it self-heals past a STALE $AMUX_URL. AMUX-3046: a lane
+# started before a port move carries the retired address in its PROCESS env for
+# life (env can't be re-read live), so `curl $AMUX_URL/...` fails at connect and
+# reads as "server down". Scripts should use `$(amux url)` in place of $AMUX_URL —
+# it survives the NEXT port move too, unlike hardcoding :8824 in every caller.
+#
+# DEFAULT is a PURE FILE READ (no HTTP probe): probing per-call across ~48 lanes
+# would flood the server to ask where the server is. `--verify` opts into a probe.
+cmd_url() {
+  local literal="https://localhost:8824"   # last-resort floor; appended, never an else-branch
+  local retired_floor="8822"                # only consulted when endpoint.json is unreadable
+  local ep="$HOME/.amux/endpoint.json"
+  local resolved="" src=""
+
+  # 1. endpoint.json is authoritative and self-updating (the server rewrites it
+  #    every boot with canonical_url + retired_ports). Canonical WINS; a stale
+  #    env is ignored whenever the file is present.
+  if [ -r "$ep" ]; then
+    resolved=$(sed -n 's/.*"canonical_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ep" | head -1)
+    [ -n "$resolved" ] && src="endpoint.json"
+  fi
+
+  # 2. File missing/garbled: trust $AMUX_URL only if its port is not the retired
+  #    floor (without the file we cannot read retired_ports).
+  if [ -z "$resolved" ] && [ -n "${AMUX_URL:-}" ]; then
+    local port="${AMUX_URL##*:}"; port="${port%%/*}"
+    case " $retired_floor " in
+      *" $port "*) : ;;                     # retired -> fall through to the literal
+      *) resolved="$AMUX_URL"; src="env" ;;
+    esac
+  fi
+
+  # 3. Unconditional literal — a conditional fallback is not a fallback: it would
+  #    remove the only working candidate exactly when file+env both fail.
+  [ -z "$resolved" ] && { resolved="$literal"; src="literal"; }
+
+  printf '%s\n' "$resolved"
+
+  if [ "${1:-}" = "--verify" ]; then
+    # A dead port returns an EMPTY body, not a connection refusal, so liveness
+    # asserts the /health body looks like an amux server — not merely that the
+    # socket answered (something else may have grabbed the port).
+    if curl -sk -m 3 "$resolved/health" 2>/dev/null | grep -q '"server"'; then
+      printf 'amux url: %s (via %s) — /health responds as an amux server\n' "$resolved" "$src" >&2
+      return 0
+    fi
+    printf 'amux url: %s (via %s) — WARNING: /health did not respond as an amux server (dead/wrong port?)\n' "$resolved" "$src" >&2
+    return 1
+  fi
+  return 0
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -1674,8 +2928,34 @@ cmd_whoami() {
 # `source amux`), $0 is the parent shell's $0 and the guard skips dispatch.
 # This lets the test suite source the script to access helper functions
 # without triggering CLI side effects.
+# One-time-per-session warning when $AMUX_URL points at a DEAD port (mvs-infra,
+# AMUX-2944). A session started before the 8822 compat bind was removed carries
+# the retired value for its whole life — env can't be re-read live — and a raw
+# `curl $AMUX_URL/...` PATCH then exits 0 with an EMPTY body, indistinguishable
+# from a successful write (mvs-infra silently lost a board PATCH this way). This
+# CLI is fine (it resolves AMUX_API=8824); the warning is so the SESSION stops
+# trusting $AMUX_URL for raw curls and repairs its own shell. Cheap: one 2s probe
+# gated by a per-session marker. ALWAYS returns 0 — a hot path 48 lanes run must
+# never break because a diagnostic failed.
+_warn_stale_amux_url() {
+  local api="${AMUX_API:-https://localhost:8824}"
+  local url="${AMUX_URL:-}"
+  if [ -z "$url" ] || [ "$url" = "$api" ]; then return 0; fi
+  local marker="${TMPDIR:-/tmp}/amux-url-warn-${AMUX_SESSION:-unknown}"
+  if [ -f "$marker" ]; then return 0; fi
+  if curl -sk -m 2 -o /dev/null "$url/health" 2>/dev/null; then return 0; fi
+  touch "$marker" 2>/dev/null || true
+  {
+    echo "amux: WARNING — \$AMUX_URL ($url) does not answer; this CLI is fine (it uses $api)."
+    echo "  But raw 'curl \$AMUX_URL/...' will SILENTLY FAIL — exit 0, empty body, looks exactly like a successful write."
+    echo "  Repair your shell for raw curls:  export AMUX_URL=$api"
+  } >&2
+  return 0
+}
+
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
   ensure_dirs
+  _warn_stale_amux_url
 
   case "${1:-}" in
     register|reg)     shift; cmd_register "$@" ;;
@@ -1694,13 +2974,11 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     crm)              shift; cmd_crm "$@" ;;
-    restart)          shift; cmd_restart "$@" ;;
-    sessions)         cmd_sessions_api ;;
-    share)            shift; cmd_share "$@" ;;
-    unshare)          shift; cmd_unshare "$@" ;;
     tunnel|t)         shift; cmd_tunnel "$@" ;;
     alert)            shift; cmd_alert "$@" ;;
+    iac)              shift; cmd_config "$@" ;;
     whoami)           cmd_whoami ;;
+    url)              shift; cmd_url "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;
     "")               cmd_dashboard ;;

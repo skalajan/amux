@@ -1,0 +1,21 @@
+-- 0008_event_payload.sql — RR-0111a: replay-capable event journal (AR-62).
+--
+-- Adds a nullable `payload` TEXT column to `_amux_state_events`: the
+-- POST-MUTATION snapshot of the entity row, as JSON, written in the same
+-- transaction as the mutation it stamps. This closes the gap between "the
+-- journal records THAT something changed" and "state can be reconstructed
+-- from the journal alone" (plan Invariant 24, EventPayload::Inline).
+--
+-- NULL is a first-class value, not a defect: it means the event predates this
+-- column, or its writing site does not capture snapshots (yet). Replay
+-- (db/replay.rs) treats NULL honestly — an entity whose latest event carries
+-- no payload is reported under `pre_payload_horizon`, never "reconstructed"
+-- from an older snapshot or from guesswork. Never pretend to replay what was
+-- not recorded.
+--
+-- ADDCOL directive (see 0002's header for the mechanism): the runner applies
+-- the ALTER only when the column is absent, so this is idempotent against a
+-- table the Python server may also touch. Additive only; no NOT NULL and no
+-- default, because absence-of-snapshot must stay distinguishable from an
+-- empty snapshot.
+-- ADDCOL: _amux_state_events payload TEXT

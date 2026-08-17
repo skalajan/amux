@@ -76,7 +76,7 @@
     <p>amux and cmux both run parallel AI coding agents, but they are fundamentally different tools built on different architectures for different workflows.</p>
     <ul>
       <li><strong>cmux</strong> is a <em>native macOS terminal application</em> built with Swift and libghostty. It replaces your terminal entirely &mdash; GPU-accelerated rendering, vertical tabs, embedded browser, notification rings, and native macOS integration. Desktop-first, visually polished, macOS-only.</li>
-      <li><strong>amux</strong> is an open-source <em>control plane for running an AI engineering team</em> from one dashboard or your phone. Built as a single Python file, it runs a local HTTPS server with a web dashboard, REST API, self-healing watchdog, kanban board, mobile PWA, and native iOS app. Orchestrates Claude Code, Codex CLI, and Gemini CLI sessions side-by-side. Platform-agnostic, API-first, accessible from any device.</li>
+      <li><strong>amux</strong> is an open-source <em>control plane for running an AI engineering team</em> from one dashboard or your phone. Built as a single Rust binary, it runs a local HTTPS server with a web dashboard, REST API, self-healing watchdog, kanban board, mobile PWA, and native iOS app. Orchestrates Claude Code, Codex CLI, and Gemini CLI sessions side-by-side. Platform-agnostic, API-first, accessible from any device.</li>
     </ul>
     <p><strong>Pick cmux</strong> if you work on macOS, want a beautiful native terminal experience, and prefer managing agents visually at your desk.<br>
     <strong>Pick amux</strong> if you need cross-platform support, remote access from your phone, self-healing overnight runs, agent-to-agent orchestration, or a REST API for custom automation.</p>
@@ -99,10 +99,10 @@
     <p>cmux is not a wrapper around tmux. It <em>is</em> the terminal &mdash; a standalone macOS app built with Swift and AppKit that replaces iTerm2, Terminal.app, or whatever terminal you currently use.</p>
 
     <h3>amux</h3>
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It is built around <code>amux-server.py</code> &mdash; a single Python file that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be monitored, recovered, coordinated, and accessed from anywhere. As of July 2026, amux has 300 GitHub stars and is actively maintained.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It is built around <code>amux-server-rs</code> &mdash; a single Rust binary that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be monitored, recovered, coordinated, and accessed from anywhere. As of July 2026, amux has 300 GitHub stars and is actively maintained.</p>
     <p>Key features:</p>
     <ul>
-      <li>Web dashboard at <code>https://localhost:8822</code> with live session status, token spend, and a send bar</li>
+      <li>Web dashboard at <code>https://localhost:8824</code> with live session status, token spend, and a send bar</li>
       <li>Native iOS app (<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">App Store</a>) and mobile PWA for monitoring and controlling the fleet from anywhere</li>
       <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions</li>
       <li>Auto-resume dialog: automatically handles the "resume session?" prompt for unattended runs</li>
@@ -152,7 +152,7 @@
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.6rem;">Web dashboard</td>
-          <td style="padding:0.6rem;color:var(--green);">Yes (https://localhost:8822)</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes (https://localhost:8824)</td>
           <td style="padding:0.6rem;">No (desktop app only)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
@@ -289,7 +289,7 @@
 
     <h3>amux architecture</h3>
     <pre><code>┌──────────────────────────────────────────────────────────┐
-│           amux-server.py (long-running)                   │
+│           amux-server-rs (long-running)                   │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
 │  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
@@ -314,7 +314,7 @@
     <h2 id="platform">Platform Support</h2>
     <p>This is the most important difference for many developers.</p>
     <p><strong>cmux runs on macOS only.</strong> It is a Swift + AppKit application that requires macOS. There are unofficial community forks (wmux for Windows, cmux-linux) but they are not maintained by the cmux team and lag behind the main release.</p>
-    <p><strong>amux runs anywhere Python and tmux run.</strong> macOS, Linux (Ubuntu, Debian, Arch, etc.), cloud VMs (GCP, AWS, any VPS), WSL on Windows. The single-file architecture means <code>scp amux-server.py your-server:</code> is a deployment.</p>
+    <p><strong>amux runs anywhere Python and tmux run.</strong> macOS, Linux (Ubuntu, Debian, Arch, etc.), cloud VMs (GCP, AWS, any VPS), WSL on Windows. The single-file architecture means <code>scp amux-server-rs your-server:</code> is a deployment.</p>
     <p>If you develop on Linux, work on remote servers, or want to run agents on a cloud VM, amux is your only option between these two tools. If you're on macOS and plan to stay on macOS, both work.</p>
 
     <h2 id="workflows">Workflow Comparison</h2>
@@ -353,7 +353,7 @@ amux board add "Add search tests, target 85% coverage" --session search
 
 # Start all and open dashboard
 amux start --all
-amux serve  # → https://localhost:8822
+amux serve  # → https://localhost:8824
 
 # Monitor from any device: laptop, phone, tablet
 # Watchdog auto-restarts crashes, auto-compacts context overflows
@@ -366,7 +366,7 @@ amux serve  # → https://localhost:8822
 
     <h2 id="dashboards">Dashboards &amp; Remote Access</h2>
     <p><strong>cmux has no dashboard and no remote access.</strong> It is a desktop application. To see your agents, you look at the app on your Mac. To check agents remotely, you SSH into your machine and... you can't use cmux over SSH, because it's a GUI app. You could use the Unix socket API to query status programmatically, but there's no web interface.</p>
-    <p><strong>amux has a full web dashboard</strong> accessible from any browser on any device. Open <code>https://localhost:8822</code> (or your machine's IP/Tailscale address) and see:</p>
+    <p><strong>amux has a full web dashboard</strong> accessible from any browser on any device. Open <code>https://localhost:8824</code> (or your machine's IP/Tailscale address) and see:</p>
     <ul>
       <li>All sessions with live status (running, idle, crashed, stuck)</li>
       <li>Per-session token spend and cumulative cost</li>
@@ -546,7 +546,7 @@ uvx amux serve                     # Zero-install (no install needed)
 
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

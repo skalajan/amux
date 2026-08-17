@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+# amux-push-guard — blocks a push that would ship commits authored by a
+# DIFFERENT amux session sharing this checkout.
+#
+# The staged-guard stops one session COMMITTING another's staged files. Nothing
+# stopped one session PUSHING another's commits, and in a shared checkout that
+# is the same class of problem one layer up: `git push` ships whatever is on the
+# branch, so a session pushing its own work silently deploys everyone else's
+# too. On 2026-07-30 that happened five times in one day — work shipped without
+# the owner asking, and once a board feature went out inside a commit message
+# about browser fixes.
+#
+# Attribution comes from the Amux-Session trailer that prepare-commit-msg
+# already stamps on every commit, so this needs no new bookkeeping.
+#
+# Fail-open by design: any error lets the push proceed. Outside amux
+# ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
+# Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
+import os, subprocess, sys
+
+ZERO = "0" * 40
+
+
+def main():
+    sess = os.environ.get("AMUX_SESSION", "")
+    if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):
+        return 0
+    if os.environ.get("AMUX_PUSH_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
+        return 0
+    foreign = {}
+    ordered = []
+    try:
+        for line in sys.stdin.read().splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local_sha, remote_sha = parts[1], parts[3]
+            if local_sha.strip("0") == "":
+                continue                      # branch deletion
+            # A NEW branch has no remote counterpart, so remote_sha is all
+            # zeros. Walking `local_sha` alone then means "everything reachable"
+            # — the ENTIRE history — and the guard reported 1081 foreign commits
+            # for a branch that added exactly one, every other commit already
+            # sitting on origin and shipping nothing.
+            #
+            # That is worse than a missing check. The guard's whole value is
+            # that AMUX_ALLOW_FOREIGN=1 stays a deliberate act; one that cries
+            # wolf on every `git checkout -b` teaches the reflex of setting it
+            # blind, and then the one push that really does carry someone
+            # else's work sails through. Bound the walk by what origin ALREADY
+            # has, which is the question the guard actually means to ask.
+            if remote_sha == ZERO:
+                rng_args = [local_sha, "--not", "--remotes=origin"]
+            else:
+                rng_args = [remote_sha + ".." + local_sha]
+            out = subprocess.run(
+                ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)"]
+                + rng_args,
+                capture_output=True, text=True, timeout=15).stdout
+            for row in out.splitlines():
+                if not row.strip():
+                    continue
+                bits = row.split("\x1f")
+                if len(bits) < 3:
+                    continue
+                who = bits[2].strip()
+                ordered.append((bits[0], who))   # newest-first, for the escape below
+                if who and who != sess:
+                    foreign.setdefault(who, []).append((bits[0], bits[1][:62]))
+                elif not who:
+                    foreign.setdefault("(no Amux-Session trailer)", []).append(
+                        (bits[0], bits[1][:62]))
+    except Exception:
+        return 0  # fail open — the guard must never brick a push
+    if not foreign:
+        return 0
+    w = sys.stderr.write
+    n = sum(len(v) for v in foreign.values())
+    w("\namux push-guard: PUSH BLOCKED — this would ship %d commit(s) authored by "
+      "another session in this shared checkout:\n\n" % n)
+    for who in sorted(foreign):
+        w("  %s:\n" % who)
+        for sha, subj in foreign[who][:6]:
+            w("    %s  %s\n" % (sha, subj))
+        if len(foreign[who]) > 6:
+            w("    ... and %d more\n" % (len(foreign[who]) - 6))
+    # NAME THE ESCAPE, and compute it (AMUX-2512). This refusal offered only "ask
+    # that session" or the override, and said nothing about ORDER — so two sessions
+    # with interleaved commits each blocked correctly and both stalled. That happened
+    # twice in one afternoon, roles swapped the second time, and it took a third
+    # session reading the stack from outside to spot it.
+    #
+    # The constraint the guard creates and never announced, stated precisely — my
+    # first version of this comment overstated it and the test caught me:
+    # you can always ship the contiguous run of YOUR commits sitting directly above
+    # the remote, whatever is above THAT. So a tip owner is not fully blocked; they
+    # ship their lower prefix and wait for the foreign commit to clear before the
+    # rest. Only a stack whose FIRST unpushed commit is foreign has no escape at all.
+    # Either way the ordering is: lower owner first. Nothing in the old message
+    # hinted ordering mattered, so "correctly declined to override" looked identical
+    # to "stalled".
+    safe = ""
+    for _sha, _who in reversed(ordered):      # oldest first
+        if _who == sess:
+            safe = _sha
+        else:
+            break
+    w("\nTheir work is not yours to deploy. Options:\n")
+    if safe:
+        w("  - PUSH ONLY YOURS (no override needed) — your commits up to %s form a\n"
+          "    contiguous run above the remote, so this ships exactly them:\n"
+          "      git push origin %s:main\n" % (safe, safe))
+    else:
+        w("  - the commit directly above the remote is not yours, so there is no\n"
+          "    same-session prefix to ship — those sessions must push first, lower\n"
+          "    owner first. Ask them, then push.\n")
+    w("  - or ask that session to push its own commits, or\n"
+      "  - if the human explicitly asked you to ship everything:\n"
+      "      AMUX_ALLOW_FOREIGN=1 git push ...\n\n")
+    # NAME THE BLOCKING RUN AND ITS LANE'S LIVE STATUS (gtm-videos +
+    # creative-dna, 2026-08-08: 55 commits, 28 interleaved runs, four owners —
+    # draining needs SEQUENTIAL handoffs, and the common stall is an IDLE lane
+    # at the bottom that nothing addresses). Three cases, three actions:
+    #   owner ACTIVE    -> wait, clears itself
+    #   owner IDLE/GONE -> nudge THAT named lane (previously invisible)
+    #   untrailered     -> only a human push clears it; say so
+    # NB: this comment used to say the hook file is GENERATED and that edits to
+    # .git/hooks/pre-push are clobbered on the next server restart. TRUE THEN,
+    # FALSE NOW, and the correction matters because the warning was steering
+    # people away from the only copy that exists.
+    #
+    # The generator lived in the PYTHON server (8 references), which was deleted
+    # at 792ce1f on 2026-08-09. The rust binary contains zero "pre-push"
+    # strings, and this file's mtime was 2026-08-08 — a day BEFORE the
+    # deletion — so nothing has regenerated it since and nothing will. It was
+    # an orphan: unversioned, uninstalled, and present in exactly one checkout,
+    # which means a fresh clone had NO push guard at all while this one
+    # believed it was protected.
+    #
+    # It is now tracked at scripts/git-hooks/pre-push and installed by
+    # scripts/install-hooks.sh, like the staged guard and the session stamp.
+    # Edit it HERE (AMUX-2940).
+    try:
+        _bottom = ordered[-1] if ordered else None
+        if _bottom and _bottom[1] != sess:
+            _bown = _bottom[1] or "(no Amux-Session trailer)"
+            _brun = 0
+            for _sha2, _who2 in reversed(ordered):
+                if (_who2 or "(no Amux-Session trailer)") != _bown:
+                    break
+                _brun += 1
+            if _bown == "(human)":
+                # AMUX-2567 made this a VALUE rather than a gap, so the guard can
+                # finally name the blocker instead of describing a hole. Before,
+                # a human's own commit and a hook-bypassing graft both arrived
+                # as absence and got the same "NO lane can claim them" text —
+                # which reads as corruption when the real answer is "Ethan
+                # committed something; ask him".
+                w("  BLOCKING RUN: the %d commit(s) at the bottom were committed by a\n"
+                  "  HUMAN (Amux-Session: (human)) — not by any lane. No session can\n"
+                  "  push them for you, and waiting will not clear it.\n"
+                  "  They may be unshipped local WIP, which is exactly what this guard\n"
+                  "  protects, so ASK before assuming they are ready:\n"
+                  "    amux alert is NOT for this — just ask in chat, or\n"
+                  "    AMUX_ALLOW_FOREIGN=1 git push ...   # only if they said ship it\n" % _brun)
+            elif _bown.startswith("("):
+                w("  BLOCKING RUN: the %d commit(s) at the BOTTOM of the queue carry no\n"
+                  "  Amux-Session trailer at all — not even (human), which every commit\n"
+                  "  made through the hooks now gets. That means the stamp was BYPASSED:\n"
+                  "  --no-verify, a cherry-pick, or a rebase replay. NO lane can claim\n"
+                  "  them, so selective pushes can never drain past this point. A HUMAN\n"
+                  "  push clears it (this guard no-ops without AMUX_SESSION), or an\n"
+                  "  entitled AMUX_ALLOW_FOREIGN=1, or re-attribute them if the author\n"
+                  "  is known. Waiting will not.\n" % _brun)
+            else:
+                _bstat = "unknown"
+                try:
+                    import json as _json, ssl as _ssl, urllib.request as _rq
+                    _ctx = _ssl.create_default_context()
+                    _ctx.check_hostname = False; _ctx.verify_mode = _ssl.CERT_NONE
+                    _rows = _json.loads(_rq.urlopen(
+                        # 8824 is canonical; 8822 is the RETIRED address kept
+                        # alive only by a compatibility bind (CLAUDE.md). A
+                        # fallback pointing at it re-teaches the dead port to
+                        # every checkout that lacks AMUX_URL.
+                        (os.environ.get("AMUX_URL") or "https://localhost:8824")
+                        + "/api/sessions", context=_ctx, timeout=3).read())
+                    _hit = next((r for r in _rows if r.get("name") == _bown), None)
+                    _bstat = ("not a session on this machine" if _hit is None
+                              else "%s%s" % (_hit.get("status") or "stopped",
+                                             "" if _hit.get("running") else " (not running)"))
+                except Exception:
+                    _bstat = "unknown (api unreachable)"
+                w("  BLOCKING RUN: the %d commit(s) at the bottom belong to %s\n"
+                  "  (currently: %s). Nobody above them can push until that run ships.\n"
+                  % (_brun, _bown, _bstat))
+                if ("idle" in _bstat or "not running" in _bstat
+                        or "not a session" in _bstat or "stopped" in _bstat):
+                    w("  That lane is NOT actively working — waiting will not clear this.\n"
+                      "  Nudge it:  amux send %s \"your %d-commit run blocks the shared\n"
+                      "  push queue — push yours\"\n" % (_bown, _brun))
+    except Exception:
+        pass
+    return 1
+
+
+sys.exit(main())

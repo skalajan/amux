@@ -194,7 +194,7 @@
     <p>An AutoGen AssistantAgent receives a high-level task ("refactor all authentication endpoints to use the new middleware"). It decomposes the work into subtasks and POSTs them to the amux board via <code>POST /api/board</code>. A second AutoGen agent monitors the board via <code>GET /api/board</code> and reports completion. Claude Code sessions running inside amux pick up tasks via the kanban system and execute them.</p>
     <pre><code style="font-size:0.82rem"># AutoGen agent posting a subtask to amux
 import requests
-requests.post("https://localhost:8822/api/board", json={
+requests.post("https://localhost:8824/api/board", json={
     "title": "Refactor auth middleware in /api/users.py",
     "session": "claude-code-worker-1",
     "status": "todo"
@@ -202,7 +202,7 @@ requests.post("https://localhost:8822/api/board", json={
 
 # AutoGen agent reading session output (peeking)
 output = requests.get(
-    "https://localhost:8822/api/sessions/claude-code-worker-1/peek",
+    "https://localhost:8824/api/sessions/claude-code-worker-1/peek",
     params={"lines": 50}, verify=False
 ).json()["output"]</code></pre>
 
@@ -211,7 +211,7 @@ output = requests.get(
     <pre><code style="font-size:0.82rem"># AutoGen tool definition: "run this in a coding agent session"
 def run_in_coding_agent(task: str, session_name: str = "code-worker") -> str:
     """Send a task to an amux-managed Claude Code session."""
-    r = requests.post(f"https://localhost:8822/api/sessions/{session_name}/send",
+    r = requests.post(f"https://localhost:8824/api/sessions/{session_name}/send",
         json={"text": task}, verify=False)
     return r.json().get("status", "sent")</code></pre>
 
@@ -272,7 +272,7 @@ def run_in_coding_agent(task: str, session_name: str = "code-worker") -> str:
       <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub ★</a>
       <a class="btn" href="/guides/getting-started/">Quick-start guide →</a>
     </div>

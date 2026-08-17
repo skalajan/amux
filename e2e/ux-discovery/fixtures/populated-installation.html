@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — populated installation</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; }
+  .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { border-color: #58a6ff; color: #f0f6fc; }
+  .card { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .header { display: flex; justify-content: space-between; align-items: center; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .meta { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+  .group-header { margin-top: 16px; padding: 4px 0; border-bottom: 1px solid #21262d; }
+  .schedule-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #21262d; }
+</style>
+</head>
+<body>
+<!-- Seed state: active installation with multiple workers, tasks, and
+     schedules across various states. The happy-path dashboard view:
+     groups, assignments, active turns (RR-0028c). -->
+
+<div class="shell" data-testid="dashboard-shell">
+  <header>
+    <div class="tabs" role="tablist">
+      <div class="tab active" role="tab" data-testid="tab-sessions" tabindex="0">Sessions (4)</div>
+      <div class="tab" role="tab" data-testid="tab-board" tabindex="0">Board (6)</div>
+      <div class="tab" role="tab" data-testid="tab-schedules" tabindex="0">Schedules (2)</div>
+      <div class="tab" role="tab" data-testid="tab-settings" tabindex="0">Settings</div>
+    </div>
+  </header>
+
+  <!-- Sessions panel -->
+  <div data-testid="sessions-panel">
+    <div class="group-header" data-testid="group-backend">Group: backend</div>
+
+    <div class="card" data-testid="worker-alpha">
+      <div class="header">
+        <span>alpha</span>
+        <span class="badge" style="background:#238636">active</span>
+      </div>
+      <div class="meta">claude-code · turn 14 · doing: "Implement SSE"</div>
+      <div class="actions">
+        <button data-testid="worker-alpha-send">Send</button>
+        <button data-testid="worker-alpha-peek">Peek</button>
+        <button data-testid="worker-alpha-stop">Stop</button>
+      </div>
+    </div>
+
+    <div class="card" data-testid="worker-bravo">
+      <div class="header">
+        <span>bravo</span>
+        <span class="badge" style="background:#1f6feb">idle</span>
+      </div>
+      <div class="meta">gemini-cli · idle 3m · 2 queued tasks</div>
+      <div class="actions">
+        <button data-testid="worker-bravo-send">Send</button>
+        <button data-testid="worker-bravo-peek">Peek</button>
+        <button data-testid="worker-bravo-stop">Stop</button>
+      </div>
+    </div>
+
+    <div class="group-header" data-testid="group-frontend">Group: frontend</div>
+
+    <div class="card" data-testid="worker-charlie">
+      <div class="header">
+        <span>charlie</span>
+        <span class="badge" style="background:#238636">active</span>
+      </div>
+      <div class="meta">claude-code · turn 7 · doing: "Fix mobile layout"</div>
+      <div class="actions">
+        <button data-testid="worker-charlie-send">Send</button>
+        <button data-testid="worker-charlie-peek">Peek</button>
+        <button data-testid="worker-charlie-stop">Stop</button>
+      </div>
+    </div>
+
+    <div class="card" data-testid="worker-delta">
+      <div class="header">
+        <span>delta</span>
+        <span class="badge" style="background:#484f58">stopped</span>
+      </div>
+      <div class="meta">codex-cli · stopped</div>
+      <div class="actions">
+        <button data-testid="worker-delta-start">Start</button>
+        <button data-testid="worker-delta-configure">Configure</button>
+      </div>
+    </div>
+
+    <button data-testid="add-worker">Add worker</button>
+  </div>
+
+  <!-- Board panel -->
+  <div data-testid="board-panel" style="display:none">
+    <div class="actions" style="margin-bottom:12px">
+      <button data-testid="board-create-task">New task</button>
+      <select data-testid="board-filter-status">
+        <option value="all">All statuses</option>
+        <option value="active">Active</option>
+        <option value="terminal">Terminal</option>
+      </select>
+      <select data-testid="board-filter-type">
+        <option value="all">All types</option>
+        <option value="code">Code</option>
+        <option value="doc">Doc</option>
+      </select>
+      <input data-testid="board-search" placeholder="Search tasks">
+    </div>
+
+    <div class="card">
+      <div class="header">
+        <span>ARE-1: Implement SSE reconnection</span>
+        <span class="badge" style="background:#238636">doing</span>
+      </div>
+      <div class="meta">assigned: alpha · type: code</div>
+    </div>
+
+    <div class="card">
+      <div class="header">
+        <span>ARE-2: Fix mobile layout</span>
+        <span class="badge" style="background:#238636">doing</span>
+      </div>
+      <div class="meta">assigned: charlie · type: code</div>
+    </div>
+
+    <div class="card">
+      <div class="header">
+        <span>ARE-3: Add rate limit headers</span>
+        <span class="badge" style="background:#1f6feb">todo</span>
+      </div>
+      <div class="meta">unassigned · type: code</div>
+    </div>
+  </div>
+
+  <!-- Schedules panel -->
+  <div data-testid="schedules-panel" style="display:none">
+    <div class="schedule-row">
+      <span data-testid="schedule-daily">Daily health check</span>
+      <span class="meta">daily at 9:00 · target: alpha</span>
+      <div class="actions">
+        <button data-testid="schedule-daily-run">Run now</button>
+        <button data-testid="schedule-daily-disable">Disable</button>
+        <button data-testid="schedule-daily-edit">Edit</button>
+      </div>
+    </div>
+    <div class="schedule-row">
+      <span data-testid="schedule-sweep">Board sweep</span>
+      <span class="meta">every 15m · target: bravo</span>
+      <div class="actions">
+        <button data-testid="schedule-sweep-run">Run now</button>
+        <button data-testid="schedule-sweep-disable">Disable</button>
+        <button data-testid="schedule-sweep-edit">Edit</button>
+      </div>
+    </div>
+    <button data-testid="schedule-create">Create schedule</button>
+  </div>
+</div>
+
+<script>
+const tabs = document.querySelectorAll('[role=tab]');
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelectorAll('[data-testid$="-panel"]').forEach(p => p.style.display = 'none');
+    const map = { 'tab-sessions': 'sessions', 'tab-board': 'board', 'tab-schedules': 'schedules', 'tab-settings': 'settings' };
+    const target = document.querySelector(`[data-testid="${map[tab.dataset.testid]}-panel"]`);
+    if (target) target.style.display = '';
+  });
+});
+</script>
+</body>
+</html>

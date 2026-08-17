@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Bolt.new — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with Bolt.new for AI-assisted development workflows.">
-  <meta name="keywords" content="amux vs bolt new, bolt.new alternative, AI coding comparison">
+  <title>amux vs Bolt.new (2026) — Existing Codebase vs Greenfield AI Coding — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux runs parallel AI agents on your existing codebase overnight. Bolt.new generates new apps in the browser. Different tools for different moments — here is how to choose.">
+  <meta name="keywords" content="amux vs bolt new, bolt.new alternative, bolt.new alternative for existing codebases, bolt.new open source alternative, amux vs bolt.new 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-bolt-new/">
-  <meta property="og:title" content="amux vs Bolt.new — amux">
-  <meta property="og:description" content="Compare amux with Bolt.new for AI-assisted development workflows.">
+  <meta property="og:title" content="amux vs Bolt.new (2026) — Existing Codebase vs Greenfield AI Coding">
+  <meta property="og:description" content="amux runs parallel AI agents on your existing codebase overnight. Bolt.new generates new apps in the browser. Different tools for different moments.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-bolt-new/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Bolt.new","item":"https://amux.io/compare/amux-vs-bolt-new/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs Bolt.new","description":"Compare amux with Bolt.new for AI-assisted development workflows.","url":"https://amux.io/compare/amux-vs-bolt-new/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Bolt.new (2026): Existing Codebase vs Greenfield AI Coding","description":"amux runs parallel AI agents on your existing codebase overnight. Bolt.new generates new apps in the browser. Different tools for different moments.","datePublished":"2026-08-13","dateModified":"2026-08-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/compare/amux-vs-bolt-new/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents (Claude Code, Codex, Gemini CLI) on your existing local codebase with overnight self-healing, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale."}},{"@type":"Question","name":"Can amux replace Bolt.new for prototyping?","acceptedAnswer":{"@type":"Answer","text":"Not directly. Bolt.new's strength is zero-setup, instant full-stack generation from a blank canvas. amux requires a local environment and existing codebase. For rapid prototyping without any local setup, Bolt.new is the right tool. For extending a prototype into a production codebase with parallel agents, switch to amux."}},{"@type":"Question","name":"Does Bolt.new support parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"No. Bolt.new is a single-session, single-agent tool. One conversation, one editing window. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and the self-healing watchdog keeps every session alive overnight."}},{"@type":"Question","name":"Is there an open-source version of Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Yes. Bolt.diy (formerly oai-like) is an open-source fork of the Bolt interface that you can self-host. It supports multiple AI providers. However, it is still a single-session tool and runs in the browser — it does not add fleet orchestration, overnight runs, or a shared kanban board."}},{"@type":"Question","name":"Is amux a Bolt.new alternative?","acceptedAnswer":{"@type":"Answer","text":"For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with self-healing, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no equivalent in amux. Most developers use both: Bolt.new to draft a prototype quickly, then amux to run parallel agents on the exported code."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,19 +40,136 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Bolt.new</span></div>
+
     <h1>amux vs Bolt.new</h1>
-<p class="subtitle">Bolt.new generates apps in the browser. amux runs agents against your existing codebase. Different tools for different moments.</p>
-<p><strong>Bolt.new</strong> is a browser-based AI coding environment that generates full-stack applications from prompts — instant, no setup, great for prototypes. <strong>amux</strong> is a local agent orchestrator that runs Claude Code sessions against your own codebase, with a web dashboard, self-healing, and parallel execution.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>Bolt.new</th></tr></thead><tbody><tr><td>Environment</td><td>Local machine, your codebase</td><td>Browser sandbox</td></tr><tr><td>Parallel agents</td><td>Dozens of independent sessions</td><td>Single session</td></tr><tr><td>Existing codebases</td><td>Full access to your files, git, tools</td><td>Starts from scratch</td></tr><tr><td>Unattended operation</td><td>Self-healing watchdog, overnight runs</td><td>Browser tab must stay open</td></tr><tr><td>Data privacy</td><td>Local only, code never leaves your machine</td><td>Code runs in cloud sandbox</td></tr><tr><td>Cost</td><td>API tokens only (no platform fee)</td><td>Subscription + token credits</td></tr><tr><td>Open source</td><td>Yes (MIT)</td><td>No</td></tr><tr><td>Mobile management</td><td>PWA dashboard</td><td>Browser only</td></tr></tbody></table>
-<h2>When to use Bolt.new</h2>
-<p>Bolt.new is ideal for <strong>generating a new project from scratch</strong> when you want instant setup and don't have an existing codebase. It's a great prototyping tool for validating ideas quickly without any local configuration.</p>
-<h2>When to use amux</h2>
-<p>amux is the right choice when you're working on an <strong>existing codebase</strong> and want to run multiple autonomous agents in parallel — overnight, from your phone, with a shared task board and self-healing infrastructure. If you're past the prototype stage, amux is the tool for the long run.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <p class="subtitle">Greenfield browser generation vs. parallel agent fleet on your existing codebase. August 2026.</p>
+
+    <!-- EXP-007 -->
+    <div style="background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:1rem 1.25rem;margin:1.25rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <strong style="color:#10b981">Building on an existing codebase?</strong>
+        <p style="margin:.25rem 0 0;font-size:.9rem;color:var(--fg-muted)">amux runs parallel agents on YOUR code — local files, git, terminal tools. 345+ stars on GitHub. Open source, MIT licensed.</p>
+      </div>
+      <a href="https://github.com/mixpeek/amux" onclick="if(typeof posthog!=='undefined')posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:.6rem 1.1rem;border-radius:7px;text-decoration:none;font-weight:600;white-space:nowrap;font-size:.9rem">&#11088; Star amux on GitHub</a>
+    </div>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> Bolt.new generates brand-new web apps in a browser sandbox with zero local setup. amux runs a fleet of parallel Claude Code, Codex, and Gemini CLI agents on your existing local codebase overnight, with self-healing, a kanban board, and mobile management. They target fundamentally different moments: Bolt.new for greenfield prototypes, amux for iterating on production code at fleet scale. Most developers use both.
+    </div>
+
+    <p><strong>Bolt.new</strong> (from StackBlitz) is a browser-based AI coding environment. You describe what you want; it generates a full-stack app in a WebContainer sandbox, with a live preview, Figma integration, and instant deployment. No local environment needed. Code stays in the cloud.</p>
+
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously against your local codebase, coordinated via a shared kanban board, with a web dashboard and a native iOS app. Single Rust binary, MIT licensed, zero external runtime dependencies beyond tmux.</p>
+
+    <h2>The core difference: greenfield generation vs. fleet iteration</h2>
+
+    <p>Bolt.new is a creation tool. Its power is speed-to-first-prototype: describe an app, get a working skeleton in seconds, iterate by chatting, preview in the browser. The WebContainer sandbox means nothing touches your local machine and there is no setup friction. That is the right model when you are validating an idea or onboarding a non-developer.</p>
+
+    <p>amux is an iteration tool. Its power is throughput on an existing codebase: queue 20 tickets on the board, have 10 agents claim tasks atomically, work overnight in parallel, and wake up to 20 pull requests. The self-healing watchdog handles context compaction, crash recovery, and tool-approval dialogs so you do not have to babysit the fleet. That is the right model when you have shipped code and need to ship more of it, faster.</p>
+
+    <h2>Feature comparison</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Feature</th><th>amux</th><th>Bolt.new</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Environment</td><td>Local machine, your codebase</td><td>Browser WebContainer sandbox</td></tr>
+          <tr><td>Existing codebase support</td><td>Full (local files, git, any tool)</td><td>No — starts from blank slate</td></tr>
+          <tr><td>Parallel agents</td><td>Dozens simultaneously (10-50+)</td><td>Single session only</td></tr>
+          <tr><td>Unattended overnight runs</td><td>Yes — self-healing watchdog</td><td>No — browser tab must stay open</td></tr>
+          <tr><td>Self-healing / crash recovery</td><td>Yes — auto-restarts, replays last message</td><td>No</td></tr>
+          <tr><td>Local file &amp; database access</td><td>Full — runs native commands, reads any file</td><td>No — sandboxed WebContainer only</td></tr>
+          <tr><td>Data privacy</td><td>Local only, code never leaves your machine</td><td>Code runs in cloud sandbox</td></tr>
+          <tr><td>Cost</td><td>Free (API tokens only, no platform fee)</td><td>Free tier + $20/month Pro + Team plans</td></tr>
+          <tr><td>Open source</td><td>Yes, MIT licensed (GitHub)</td><td>Bolt.diy is open source; Bolt.new is not</td></tr>
+          <tr><td>Mobile management</td><td>Native iOS app + PWA</td><td>Browser only, mobile-friendly UI</td></tr>
+          <tr><td>Built-in kanban board</td><td>Yes — atomic task claiming, agents self-assign</td><td>No</td></tr>
+          <tr><td>AI runtime support</td><td>Claude Code, Codex CLI, Gemini CLI</td><td>Claude Sonnet (primary), others via Bolt.diy</td></tr>
+          <tr><td>Deployment target</td><td>Any language, any codebase, any tool</td><td>Web apps primarily (Node, React, etc.)</td></tr>
+          <tr><td>Self-hosted option</td><td>Yes — runs entirely on your machine</td><td>Bolt.diy only (community fork)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>When to use Bolt.new</h2>
+    <ul>
+      <li><strong>You are validating a brand-new idea</strong> and want a working prototype in minutes, not hours</li>
+      <li><strong>You have no existing codebase</strong> and no local development environment set up</li>
+      <li><strong>You want a visual preview</strong> as you iterate — Bolt.new's live browser preview is first-class</li>
+      <li><strong>You are working with a non-developer</strong> who needs to see results without touching a terminal</li>
+      <li><strong>You are building a web app</strong> — Bolt.new's WebContainer is optimized for front-end and full-stack web projects</li>
+    </ul>
+
+    <h2>When to use amux</h2>
+    <ul>
+      <li><strong>You have an existing codebase</strong> and need to parallelize work across it overnight</li>
+      <li><strong>You want to run 10+ agents simultaneously</strong> on different branches or tasks without manual coordination</li>
+      <li><strong>You need unattended overnight runs</strong> — amux keeps every session alive while you sleep</li>
+      <li><strong>You want fleet visibility from your phone</strong> — check agent status, send messages, and review results from the iOS app</li>
+      <li><strong>You are building beyond web apps</strong> — native apps, CLI tools, backend services, data pipelines, anything a terminal can run</li>
+      <li><strong>Data privacy is non-negotiable</strong> — your code never leaves your machine</li>
+    </ul>
+
+    <h2>Why not both?</h2>
+    <p>Many developers use Bolt.new and amux at different stages of the same project. Bolt.new is ideal for the first 10% — getting a working skeleton fast, before you have strong opinions about the architecture. Once the prototype is solid enough to export and commit, amux takes over for the remaining 90%: running parallel agents across the growing codebase, managing tickets on the shared board, and doing overnight sprints.</p>
+    <p>The handoff point is when your project graduates from "idea validation" to "I care about this code long-term." Bolt.new excels at the former; amux excels at the latter.</p>
+
+    <h2>Decision guide</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Bolt.new</th><th>amux</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>New idea, no codebase yet</td><td>Best fit</td><td>Not designed for this</td></tr>
+          <tr><td>Existing production codebase, parallelizing features</td><td>Not applicable</td><td>Best fit</td></tr>
+          <tr><td>Need to run agents overnight unattended</td><td>No</td><td>Yes</td></tr>
+          <tr><td>Web app prototype, visual preview required</td><td>Best fit</td><td>No built-in preview</td></tr>
+          <tr><td>Data must stay local (compliance, IP)</td><td>No</td><td>Yes</td></tr>
+          <tr><td>Budget: minimize platform costs</td><td>Depends on usage tier</td><td>Free (API tokens only)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Frequently asked questions</h2>
+
+    <h3>What is the main difference between amux and Bolt.new?</h3>
+    <p>Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents on your existing local codebase with overnight self-healing, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale.</p>
+
+    <h3>Can amux replace Bolt.new for prototyping?</h3>
+    <p>Not directly. Bolt.new's strength is zero-setup, instant full-stack generation from a blank canvas in the browser. amux requires a local environment and an existing codebase. For rapid prototyping without any local setup, Bolt.new is the right tool. Once a prototype is solid enough to export and commit, switching to amux enables parallel agent iteration at far higher throughput.</p>
+
+    <h3>Does Bolt.new support parallel AI agents?</h3>
+    <p>No. Bolt.new is a single-session, single-agent tool. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and the self-healing watchdog keeps every session alive overnight.</p>
+
+    <h3>Is there an open-source version of Bolt.new?</h3>
+    <p>Yes. <strong>Bolt.diy</strong> (formerly oai-like) is an open-source fork of the Bolt interface that you can self-host and configure with multiple AI providers. However, it is still a single-session browser tool and does not add fleet orchestration, overnight runs, or a shared kanban board. amux and Bolt.diy solve different problems.</p>
+
+    <h3>Is amux a Bolt.new alternative?</h3>
+    <p>For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with self-healing, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no direct equivalent in amux. Most developers use both at different stages of their projects.</p>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team from one dashboard</h3>
+      <p>amux is an open-source control plane for AI coding agents — self-healing, phone-first, MIT licensed, single compiled binary. 345+ stars on GitHub.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+# → https://localhost:8824</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#11088; Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
+
+    <h2>Related comparisons</h2>
+    <ul>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor — agent orchestrator vs AI code editor</a></li>
+      <li><a href="/compare/amux-vs-v0/">amux vs v0 — local agent fleet vs browser UI generation</a></li>
+      <li><a href="/compare/amux-vs-replit-agent/">amux vs Replit Agent — self-hosted vs cloud coding agent</a></li>
+      <li><a href="/compare/amux-vs-devin/">amux vs Devin — open source vs fully autonomous cloud agent</a></li>
+      <li><a href="/compare/">All amux comparisons</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -98,7 +216,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count)el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

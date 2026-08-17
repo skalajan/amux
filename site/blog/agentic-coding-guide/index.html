@@ -116,7 +116,7 @@ amux start myapp/test --prompt "Write integration tests for the
     <p><strong>Real-time output streaming.</strong> Watch what each agent is doing as it works. amux provides a web dashboard that streams each agent's terminal output in real-time, so you can spot problems without waiting for the agent to finish.</p>
     <p><strong>Token spend tracking.</strong> Agents that get stuck in loops burn through tokens. Monitor per-session spend and set budget limits to catch runaway agents:</p>
     <pre><code># Check token spend across all sessions
-curl -sk https://localhost:8822/api/sessions | \
+curl -sk https://localhost:8824/api/sessions | \
   python3 -c "import json,sys
 for s in json.load(sys.stdin):
   print(f\"{s['name']:20s} \${s.get('cost_usd',0):.2f}  {s.get('status','')}\")"</code></pre>
@@ -152,17 +152,17 @@ git diff -- src/api/  # agent-specific scope</code></pre>
 # A lead agent decomposes work and creates tasks
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Implement user model","session":"worker-1","status":"todo"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 # Worker agents claim and complete tasks
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"session":"worker-1"}' \
-  https://localhost:8822/api/board/TASK-ID/claim
+  https://localhost:8824/api/board/TASK-ID/claim
 
 # Inter-agent messaging for direct coordination
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"The User model is ready at models/user.py. You can import it now."}' \
-  https://localhost:8822/api/sessions/worker-2/send</code></pre>
+  https://localhost:8824/api/sessions/worker-2/send</code></pre>
     <p>The most effective orchestration pattern is "hub and spoke": one lead agent (or the human developer) creates and assigns tasks via the board, and worker agents pull tasks, execute them, and report back. This avoids the complexity of agents negotiating directly with each other.</p>
 
     <h2>The future of agentic development</h2>
@@ -179,7 +179,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

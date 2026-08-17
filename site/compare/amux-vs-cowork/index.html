@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Cowork — Coding Agent Fleet vs Single Computer-Use Agent</title>
+  <title>amux vs CoWork (cowork.ai) 2026 — Open-Source Fleet vs Cloud SaaS Multi-Agent Platform</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs Claude Cowork: parallel coding agent fleet orchestration vs Anthropic's single computer-use agent. Feature comparison, throughput, pricing, and when to use each.">
-  <meta name="keywords" content="amux vs cowork, claude cowork alternative, cowork AI agent, amux vs claude cowork, open source cowork alternative">
+  <meta name="description" content="amux vs CoWork (cowork.ai) 2026: self-hosted open-source AI agent orchestration vs cloud SaaS multi-agent platform. Compare pricing, control, runtime support, and when to use each.">
+  <meta name="keywords" content="amux vs cowork, cowork.ai alternative, open source cowork alternative, self hosted multi-agent coding platform, cowork ai agent platform, amux cowork comparison 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-cowork/">
-  <meta property="og:title" content="amux vs Cowork — Coding Agent Fleet vs Single Computer-Use Agent">
-  <meta property="og:description" content="Compare amux (parallel coding fleet, open source) with Claude Cowork (single computer-use agent, Anthropic). Different scale, different model.">
+  <meta property="og:title" content="amux vs CoWork (cowork.ai) 2026 — Open-Source Fleet vs Cloud SaaS">
+  <meta property="og:description" content="CoWork is a cloud SaaS multi-agent platform. amux is a self-hosted, open-source control plane for AI coding agents. Different deployment models for different team priorities.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-cowork/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,8 +21,12 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Cowork","item":"https://amux.io/compare/amux-vs-cowork/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Cowork?","acceptedAnswer":{"@type":"Answer","text":"Claude Cowork is Anthropic's agentic computer-use product, available on all paid Claude plans via the Claude desktop app. You give it a goal; it operates autonomously on your computer and local files — browsing the web, writing code, running commands, filling forms — and returns a finished deliverable. It is a single-agent, task-completion model, not a fleet orchestration system."}},{"@type":"Question","name":"What is the main difference between amux and Cowork?","acceptedAnswer":{"@type":"Answer","text":"Scale and model. Cowork runs one agent on one task at a time, using computer-use to operate your desktop environment. amux runs 10-50 parallel coding agents simultaneously (Claude Code, Codex, Gemini CLI), coordinated via a shared kanban board, with a self-healing watchdog for overnight unattended operation. Cowork is great for a single complex task requiring GUI interaction. amux is for shipping code at fleet scale — parallel feature branches, overnight runs, and coordinated agent teams."}},{"@type":"Question","name":"Is amux an alternative to Claude Cowork?","acceptedAnswer":{"@type":"Answer","text":"They are complementary rather than direct alternatives. Cowork handles tasks that require computer-use (navigating GUIs, filling web forms, operating desktop apps). amux handles tasks that require fleet coordination (parallel coding, overnight unattended runs, kanban-based task queues across many sessions). For coding work specifically, amux provides significantly more throughput: 10 coding agents working in parallel complete the same work 10x faster than a single sequential agent."}},{"@type":"Question","name":"Does Cowork support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Cowork is a single-agent product — one task, one agent, one result. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents duplicate work, git worktree isolation prevents merge conflicts, and the self-healing watchdog keeps every agent in the fleet running overnight."}},{"@type":"Question","name":"How much does Cowork cost compared to amux?","acceptedAnswer":{"@type":"Answer","text":"Cowork is included in Claude paid plans (Pro at $20/month, Max at $100-200/month) but agent usage on paid plans moved to a separate credit pool in June 2026 — usage beyond the included credits bills at API rates. amux itself is free and open source; you pay only for API tokens to Claude, Codex, or Gemini CLI. For high-throughput coding work (overnight fleet runs, 10+ parallel agents), amux with API keys is typically more cost-effective than Cowork on a Max plan."}}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs CoWork","item":"https://amux.io/compare/amux-vs-cowork/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs CoWork (cowork.ai) 2026: Open-Source AI Agent Fleet vs Cloud SaaS Platform","description":"CoWork (cowork.ai) is a cloud SaaS multi-agent AI platform for business teams. amux is a self-hosted, open-source control plane for engineering teams running parallel Claude Code, Codex, and Gemini CLI agents. Here is when to use each.","url":"https://amux.io/compare/amux-vs-cowork/","datePublished":"2026-08-14","dateModified":"2026-08-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a CoWork alternative?","acceptedAnswer":{"@type":"Answer","text":"It depends on your use case. CoWork (cowork.ai) is a cloud SaaS platform designed for business teams assigning work to AI agents. amux is a self-hosted, open-source tool designed for engineering teams running parallel Claude Code, Codex CLI, and Gemini CLI agents on their own machines. If you are an engineering team that wants full control over your AI agent runtime, your own API keys, and no SaaS subscription, amux is the direct alternative. If you want a managed cloud platform with a business-oriented UI, CoWork is the intended product."}},{"@type":"Question","name":"Can I use amux instead of CoWork for my engineering team?","acceptedAnswer":{"@type":"Answer","text":"Yes, for coding-focused work. amux gives engineering teams a self-hosted control plane for Claude Code, Codex CLI, and Gemini CLI agents running in parallel on your own machine. You get a shared kanban board with atomic task claiming, a self-healing watchdog for overnight runs, an iOS app and PWA for mobile monitoring, and full control over which models run on which tasks. There are no per-seat fees and no SaaS subscription: you pay only for the API tokens your agents consume."}},{"@type":"Question","name":"What does amux offer that CoWork does not?","acceptedAnswer":{"@type":"Answer","text":"Several engineering-focused capabilities: (1) multi-runtime support — Claude Code, OpenAI Codex CLI, and Gemini CLI all managed from the same dashboard; (2) self-hosted deployment on your own machine with your own API keys; (3) a self-healing watchdog that auto-compacts agent context, restarts crashed sessions, and replays the last message overnight without intervention; (4) a native iOS app and installable PWA for mobile monitoring; (5) EnvSpec — save your entire AI team configuration as a YAML file and restore it on any machine; (6) named agent groups for organizing large fleets by team or project. amux is also MIT licensed and runs as a single binary with no Docker or containers required."}},{"@type":"Question","name":"Is amux free compared to CoWork?","acceptedAnswer":{"@type":"Answer","text":"amux is free open-source software (MIT + Commons Clause). You install it on your own machine and pay only for the LLM API tokens your agents consume: Claude API tokens, Codex API tokens, or Gemini API tokens. There is no per-seat fee, no monthly subscription, and no usage cap. CoWork (cowork.ai) is a SaaS product with its own pricing model; check cowork.ai for current plan details."}},{"@type":"Question","name":"Which should I use, amux or CoWork?","acceptedAnswer":{"@type":"Answer","text":"Choose amux if you are an engineering team who wants to run parallel Claude Code, Codex, or Gemini CLI agents on your own machine, keep your data and API keys under your own control, run overnight unattended fleet operations, and avoid a SaaS subscription. Choose CoWork if you want a managed cloud platform with a business-oriented UI, do not want to manage your own server, and your primary use case is assigning tasks to AI agents through a web interface rather than running a parallel coding fleet."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -37,75 +41,218 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
     </nav>
   </header>
+
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Cowork</span></div>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs CoWork</span></div>
 
-    <h1>amux vs Cowork</h1>
-    <p class="subtitle">Parallel coding agent fleet vs. a single computer-use agent — different scale, different model.</p>
+    <h1>amux vs CoWork (cowork.ai) 2026</h1>
+    <p class="subtitle">Open-source self-hosted AI agent fleet vs cloud SaaS multi-agent platform. Different deployment models, different teams, different priorities.</p>
 
-    <p><strong>Claude Cowork</strong> is Anthropic's agentic product for autonomous computer-use. Available on all paid Claude plans via the Claude desktop app, it takes a goal, operates your computer — browsing, coding, running commands, interacting with GUIs — and returns a finished deliverable. One task, one agent, one result.</p>
-
-    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously, coordinates them via a shared kanban board, and lets you manage the fleet from your phone. Single Python file, MIT licensed, zero external dependencies.</p>
-
-    <h2>The core difference: one agent vs. a fleet</h2>
-
-    <p>Cowork is built around a single-agent, task-completion model. You describe a goal; it works through it autonomously; you review the result. That model is powerful for complex, multi-step tasks that require navigating GUIs or interacting with desktop applications.</p>
-
-    <p>amux is built around a fleet model. You queue 20 tasks on the board; 10 agents claim tasks atomically and work in parallel; all 20 tasks are done in roughly the same time as one sequential agent. The watchdog keeps every session alive overnight — context compaction, crash recovery, automatic tool-approval — so you queue work before bed and review pull requests in the morning.</p>
-
-    <h2>Feature comparison</h2>
-
-    <table>
-      <thead><tr><th>Feature</th><th>amux</th><th>Claude Cowork</th></tr></thead>
-      <tbody>
-        <tr><td>Agent count</td><td>Unlimited parallel sessions (10–50+ typical)</td><td>Single agent per task</td></tr>
-        <tr><td>Execution model</td><td>Claude Code / Codex / Gemini CLI via tmux</td><td>Computer-use (GUI, browser, files)</td></tr>
-        <tr><td>Task coordination</td><td>Shared kanban board with atomic claiming</td><td>Single task queue</td></tr>
-        <tr><td>Overnight operation</td><td>Built-in — self-healing watchdog, YOLO mode</td><td>Limited (single session)</td></tr>
-        <tr><td>Self-healing</td><td>Auto-compact, crash restart, tool-approval auto-respond</td><td>Not a stated feature</td></tr>
-        <tr><td>Mobile management</td><td>Native iOS app + PWA — full fleet control from phone</td><td>Desktop app required</td></tr>
-        <tr><td>Open source</td><td>Yes (MIT + Commons Clause)</td><td>No (Anthropic product)</td></tr>
-        <tr><td>Cost</td><td>Free + API tokens</td><td>Included in Claude paid plans; agent usage bills from credit pool</td></tr>
-        <tr><td>Setup</td><td>Python 3 + tmux, ~5 min</td><td>Claude desktop app</td></tr>
-        <tr><td>Git integration</td><td>Per-session worktrees, commit-guard, verify-gate</td><td>File system access</td></tr>
-        <tr><td>Model choice</td><td>Claude Code, Codex, Gemini CLI (route by task)</td><td>Claude only</td></tr>
-        <tr><td>Infrastructure</td><td>Your machine (local-first)</td><td>Your computer (Anthropic's desktop app)</td></tr>
-      </tbody>
-    </table>
-
-    <h2>Where Cowork is the better fit</h2>
-
-    <ul>
-      <li><strong>Tasks requiring GUI interaction.</strong> Filling out web forms, navigating desktop apps, interacting with software that has no API or CLI interface — computer-use is the right model and amux doesn't do this natively.</li>
-      <li><strong>Non-technical users.</strong> Cowork is accessible through the Claude desktop app without any setup. amux requires Python 3 and tmux.</li>
-      <li><strong>One-off complex tasks.</strong> A single sophisticated task that needs deep autonomy and GUI access — Cowork's single-agent model shines here.</li>
-      <li><strong>Already on a paid Claude plan.</strong> If you're paying for Claude Max, Cowork is included — no additional setup.</li>
-    </ul>
-
-    <h2>Where amux is the better fit</h2>
-
-    <ul>
-      <li><strong>Parallel coding work at scale.</strong> Running 10 feature branches simultaneously, overnight bug-fix batches, large refactors decomposed into parallel tasks — amux handles this; Cowork cannot.</li>
-      <li><strong>Unattended overnight operation.</strong> The self-healing watchdog automatically handles context exhaustion, crashes, and tool-approval prompts so agents run from bed to morning report without intervention.</li>
-      <li><strong>Team coordination.</strong> Multiple developers sharing one amux server, each with their own sessions, coordinated via the shared board. Cowork is single-user.</li>
-      <li><strong>Cost optimization at volume.</strong> Route cheap tasks to Haiku, expensive tasks to Opus, code tasks to Codex — multi-model routing in amux saves 50-65% vs running everything at full tier. Cowork uses Claude exclusively.</li>
-      <li><strong>Full business ops integration.</strong> amux sessions have access to CRM, Gmail, browser automation, and the scheduler — coding agents and business operations in one platform.</li>
-    </ul>
-
-    <h2>The throughput question</h2>
-
-    <p>If you have 20 tasks to complete and one Cowork session, you run them sequentially: task 1, then 2, then 3. If each takes 30 minutes, the batch takes 10 hours. With amux running 10 parallel sessions claiming from the same board, the same 20 tasks complete in roughly 1 hour. For teams with a steady backlog of coding work, the throughput difference is the deciding factor.</p>
-
-    <div class="cta-box">
-      <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, Python 3 + tmux.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    <!-- EXP-007: compare pages GitHub CTA -->
+    <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.1rem 1.4rem;margin:1.25rem 0 1.75rem">
+      <p style="margin:0 0 0.7rem;font-size:0.95rem">amux is free, MIT licensed, and works with Claude Code, Codex CLI, and Gemini CLI — no SaaS subscription required.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp007_compare_github_cta_click')" style="display:inline-block;background:#10b981;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">View amux on GitHub ★</a>
     </div>
+
+    <section>
+      <p><strong>CoWork (cowork.ai)</strong> is a cloud-hosted SaaS platform that lets teams assign tasks to AI agents through a managed web interface. It is designed for business teams who want AI assistance without managing their own infrastructure. The platform handles the compute, the models, and the UI.</p>
+
+      <p><strong>amux</strong> is a self-hosted, open-source control plane for engineering teams who run their own AI coding fleet. It manages parallel Claude Code, Codex CLI, and Gemini CLI sessions on your own machine, coordinates them via a shared kanban board, and keeps them running unattended overnight. Single Rust binary, MIT licensed, 347 GitHub stars.</p>
+
+      <p>The core distinction is deployment model and audience. CoWork is a managed cloud product built around a business-team workflow. amux is a local-first engineering tool built around a parallel coding-agent workflow. Both serve "teams with AI agents," but they serve different kinds of teams doing different kinds of work.</p>
+    </section>
+
+    <section>
+      <h2>Feature comparison</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Feature</th>
+              <th>amux</th>
+              <th>CoWork (cowork.ai)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Deployment</strong></td>
+              <td>Self-hosted on your machine (macOS, Linux)</td>
+              <td>Cloud SaaS — managed by CoWork</td>
+            </tr>
+            <tr>
+              <td><strong>Open source</strong></td>
+              <td>Yes — MIT + Commons Clause, 347 stars</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><strong>Runtime support</strong></td>
+              <td>Claude Code, OpenAI Codex CLI, Gemini CLI</td>
+              <td>Platform-defined (SaaS abstraction)</td>
+            </tr>
+            <tr>
+              <td><strong>API keys</strong></td>
+              <td>Your own keys — full cost control</td>
+              <td>Platform-managed billing</td>
+            </tr>
+            <tr>
+              <td><strong>Parallel agents</strong></td>
+              <td>5-50+ simultaneous sessions</td>
+              <td>Platform-dependent</td>
+            </tr>
+            <tr>
+              <td><strong>Task coordination</strong></td>
+              <td>Shared SQLite kanban board with atomic claiming</td>
+              <td>Web-based task assignment UI</td>
+            </tr>
+            <tr>
+              <td><strong>Overnight operation</strong></td>
+              <td>Built-in — self-healing watchdog, auto-compact, crash restart</td>
+              <td>Managed by the platform</td>
+            </tr>
+            <tr>
+              <td><strong>Mobile monitoring</strong></td>
+              <td>Native iOS app + installable PWA</td>
+              <td>Web-responsive UI</td>
+            </tr>
+            <tr>
+              <td><strong>Agent groups</strong></td>
+              <td>Named groups with shared memory, env vars, and gates</td>
+              <td>Not a stated feature</td>
+            </tr>
+            <tr>
+              <td><strong>Config as code (EnvSpec)</strong></td>
+              <td>Export/restore full AI team config as YAML</td>
+              <td>Not a stated feature</td>
+            </tr>
+            <tr>
+              <td><strong>Voice orchestration</strong></td>
+              <td>Orchestrate your fleet by voice from the dashboard</td>
+              <td>Not a stated feature</td>
+            </tr>
+            <tr>
+              <td><strong>Setup</strong></td>
+              <td>~30 seconds, single binary, no Docker</td>
+              <td>SaaS sign-up, no local setup needed</td>
+            </tr>
+            <tr>
+              <td><strong>Pricing</strong></td>
+              <td>Free software + your own API tokens only</td>
+              <td>SaaS subscription (check cowork.ai for plans)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Where CoWork is the better fit</h2>
+      <ul>
+        <li><strong>Non-engineering business teams.</strong> If the team assigning work to AI agents is not primarily software engineers, CoWork's business-oriented SaaS UI is designed for that audience. amux is built for developers who are comfortable with the terminal.</li>
+        <li><strong>No infrastructure to manage.</strong> CoWork handles everything server-side. amux requires a machine running macOS or Linux and a few minutes of setup. If your organization has a strong preference for not running local infrastructure, a managed cloud product is a better fit.</li>
+        <li><strong>Integrated billing.</strong> For teams that want one bill covering AI agent compute and platform, a SaaS product simplifies procurement. amux splits costs: the software is free, but you manage your own API token spend.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Where amux is the better fit</h2>
+      <ul>
+        <li><strong>Engineering teams running parallel coding agents.</strong> amux is purpose-built for 5-50 Claude Code, Codex, or Gemini CLI sessions running simultaneously on coding tasks. Atomic task claiming from a shared board means no two agents duplicate work. This is not a typical SaaS-platform use case.</li>
+        <li><strong>Full control over models and API keys.</strong> amux uses your own keys. You choose which model runs on which task, switch providers without a platform migration, and see exact per-session token spend. There is no intermediary markup.</li>
+        <li><strong>Overnight unattended fleet runs.</strong> The self-healing watchdog auto-compacts agent context before it hits the limit, restarts crashed sessions, and replays the last prompt so agents continue without human intervention. Queue 30 tasks before bed and review results in the morning.</li>
+        <li><strong>Data stays on your machine.</strong> amux is local-first. Your code, your prompts, and your agent output never leave your own infrastructure. For teams with data sensitivity requirements, self-hosted beats cloud SaaS.</li>
+        <li><strong>Multi-runtime mixed fleet.</strong> You can run Claude Code for reasoning-heavy tasks, Codex CLI for code-generation tasks, and Gemini CLI for tasks where you want Google's model, all from the same dashboard.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Using amux and CoWork together</h2>
+      <p>These tools address different parts of the organization. A practical split for larger teams:</p>
+
+      <p><strong>Pattern 1: CoWork for business ops, amux for engineering.</strong> Business teams use CoWork to assign AI agents to operational tasks (drafting, research, document processing). Engineering teams use amux to run parallel coding agents on the same codebase. The two fleets work independently without interfering with each other.</p>
+
+      <p><strong>Pattern 2: amux as the engineering backend.</strong> Engineering output (code, tests, documentation) generated by the amux fleet gets reviewed and handed off to the business process managed in CoWork. The amux board tracks what the engineering agents produced; CoWork tracks what happens to it next.</p>
+
+      <p><strong>Pattern 3: EnvSpec bridges environments.</strong> amux's EnvSpec feature lets you export your entire AI team configuration as a YAML file. Teams running the same project across multiple machines or collaborators can share the config file to reproduce the same agent setup everywhere. This is a local-infrastructure answer to the reproducibility problem cloud SaaS handles through shared server state.</p>
+    </section>
+
+    <section>
+      <h2>Cost structure comparison</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Cost element</th>
+              <th>amux</th>
+              <th>CoWork (cowork.ai)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Software license</td>
+              <td>Free (MIT + Commons Clause)</td>
+              <td>SaaS subscription (see cowork.ai pricing)</td>
+            </tr>
+            <tr>
+              <td>LLM API tokens</td>
+              <td>Your own keys — no markup</td>
+              <td>Included in or billed through platform</td>
+            </tr>
+            <tr>
+              <td>Infrastructure</td>
+              <td>Your own machine — no extra cost</td>
+              <td>Hosted by CoWork — included in plan</td>
+            </tr>
+            <tr>
+              <td>Per-seat fee</td>
+              <td>None</td>
+              <td>Check cowork.ai for current plans</td>
+            </tr>
+            <tr>
+              <td>Scaling to 20+ agents</td>
+              <td>No additional cost — add more tmux sessions</td>
+              <td>Depends on platform plan limits</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Frequently asked questions</h2>
+
+      <h3>Is amux a CoWork alternative?</h3>
+      <p>For engineering teams, yes. CoWork is a cloud SaaS platform for business teams assigning work to AI agents. amux is a self-hosted open-source tool for engineering teams running parallel Claude Code, Codex CLI, and Gemini CLI agents. If you want self-hosted deployment, your own API keys, and a coding-agent-focused workflow, amux is the alternative.</p>
+
+      <h3>Can I use amux instead of CoWork for my engineering team?</h3>
+      <p>Yes. amux gives engineering teams a self-hosted control plane for parallel coding agents. You get a shared kanban board with atomic task claiming, a self-healing watchdog for overnight runs, an iOS app and PWA for mobile monitoring, named agent groups for fleet organization, and EnvSpec for reproducible team configurations. No per-seat fee, no monthly subscription — you pay only for the API tokens your agents consume.</p>
+
+      <h3>What does amux offer that CoWork does not?</h3>
+      <p>Several engineering-specific capabilities: multi-runtime support (Claude Code + Codex CLI + Gemini CLI from one dashboard), a self-healing watchdog for overnight unattended fleet operation, EnvSpec for saving and restoring your full AI team config as YAML, named agent groups with shared memory and environment variables, voice orchestration from the dashboard, and a native iOS app for mobile monitoring. amux is also fully self-hosted and open source, so your code and prompts stay on your machine.</p>
+
+      <h3>Is amux free compared to CoWork?</h3>
+      <p>amux is free open-source software. You install it on your machine and pay only for the LLM API tokens your agents use. There is no per-seat fee, no monthly subscription, and no platform markup on API calls. CoWork is a SaaS product with its own pricing structure; check cowork.ai for current plan pricing.</p>
+
+      <h3>Which should I use?</h3>
+      <p>Choose amux if you are an engineering team who wants to run parallel Claude Code, Codex, or Gemini CLI agents on your own machine, keep your API keys and data under your own control, and run overnight fleet operations without intervention. Choose CoWork if you want a managed cloud platform with a business-oriented UI, do not want to manage local infrastructure, and your primary use case is task assignment through a web interface rather than parallel coding-agent orchestration.</p>
+    </section>
+
+    <section>
+      <h2>Get started with amux</h2>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/mixpeek/amux/main/install.sh | bash
+amux register myproject --dir ~/Dev/myproject --yolo
+amux serve  # web dashboard at https://localhost:8824</code></pre>
+      <p>No Docker, no containers, no cloud account. Single Rust binary, runs on macOS and Linux. Installs in under a minute.</p>
+
+      <div class="cta-box">
+        <h3>Run a parallel AI coding fleet tonight</h3>
+        <p>amux is free, open source, and takes two minutes to install. Queue tasks before bed, wake up to finished pull requests.</p>
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View amux on GitHub (347 stars)</a>
+      </div>
+    </section>
+
+    <p style="margin-top:2rem">Also see: <a href="/compare/">all comparisons</a>, <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>, <a href="/compare/amux-vs-devin/">amux vs Devin</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers 2026</a></p>
   </main>
+
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">
@@ -151,6 +298,7 @@ amux serve  # → https://localhost:8822</code></pre>
       </div>
     </div>
   </footer>
+
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

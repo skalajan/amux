@@ -1,0 +1,29 @@
+-- 0015: the delivery verdict on a schedule run (AMUX-2647).
+--
+-- ADDITIVE ONLY (shared live DB; 20.5k existing run rows must keep working).
+--
+-- WHY: `schedule_runs.status` was a free string and BOTH rust fire paths passed
+-- the literal `"ok"` — including run-now, which delivered nothing at all. The
+-- endpoint's own comment admitted it ("the run row records the trigger, not a
+-- delivery") and the row said `ok` anyway, so the audit trail asserted success
+-- for something that never happened (ethos rule 6). Ethan pressed Run now,
+-- got a green "Ran", and nothing arrived in the target session.
+--
+-- `status` alone still cannot carry the distinction even once delivery exists,
+-- because there are four honest outcomes and one word:
+--   delivered — Claude Code's own artifacts confirm the command was submitted
+--   queued    — parked on the steering queue; lands at the next turn boundary
+--   refused   — the send path declined (selector, archived, resume picker, …)
+--   error     — delivery was attempted and failed
+-- So `delivery` records WHICH path the command took and `submission` records
+-- what `verify_submitted` read back from the composer / conversation JSONL.
+--
+-- NULL is meaningful in both columns and must NOT be coalesced on read: every
+-- row written before this migration (including the 154 python `cron` fires and
+-- the two undelivered rust run-nows that motivated the card) has no verdict,
+-- and NULL means "not recorded", never "delivered". Nothing is backfilled —
+-- inventing a verdict for a run nobody observed would be the same lie in a new
+-- column.
+
+-- ADDCOL: schedule_runs delivery TEXT
+-- ADDCOL: schedule_runs submission TEXT

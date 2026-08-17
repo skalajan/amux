@@ -87,7 +87,7 @@ amux start myproject --sessions 4
 
 # Launch the web dashboard
 amux serve</code></pre>
-    <p>The <code>amux serve</code> command starts an HTTPS server at <code>https://localhost:8822</code> that provides a real-time dashboard showing all running sessions. You can also manage everything from the CLI:</p>
+    <p>The <code>amux serve</code> command starts an HTTPS server at <code>https://localhost:8824</code> that provides a real-time dashboard showing all running sessions. You can also manage everything from the CLI:</p>
     <pre><code># List running sessions
 amux list
 
@@ -122,7 +122,7 @@ amux start myproject/search --prompt "Add full-text search to the products API u
 amux start myproject/perf --prompt "Profile the /dashboard endpoint and optimize the slowest queries"
 
 # Check back later from your phone (via PWA or Tailscale)
-curl -sk https://your-machine:8822/api/sessions | python3 -m json.tool</code></pre>
+curl -sk https://your-machine:8824/api/sessions | python3 -m json.tool</code></pre>
     <p>This is not possible with IDE-based AI tools. You cannot close Cursor and expect it to keep coding. The terminal model, with session persistence via tmux, makes "fire and forget" agent workflows practical.</p>
 
     <h2>Self-healing and watchdog</h2>
@@ -137,8 +137,8 @@ curl -sk https://your-machine:8822/api/sessions | python3 -m json.tool</code></p
     <h2>Remote access patterns</h2>
     <p>Because amux is a web server, remote access is straightforward. The most common patterns:</p>
     <ul>
-      <li><strong>Tailscale:</strong> Install Tailscale on your development machine and access the amux dashboard from anywhere on your tailnet at <code>https://your-machine:8822</code>.</li>
-      <li><strong>SSH tunnel:</strong> <code>ssh -L 8822:localhost:8822 your-server</code> and access the dashboard at <code>https://localhost:8822</code>.</li>
+      <li><strong>Tailscale:</strong> Install Tailscale on your development machine and access the amux dashboard from anywhere on your tailnet at <code>https://your-machine:8824</code>.</li>
+      <li><strong>SSH tunnel:</strong> <code>ssh -L 8824:localhost:8824 your-server</code> and access the dashboard at <code>https://localhost:8824</code>.</li>
       <li><strong>PWA:</strong> The amux dashboard is installable as a Progressive Web App on iOS and Android, giving you a native-app experience for monitoring agents from your phone.</li>
     </ul>
 
@@ -157,7 +157,7 @@ curl -sk https://your-machine:8822/api/sessions | python3 -m json.tool</code></p
     <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

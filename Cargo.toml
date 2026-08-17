@@ -1,0 +1,89 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/amux-core",
+    "crates/amux-server",
+    "crates/amux-cli",
+    "crates/amux-dashboard",
+]
+
+# Workspace-wide dependency versions: every crate inherits from here so the
+# whole system agrees on one version of each concern (RR-0001).
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["http2"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+thiserror = "2"
+anyhow = "1"
+ulid = "1"
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+regex = "1"
+# debug-embed: embed the dashboard assets at COMPILE time in debug builds too,
+# not just release (AF-60). Without it rust-embed falls back to reading
+# static/ from disk at runtime in debug, so on this 50-lane shared checkout a
+# peer saving app.js mid-run made four unrelated tests fail -- branding, sse,
+# static_files and the invariants extractor -- pointing at subsystems the
+# author never touched. Reproduced deterministically: truncate app.js without
+# rebuilding and those tests fail; with this feature they pass even if app.js
+# is DELETED, because the binary carries its own copy.
+#
+# It costs the debug hot-reload of dashboard assets, which nothing here uses:
+# the auto-builder ships `cargo build --release` (scripts/rust-auto-build.sh),
+# so what deploys has always embedded at compile time. CLAUDE.md states the
+# rule this restores -- "editing the working tree changes nothing that is
+# live; COMMITTED source is what ships" -- which the debug fallback was
+# quietly contradicting.
+rust-embed = { version = "8", features = ["debug-embed"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+rcgen = "0.13"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
+cron = "0.12"
+proptest = "1"
+tempfile = "3"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "compression-gzip"] }
+sha2 = "0.10"
+# sha1 is NOT for security here: /api/file/prepare's media-cache key must be
+# byte-identical to python's hashlib.sha1 derivation (amux-server.py:68158) so
+# already-prepared copies in ~/.amux/media-cache survive the cutover.
+sha1 = "0.10"
+hex = "0.4"
+# The CLI only needs libc to restore the DEFAULT SIGPIPE disposition, which Rust
+# sets to SIG_IGN before main. Already in the tree transitively (rusqlite, tokio).
+libc = "0.2"
+# Web Push (RR-0094): ES256 VAPID + RFC 8291 aes128gcm. `ecdh` and `pem` are
+# feature additions to the same crate: ecdh for the RFC 8291 key agreement,
+# pem so the Python server's PKCS#8 PEM VAPID key (~/.amux/vapid_private.pem)
+# loads unchanged and existing dashboard subscriptions keep verifying.
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pem"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+base64 = "0.22"
+toml = "0.8"
+futures = "0.3"
+# CDP WebSocket client (browser driver cutover, AMUX-2598): Chrome's DevTools
+# protocol speaks JSON-RPC over a LOCAL ws:// endpoint — no TLS features
+# needed, and screenshot payloads (multi-MB base64 text frames) ride
+# tungstenite's default 64MB message cap.
+tokio-tungstenite = "0.24"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Fast iteration: thin LTO only for release, debug builds favor compile speed.
+[profile.release]
+lto = "thin"
+strip = "symbols"

@@ -1,6 +1,6 @@
 ---
-description: When editing SSE or real-time sync code in amux-server.py
-globs: ["amux-server.py"]
+description: When editing SSE or real-time sync code (server or dashboard client)
+globs: ["crates/amux-server/src/api/sse.rs", "crates/amux-dashboard/static/app.js"]
 ---
 
 The SSE system (`_sse_events`, `connectSSE`, `_onClientResume`) is the backbone of live updates. When touching it:

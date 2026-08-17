@@ -1,0 +1,51 @@
+#!/bin/sh
+# amux-session-stamp — tags each commit with the originating amux session, and
+# stamps `(human)` when there is none.
+#
+# WHY THE HUMAN CASE IS STAMPED AT ALL (AMUX-2567, creative-dna's design,
+# endorsed by gtm-videos). The push guard reads a MISSING Amux-Session trailer
+# as "unclaimable by every lane" — correctly, but absence has three causes it
+# cannot tell apart: a human's own commit, a session whose AMUX_SESSION was
+# unset, and a hook-bypassing graft (`--no-verify`, cherry-pick, rebase
+# replay). It therefore takes the most restrictive reading of all three, and
+# says nothing about which.
+#
+# Measured on this checkout 2026-08-11: `git log --format="%h [%(trailers:...)]"`
+# over one day showed a dozen commits rendering as `[]`, and the deploy recipe
+# in CLAUDE.md tells you to "treat as foreign" — so a peer's ordinary work and a
+# genuine graft looked identical, and I could not answer "whose is this?"
+# without asking. Stamping the human case makes ABSENCE rare and therefore
+# genuinely suspicious: what is left unstamped is a bypass, which is exactly
+# what the guard should be loud about.
+#
+# THE EXEMPTION IS NOT WEAKENED, only spelled. A human's local commit may be
+# unshipped WIP and protecting it is the guard's whole purpose — this changes
+# nothing about whether lanes may push it, only whether the guard can SAY why
+# it refused instead of going quiet.
+msg_file="$1"
+
+# git interpret-trailers, NOT a hand-rolled append (2026-08-08, third failure
+# mode in one day). The history: an unconditional leading newline started a
+# SECOND trailer block and orphaned every trailer above it (152/152 mixpeek
+# commits, unparseable Co-Authored-By); no newline glued the stamp onto
+# trailer-LESS bodies; and the conditional case-glob that replaced them
+# matched any CONVENTIONAL-COMMIT SUBJECT ("docs(x): ..." contains ': '), so
+# a bodyless commit got the stamp glued into its subject paragraph (35c2755,
+# rendered as an untrailered '[]' in the push guard). Trailer placement has
+# comment-lines, subject-only, existing-block and dedupe cases — git ships
+# the parser that handles all four; stop reimplementing it.
+#
+# `(human)` is parenthesised so it can never collide with a real session name:
+# amux session names are [a-z0-9-] (see sanitize_session_name), so no lane can
+# ever be called "(human)" and a reader needs no lookup table to tell them
+# apart.
+stamp="${AMUX_SESSION:-(human)}"
+
+git interpret-trailers --in-place --if-exists doNothing \
+  --trailer "Amux-Session: $stamp" "$msg_file" 2>/dev/null || {
+  # Ancient git without interpret-trailers: fall back to a plain paragraph
+  # append, correct for the common subject+body shape.
+  grep -q "^Amux-Session: " "$msg_file" 2>/dev/null \
+    || printf '\nAmux-Session: %s\n' "$stamp" >> "$msg_file"
+}
+exit 0

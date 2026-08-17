@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Context Engineering","item":"https://amux.io/guides/context-engineering/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Context Engineering for AI Coding Agents: The Complete Guide (2026)","description":"The practitioner's guide to context engineering — structuring CLAUDE.md, hooks, skills, subagents, memory, and specs so AI coding agents produce reliable output at scale.","url":"https://amux.io/guides/context-engineering/","datePublished":"2026-04-09","dateModified":"2026-04-09","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Context Engineering for AI Coding Agents: The Complete Guide (2026)","description":"The practitioner's guide to context engineering — structuring CLAUDE.md, hooks, skills, subagents, memory, and specs so AI coding agents produce reliable output at scale.","url":"https://amux.io/guides/context-engineering/","datePublished":"2026-04-09","dateModified":"2026-08-04","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Context Engineering for an AI Coding Agent Fleet","description":"Step-by-step guide to structuring context across CLAUDE.md, hooks, skills, subagents, and memory for reliable AI coding agents.","step":[{"@type":"HowToStep","name":"Write a lean CLAUDE.md","text":"Keep it under 500 lines. Include only what the agent cannot infer from code: build commands, test commands, style rules, forbidden patterns, and pointers to deeper docs."},{"@type":"HowToStep","name":"Add hooks for hard guarantees","text":"Move any CLAUDE.md rule that must never be violated into a PreToolUse hook that blocks the action with exit code 2. Hooks enforce at 100%; instructions comply at ~70%."},{"@type":"HowToStep","name":"Create skills for on-demand context","text":"Move large reference docs, API specs, and workflow instructions into .claude/skills/ files. The agent loads them only when relevant, keeping base context small."},{"@type":"HowToStep","name":"Define subagents for specialized roles","text":"Create .claude/agents/ files for recurring delegation patterns (code review, security audit, test writing). Each runs in a fresh context with a focused system prompt."},{"@type":"HowToStep","name":"Structure shared memory for fleet coordination","text":"When running parallel agents, use a shared board or REST API for task state and a per-session memory for agent-specific context. Never rely on filesystem as shared state."},{"@type":"HowToStep","name":"Iterate based on failure modes","text":"When an agent produces bad output, diagnose which context surface failed: missing instruction (CLAUDE.md), violated constraint (needs a hook), missing reference (needs a skill), or polluted context (needs a subagent). Fix the surface, not the symptom."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is context engineering?","acceptedAnswer":{"@type":"Answer","text":"Context engineering is the practice of curating everything an AI agent sees — system prompts, project rules, reference docs, tool outputs, memory — so that it produces reliable, correct output. Unlike prompt engineering (crafting a single input), context engineering designs the entire information environment across multiple surfaces: CLAUDE.md files, hooks, skills, subagents, memory systems, and specs."}},{"@type":"Question","name":"What is the difference between context engineering and prompt engineering?","acceptedAnswer":{"@type":"Answer","text":"Prompt engineering optimizes a single input message. Context engineering designs the entire information architecture around an agent: what it sees at startup (CLAUDE.md), what it can load on demand (skills), what it cannot do (hooks), who it can delegate to (subagents), and what persists across sessions (memory). Prompt engineering is one tool inside context engineering."}},{"@type":"Question","name":"How long should CLAUDE.md be?","acceptedAnswer":{"@type":"Answer","text":"Under 500 lines for the root file. For each line, ask: would removing this cause the agent to make a mistake it cannot recover from by reading the code? If not, cut it. Use nested CLAUDE.md files in subdirectories for context that only matters in specific parts of the codebase. Use skills for large reference docs the agent only needs sometimes."}},{"@type":"Question","name":"When should I use a hook instead of a CLAUDE.md instruction?","acceptedAnswer":{"@type":"Answer","text":"Use a hook when the rule must be enforced 100% of the time with zero exceptions — blocking pushes to main, preventing deletion of production databases, enforcing code formatting. CLAUDE.md instructions are followed roughly 70% of the time. That is fine for style preferences. For safety-critical rules, 70% is a production incident waiting to happen. Hooks close the gap to 100%."}},{"@type":"Question","name":"What are Claude Code skills?","acceptedAnswer":{"@type":"Answer","text":"Skills are markdown files in .claude/skills/ that contain reference documentation, workflow instructions, or specialized knowledge. The agent sees only the skill's frontmatter (name + description, ~200 tokens) at all times, and loads the full content on demand when it judges the skill is relevant. This is progressive disclosure — the agent navigates your knowledge base like a developer reading docs, loading only what the current task requires."}},{"@type":"Question","name":"How does context engineering change when running parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Three things change: (1) shared context must be externalized — a REST API or database instead of local files, because agents run in separate worktrees, (2) per-agent context must be scoped to that agent's task, not the whole project, and (3) fleet-wide rules go in the root CLAUDE.md while task-specific instructions go in the prompt or per-session config. The goal is identical agents with differentiated task context, not bespoke agents with identical tasks."}},{"@type":"Question","name":"Is CLAUDE.md the same as context engineering?","acceptedAnswer":{"@type":"Answer","text":"No. CLAUDE.md is one context surface — the always-loaded project rules. Context engineering encompasses all surfaces: CLAUDE.md (base rules), hooks (hard enforcement), skills (on-demand reference), subagents (delegation with specialized prompts), memory (cross-session persistence), and specs (task-level instructions). Treating CLAUDE.md as the entire context strategy is the most common mistake teams make."}}]}</script>
 </head>
@@ -44,6 +44,15 @@
     <h1>Context Engineering for AI Coding Agents</h1>
     <p class="subtitle">The complete guide to structuring what your AI agents see &mdash; CLAUDE.md, hooks, skills, subagents, memory, and specs &mdash; so they produce reliable output, especially when you run many of them in parallel.</p>
 
+    <div style="background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(59,130,246,.08));border:1px solid rgba(110,231,183,.3);border-radius:10px;padding:1.2rem 1.6rem;margin:1.5rem 0;display:flex;align-items:center;gap:1.2rem;flex-wrap:wrap;">
+      <div style="flex:1;min-width:240px;">
+        <div style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#6ee7b7;margin-bottom:0.3rem;">Context Engineering at Scale</div>
+        <div style="font-size:0.92rem;color:var(--fg);">Running multiple agents with shared context? amux manages CLAUDE.md, hooks, skills, and board state across your entire fleet — self-healing, open source.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog?.capture('exp021_context_eng_topofpage_cta_click',{page:window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba(110,231,183,.15);border:1px solid rgba(110,231,183,.4);color:#6ee7b7;padding:0.55rem 1.2rem;border-radius:6px;font-weight:600;font-size:0.88rem;text-decoration:none;white-space:nowrap;">View amux on GitHub &#9733;</a>
+    </div>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:-0.5rem;margin-bottom:1.5rem;">Updated August 2026 &mdash; covers tag-scoped fleet isolation, multi-runtime (Claude Code + Codex + Gemini CLI), Activity log debugging, and the standing context-size monitor.</p>
+
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
       <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
@@ -57,6 +66,9 @@
         <li><a href="#specs" style="color:var(--dim);text-decoration:none;">Specs: Task-Level Instructions</a></li>
         <li><a href="#parallel" style="color:var(--dim);text-decoration:none;">Context Engineering for Parallel Agent Fleets</a></li>
         <li><a href="#budget" style="color:var(--dim);text-decoration:none;">The Context Budget: Measuring What You Spend</a></li>
+        <li><a href="#tag-isolation" style="color:var(--dim);text-decoration:none;">Tag-Scoped Fleet Isolation</a></li>
+        <li><a href="#multi-runtime" style="color:var(--dim);text-decoration:none;">Multi-Runtime Context Engineering</a></li>
+        <li><a href="#activity-debug" style="color:var(--dim);text-decoration:none;">Debugging Context with the Activity Log</a></li>
         <li><a href="#diagnosis" style="color:var(--dim);text-decoration:none;">Diagnosing Failures by Context Surface</a></li>
         <li><a href="#reference" style="color:var(--dim);text-decoration:none;">Quick Reference: What Goes Where</a></li>
         <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
@@ -322,6 +334,10 @@ curl -sk $AMUX_URL/api/notes/architecture-decisions
 curl -sk $AMUX_URL/api/sessions/$AMUX_SESSION/peek</code></pre>
     <p>The principle: <strong>shared knowledge goes in shared stores; session-specific knowledge goes in session-specific stores.</strong> Never use the local filesystem as shared state when running parallel agents in separate worktrees.</p>
 
+    <h3>Memory bridge for multi-runtime fleets</h3>
+    <p>When you run a mixed fleet — Claude Code lanes alongside Gemini CLI lanes — auto-memory is fragmented by design: each provider has its own memory format and path. The amux memory bridge (shipped August 2026) exposes shared notes and board state via the same REST API regardless of the provider running in each lane. Gemini CLI sessions can read and write the same notes a Claude Code session just updated, using <code>$AMUX_URL/api/notes/*</code> as the coordination layer.</p>
+    <p>This makes the amux notes API the canonical cross-runtime memory surface. The CLAUDE.md memory path (<code>~/.claude/projects/…/memory/</code>) stays Claude Code-specific. For anything a Gemini CLI or Codex session must also see, write it to amux notes, not Claude's memory files.</p>
+
     <h2 id="specs">Specs: Task-Level Instructions</h2>
     <p>Specs are the newest context surface and the one gaining the most traction in 2026. A spec is a structured document that describes <em>exactly what a task should produce</em> &mdash; requirements, constraints, acceptance criteria, and sometimes an implementation plan &mdash; before the agent writes any code.</p>
 
@@ -409,6 +425,12 @@ curl -sk -X POST -H 'Content-Type: application/json' \
       <li>Writing tight specs that preempt wrong turns</li>
     </ul>
 
+    <h3>Principle 4: monitor context size as a fleet metric</h3>
+    <p>amux ships a standing context-size monitor (the dominant cost lever for agent fleets). The Cost tab shows per-session context growth over time. When a session approaches 150K tokens — the point where the model's attention on early instructions degrades — amux surfaces it in the dashboard and triggers compaction if configured. You don't need to poll each agent manually: the monitor fires on the resource boundary, not on a poll interval.</p>
+    <pre><code># Read context size for all sessions right now
+curl -sk $AMUX_URL/api/observability | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); [print(s['name'], s.get('context_tokens','?'), 'tokens') for s in d.get('sessions',[])]"</code></pre>
+
     <h2 id="budget">The Context Budget: Measuring What You Spend</h2>
     <p>Context has a cost &mdash; both in tokens and in model attention. Think of your 200K context window as a budget:</p>
 
@@ -428,6 +450,97 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     </table>
 
     <p>A session with a lean CLAUDE.md, 5 skill frontmatters, and minimal memory starts at ~20K tokens. That leaves 180K for actual work. A session with a bloated 3,000-line CLAUDE.md and 20 skills starts at ~40K, leaving only 160K &mdash; and the model's attention on your instructions is diluted by all the noise.</p>
+
+    <h2 id="tag-isolation">Tag-Scoped Fleet Isolation</h2>
+    <p>When you run more than one team of agents, context separation becomes a safety concern. An agent working on the payments service should not see the board cards, peer-review requests, or memory notes of an agent working on the authentication service. Without isolation, inter-agent messaging and board state bleed across teams.</p>
+    <p>amux solves this with <strong>tag-scoped fleet isolation</strong>: every session carries a tag, and same-tag sessions see each other while cross-tag interactions are blocked at the API layer. The tag is set at session registration:</p>
+    <pre><code>amux register payments-agent --dir ~/Dev/payments --tag payments
+amux register auth-agent     --dir ~/Dev/auth     --tag auth
+
+# Payments agents can only see payments board cards
+curl -sk -H "X-Amux-Tag: payments" $AMUX_URL/api/board
+# X-Amux-Scope: payments is returned in the response header — confirms the filter</code></pre>
+    <p>Context engineering implications:</p>
+    <ul>
+      <li><strong>CLAUDE.md</strong> can be team-specific: register agents with different <code>--dir</code> paths that contain different CLAUDE.md files</li>
+      <li><strong>Board coordination</strong> is scoped: agents in the <code>auth</code> tag cannot accidentally claim a <code>payments</code> task</li>
+      <li><strong>Peer review</strong> is scoped: a reviewer session only reviews sessions in its own tag, preventing cross-team context contamination</li>
+      <li><strong>Memory notes</strong> can be scoped by convention: use note slugs like <code>payments-arch-decisions</code> to keep team knowledge separate</li>
+    </ul>
+    <p>Untagged sessions are the default and see only themselves — the safest default for solo developers. Add tags as your fleet grows.</p>
+
+    <h2 id="multi-runtime">Multi-Runtime Context Engineering</h2>
+    <p>amux supports three agent runtimes: Claude Code, Codex (OpenAI), and Gemini CLI (Antigravity). Each has different context window sizes, tool support, and cost profiles. Running a mixed fleet compounds context engineering — you need strategies that work across providers.</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Runtime</th>
+          <th style="text-align:left;padding:0.6rem;">Context window</th>
+          <th style="text-align:left;padding:0.6rem;">CLAUDE.md equiv</th>
+          <th style="text-align:left;padding:0.6rem;">amux hooks support</th>
+          <th style="text-align:left;padding:0.6rem;">Best for</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;font-weight:600;">Claude Code</td>
+          <td style="padding:0.6rem;">200K tokens</td>
+          <td style="padding:0.6rem;">CLAUDE.md (native)</td>
+          <td style="padding:0.6rem;">Full (all hook types)</td>
+          <td style="padding:0.6rem;">Complex reasoning, long-running tasks</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;font-weight:600;">Codex</td>
+          <td style="padding:0.6rem;">200K tokens</td>
+          <td style="padding:0.6rem;">AGENTS.md</td>
+          <td style="padding:0.6rem;">Partial</td>
+          <td style="padding:0.6rem;">Code generation, refactoring</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;font-weight:600;">Gemini CLI (Antigravity)</td>
+          <td style="padding:0.6rem;">1M tokens</td>
+          <td style="padding:0.6rem;">GEMINI.md</td>
+          <td style="padding:0.6rem;">Partial (via amux memory bridge)</td>
+          <td style="padding:0.6rem;">Large codebase reads, batch processing</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Cross-runtime context rules</h3>
+    <ol>
+      <li><strong>Use the board for all inter-runtime coordination.</strong> Board task claiming (<code>POST /api/board/:id/claim</code>) works for Claude Code, Codex, and Gemini CLI sessions equally. This is the only reliable shared-state mechanism across providers.</li>
+      <li><strong>Use amux notes for shared reference docs.</strong> CLAUDE.md is Claude-specific. Gemini CLI reads GEMINI.md. The amux notes API is the only memory surface all three runtimes can access via the same API call.</li>
+      <li><strong>Route by context budget, not by preference.</strong> Gemini CLI's 1M context window makes it the right choice when tasks require reading 50+ files. Use Claude Code for tasks requiring multi-turn reasoning. Use Codex for autonomous code generation with minimal guidance.</li>
+      <li><strong>Fleet-wide hooks are Claude Code-only.</strong> Safety hooks (PreToolUse blocking pushes to main) only apply to Claude Code sessions. For Gemini CLI sessions, encode safety rules in the GEMINI.md and amux board gate configuration.</li>
+    </ol>
+    <p>See the <a href="/guides/multi-runtime-agent-setup/">multi-runtime agent setup guide</a> for the full configuration walkthrough.</p>
+
+    <h2 id="activity-debug">Debugging Context with the Activity Log</h2>
+    <p>When an agent behaves unexpectedly, the first question is always: what did it actually see? The amux Activity log (Sessions tab &rarr; Activity) records every API request the agent made and every response it received, with full payload inspection. This makes context debugging concrete &mdash; instead of guessing which tool output polluted the context, you can read the exact bytes.</p>
+
+    <h3>What the Activity log shows</h3>
+    <ul>
+      <li><strong>Request payload:</strong> the exact tool call arguments (file paths read, bash commands run, API calls made)</li>
+      <li><strong>Response payload:</strong> the full tool output that entered the agent's context window</li>
+      <li><strong>Timestamps:</strong> when each exchange happened, so you can correlate context growth with behavior changes</li>
+      <li><strong>Search:</strong> full-text search across all payloads — find "which turn did the agent first read the wrong file"</li>
+    </ul>
+
+    <h3>Context engineering debugging workflow</h3>
+    <ol>
+      <li>Agent produces wrong output. Open Activity log for that session.</li>
+      <li>Search for the symptom term (e.g., the wrong function name it used).</li>
+      <li>Find the tool response that introduced the wrong information.</li>
+      <li>Identify the context surface failure: wrong file read (needs a spec constraint), too-broad grep (needs a subagent), missing CLAUDE.md rule (needs to be added).</li>
+      <li>Fix the surface. The next agent on the same task uses correct context.</li>
+    </ol>
+    <pre><code># Read recent Activity for a session (API)
+curl -sk "$AMUX_URL/api/sessions/my-agent/activity?limit=50"
+
+# Or in the dashboard: Sessions → my-agent → Activity tab → expand any row</code></pre>
+    <p>The Activity log is also the right place to diagnose <strong>context bloat</strong>: if tool responses are returning 10KB of grep output when the agent only needed a 200-byte function signature, that is the subagent opportunity. The log makes the waste visible.</p>
+    <p>See the <a href="/guides/debug-ai-coding-agents/">AI agent debugging guide</a> for the full troubleshooting workflow.</p>
 
     <h2 id="diagnosis">Diagnosing Failures by Context Surface</h2>
     <p>When an agent produces bad output, the question is not <em>"why is the model dumb?"</em> but <em>"which context surface failed?"</em> This reframe is the most important mental shift in context engineering:</p>
@@ -499,7 +612,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <div class="cta-box"><h3>Context engineering at scale with amux</h3><p>amux manages CLAUDE.md, hooks, skills, subagents, memory, and task specs across your entire agent fleet. Shared board, REST API, web dashboard, mobile PWA. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # &rarr; https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

@@ -40,58 +40,59 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/lists/">Lists</a> <span class="sep">›</span> <span>Best AI Agent Orchestrators 2026</span></div>
 
     <h1>Best AI Agent Orchestrators 2026</h1>
-    <p class="subtitle">Open source and commercial — architecture, pricing, and honest guidance on when each one is right. Last updated July 2026.</p>
+    <p class="subtitle">Open source and commercial — architecture, pricing, and honest guidance on when each one is right. Last updated August 2026.</p>
 
     <table>
-      <thead><tr><th>Tool</th><th>Type</th><th>Open source?</th><th>Architecture</th><th>Best for</th></tr></thead>
+      <thead><tr><th>Tool</th><th>Type</th><th>Open source?</th><th>Stars</th><th>Architecture</th><th>Best for</th></tr></thead>
       <tbody>
-        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Yes (MIT+CC)</td><td>tmux + Python + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
-        <tr><td><strong>LangGraph</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>Directed graph, Python</td><td>Custom stateful multi-agent pipelines</td></tr>
-        <tr><td><strong>CrewAI</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>Role-based crews, Python</td><td>Task-delegating agent teams with structured roles</td></tr>
-        <tr><td><strong>AutoGen</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>Conversation-based, Python</td><td>Microsoft ecosystem, conversation-driven agents</td></tr>
-        <tr><td><strong>OpenAI Symphony</strong></td><td>Coding orchestrator</td><td>Yes (MIT)</td><td>Ticket-driven, Codex</td><td>GitHub issue → PR pipelines on OpenAI Codex</td></tr>
-        <tr><td><strong>Claude Managed Agents</strong></td><td>Cloud orchestrator</td><td>No</td><td>Anthropic cloud</td><td>Teams that want zero ops overhead, Anthropic-managed</td></tr>
-        <tr><td><strong>Hermes Agent</strong></td><td>Personal AI daemon</td><td>Yes (MIT)</td><td>Persistent daemon, any LLM</td><td>Single persistent agent with deep cross-session memory</td></tr>
-        <tr><td><strong>dmux</strong></td><td>Coding fleet orchestrator</td><td>Yes</td><td>tmux-based</td><td>amux alternative, similar pattern</td></tr>
-        <tr><td><strong>OpenHands</strong></td><td>Autonomous coding agent</td><td>Yes (MIT)</td><td>Sandbox + browser, Python</td><td>End-to-end autonomous coding with web browsing</td></tr>
-        <tr><td><strong>sandboxed.sh</strong></td><td>Cloud agent host</td><td>Partial</td><td>Cloud sandboxes</td><td>Cloud-isolated agent execution</td></tr>
+        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Yes (MIT+CC)</td><td>336★</td><td>tmux/herdr + Python + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
+        <tr><td><strong>LangGraph</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>47k+★</td><td>Directed graph, Python</td><td>Custom stateful multi-agent pipelines</td></tr>
+        <tr><td><strong>CrewAI</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>31k+★</td><td>Role-based crews, Python</td><td>Task-delegating agent teams with structured roles</td></tr>
+        <tr><td><strong>AutoGen</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>38k+★</td><td>Conversation-based, Python</td><td>Microsoft ecosystem, conversation-driven agents</td></tr>
+        <tr><td><strong>OpenAI Symphony</strong></td><td>Coding orchestrator</td><td>Yes (MIT)</td><td>—</td><td>Ticket-driven, Codex</td><td>GitHub issue → PR pipelines on OpenAI Codex</td></tr>
+        <tr><td><strong>Claude Managed Agents</strong></td><td>Cloud orchestrator</td><td>No</td><td>—</td><td>Anthropic cloud</td><td>Teams that want zero ops overhead, Anthropic-managed</td></tr>
+        <tr><td><strong>Hermes Agent</strong></td><td>Personal AI daemon</td><td>Yes (MIT)</td><td>—</td><td>Persistent daemon, any LLM</td><td>Single persistent agent with deep cross-session memory</td></tr>
+        <tr><td><strong>dmux</strong></td><td>Coding fleet orchestrator</td><td>Yes</td><td>—</td><td>tmux-based</td><td>amux alternative, similar pattern</td></tr>
+        <tr><td><strong>OpenHands</strong></td><td>Autonomous coding agent</td><td>Yes (MIT)</td><td>42k+★</td><td>Sandbox + browser, Python</td><td>End-to-end autonomous coding with web browsing</td></tr>
+        <tr><td><strong>sandboxed.sh</strong></td><td>Cloud agent host</td><td>Partial</td><td>—</td><td>Cloud sandboxes</td><td>Cloud-isolated agent execution</td></tr>
       </tbody>
     </table>
 
     <h2>amux</h2>
-    <p>Open-source control plane for running parallel coding agent fleets. amux is not a framework — you don't write agent code. You configure sessions (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Self-healing watchdog keeps agents running overnight. Web dashboard + native iOS app for monitoring. Single Python file, zero external dependencies.</p>
-    <p><strong>Architecture:</strong> tmux sessions managed by a Python server. SQLite for state. REST API for inter-session coordination. Inline HTML/CSS/JS dashboard.</p>
-    <p><strong>Best for:</strong> Developers shipping code who want 10–50× throughput with minimal setup. Not a framework — you don't program agents, you manage them. <a href="/compare/amux-vs-langraph/">amux vs LangGraph →</a></p>
+    <p>Open-source control plane for running an AI engineering team from a single dashboard or your phone. amux is not a framework — you don't write agent code. You configure workers (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Self-healing watchdog keeps agents running overnight. Web dashboard + native iOS app for monitoring. Single Rust binary, zero external dependencies. 336 GitHub stars.</p>
+    <p><strong>New in August 2026:</strong> declarative IaC via <code>amux iac apply vertical.yaml</code> — define your entire agent team in one YAML file and apply it idempotently. Also: commit nudges (prevents work loss), worker model/cost visibility, herdr as an alternative terminal backend.</p>
+    <p><strong>Architecture:</strong> tmux or herdr sessions managed by a Python server. SQLite for state. REST API for inter-session coordination. Inline HTML/CSS/JS dashboard served from the same process.</p>
+    <p><strong>Best for:</strong> Developers shipping code who want 10–50× throughput with minimal setup. Not a framework — you don't program agents, you run them. <a href="/compare/amux-vs-langraph/">amux vs LangGraph →</a></p>
 
     <h2>LangGraph</h2>
-    <p>The most mature Python framework for building custom stateful agent graphs. Nodes are functions or LLM calls; edges define control flow. Supports cycles (for retry loops), streaming, and persistence via LangGraph Cloud. Part of the LangChain ecosystem but usable standalone.</p>
-    <p><strong>Architecture:</strong> Directed acyclic/cyclic graph, each node is a Python function. State is a typed dict threaded through the graph. Can persist state to any SQL-compatible store.</p>
-    <p><strong>Best for:</strong> Engineers building custom multi-agent pipelines from scratch — research workflows, approval pipelines, complex branching logic. High flexibility, higher implementation effort.</p>
+    <p>The most mature Python framework for building custom stateful agent graphs. 47k+ GitHub stars as of mid-2026. Nodes are functions or LLM calls; edges define control flow. Supports cycles (for retry loops), streaming, and persistence via LangGraph Cloud. Part of the LangChain ecosystem but usable standalone. LangGraph Platform offers hosted deployment for production workloads.</p>
+    <p><strong>Architecture:</strong> Directed acyclic/cyclic graph, each node is a Python function. State is a typed dict threaded through the graph. Can persist state to any SQL-compatible store via LangGraph checkpointers.</p>
+    <p><strong>Best for:</strong> Engineers building custom multi-agent pipelines from scratch — research workflows, approval pipelines, complex branching logic. High flexibility, higher implementation effort than orchestrators.</p>
 
     <h2>CrewAI</h2>
-    <p>Role-based multi-agent framework. You define "Crew" of "Agents" with distinct roles (researcher, writer, reviewer), assign them "Tasks", and CrewAI orchestrates the handoff. Abstracts away LLM details; focuses on high-level role assignment.</p>
-    <p><strong>Architecture:</strong> Agent objects with role/goal/backstory, Task objects with description/expected output, Crew that sequences them.</p>
-    <p><strong>Best for:</strong> Structured, document-production workflows (reports, analyses) where role separation and task handoff are natural. Less suited to open-ended coding tasks.</p>
+    <p>Role-based multi-agent framework. 31k+ GitHub stars. You define a "Crew" of "Agents" with distinct roles (researcher, writer, reviewer), assign them "Tasks", and CrewAI orchestrates the handoff. CrewAI Enterprise adds observability, deployment, and team management on top of the open-source core.</p>
+    <p><strong>Architecture:</strong> Agent objects with role/goal/backstory, Task objects with description/expected output, Crew that sequences them. Supports both sequential and hierarchical process modes.</p>
+    <p><strong>Best for:</strong> Structured document-production workflows (reports, analyses, content pipelines) where role separation and task handoff are natural. Less suited to open-ended coding tasks.</p>
 
     <h2>AutoGen (Microsoft)</h2>
-    <p>Conversation-based multi-agent framework from Microsoft Research. Agents communicate by exchanging messages; you define which agents talk to which and what triggers termination. Integrates tightly with Azure OpenAI and Microsoft ecosystem.</p>
-    <p><strong>Architecture:</strong> Agent conversations with configurable termination conditions. Supports human-in-the-loop via HumanProxyAgent. Strong observability via AutoGen Studio. <a href="/compare/amux-vs-autogen/">amux vs AutoGen →</a></p>
-    <p><strong>Best for:</strong> Microsoft/Azure shops, or researchers who want conversation-based agent coordination with rich observability.</p>
+    <p>Conversation-based multi-agent framework from Microsoft Research. 38k+ GitHub stars. Agents communicate by exchanging messages; you define which agents talk to which and what triggers termination. AutoGen 0.4 (released late 2025) introduced a new async actor-model architecture. Integrates with Azure OpenAI and the broader Microsoft AI ecosystem.</p>
+    <p><strong>Architecture:</strong> Agent conversations with configurable termination conditions. Supports human-in-the-loop via HumanProxyAgent. AutoGen Studio provides a low-code UI for building agent workflows. <a href="/compare/amux-vs-autogen/">amux vs AutoGen →</a></p>
+    <p><strong>Best for:</strong> Microsoft/Azure shops, or researchers who want conversation-based agent coordination with rich observability and a growing community.</p>
 
     <h2>OpenAI Symphony</h2>
-    <p>Open-sourced by OpenAI in early 2026. Ticket-driven Codex orchestrator — it reads GitHub issues, assigns them to Codex agents, and opens PRs. Tightly integrated with GitHub and OpenAI's Codex model. Linear dependency for project management.</p>
+    <p>Open-sourced by OpenAI in early 2026. Ticket-driven Codex orchestrator — it reads GitHub issues, assigns them to Codex agents, and opens PRs. Tightly integrated with GitHub and OpenAI's Codex model. Uses Linear for project management integration.</p>
     <p><strong>Architecture:</strong> Event-driven pipeline: GitHub issue → task queue → Codex agent → PR. <a href="/compare/amux-vs-symphony/">amux vs Symphony →</a></p>
     <p><strong>Best for:</strong> Teams already using GitHub Issues as their task tracker who want Codex-driven automation with minimal setup.</p>
 
     <h2>Claude Managed Agents (Anthropic)</h2>
-    <p>Anthropic's cloud-managed agent service. Zero infrastructure — Anthropic runs the agents, handles scaling, and manages the runtime. Launched April 2026 at $0.08/session-hour. Suited for teams that want agent benefits without ops overhead. <a href="/compare/amux-vs-claude-managed-agents/">amux vs Managed Agents →</a></p>
-    <p><strong>Best for:</strong> Enterprises that want Anthropic-managed infrastructure and are willing to pay for the convenience. amux is the self-hosted alternative.</p>
+    <p>Anthropic's cloud-managed agent service. Zero infrastructure — Anthropic runs the agents, handles scaling, and manages the runtime. Launched April 2026. Suited for teams that want agent benefits without ops overhead. <a href="/compare/amux-vs-claude-managed-agents/">amux vs Managed Agents →</a></p>
+    <p><strong>Best for:</strong> Enterprises that want Anthropic-managed infrastructure and are willing to pay for the convenience and compliance guarantees. amux is the self-hosted, open-source alternative.</p>
 
     <h2>Hermes Agent (NousResearch)</h2>
-    <p>Persistent AI daemon with cross-session memory, self-improvement loop, and 16+ messaging connectors. Single agent with deep memory rather than a fleet. Different philosophy from amux — depth vs breadth. <a href="/compare/amux-vs-hermes-agent/">amux vs Hermes →</a></p>
+    <p>Persistent AI daemon with cross-session memory, self-improvement loop, and 16+ messaging connectors. Single agent with deep memory rather than a fleet — a different philosophy from amux (depth vs breadth). <a href="/compare/amux-vs-hermes-agent/">amux vs Hermes →</a></p>
 
     <h2>OpenHands (formerly OpenDevin)</h2>
-    <p>Autonomous coding agent with a browser sandbox. Can browse documentation, search the web, and execute code in an isolated environment. Strong for end-to-end tasks requiring web research. MIT licensed, active community. <a href="/compare/amux-vs-openhands/">amux vs OpenHands →</a></p>
+    <p>Autonomous coding agent with a browser sandbox. 42k+ GitHub stars. Can browse documentation, search the web, and execute code in an isolated environment. Strong for end-to-end tasks requiring web research. MIT licensed, active community. OpenHands runs one agent per task; amux runs many. <a href="/compare/amux-vs-openhands/">amux vs OpenHands →</a></p>
 
     <p>See all comparisons at <a href="/compare/">/compare/</a> or explore <a href="/lists/ai-agent-frameworks-comparison-2026/">AI Agent Frameworks in depth →</a></p>
   </main>

@@ -1,0 +1,19 @@
+# Pin the toolchain so LOCAL clippy == CI clippy (AMUX-3013). Without this, CI's
+# `dtolnay/rust-toolchain@stable` floats to the newest stable at run time while
+# each lane runs whatever rustup last installed — so a locally-green
+# `cargo clippy -- -D warnings` was a FALSE proxy for CI, which red-mained for
+# hours on a lint a months-stale local clippy did not know about
+# (unnecessary_sort_by, messages.rs:585, 2026-08-12) and, because deploy-cloud
+# gates on green CI, silently froze the cloud image for that whole window.
+#
+# rustup honors this file for every cargo/rustc/clippy invocation in the repo dir
+# — auto-installing the toolchain and components on first use — and it OVERRIDES
+# the default toolchain any CI action installs, so local and CI now resolve to
+# the SAME clippy. The codebase is already clean under this version.
+#
+# Bumping is DELIBERATE: raise the channel here, run `cargo clippy` to surface any
+# new lints, fix them, and commit — one atomic move that keeps local and CI in
+# lock-step instead of drifting apart silently.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

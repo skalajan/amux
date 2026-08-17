@@ -1,40 +1,21 @@
 #!/usr/bin/env bash
-# Install amux to /usr/local/bin
+# amux bootstrap installer (served from amux.io) — clones the repo and runs
+# the real installer, ./install.sh, which builds the Rust server and installs
+# the launchd agents. The old Python-symlink install this file used to do was
+# retired with the Python server (2026-08-09).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="/usr/local/bin"
+REPO_URL="https://github.com/mixpeek/amux"
+DEST="${AMUX_CHECKOUT:-$HOME/Dev/amux}"
 
-echo "Installing amux to $INSTALL_DIR..."
+command -v git &>/dev/null || { echo "git is required" >&2; exit 1; }
 
-# Check dependencies
-command -v tmux &>/dev/null || echo "Warning: tmux not found (required for sessions)"
-command -v python3 &>/dev/null || echo "Warning: python3 not found (required for amux serve)"
-
-chmod +x "$SCRIPT_DIR/amux"
-chmod +x "$SCRIPT_DIR/amux-server.py"
-
-if [[ -w "$INSTALL_DIR" ]]; then
-  ln -sf "$SCRIPT_DIR/amux" "$INSTALL_DIR/amux"
-  ln -sf "$SCRIPT_DIR/amux-server.py" "$INSTALL_DIR/amux-server.py"
-  # Compat alias: cc → amux
-  ln -sf "$SCRIPT_DIR/amux" "$INSTALL_DIR/cc"
+if [ -d "$DEST/.git" ]; then
+  echo "Using existing checkout at $DEST (not pulling — review and update it yourself)"
 else
-  sudo ln -sf "$SCRIPT_DIR/amux" "$INSTALL_DIR/amux"
-  sudo ln -sf "$SCRIPT_DIR/amux-server.py" "$INSTALL_DIR/amux-server.py"
-  sudo ln -sf "$SCRIPT_DIR/amux" "$INSTALL_DIR/cc"
+  echo "Cloning $REPO_URL to $DEST..."
+  git clone "$REPO_URL" "$DEST"
 fi
 
-# Verify
-if command -v amux &>/dev/null; then
-  echo "Installed: $(amux --version)"
-  echo ""
-  echo "Quick start:"
-  echo "  amux register myproject --dir ~/Dev/myproject --yolo"
-  echo "  amux start myproject"
-  echo "  amux                     # open terminal dashboard"
-  echo "  amux serve               # open web dashboard on :8822"
-else
-  echo "Warning: amux not found in PATH after install"
-  echo "You may need to add $INSTALL_DIR to your PATH"
-fi
+cd "$DEST"
+exec ./install.sh

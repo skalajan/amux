@@ -23,8 +23,8 @@ func loadConfig() -> Config {
     guard let data = try? Data(contentsOf: configURL),
           let config = try? JSONDecoder().decode(Config.self, from: data) else {
         return Config(connections: [
-            Connection(name: "localhost", url: "https://localhost:8822")
-        ], lastUrl: "https://localhost:8822")
+            Connection(name: "localhost", url: "https://localhost:8824")
+        ], lastUrl: "https://localhost:8824")
     }
     return config
 }
@@ -97,7 +97,7 @@ func connectPageHTML(_ config: Config) -> String {
       <h1>amux</h1>
       <div class="subtitle">Connect to an amux server</div>
       <div class="input-row">
-        <input type="text" id="url" placeholder="https://localhost:8822"
+        <input type="text" id="url" placeholder="https://localhost:8824"
           value="\(config.lastUrl)" autofocus
           onkeydown="if(event.key==='Enter')doConnect()">
         <button class="btn" onclick="doConnect()">Connect</button>
@@ -124,7 +124,7 @@ func connectPageHTML(_ config: Config) -> String {
       function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;'); }
       function doConnect() {
         let url = document.getElementById('url').value.trim();
-        if (!url) url = 'https://localhost:8822';
+        if (!url) url = 'https://localhost:8824';
         if (!/^https?:\\/\\//.test(url)) url = 'https://' + url;
         go(url);
       }

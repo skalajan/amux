@@ -460,7 +460,7 @@ import json, sys
     <!-- EXP-007: inline GitHub CTA -->
     <div style="background:var(--surface-2);border:1px solid var(--border,#333);border-radius:8px;padding:16px 20px;margin:2rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>amux is open source.</strong> <span style="color:var(--muted)">Single Python file, SQLite-backed, zero external dependencies. The full graph API is live in every amux installation.</span>
+        <strong>amux is open source.</strong> <span style="color:var(--muted)">Single Rust binary, SQLite-backed, zero external dependencies. The full graph API is live in every amux installation.</span>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_guide_github_cta_click',{page:window.location.pathname})" style="background:var(--surface-3,#2a2f3e);color:var(--text);border:1px solid var(--border,#333);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -504,9 +504,9 @@ import json, sys
 
     <div class="cta-box">
       <h3>Build your first agent graph with amux</h3>
-      <p>Open-source control plane for parallel AI coding agents. SQLite-backed task graph with atomic claiming, typed edges, and phone-first monitoring. Single Python file, zero external dependencies.</p>
+      <p>Open-source control plane for parallel AI coding agents. SQLite-backed task graph with atomic claiming, typed edges, and phone-first monitoring. Single Rust binary, zero external dependencies.</p>
       <pre><code>brew install mixpeek/amux/amux
-amux serve  # → https://localhost:8822
+amux serve  # → https://localhost:8824
 # Start building your graph via the REST API or dashboard</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>

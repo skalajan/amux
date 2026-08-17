@@ -7,7 +7,7 @@
 <title>amux — The Agent Control Plane</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
-<meta name="description" content="Run an AI engineering team from one dashboard. amux is the open-source control plane for AI coding agents — launch, coordinate, monitor, and recover dozens of parallel Claude Code sessions from a single interface. Self-healing, single-file.">
+<meta name="description" content="Run an AI engineering team from one dashboard. amux is the open-source control plane for AI coding agents — launch, coordinate, monitor, and recover dozens of parallel Claude Code sessions from a single interface. Self-healing, MIT licensed.">
 <meta name="keywords" content="amux, agent control plane, agent infrastructure, agent fleet management, agent observability, claude code multiplexer, parallel AI coding agents, AI agent orchestration, self-healing AI agent, claude code dashboard, run multiple claude code, AI coding while you sleep, AI agent remote control, monitor Claude Code from phone, open source AI tools, ngrok alternative, expose localhost, localhost tunnel">
 <link rel="sitemap" type="application/xml" href="/sitemap.xml">
 <link rel="canonical" href="https://amux.io/">
@@ -20,7 +20,7 @@
 <meta property="og:image:height" content="640">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://amux.io/og-image.png">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","alternateName":"Agent Control Plane","description":"Open-source control plane for AI agents. Run, monitor, and govern parallel agent sessions with a web dashboard, kanban board, and agent-to-agent orchestration. Self-healing, single-file.","url":"https://amux.io","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT","offers":[{"@type":"Offer","name":"Open Source","price":"0","priceCurrency":"USD"},{"@type":"Offer","name":"Cloud Monthly","price":"20","priceCurrency":"USD","priceSpecification":{"@type":"UnitPriceSpecification","billingDuration":"P1M"}},{"@type":"Offer","name":"Cloud Annual","price":"200","priceCurrency":"USD","priceSpecification":{"@type":"UnitPriceSpecification","billingDuration":"P1Y"}}],"author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","alternateName":"Agent Control Plane","description":"Open-source control plane for AI agents. Run, monitor, and govern parallel agent sessions with a web dashboard, kanban board, and agent-to-agent orchestration. Self-healing, MIT licensed, single binary.","url":"https://amux.io","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT","offers":[{"@type":"Offer","name":"Open Source","price":"0","priceCurrency":"USD"},{"@type":"Offer","name":"Cloud Monthly","price":"20","priceCurrency":"USD","priceSpecification":{"@type":"UnitPriceSpecification","billingDuration":"P1M"}},{"@type":"Offer","name":"Cloud Annual","price":"200","priceCurrency":"USD","priceSpecification":{"@type":"UnitPriceSpecification","billingDuration":"P1Y"}}],"author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"}}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -1011,7 +1011,7 @@
 <span class="pmt">$</span> brew install mixpeek/amux/amux
 <span class="pmt">$</span> amux register myproject --dir <span class="str">~/Dev/myproject</span> --yolo
 <span class="pmt">$</span> amux start myproject
-<span class="pmt">$</span> amux serve   <span class="cmt"># &rarr; https://localhost:8822</span></pre>
+<span class="pmt">$</span> amux serve   <span class="cmt"># &rarr; https://localhost:8824</span></pre>
     </div>
   </div>
 </header>
@@ -1023,7 +1023,7 @@
       <div class="kicker">// Why amux</div>
       <h2>Multi-agent infra, without the duct tape.</h2>
       <p class="sub">If you're already running parallel coding agents from a stack of terminal windows,
-        you've felt every one of these. amux fixes them in a single Python file.</p>
+        you've felt every one of these. amux fixes them in a single Rust binary.</p>
     </div>
 
     <div class="ps">
@@ -1079,7 +1079,7 @@
       <div class="kicker">// Dashboard</div>
       <h2>One pane of glass for the whole fleet.</h2>
       <p class="sub">Session cards, live terminal peek, kanban, notes, CRM, scheduler, files.
-        Everything lives in a single Python file with inline HTML &mdash; clone it, edit it, deploy it.</p>
+        Everything lives in a single compiled Rust binary &mdash; clone it, commit a change, and the auto-builder ships it.</p>
     </div>
 
     <div class="showcase">
@@ -1087,7 +1087,7 @@
       <div class="desktop">
         <div class="win-bar">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="win-url"><span class="lock">&bull;</span> https://localhost:8822/sessions</span>
+          <span class="win-url"><span class="lock">&bull;</span> https://localhost:8824/sessions</span>
         </div>
         <div class="desktop-body">
           <aside class="sidebar">
@@ -1215,7 +1215,7 @@
                 </div>
                 <div style="padding:16px 20px; font-size:13.5px; line-height:1.6; color:var(--fg-2);">
                   <div style="font:600 16px/1 'Geist',sans-serif; color:var(--fg); margin-bottom:14px;">Architecture Overview</div>
-                  <p style="margin:0 0 10px;">amux uses a single-file architecture. <span style="color:var(--accent);">amux-server.py</span> contains the Python HTTP server, SQLite database layer, and the full HTML/CSS/JS dashboard.</p>
+                  <p style="margin:0 0 10px;">amux is a 4-crate Rust workspace. <span style="color:var(--accent);">amux-server</span> (axum) handles the REST API and SSE backbone. The dashboard is real static files served from <span style="color:var(--accent);">amux-dashboard/static/</span>. SQLite is the only database.</p>
                   <p style="margin:0 0 10px;">Sessions are managed via tmux. Each agent gets an isolated pane with a permanent conversation ID. The watchdog monitors all panes and auto-heals on context overflow or corruption.</p>
                   <p style="margin:0;">Inter-agent communication uses 1:1 channels with @mentions. The board provides atomic task claiming via SQLite CAS.</p>
                 </div>
@@ -1306,9 +1306,9 @@
           <p style="margin:0; color: var(--fg-2); font-size: 14px;">SQLite-backed board with auto-generated keys, custom columns, and iCal sync. No two agents pick up the same ticket.</p>
         </div>
         <div class="m-card" style="padding: 18px 20px;">
-          <div style="font: 500 11px/1 'JetBrains Mono', monospace; color: var(--accent); letter-spacing:0.1em;">// SINGLE FILE</div>
-          <h3 style="margin: 6px 0 0; font-size: 17px; font-weight: 600;">One Python file. Edit it.</h3>
-          <p style="margin:0; color: var(--fg-2); font-size: 14px;">No build step, no node_modules, no Docker. Inline HTML/CSS/JS. Save the file, it restarts itself.</p>
+          <div style="font: 500 11px/1 'JetBrains Mono', monospace; color: var(--accent); letter-spacing:0.1em;">// SINGLE BINARY</div>
+          <h3 style="margin: 6px 0 0; font-size: 17px; font-weight: 600;">One Rust binary. Audit it.</h3>
+          <p style="margin:0; color: var(--fg-2); font-size: 14px;">No Docker, no node_modules, no config files. Commit a change &mdash; the auto-builder compiles and the server self-adopts within seconds.</p>
         </div>
         <div class="m-card" style="padding: 18px 20px;">
           <div style="font: 500 11px/1 'JetBrains Mono', monospace; color: var(--accent); letter-spacing:0.1em;">// SECURITY</div>
@@ -1594,7 +1594,7 @@
       <div class="kicker">// Everything inside</div>
       <h2>Batteries included.</h2>
       <p class="sub">amux ships with the workspace tools an agent fleet needs &mdash; kanban, CRM, email, browser automation, scheduler, and tunnel.
-        Every feature lives in the same single Python file.</p>
+        Every feature lives in the same single Rust binary.</p>
     </div>
 
     <div class="features">
@@ -1649,8 +1649,8 @@
       <div class="feat">
         <div class="num">09</div>
         <div class="glyph"><svg class="ic" width="16" height="16" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 8h16M8 4v16"/></svg></div>
-        <h3>Single-file architecture</h3>
-        <p>One Python file with inline HTML/CSS/JS. No build step. No dependencies. Edit and save &mdash; it restarts itself. Audit the whole thing in an afternoon.</p>
+        <h3>Rust workspace — audit it in an afternoon</h3>
+        <p>One compiled binary. 4-crate Cargo workspace, static dashboard files, SQLite. No Docker, no external deps. Commit a change &mdash; the auto-builder picks it up and the server self-adopts within seconds.</p>
       </div>
       <div class="feat">
         <div class="num">10</div>
@@ -1764,7 +1764,7 @@ fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.jso
       tabs.forEach(function(n){n.classList.remove('active')});
       this.classList.add('active');
       panels.forEach(function(p){p.style.display=p.getAttribute('data-panel')===t?'':'none'});
-      if(urlBar) urlBar.innerHTML='<span class="lock">•</span> https://localhost:8822'+routes[t];
+      if(urlBar) urlBar.innerHTML='<span class="lock">•</span> https://localhost:8824'+routes[t];
     });
   });
 })();

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — provider/backend states</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .card { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .banner { padding: 8px 16px; border-radius: 6px; margin: 8px 0; }
+  .banner-warn { background: #9e6a03; }
+  .banner-error { background: #da3633; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .meta { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+  .schedule-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #21262d; }
+  .profile-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #21262d; }
+</style>
+</head>
+<body>
+<!-- Seed state: provider unavailable, herdr unavailable, schedules
+     enabled/disabled, browser profile active/locked (RR-0028c).
+     Each section represents a distinct failure/config surface. -->
+
+<div class="shell" data-testid="dashboard-shell">
+
+  <!-- === Provider unavailable === -->
+  <div data-testid="provider-section">
+    <h3>Providers</h3>
+
+    <div class="banner banner-error" data-testid="provider-unavailable-banner">
+      Provider "claude-code" is unavailable: authentication expired
+    </div>
+
+    <div class="card" data-testid="provider-claude">
+      <div>Claude Code</div>
+      <div class="meta" data-testid="provider-claude-status">status: unavailable (auth expired)</div>
+      <div class="actions">
+        <button data-testid="provider-claude-reauthenticate">Re-authenticate</button>
+        <button data-testid="provider-claude-configure">Configure</button>
+      </div>
+    </div>
+
+    <div class="card" data-testid="provider-gemini">
+      <div>Gemini CLI</div>
+      <div class="meta" data-testid="provider-gemini-status">status: available</div>
+      <div class="actions">
+        <button data-testid="provider-gemini-configure">Configure</button>
+      </div>
+    </div>
+
+    <div class="card" data-testid="provider-codex">
+      <div>Codex CLI</div>
+      <div class="meta" data-testid="provider-codex-status">status: available</div>
+      <div class="actions">
+        <button data-testid="provider-codex-configure">Configure</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Herdr unavailable === -->
+  <div data-testid="backend-section">
+    <h3>Backends</h3>
+
+    <div class="banner banner-warn" data-testid="herdr-unavailable-banner">
+      herdr is not responding. Workers will fall back to tmux.
+    </div>
+
+    <div class="card" data-testid="backend-herdr">
+      <div>herdr</div>
+      <div class="meta" data-testid="backend-herdr-status">status: unavailable</div>
+      <div class="actions">
+        <button data-testid="backend-herdr-retry">Retry</button>
+        <button data-testid="backend-herdr-configure">Configure</button>
+      </div>
+    </div>
+
+    <div class="card" data-testid="backend-tmux">
+      <div>tmux (fallback)</div>
+      <div class="meta" data-testid="backend-tmux-status">status: available</div>
+      <div class="actions">
+        <button data-testid="backend-tmux-configure">Configure</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Schedule enabled/disabled === -->
+  <div data-testid="schedule-section">
+    <h3>Schedules</h3>
+
+    <div class="schedule-row" data-testid="schedule-enabled">
+      <div>
+        <span data-testid="schedule-enabled-title">Daily health check</span>
+        <div class="meta">daily at 9:00 · target: alpha · last run: 2026-08-09T09:00:00Z</div>
+      </div>
+      <div class="actions">
+        <button data-testid="schedule-enabled-run">Run now</button>
+        <button data-testid="schedule-enabled-disable">Disable</button>
+        <button data-testid="schedule-enabled-edit">Edit</button>
+        <button data-testid="schedule-enabled-delete">Delete</button>
+      </div>
+    </div>
+
+    <div class="schedule-row" data-testid="schedule-disabled">
+      <div>
+        <span data-testid="schedule-disabled-title" style="opacity:0.5">Weekly report</span>
+        <div class="meta">weekly on Monday at 10:00 · target: bravo · disabled</div>
+      </div>
+      <div class="actions">
+        <button data-testid="schedule-disabled-enable">Enable</button>
+        <button data-testid="schedule-disabled-edit">Edit</button>
+        <button data-testid="schedule-disabled-delete">Delete</button>
+      </div>
+    </div>
+
+    <button data-testid="schedule-create">Create schedule</button>
+  </div>
+
+  <!-- === Browser profile active/locked === -->
+  <div data-testid="browser-section">
+    <h3>Browser Profiles</h3>
+
+    <div class="profile-row" data-testid="profile-active">
+      <div>
+        <span data-testid="profile-active-name">default</span>
+        <div class="meta">active · used by: alpha</div>
+      </div>
+      <div class="actions">
+        <button data-testid="profile-active-release">Release</button>
+        <button data-testid="profile-active-screenshot">Screenshot</button>
+      </div>
+    </div>
+
+    <div class="profile-row" data-testid="profile-locked">
+      <div>
+        <span data-testid="profile-locked-name">social</span>
+        <div class="meta">locked by: charlie (since 5m ago)</div>
+      </div>
+      <div class="actions">
+        <button data-testid="profile-locked-force-release">Force release</button>
+      </div>
+    </div>
+
+    <div class="profile-row" data-testid="profile-available">
+      <div>
+        <span data-testid="profile-available-name">testing</span>
+        <div class="meta">available</div>
+      </div>
+      <div class="actions">
+        <button data-testid="profile-available-start">Start</button>
+        <button data-testid="profile-available-configure">Configure</button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

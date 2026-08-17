@@ -1,0 +1,828 @@
+{
+ "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+ "cases": {
+  "fs_list_ok": {
+   "url": "/api/fs/list?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "count": 6,
+    "entries": [
+     {
+      "name": "sub",
+      "dir": true,
+      "size": 96,
+      "modified": 1786310240
+     },
+     {
+      "name": ".hidden.txt",
+      "dir": false,
+      "size": 15,
+      "modified": 1786310240
+     },
+     {
+      "name": "a.txt",
+      "dir": false,
+      "size": 41,
+      "modified": 1786310240
+     },
+     {
+      "name": "bin.dat",
+      "dir": false,
+      "size": 18,
+      "modified": 1786310240
+     },
+     {
+      "name": "broken-link",
+      "error": "unreadable"
+     },
+     {
+      "name": "utf8.txt",
+      "dir": false,
+      "size": 6,
+      "modified": 1786310240
+     }
+    ]
+   }
+  },
+  "fs_list_file": {
+   "url": "/api/fs/list?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+   "status": 400,
+   "body": {
+    "error": "not a directory — use /api/fs/read",
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt"
+   }
+  },
+  "fs_list_missing": {
+   "url": "/api/fs/list?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/nope",
+   "status": 404,
+   "body": {
+    "error": "not found",
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/nope"
+   }
+  },
+  "fs_list_nopath": {
+   "url": "/api/fs/list",
+   "status": 400,
+   "body": {
+    "error": "missing 'path'"
+   }
+  },
+  "fs_read_utf8": {
+   "url": "/api/fs/read?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+    "size": 41,
+    "returned": 41,
+    "truncated": false,
+    "encoding": "utf-8",
+    "content": "hello world\nsecond line with needle here\n",
+    "modified": 1786310240
+   }
+  },
+  "fs_read_binary": {
+   "url": "/api/fs/read?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/bin.dat",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/bin.dat",
+    "size": 18,
+    "returned": 18,
+    "truncated": false,
+    "encoding": "utf-8",
+    "content": "héllo binary\u0000tail",
+    "modified": 1786310240
+   }
+  },
+  "fs_read_trunc": {
+   "url": "/api/fs/read?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/utf8.txt&max_bytes=4",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/utf8.txt",
+    "size": 6,
+    "returned": 4,
+    "truncated": true,
+    "encoding": "base64",
+    "content": "Y2Fmww==",
+    "modified": 1786310240
+   }
+  },
+  "fs_read_dir": {
+   "url": "/api/fs/read?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+   "status": 400,
+   "body": {
+    "error": "is a directory — use /api/fs/list",
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree"
+   }
+  },
+  "fs_read_missing": {
+   "url": "/api/fs/read?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/nope.txt",
+   "status": 404,
+   "body": {
+    "error": "not found",
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/nope.txt"
+   }
+  },
+  "fs_read_denied": {
+   "url": "/api/fs/read?path=/Users/ethan/.ssh/config",
+   "status": 403,
+   "body": {
+    "error": "access denied"
+   }
+  },
+  "fs_read_nopath": {
+   "url": "/api/fs/read",
+   "status": 400,
+   "body": {
+    "error": "missing 'path'"
+   }
+  },
+  "fs_search_literal": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=needle",
+   "status": 200,
+   "body": {
+    "query": "needle",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [
+     {
+      "path": "sub/nested.md",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/nested.md",
+      "line": 1,
+      "text": "needle in sub",
+      "spans": [
+       [
+        0,
+        6
+       ]
+      ]
+     },
+     {
+      "path": "a.txt",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+      "line": 2,
+      "text": "second line with needle here",
+      "spans": [
+       [
+        17,
+        23
+       ]
+      ]
+     }
+    ],
+    "files": 2,
+    "matches": 2,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "max_filesize": "20M",
+    "elapsed_ms": 90
+   }
+  },
+  "fs_search_limit": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=needle&limit=1",
+   "status": 200,
+   "body": {
+    "query": "needle",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [
+     {
+      "path": "a.txt",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+      "line": 2,
+      "text": "second line with needle here",
+      "spans": [
+       [
+        17,
+        23
+       ]
+      ]
+     }
+    ],
+    "files": 1,
+    "matches": 1,
+    "truncated": true,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 1,
+    "max_filesize": "20M",
+    "elapsed_ms": 46
+   }
+  },
+  "fs_search_hidden": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=needle&ignored=1",
+   "status": 200,
+   "body": {
+    "query": "needle",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [
+     {
+      "path": ".hidden.txt",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/.hidden.txt",
+      "line": 1,
+      "text": "ignored needle",
+      "spans": [
+       [
+        8,
+        14
+       ]
+      ]
+     },
+     {
+      "path": "sub/nested.md",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/nested.md",
+      "line": 1,
+      "text": "needle in sub",
+      "spans": [
+       [
+        0,
+        6
+       ]
+      ]
+     },
+     {
+      "path": "a.txt",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+      "line": 2,
+      "text": "second line with needle here",
+      "spans": [
+       [
+        17,
+        23
+       ]
+      ]
+     }
+    ],
+    "files": 3,
+    "matches": 3,
+    "truncated": false,
+    "searched_ignored": true,
+    "searched_hidden": true,
+    "limit": 300,
+    "max_filesize": "20M",
+    "elapsed_ms": 62
+   }
+  },
+  "fs_search_glob": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=needle&glob=*.md",
+   "status": 200,
+   "body": {
+    "query": "needle",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [
+     {
+      "path": "sub/nested.md",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/nested.md",
+      "line": 1,
+      "text": "needle in sub",
+      "spans": [
+       [
+        0,
+        6
+       ]
+      ]
+     }
+    ],
+    "files": 1,
+    "matches": 1,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "max_filesize": "20M",
+    "elapsed_ms": 43
+   }
+  },
+  "fs_search_regex": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=ne.dle&literal=0",
+   "status": 200,
+   "body": {
+    "query": "ne.dle",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [
+     {
+      "path": "a.txt",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/a.txt",
+      "line": 2,
+      "text": "second line with needle here",
+      "spans": [
+       [
+        17,
+        23
+       ]
+      ]
+     },
+     {
+      "path": "sub/nested.md",
+      "abs": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/nested.md",
+      "line": 1,
+      "text": "needle in sub",
+      "spans": [
+       [
+        0,
+        6
+       ]
+      ]
+     }
+    ],
+    "files": 2,
+    "matches": 2,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "max_filesize": "20M",
+    "elapsed_ms": 48
+   }
+  },
+  "fs_search_case": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree&q=NEEDLE&case=sensitive",
+   "status": 200,
+   "body": {
+    "query": "NEEDLE",
+    "root": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "engine": "ripgrep",
+    "results": [],
+    "files": 0,
+    "matches": 0,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "max_filesize": "20M",
+    "elapsed_ms": 45,
+    "note": "No matches. .gitignore'd and hidden files were NOT searched (retry with ignored=1); files over 20M and binaries were skipped."
+   }
+  },
+  "fs_search_noq": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+   "status": 400,
+   "body": {
+    "query": "",
+    "root": "",
+    "engine": "",
+    "results": [],
+    "files": 0,
+    "matches": 0,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "error": "missing query"
+   }
+  },
+  "fs_search_badroot": {
+   "url": "/api/fs/search?path=/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/nope&q=x",
+   "status": 200,
+   "body": {
+    "query": "x",
+    "root": "",
+    "engine": "",
+    "results": [],
+    "files": 0,
+    "matches": 0,
+    "truncated": false,
+    "searched_ignored": false,
+    "searched_hidden": false,
+    "limit": 300,
+    "error": "access denied or not a directory"
+   }
+  },
+  "fs_root_404": {
+   "url": "/api/fs",
+   "status": 404,
+   "body": {
+    "error": "not found"
+   }
+  },
+  "fs_unknown_404": {
+   "url": "/api/fs/definitely-not",
+   "status": 404,
+   "body": {
+    "error": "not found"
+   }
+  },
+  "groups_dashboard": {
+   "url": "/api/groups",
+   "status": 200,
+   "body": {
+    "groups": [
+     {
+      "name": "ops",
+      "workers": 12
+     },
+     {
+      "name": "gtm",
+      "workers": 11,
+      "department": "Sales floor",
+      "goal": "12 meetings booked in August",
+      "kpis": [
+       {
+        "name": "Meetings booked",
+        "target": 12,
+        "unit": "meetings"
+       },
+       {
+        "name": "Reply rate",
+        "target": 30,
+        "unit": "%"
+       }
+      ],
+      "human_cost": 300000
+     },
+     {
+      "name": "customers",
+      "workers": 10
+     },
+     {
+      "name": "personal",
+      "workers": 8
+     },
+     {
+      "name": "amux",
+      "workers": 7
+     },
+     {
+      "name": "canvas",
+      "workers": 5
+     },
+     {
+      "name": "new-features",
+      "workers": 4
+     },
+     {
+      "name": "public-assets",
+      "workers": 4
+     },
+     {
+      "name": "mvs",
+      "workers": 3
+     },
+     {
+      "name": "plg",
+      "workers": 3
+     },
+     {
+      "name": "sherpa",
+      "workers": 2
+     },
+     {
+      "name": "testpair",
+      "workers": 2
+     },
+     {
+      "name": "admin",
+      "workers": 1
+     },
+     {
+      "name": "ip-check",
+      "workers": 1
+     }
+    ],
+    "total": 14,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   }
+  },
+  "tags_dashboard": {
+   "url": "/api/tags",
+   "status": 200,
+   "body": {
+    "groups": [
+     {
+      "name": "ops",
+      "workers": 12
+     },
+     {
+      "name": "gtm",
+      "workers": 11,
+      "department": "Sales floor",
+      "goal": "12 meetings booked in August",
+      "kpis": [
+       {
+        "name": "Meetings booked",
+        "target": 12,
+        "unit": "meetings"
+       },
+       {
+        "name": "Reply rate",
+        "target": 30,
+        "unit": "%"
+       }
+      ],
+      "human_cost": 300000
+     },
+     {
+      "name": "customers",
+      "workers": 10
+     },
+     {
+      "name": "personal",
+      "workers": 8
+     },
+     {
+      "name": "amux",
+      "workers": 7
+     },
+     {
+      "name": "canvas",
+      "workers": 5
+     },
+     {
+      "name": "new-features",
+      "workers": 4
+     },
+     {
+      "name": "public-assets",
+      "workers": 4
+     },
+     {
+      "name": "mvs",
+      "workers": 3
+     },
+     {
+      "name": "plg",
+      "workers": 3
+     },
+     {
+      "name": "sherpa",
+      "workers": 2
+     },
+     {
+      "name": "testpair",
+      "workers": 2
+     },
+     {
+      "name": "admin",
+      "workers": 1
+     },
+     {
+      "name": "ip-check",
+      "workers": 1
+     }
+    ],
+    "total": 14,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   }
+  },
+  "groups_sub_404": {
+   "url": "/api/groups/nonexistent-group-xyz",
+   "status": 404,
+   "body": {
+    "error": "not found"
+   }
+  },
+  "tags_sub_404": {
+   "url": "/api/tags/nonexistent-tag-xyz",
+   "status": 404,
+   "body": {
+    "error": "not found"
+   }
+  },
+  "groups_config_missing": {
+   "url": "/api/groups/no-such-group-xyz/config",
+   "status": 200,
+   "body": {
+    "name": "no-such-group-xyz",
+    "department": "",
+    "goal": "",
+    "kpis": [],
+    "human_cost": 0
+   }
+  },
+  "groups_config_first_live": {
+   "url": "/api/groups/ops/config",
+   "status": 200,
+   "body": {
+    "name": "ops",
+    "department": "",
+    "goal": "",
+    "kpis": [],
+    "human_cost": 0
+   }
+  },
+  "groups_config_gtm": {
+   "url": "/api/groups/gtm/config",
+   "status": 200,
+   "body": {
+    "name": "gtm",
+    "department": "Sales floor",
+    "goal": "12 meetings booked in August",
+    "kpis": [
+     {
+      "name": "Meetings booked",
+      "target": 12,
+      "unit": "meetings"
+     },
+     {
+      "name": "Reply rate",
+      "target": 30,
+      "unit": "%"
+     }
+    ],
+    "human_cost": 300000
+   },
+   "headers": null
+  },
+  "groups_scoped_tagged": {
+   "url": "/api/groups",
+   "status": 200,
+   "body": {
+    "groups": [
+     {
+      "name": "amux",
+      "workers": 7
+     }
+    ],
+    "total": 1,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   },
+   "headers": {
+    "X-Amux-Session": "amux-rust"
+   }
+  },
+  "groups_scoped_untagged": {
+   "url": "/api/groups",
+   "status": 200,
+   "body": {
+    "groups": [],
+    "total": 0,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   },
+   "headers": {
+    "X-Amux-Session": "gtm-ticker"
+   }
+  },
+  "groups_scoped_unknown": {
+   "url": "/api/groups",
+   "status": 200,
+   "body": {
+    "groups": [],
+    "total": 0,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   },
+   "headers": {
+    "X-Amux-Session": "no-such-session-xyz"
+   }
+  },
+  "groups_scoped_worker_hdr": {
+   "url": "/api/groups",
+   "status": 200,
+   "body": {
+    "groups": [
+     {
+      "name": "amux",
+      "workers": 7
+     }
+    ],
+    "total": 1,
+    "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
+    "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+    "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}"
+   },
+   "headers": {
+    "X-Amux-Worker": "amux-rust"
+   }
+  },
+  "ls_ok": {
+   "url": "/api/ls?path=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "parent": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad",
+    "entries": [
+     {
+      "name": "sub",
+      "type": "dir",
+      "size": null,
+      "modified": 1786310240
+     },
+     {
+      "name": "a.txt",
+      "type": "file",
+      "size": 41,
+      "modified": 1786310240
+     },
+     {
+      "name": "bin.dat",
+      "type": "file",
+      "size": 18,
+      "modified": 1786310240
+     },
+     {
+      "name": "utf8.txt",
+      "type": "file",
+      "size": 6,
+      "modified": 1786310240
+     }
+    ]
+   }
+  },
+  "ls_hidden": {
+   "url": "/api/ls?path=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree&hidden=1",
+   "status": 200,
+   "body": {
+    "path": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree",
+    "parent": "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad",
+    "entries": [
+     {
+      "name": "sub",
+      "type": "dir",
+      "size": null,
+      "modified": 1786310240
+     },
+     {
+      "name": ".hidden.txt",
+      "type": "file",
+      "size": 15,
+      "modified": 1786310240
+     },
+     {
+      "name": "a.txt",
+      "type": "file",
+      "size": 41,
+      "modified": 1786310240
+     },
+     {
+      "name": "bin.dat",
+      "type": "file",
+      "size": 18,
+      "modified": 1786310240
+     },
+     {
+      "name": "utf8.txt",
+      "type": "file",
+      "size": 6,
+      "modified": 1786310240
+     }
+    ]
+   }
+  },
+  "ls_file": {
+   "url": "/api/ls?path=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree%2Fa.txt",
+   "status": 400,
+   "body": {
+    "error": "not a directory"
+   }
+  },
+  "ls_missing": {
+   "url": "/api/ls?path=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree%2Fnope",
+   "status": 400,
+   "body": {
+    "error": "not a directory"
+   }
+  },
+  "ls_nopath": {
+   "url": "/api/ls",
+   "status": 400,
+   "body": {
+    "error": "missing path"
+   }
+  },
+  "ls_denied": {
+   "url": "/api/ls?path=%2FUsers%2Fethan%2F.ssh",
+   "status": 403,
+   "body": {
+    "error": "access denied"
+   }
+  },
+  "autocomplete_dir": {
+   "url": "/api/autocomplete/dir?q=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree%2Fs",
+   "status": 200,
+   "body": [
+    "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/"
+   ]
+  },
+  "autocomplete_slash": {
+   "url": "/api/autocomplete/dir?q=%2Fprivate%2Ftmp%2Fclaude-501%2F-Users-ethan-Dev-amux%2Fc70e7c50-636b-4d3c-94b2-bc27d073f6e6%2Fscratchpad%2Ffstree%2F",
+   "status": 200,
+   "body": [
+    "/private/tmp/claude-501/-Users-ethan-Dev-amux/c70e7c50-636b-4d3c-94b2-bc27d073f6e6/scratchpad/fstree/sub/"
+   ]
+  },
+  "autocomplete_empty": {
+   "url": "/api/autocomplete/dir",
+   "status": 200,
+   "body": []
+  },
+  "autocomplete_denied": {
+   "url": "/api/autocomplete/dir?q=%2FUsers%2Fethan%2F.ssh%2F",
+   "status": 200,
+   "body": []
+  }
+ }
+}

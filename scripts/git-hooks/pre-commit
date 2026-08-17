@@ -1,17 +1,52 @@
 #!/bin/bash
-# Pre-commit hook: security scan + Python/JS syntax + E2E smoke tests
+# amux-staged-guard  (see the block below for why this call is HERE now)
+g="$(dirname -- "$0")/amux-staged-guard"
+# SELF-HEAL RATHER THAN WARN (AMUX-2663). The guard BLOCKS a commit that touches
+# another lane's in-flight files — that is the whole protection — and it was one
+# file mode away from being inert: the tracked copy was 100644, so every path
+# that PRESERVES mode (git checkout of a fresh clone, cp -p, tar) landed a
+# non-executable guard, `[ -x ]` failed, and this branch printed one line to
+# stderr and let the commit through. A protection that announces it is off and
+# proceeds is the incident this card records, not a warning about it.
+#
+# Mode is fixed at the source too, but self-healing here covers the checkouts
+# that already have the bad copy and will never run install-hooks.sh again.
+if [ ! -x "$g" ]; then
+  _src="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/git-hooks/amux-staged-guard"
+  if [ -f "$_src" ]; then
+    install -m 0755 "$_src" "$g" 2>/dev/null       && echo "amux: staged-guard was not executable - reinstalled from $_src" >&2
+  fi
+fi
+if [ -x "$g" ]; then "$g" || exit 1; else echo "amux: staged-guard MISSING at $g - cross-session sweep protection is OFF (AMUX-1730)" >&2; fi
+# Pre-commit hook: security scan + Rust/client-JS syntax
 set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 
-# amux-staged-guard — blocks committing another session's WIP out of this
-# shared checkout. It lives beside this hook and is a no-op when absent, so the
-# call is unconditional here on purpose: it was previously hand-added to the
-# INSTALLED copy only, which left re-running install-hooks.sh one command away
-# from silently disabling it while the guard file sat there looking installed.
-g="$(dirname -- "$0")/amux-staged-guard"
-if [ -x "$g" ]; then "$g" || exit 1; fi
+# THE staged-guard CALL IS AT THE TOP OF THIS FILE AGAIN (2026-08-09), and the
+# history below is why that is not a re-run of a mistake.
+#
+# It used to be injected by the server: `_install_amux_precommit_guard()` in
+# amux-server.py generated `.git/hooks/amux-staged-guard` per work_dir and
+# inserted a shim line into whatever pre-commit existed. On 2026-08-06 a
+# session added a tracked copy plus a call here, and that was correctly
+# reverted for two reasons — it made install-hooks.sh a SECOND producer of a
+# generated file (running it overwrote the server's live guard with a frozen
+# one, reverting AC-241), and the shim was already injected, so the guard ran
+# TWICE and printed every NOTE twice.
+#
+# Both reasons are now dead. amux-server.py is deleted (rust cutover) and
+# nothing in the rust server generates the hook or injects the shim, so:
+#   1. there is no first producer to collide with — the tracked copy in
+#      scripts/git-hooks/ is the only one; and
+#   2. nothing injects a second call, so this one cannot duplicate.
+#
+# The cost of the old arrangement was measured: with no generator, this hook
+# was whatever the retired python last wrote, and running install-hooks.sh —
+# which overwrites this file — would have DELETED the injected shim and turned
+# the guard off, while printing "ok ... matches". If a generator ever returns,
+# delete this call and the tracked guard in the same commit that adds it.
 
 # ── 1. Security scan (runs on every commit) ─────────────────────────────────
 
@@ -37,6 +72,17 @@ SECRET_PATTERNS=(
   "github_pat_[A-Za-z0-9_]+"                              # GitHub fine-grained PATs
   "AIza[0-9A-Za-z_-]{35}"                                 # Google API keys
   "sk-[a-zA-Z0-9]{48}"                                    # OpenAI-style keys
+  # AC-239: FOUR credentials sat committed in cloud/setup-cloud.sh since
+  # 2026-03-11 — Clerk sk_test_, R2 access+secret, CF account id — and this
+  # scanner matched NONE of them. The R2 pair is what litestream uses to
+  # replicate every per-user database, in a PUBLIC repo. Every pattern below
+  # was added by testing it against that exact block first; a secret scanner
+  # whose patterns were never run against a real leak is theatre.
+  "sk_(test|live)_[A-Za-z0-9]{20,}"                       # Clerk / Stripe secret keys
+  "(R2|AWS)_SECRET(_ACCESS)?_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9/+]{32,}"   # R2/S3 secrets
+  "CLERK_SECRET_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{20,}"
+  "xox[baprs]-[A-Za-z0-9-]{10,}"                          # Slack tokens
+  "glpat-[A-Za-z0-9_-]{20,}"                              # GitLab PATs
 )
 
 SECRETS_FOUND=0
@@ -98,32 +144,116 @@ fi
 
 echo "Security scan passed."
 
-# ── 2. Python + JS syntax (only when amux-server.py is staged) ──────────────
+# ── 2. Rust + client JS syntax (only when the workspace / dashboard is staged) ─
+# The Python predecessor's ast.parse + inline-<script> extraction lived here
+# until 2026-08-09; the client is real static files now and the server is Rust.
 
-FILE="amux-server.py"
+STAGED_RS=$(echo "$STAGED" | grep -E '^crates/.*\.rs$' || true)
 
-if echo "$STAGED" | grep -q "^${FILE}$"; then
-  echo "Checking Python syntax..."
-  python3 -c "import ast; ast.parse(open('$ROOT/$FILE').read())"
-
-  echo "Checking JS syntax..."
-  python3 -c "
-import re, subprocess, sys, tempfile, os
-with open('$ROOT/$FILE') as f:
-    content = f.read()
-m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
-if not m:
-    print('WARNING: no <script> block found'); sys.exit(0)
-fd, path = tempfile.mkstemp(suffix='.js')
-os.write(fd, m.group(1).encode())
-os.close(fd)
-r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
-os.unlink(path)
-if r.returncode != 0:
-    print('JS syntax error:')
-    print(r.stderr)
-    sys.exit(1)
-"
-  echo "Syntax checks passed."
+# ── 2a. A staged `mod X;` whose X is UNTRACKED (AMUX-2777) ────────────────────
+#
+# THIS IS THE ONE `cargo check` STRUCTURALLY CANNOT CATCH. The module file is
+# present in MY working tree, so my build is green and stays green; the breakage
+# appears only in a checkout that does not have the untracked file — i.e. in
+# everyone else's, after I push. Five times in one night, per the card.
+#
+# The check is deliberately about TRACKEDNESS, not existence: `test -f` passes
+# for exactly the file that is about to be missing for everybody else.
+if [ -n "$STAGED_RS" ]; then
+  MISSING_MODS=""
+  for f in $STAGED_RS; do
+    dir=$(dirname "$f")
+    base=$(basename "$f" .rs)
+    # `mod x;` in foo.rs resolves against foo/, except for the crate roots and
+    # mod.rs, which resolve against their own directory.
+    case "$base" in
+      lib|main|mod) moddir="$dir" ;;
+      *)            moddir="$dir/$base" ;;
+    esac
+    # Declarations only: `mod x;` / `pub mod x;` / `pub(crate) mod x;` ending in
+    # a semicolon. `mod tests { ... }` is inline and has no file.
+    for m in $(grep -oE '^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?mod[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*;' "$f" 2>/dev/null \
+               | sed -E 's/.*mod[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*;/\1/'); do
+      cand1="$moddir/$m.rs"
+      cand2="$moddir/$m/mod.rs"
+      target=""
+      [ -e "$cand1" ] && target="$cand1"
+      [ -z "$target" ] && [ -e "$cand2" ] && target="$cand2"
+      if [ -z "$target" ]; then
+        continue   # declared but absent here too — cargo check will say so
+      fi
+      # Tracked in HEAD, or staged in THIS commit: either way it ships.
+      if git ls-files --error-unmatch "$target" >/dev/null 2>&1; then continue; fi
+      if git diff --cached --name-only | grep -qxF "$target"; then continue; fi
+      MISSING_MODS="$MISSING_MODS\n  $f declares 'mod $m;' -> $target is UNTRACKED"
+    done
+  done
+  if [ -n "$MISSING_MODS" ]; then
+    printf 'BLOCKED: a staged file declares a module whose file is not tracked.%b\n' "$MISSING_MODS"
+    echo ""
+    echo "Your build is green because the file exists HERE. It will not exist in any"
+    echo "other checkout, so this commit breaks the workspace for every other lane the"
+    echo "moment it lands — and cargo check cannot see that from inside your tree."
+    echo ""
+    echo "Stage the module file too:   git add <the path(s) above>"
+    echo "Or drop the declaration if it was not meant to ship yet."
+    exit 1
+  fi
 fi
 
+if echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
+  echo "Checking Rust (cargo check --workspace --all-targets)..."
+  # --all-targets IS THE POINT, not a flourish (AMUX-2807).
+  #
+  # Plain `cargo check --workspace` does not compile test targets, so a break
+  # that lives in `#[cfg(test)]` code sails through this gate and lands on
+  # whoever runs tests next — which on a shared checkout is every other lane.
+  # That happened TWICE on 2026-08-10 alone: a non-exhaustive match on
+  # `DetectorKind::CiFailure`, and `title_needs_self_description` called from
+  # orchestrator/runtime.rs before it existed in amux-core. Both passed this
+  # hook. Both left `cargo test` red for the whole fleet, one of them for ~30
+  # minutes, while `cargo check` reported green the entire time.
+  #
+  # Note what this does and does not buy: it compiles tests, it does not RUN
+  # them. That is deliberate — running the suite is ~40s and this is every
+  # commit on a machine hosting ~50 lanes. Compile errors are the class that
+  # blocks OTHER PEOPLE; a failing assertion blocks only its author.
+  #
+  # Measured on this machine, warm cache: 3.75s -> 13.75s. Ten seconds a commit
+  # against four fleet-wide blockages in one afternoon. If that trade ever stops
+  # being worth it, drop the flag — but drop it knowing what it was buying.
+  # CLIPPY, NOT CHECK — it SUBSUMES check (it compiles) and adds the lints, so
+  # this is a swap and not an extra gate. Measured warm on this machine:
+  # check --all-targets 0s, clippy --all-targets 1s. One second.
+  #
+  # Added 2026-08-11 after TWO peer test files reached main with clippy denials
+  # in one day (tests/opencode_battle.rs, tests/autofix_e2e.rs), each turning
+  # `clippy --workspace --all-targets -D warnings` red for every lane on this
+  # shared checkout and queued to fail CI on the next push of main — which on a
+  # shared checkout is whoever pushes next, not the author.
+  #
+  # The class reached main BY DESIGN: `cargo check` does not lint, and clippy
+  # without --all-targets does not compile tests, so a lint denial in a test
+  # file passed every gate an author would naturally run. It was caught only by
+  # whoever ran the full command next, hours later, on someone else's work.
+  #
+  # Falls back to check where clippy is absent: a missing component must not
+  # block commits, and check is what this gate did before.
+  if cargo clippy --version >/dev/null 2>&1; then
+    cargo clippy --workspace --all-targets --quiet -- -D warnings
+    echo "cargo clippy passed (test targets + lints)."
+  else
+    echo "clippy not installed - falling back to cargo check (lints NOT enforced)" >&2
+    cargo check --workspace --all-targets --quiet
+    echo "cargo check passed (including test targets)."
+  fi
+fi
+
+JS_STAGED=$(echo "$STAGED" | grep -E '^crates/amux-dashboard/static/.*\.(js|mjs)$' || true)
+if [ -n "$JS_STAGED" ]; then
+  echo "Checking client JS syntax..."
+  for f in $JS_STAGED; do
+    node --check "$ROOT/$f"
+  done
+  echo "JS syntax checks passed."
+fi

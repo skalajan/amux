@@ -79,7 +79,7 @@
     "headline": "Expose a Localhost Port to the Public Internet with amux Tunnel",
     "description": "How to use amux tunnel to get a stable public HTTPS URL for any local port. Machine dials out, no inbound firewall port needed, URL survives restarts.",
     "datePublished": "2026-07-10",
-    "dateModified": "2026-07-10",
+    "dateModified": "2026-08-15",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
   }
@@ -89,6 +89,14 @@
     "@context": "https://schema.org",
     "@type": "FAQPage",
     "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Does amux tunnel have rate limiting?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux tunnel includes built-in rate limiting (added in v0.9.96) — you can set per-tunnel request caps to protect your local service from traffic spikes or accidental exposure. The Proxies management tab (v0.9.95) shows all active tunnels, their public URLs, traffic counts, and status in one view."
+        }
+      },
       {
         "@type": "Question",
         "name": "How do I expose a localhost port to the internet without ngrok?",
@@ -152,7 +160,7 @@
     <h1>Expose a Localhost Port to the Public Internet with amux</h1>
     <p class="subtitle">One command. Stable HTTPS URL. No inbound port, no firewall config, no ngrok account.</p>
 
-    <p>amux tunnel makes any local port reachable from the public internet in seconds. Your machine dials <em>out</em> to the amux cloud relay — no inbound firewall port needed, no router forwarding, no ISP restrictions. The resulting URL at <code>https://&lt;id&gt;.t.amux.io/</code> is stable across restarts: same token, same URL, forever. Updated July 2026.</p>
+    <p>amux tunnel makes any local port reachable from the public internet in seconds. Your machine dials <em>out</em> to the amux cloud relay — no inbound firewall port needed, no router forwarding, no ISP restrictions. The resulting URL at <code>https://&lt;id&gt;.t.amux.io/</code> is stable across restarts: same token, same URL, forever. Updated August 2026.</p>
 
     <h2>Quick start</h2>
 
@@ -198,6 +206,22 @@ amux tunnel stop
 # ... later ...
 amux tunnel start 3000
 # → same URL: https://abc123def456789.t.amux.io/</code></pre>
+
+    <h2>Rate limiting and traffic management</h2>
+
+    <p>amux tunnel now includes built-in rate limiting (v0.9.96). You can set a per-tunnel request cap to protect your local service from accidental exposure or traffic spikes:</p>
+
+    <pre><code># Start a tunnel with a rate limit of 60 requests per minute
+amux tunnel start 3000 --rate-limit 60
+# → Requests beyond the cap receive 429 Too Many Requests</code></pre>
+
+    <p>This is useful when sharing a dev server with a client or exposing a webhook handler — you get a public URL without worrying about your local machine getting hammered by a misconfigured sender.</p>
+
+    <h2>Proxies management tab</h2>
+
+    <p>The amux dashboard now has a dedicated Proxies tab (v0.9.95) showing all active tunnels at a glance: their public URLs, the local port they forward to, request counts, and current status. You can start and stop tunnels from the tab without dropping to the CLI.</p>
+
+    <p>Access it at <code>https://localhost:8824</code> (or your amux cloud dashboard) under the Proxies tab once at least one tunnel is running.</p>
 
     <h2>Common use cases</h2>
 
@@ -250,8 +274,8 @@ amux tunnel start 3000
     <h3>Exposing the amux dashboard remotely</h3>
 
     <pre><code"># Make your amux dashboard reachable from anywhere
-amux serve &amp;                    # → localhost:8822
-amux tunnel start 8822
+amux serve &amp;                    # → localhost:8824
+amux tunnel start 8824
 # → Access your agent fleet from your phone, hotel WiFi, anywhere</code></pre>
 
     <p>See also: <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a>.</p>
@@ -273,6 +297,8 @@ amux tunnel start 8822
         <tr><td>Request inspection UI</td><td>No</td><td>Yes (localhost:4040)</td></tr>
         <tr><td>Custom domains</td><td>No (*.t.amux.io only)</td><td>Paid plan</td></tr>
         <tr><td>Authentication on the URL</td><td>No (public, unguessable)</td><td>Basic auth option</td></tr>
+        <tr><td>Rate limiting</td><td>Yes (v0.9.96)</td><td>Paid plan</td></tr>
+        <tr><td>Active tunnel dashboard</td><td>Yes — Proxies tab (v0.9.95)</td><td>Yes (localhost:4040)</td></tr>
         <tr><td>Free tier</td><td>No (cloud feature)</td><td>Yes (limited)</td></tr>
         <tr><td>Integrated with AI agent fleet</td><td>Yes</td><td>No</td></tr>
       </tbody>
@@ -294,6 +320,11 @@ amux tunnel start 8822
     <h2>Frequently asked questions</h2>
 
     <details open>
+      <summary>Does amux tunnel have rate limiting?</summary>
+      <p>Yes. Built-in rate limiting was added in v0.9.96. Use <code>amux tunnel start PORT --rate-limit N</code> to cap requests per minute per tunnel. Requests beyond the cap receive a 429 response. The Proxies tab (v0.9.95) shows traffic counts for all active tunnels.</p>
+    </details>
+
+    <details>
       <summary>How do I expose a localhost port without ngrok?</summary>
       <p>Run <code>amux tunnel start PORT</code>. Your machine dials out to the amux cloud relay — no inbound firewall port, no router config. You get a stable HTTPS URL at <code>https://&lt;id&gt;.t.amux.io/</code> immediately. Requires an amux cloud account.</p>
     </details>

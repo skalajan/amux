@@ -26,9 +26,9 @@ Provision an isolated amux cloud environment on behalf of a prospect by email. T
 
 1. **No provision-by-email.** No endpoint creates a workspace for someone who has not signed up. `org_invites` are link-tokens shown in the UI; no email is ever sent.
 2. **No admin god mode into workspaces.** Admin endpoints are read-only ops. Ethan cannot open or act inside another user's workspace unless he is an org member. No impersonation or auto-membership.
-3. **No budget enforcement.** Cost data exists per container but the gateway never reads it. No budget column, no gate, no shutdown of running sessions when the cap is hit (a running agent keeps burning tokens even if the user never loads the page again).
-4. **No budget-exceeded modal / platform-fee checkout.** The upgrade page covers trial expiry only, subscription-only pricing. No one-time platform fee line item, no POC-specific copy (production-grade sessions, dedicated machine, support, workflow buildout).
-5. **Attribution not universal.** Board creator and message history record the acting email, but other mutations (session create/stop, notes, schedules, files) do not consistently record which human did it. No visible "who did this" in most UI surfaces, no presence indicator.
+3. **No budget enforcement.** Cost data exists per container but the gateway never reads it. No budget column, no gate, no shutdown of running workers when the cap is hit (a running agent keeps burning tokens even if the user never loads the page again).
+4. **No budget-exceeded modal / platform-fee checkout.** The upgrade page covers trial expiry only, subscription-only pricing. No one-time platform fee line item, no POC-specific copy (production-grade workers, dedicated machine, support, workflow buildout).
+5. **Attribution not universal.** Board creator and message history record the acting email, but other mutations (worker create/stop, notes, schedules, files) do not consistently record which human did it. No visible "who did this" in most UI surfaces, no presence indicator.
 6. **Admin expiry control.** `trial_ends_at` is set at signup; no admin API to set a custom expiration when provisioning.
 
 ## Plan
@@ -52,10 +52,10 @@ Verify in prod: provision a real throwaway email end to end, both Ethan and the 
 Build:
 - `orgs.budget_usd` (nullable; null = no cap) + `orgs.spend_cached_usd` + `orgs.spend_checked_at`.
 - Gateway poller (reuse the reaper loop cadence, every 5 min): for each running container with a budget, `GET 127.0.0.1:<port>/api/observability?days=30`, cache `total_cost`.
-- Enforcement on breach: stop all sessions in the container (`POST /api/sessions/<n>/stop` for each), then gate requests exactly like the trial gate: HTML gets the upgrade page, API gets `402 {"error": "budget_exceeded", "spend": X, "budget": Y}`. Admins bypass.
+- Enforcement on breach: stop all workers in the container (`POST /api/sessions/<n>/stop` for each), then gate requests exactly like the trial gate: HTML gets the upgrade page, API gets `402 {"error": "budget_exceeded", "spend": X, "budget": Y}`. Admins bypass.
 - Important: enforcement must not depend on the user visiting; the poller acts alone.
 
-Test: provision POC org with `budget_usd=0.01`, run one real Claude turn, wait for poller, assert sessions stopped and 402 served. Add to `e2e_poc.py`.
+Test: provision POC org with `budget_usd=0.01`, run one real Claude turn, wait for poller, assert workers stopped and 402 served. Add to `e2e_poc.py`.
 
 Verify in prod: same flow against cloud.amux.io with a real container.
 
@@ -63,23 +63,23 @@ Verify in prod: same flow against cloud.amux.io with a real container.
 
 Build:
 - New env: `STRIPE_PLATFORM_FEE_PRICE_ID` (one-time). Checkout gains `poc_upgrade` mode: `line_items=[{platform fee, one-time}, {subscription price}]` in subscription mode.
-- Budget/expiry upgrade page variant: copy sells the production tier (sessions hardened for production, dedicated isolated machine, support + maintenance, ongoing workflow buildout and teaching). Served by the gateway on gate; the dashboard also shows a modal when any API call returns 402 with `budget_exceeded` (client change is generic 402 handling, honoring the single-codebase rule: behavior driven by gateway response, not env branching).
+- Budget/expiry upgrade page variant: copy sells the production tier (workers hardened for production, dedicated isolated machine, support + maintenance, ongoing workflow buildout and teaching). Served by the gateway on gate; the dashboard also shows a modal when any API call returns 402 with `budget_exceeded` (client change is generic 402 handling, honoring the single-codebase rule: behavior driven by gateway response, not env branching).
 - Webhook: `checkout.session.completed` for a POC org flips plan to `pro`, clears the budget gate.
 
 Test: Stripe test-mode checkout with both line items; webhook flips the org; gate lifts.
 
-Verify in prod: real checkout session created (can cancel before paying), confirm line items and redirect; webhook verified via Stripe CLI replay or a $0 coupon test.
+Verify in prod: real checkout worker created (can cancel before paying), confirm line items and redirect; webhook verified via Stripe CLI replay or a $0 coupon test.
 
 ### Phase 4: Attribution + multiplayer polish
 
 Build (amux-server.py, single codebase):
-- Record `X-Amux-User-Email` on every mutating endpoint that currently skips it: session create/stop/send, notes writes, schedule mutations, file ops. Store in the existing audit/history structures (board already does this).
-- Surface it: board card creator chip already exists; add actor email to session history entries and the activity feed so "who did this" is visible to both parties in real time.
+- Record `X-Amux-User-Email` on every mutating endpoint that currently skips it: worker create/stop/send, notes writes, schedule mutations, file ops. Store in the existing audit/history structures (board already does this).
+- Surface it: board card creator chip already exists; add actor email to worker history entries and the activity feed so "who did this" is visible to both parties in real time.
 - Presence (optional, if time allows): SSE-driven "Ethan is viewing" indicator using the identity already injected into the page.
 
 Test: two browsers (Ethan + POC user) against one workspace; actions from each side appear on the other within ~2s with correct attribution. Extend `e2e_poc.py` to assert attribution fields via API.
 
-Verify in prod: live two-account session in the provisioned workspace.
+Verify in prod: live two-account worker in the provisioned workspace.
 
 ### Rollout order and dependencies
 
@@ -87,6 +87,6 @@ Verify in prod: live two-account session in the provisioned workspace.
 
 ## Open items needing Ethan
 
-- `ADMIN_EMAILS` value in `/etc/amux/gateway.env` could not be verified remotely (SSH unreachable from this session; Tailscale needs re-auth). Confirm it contains your email before Phase 1 verification.
+- `ADMIN_EMAILS` value in `/etc/amux/gateway.env` could not be verified remotely (SSH unreachable from this worker; Tailscale needs re-auth). Confirm it contains your email before Phase 1 verification.
 - Stripe: create the one-time platform fee price and pick the amount; confirm POC subscription price ($20/mo current Pro, or a distinct POC-upgrade price).
 - Clerk invitation email template: default Clerk branding or custom?

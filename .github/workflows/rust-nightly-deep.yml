@@ -1,0 +1,255 @@
+name: rust-nightly-deep
+# RR-0116 — CI tiered pipeline: NIGHTLY DEEP GATE.
+#
+# The tier above the PR gates in rust.yml. Everything here is either too slow
+# or too resource-hungry to run per-PR, and every stage must be able to FAIL
+# (ethos rule 7) — a nightly full of green stages that could not have gone red
+# is more expensive than no nightly, because it is trusted.
+#
+# WHAT THE PLAN ASKS FOR THAT IS NOT HERE, and why. Stated in the workflow
+# itself rather than in a doc nobody opens, because a silently-absent stage is
+# indistinguishable from a passing one:
+#
+#   * "40+ Herdr worker concurrency" — herdr is not installable on a hosted
+#     runner and the repo's own README already records that CI does not cover
+#     the herdr path (ethos deviation D6). Faking it with mocked subprocesses
+#     would produce a green stage that proves the mock works.
+#   * "fault-injection matrix (all 18 fault types)" — no fault-injection
+#     harness exists in the codebase yet. A stage that injects nothing and
+#     passes is theatre; this needs the harness first (RR-0112 territory).
+#   * "migration against sanitized production snapshot" — scripts/migration-
+#     rehearsal.sh needs the live database, which exists on one machine. Its
+#     own header marks it historical/local-only. The seeded-corpus migration
+#     check below is what CI can honestly run.
+#   * "browser matrix" runs chromium + webkit; the plan's full matrix has no
+#     third engine configured in e2e/playwright.config.ts today.
+#
+# Each of those is a real gap. They are listed so the next person adds the
+# missing harness instead of concluding the nightly already covers it.
+
+on:
+  schedule:
+    # 07:00 UTC = midnight Pacific, after the day's merges have landed.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: 'Minutes for the resource-leak probe'
+        default: '20'
+      proptest_cases:
+        description: 'Property-test cases per property'
+        default: '5000'
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  deep-tests:
+    name: full suite + extended property testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+
+      - name: Extended property testing
+        # The PR gate runs proptest at its default case count. Here it runs
+        # orders of magnitude more, which is the only thing that makes a
+        # property test a fuzz run rather than a spot check.
+        env:
+          PROPTEST_CASES: ${{ github.event.inputs.proptest_cases || '5000' }}
+        run: cargo test -p amux-core --test proptest_core -- --nocapture
+
+      - name: Restart-persistence suite (tolerated absent while it is being written)
+        # Another lane owns this suite. Tolerating its ABSENCE is fine;
+        # tolerating its FAILURE is not, so the two cases are distinguished
+        # here rather than folded into one `|| true`.
+        run: |
+          if [ -f crates/amux-server/tests/restart_persistence.rs ]; then
+            echo "restart_persistence suite present — running it"
+            cargo test -p amux-server --test restart_persistence
+          else
+            echo "NOTE: crates/amux-server/tests/restart_persistence.rs does not exist yet — stage skipped, NOT passed"
+          fi
+
+      - name: Ignored tests that need no live model
+        # golden_live.rs and two golden_remaining tests spend real tokens and
+        # spawn a real `claude`; they stay ignored. Anything else marked
+        # #[ignore] is listed so an ignore cannot quietly become permanent.
+        run: |
+          echo "== tests currently ignored in the workspace:"
+          cargo test --workspace -- --ignored --list 2>/dev/null | sed -n '1,100p' || true
+
+  # -------------------------------------------------------------------------
+  browser-matrix:
+    name: golden scenarios (chromium + webkit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # browser -> the projects in e2e/playwright.config.ts that USE that
+        # engine, named explicitly. This used to be `browser: [chromium,
+        # webkit]` filtered with --project='*${{ matrix.browser }}*', which
+        # matched NO project ("Available projects: desktop, mobile,
+        # ios-safari") and fell through the `||` to running every project on
+        # whichever single browser was installed. So this job never ran a
+        # webkit scenario despite its name, and its webkit leg was red on its
+        # own (desktop+mobile need chromium). Verified 2026-08-13 with
+        # `--project='*chromium*' --list` -> "No projects matched".
+        include:
+          - browser: chromium
+            projects: --project=desktop --project=mobile
+          - browser: webkit
+            projects: --project=ios-safari
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Install Playwright
+        run: |
+          npm ci --ignore-scripts 2>/dev/null || npm install
+          npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Build server
+        run: cargo build -p amux-server
+      - name: Golden scenarios
+        # No `|| <run everything>` fallback: that fallback is what hid the
+        # broken filter for weeks, by turning "my selector matched nothing"
+        # into a green run of the wrong thing. If the projects below stop
+        # existing, this must go red.
+        run: npx playwright test --config e2e/playwright.config.ts ${{ matrix.projects }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-${{ matrix.browser }}
+          path: test-results/
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  perf:
+    name: performance benchmarks + regression thresholds (RR-0117b)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release -p amux-server
+      - name: Measure (seeded 10k-entity corpus)
+        run: bash scripts/perf-ci.sh measured.json
+      - name: Show the measurement
+        run: cat measured.json
+      - name: Compare against the CI baseline
+        # NOT docs/perf-baseline.json. That file was measured on a developer's
+        # macOS box against the 640k-row LIVE database; this job measures a
+        # 12k-doc synthetic corpus on a shared Linux runner. Comparing them
+        # produces a red gate on day one for a reason no code change can fix
+        # (measured: board_avg_ms 79 vs 28 = +182%, rss 164 vs 66 = +148%) —
+        # and a gate that cries wolf on its first run is a gate that gets
+        # ignored on its hundredth.
+        #
+        # docs/perf-baseline-ci.json does NOT exist yet, on purpose. The first
+        # nightly records every metric and gates none of them EXCEPT the
+        # absolute ceilings from the plan (dashboard <500ms, health <50ms,
+        # board <200ms, search <50ms, RSS <200MB), which are targets rather
+        # than deltas and therefore hold with no baseline at all. Commit the
+        # uploaded measured.json as docs/perf-baseline-ci.json to start gating
+        # the deltas too.
+        run: python3 scripts/perf-compare.py --measured measured.json --baseline docs/perf-baseline-ci.json --record-missing --json-out perf-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-nightly
+          path: |
+            measured.json
+            perf-report.json
+          retention-days: 30
+
+  # -------------------------------------------------------------------------
+  leak-probe:
+    name: FD / RSS leak probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release -p amux-server
+      - name: Soak
+        # The plan says 4h here and 48h for the weekly soak. A GitHub-hosted
+        # job is capped at 6h, so the long runs live in rust-soak.yml with a
+        # self-hosted note; the nightly runs a shorter probe by default and
+        # says which duration it used.
+        env:
+          SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '20' }}
+        run: bash scripts/soak-probe.sh
+
+  # -------------------------------------------------------------------------
+  migration-on-seeded-snapshot:
+    name: migrations apply to a populated database
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release -p amux-server
+      - name: Boot, seed, re-open, and prove nothing was lost
+        # The live-snapshot rehearsal cannot run in CI. What CAN run, and what
+        # actually catches an additive-only violation, is: create a schema,
+        # populate it, re-open it (re-running the migration path over
+        # non-empty tables), and compare table names + row counts.
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          BIN=./target/release/amux-server
+          boot() { AMUX_HOME=$WORK AMUX_DB=$WORK/amux.db AMUX_RS_PORT=18955 $BIN >$WORK/s.log 2>&1 & echo $!; }
+          PID=$(boot); for _ in $(seq 1 60); do curl -sk --max-time 2 https://localhost:18955/health >/dev/null 2>&1 && break; sleep 0.5; done; kill $PID || true; sleep 1
+          sqlite3 $WORK/amux.db "INSERT INTO issues (id,title,desc,status,creator,created,updated,log) VALUES ('MIG-1','t','d','todo','x',1,1,'\`09:00\` created');"
+          sqlite3 $WORK/amux.db "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" > $WORK/before.txt
+          BEFORE_ROWS=$(sqlite3 $WORK/amux.db "SELECT COUNT(*) FROM issues;")
+          PID=$(boot); for _ in $(seq 1 60); do curl -sk --max-time 2 https://localhost:18955/health >/dev/null 2>&1 && break; sleep 0.5; done; kill $PID || true; sleep 1
+          sqlite3 $WORK/amux.db "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" > $WORK/after.txt
+          AFTER_ROWS=$(sqlite3 $WORK/amux.db "SELECT COUNT(*) FROM issues;")
+          diff $WORK/before.txt $WORK/after.txt || { echo "FAIL: re-opening changed the table set (migrations must be additive only)"; exit 1; }
+          [ "$BEFORE_ROWS" = "$AFTER_ROWS" ] || { echo "FAIL: issues row count changed $BEFORE_ROWS -> $AFTER_ROWS across a re-open"; exit 1; }
+          # And the derived index must survive the round trip rather than
+          # being silently rebuilt-to-empty.
+          DOCS=$(sqlite3 $WORK/amux.db "SELECT COUNT(*) FROM search_docs;")
+          [ "$DOCS" -ge 1 ] || { echo "FAIL: the search index is empty after a re-open (expected >= 1 doc)"; exit 1; }
+          echo "OK: $BEFORE_ROWS rows, $DOCS indexed docs, table set unchanged across re-open"
+
+  # -------------------------------------------------------------------------
+  summary:
+    name: nightly summary
+    runs-on: ubuntu-latest
+    needs: [deep-tests, browser-matrix, perf, leak-probe, migration-on-seeded-snapshot]
+    if: always()
+    steps:
+      - name: Report
+        # A nightly that fails silently is a nightly nobody reads. The verdict
+        # is one grep-able line.
+        run: |
+          echo "deep-tests:  ${{ needs.deep-tests.result }}"
+          echo "browser:     ${{ needs.browser-matrix.result }}"
+          echo "perf:        ${{ needs.perf.result }}"
+          echo "leak-probe:  ${{ needs.leak-probe.result }}"
+          echo "migration:   ${{ needs.migration-on-seeded-snapshot.result }}"
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ]; then
+            echo "NIGHTLY DEEP GATE: FAILED"; exit 1
+          fi
+          echo "NIGHTLY DEEP GATE: PASSED"

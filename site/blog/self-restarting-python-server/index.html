@@ -40,9 +40,14 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>os.execv Hot-Reload</span></div>
     <h1>os.execv: The One-Syscall Way to Hot-Reload a Python Server</h1>
+
+    <div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:0.9rem 1.1rem;border-radius:0 6px 6px 0;margin:1.25rem 0;font-size:0.9rem">
+      <strong>Historical note (August 2026):</strong> This post describes the <code>os.execv</code> self-restart mechanism used by amux&rsquo;s original Python server, which was removed at commit <code>792ce1f</code>. amux is now a compiled Rust binary that self-adopts updates via a background build watcher and launchd restart. See <a href="/features/single-file-architecture/">the current architecture page</a> for how deployment works today.
+    </div>
+
 <p class="subtitle">Replace the running process with a new version of itself. Same PID, same port, new code.</p>
 
-<p>amux is a single Python file — about 25,000 lines of server, dashboard HTML/CSS/JS, and agent orchestration logic. During development, this file changes constantly. Sometimes by me, sometimes by the AI agents that amux is orchestrating (they edit the file, the server picks up the changes, and the agents see the new behavior immediately). The server needs to reload without manual intervention, without a process manager, and without losing the port binding for more than a fraction of a second.</p>
+<p>amux is a single Rust binary — about 25,000 lines of server, dashboard HTML/CSS/JS, and agent orchestration logic. During development, this file changes constantly. Sometimes by me, sometimes by the AI agents that amux is orchestrating (they edit the file, the server picks up the changes, and the agents see the new behavior immediately). The server needs to reload without manual intervention, without a process manager, and without losing the port binding for more than a fraction of a second.</p>
 
 <p>The solution is one syscall: <code>os.execv</code>.</p>
 
@@ -69,7 +74,7 @@ sys.exit(0)</code></pre>
 <p>Problems:</p>
 
 <ul>
-<li><strong>Port conflict.</strong> The old process holds port 8822. The new process tries to bind it and gets <code>EADDRINUSE</code>. You need careful coordination — shut down the old server, wait for the OS to release the port, then start the new one. Or use SO_REUSEADDR/SO_REUSEPORT, which have their own edge cases.</li>
+<li><strong>Port conflict.</strong> The old process holds port 8824. The new process tries to bind it and gets <code>EADDRINUSE</code>. You need careful coordination — shut down the old server, wait for the OS to release the port, then start the new one. Or use SO_REUSEADDR/SO_REUSEPORT, which have their own edge cases.</li>
 <li><strong>Two processes.</strong> For a brief window, both are running. If the parent is managed by systemd/launchd, killing it might trigger a restart of the old code.</li>
 <li><strong>PID changes.</strong> Anything monitoring the process by PID (log aggregators, process managers, health checks) sees a new process, not a restart.</li>
 </ul>
@@ -137,12 +142,12 @@ def watch_and_restart(server):
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
-    server = HTTPServer(("", 8822), Handler)
+    server = HTTPServer(("", 8824), Handler)
     watcher = threading.Thread(
         target=watch_and_restart, args=(server,), daemon=True
     )
     watcher.start()
-    print("Serving on :8822")
+    print("Serving on :8824")
     server.serve_forever()</code></pre>
 
 <p>That's 50 lines for a self-reloading HTTP server. Let's walk through the important parts.</p>
@@ -275,7 +280,7 @@ for line in Path("~/.myapp/server.env").expanduser().read_text().splitlines():
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

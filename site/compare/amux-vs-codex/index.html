@@ -78,7 +78,7 @@
         "name": "Is amux open source?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. amux is MIT + Commons Clause licensed, distributed as a single Python file with zero external dependencies. The Codex CLI is also open source (MIT), but the Codex cloud agent platform is proprietary."
+          "text": "Yes. amux is MIT + Commons Clause licensed, distributed as a single Rust binary with zero external dependencies. The Codex CLI is also open source (MIT), but the Codex cloud agent platform is proprietary."
         }
       },
       {
@@ -140,7 +140,7 @@
         <tr><td>Built-in task coordination</td><td>Kanban board, CRM, email, scheduler</td><td>No</td><td>No</td></tr>
         <tr><td>Dashboard</td><td>Web dashboard + iOS app</td><td>ChatGPT / OpenAI platform</td><td>Terminal only</td></tr>
         <tr><td>Pricing</td><td>API tokens only (Anthropic/OpenAI/Google rates)</td><td>OpenAI API usage</td><td>OpenAI API usage</td></tr>
-        <tr><td>Self-hosted</td><td>Yes (single Python file, zero deps)</td><td>No</td><td>Yes</td></tr>
+        <tr><td>Self-hosted</td><td>Yes (single Rust binary, zero deps)</td><td>No</td><td>Yes</td></tr>
         <tr><td>Tunnel (localhost → public URL)</td><td>Yes (<a href="/compare/amux-vs-ngrok/">amux cloud</a>)</td><td>N/A (cloud-native)</td><td>No</td></tr>
       </tbody>
     </table>
@@ -154,7 +154,7 @@ amux register codex-agent-1 --dir ~/Dev/myproject
 amux register codex-agent-2 --dir ~/Dev/myproject
 amux start codex-agent-1
 amux start codex-agent-2
-amux serve  # → dashboard at https://localhost:8822</code></pre>
+amux serve  # → dashboard at https://localhost:8824</code></pre>
 
     <p>Each session is then visible in the amux dashboard, gets the self-healing watchdog, appears in the phone app, and participates in the shared kanban queue. You don't have to choose between amux and Codex CLI.</p>
 
@@ -175,7 +175,7 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
       <li><strong>You want to run multiple runtimes</strong> — mix Claude Code, Codex CLI, and Gemini CLI sessions in parallel on the same project.</li>
       <li><strong>Phone monitoring is essential</strong> — amux's iOS app and PWA let you watch agents, approve PR diffs, steer sessions, and kick off new tasks from anywhere, including overnight from your bed.</li>
       <li><strong>Self-healing matters</strong> — the amux watchdog auto-compacts context, restarts crashed agents, and replays the last message automatically. Agents run overnight without you.</li>
-      <li><strong>Open source and self-hosted is required</strong> — amux is a single Python file, zero external dependencies, MIT + Commons Clause. Deploy it on any Linux/macOS box.</li>
+      <li><strong>Open source and self-hosted is required</strong> — amux is a single Rust binary, zero external dependencies, MIT + Commons Clause. Deploy it on any Linux/macOS box.</li>
       <li><strong>You want built-in ops tools</strong> — kanban board, CRM, Gmail integration, browser automation, and scheduler are included at no extra cost.</li>
       <li><strong>You need team-level review and observability</strong> — the Trends view shows what your AI engineering team accomplished grouped by theme; the Review dashboard surfaces blockers-first synthesis; the Fleet org chart visualizes all sessions by department. None of this exists in Codex cloud.</li>
     </ul>
@@ -231,7 +231,7 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
 
     <details>
       <summary>Is amux open source?</summary>
-      <p>Yes. amux is MIT + Commons Clause, a single Python file, zero external dependencies. The Codex CLI is also open source (MIT). The Codex cloud agent platform is proprietary.</p>
+      <p>Yes. amux is MIT + Commons Clause, a single Rust binary, zero external dependencies. The Codex CLI is also open source (MIT). The Codex cloud agent platform is proprietary.</p>
     </details>
 
     <details>
@@ -251,11 +251,11 @@ amux serve  # → dashboard at https://localhost:8822</code></pre>
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux orchestrates Claude Code, Codex CLI, and Gemini CLI sessions in parallel with self-healing, phone management, and built-in tools. Open source. Single Python file.</p>
+      <p>amux orchestrates Claude Code, Codex CLI, and Gemini CLI sessions in parallel with self-healing, phone management, and built-in tools. Open source. Single Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
     </div>
   </main>

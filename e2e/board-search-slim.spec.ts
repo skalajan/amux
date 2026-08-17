@@ -1,0 +1,50 @@
+import { test, expect } from '@playwright/test';
+
+// AMUX-2840 step 2. Free-text board search reads desc and log, which slim=1
+// does not ship. Rather than switching engines to /api/search — measured to
+// return materially different results in both directions, and paginated — the
+// matcher stays authoritative and the client pays for desc/log only while a
+// text query is active.
+
+test('the full-text hydrator is INERT while the payload already carries desc', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  const r = await page.evaluate(async () => {
+    const w = window as any;
+    let fetches = 0;
+    const orig = w.fetch;
+    w.fetch = (...a: any[]) => { fetches++; return orig(...a); };
+    // Today's shape: items carry desc. Must not fetch.
+    w._bqEnsureFullText([{ id: 'A-1', desc: 'present', log: '' }]);
+    await new Promise(res => setTimeout(res, 200));
+    w.fetch = orig;
+    return fetches;
+  });
+  expect(r, 'a full payload must not trigger a hydration fetch').toBe(0);
+});
+
+test('it hydrates once when the payload is slim, and not again inside the cache window', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  const r = await page.evaluate(async () => {
+    const w = window as any;
+    let fetches = 0;
+    const orig = w.fetch;
+    w.fetch = (...a: any[]) => {
+      if (String(a[0]).includes('/api/board?archived=0')) fetches++;
+      return orig(...a);
+    };
+    // Slim shape: desc absent. `desc_len` present, as slim actually serves.
+    const slim = [{ id: 'A-1', desc_len: 5 }];
+    w._bqEnsureFullText(slim);
+    await new Promise(res => setTimeout(res, 800));
+    const afterFirst = fetches;
+    // Second call inside the 60s window must not refetch.
+    w._bqEnsureFullText(slim);
+    await new Promise(res => setTimeout(res, 300));
+    w.fetch = orig;
+    return { afterFirst, afterSecond: fetches };
+  });
+  expect(r.afterFirst, 'a slim payload must trigger exactly one hydration fetch').toBe(1);
+  expect(r.afterSecond, 'the 60s cache must suppress the second call').toBe(1);
+});

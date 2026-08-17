@@ -181,7 +181,7 @@
       work. The self-healing watchdog handles context exhaustion, crashes, and stuck prompts
       automatically, enabling true overnight unattended operation. Install via
       <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
-      Single Python file, zero external dependencies —
+      Single Rust binary, zero external dependencies —
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
     </p>
 
@@ -338,7 +338,7 @@
         </tr>
         <tr>
           <td>Open source / self-hosted</td>
-          <td>Yes — MIT license, single Python file, zero external dependencies</td>
+          <td>Yes — MIT license, single Rust binary, zero external dependencies</td>
           <td>Agent Teams is built into the proprietary Claude Code CLI (Anthropic)</td>
         </tr>
         <tr>
@@ -353,7 +353,7 @@
     <div class="exp007-cta" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">Try amux — 304 stars on GitHub</div>
-        <div style="color:var(--fg-dim);font-size:.9rem">Open source, self-hosted, single Python file. No cloud account needed.</div>
+        <div style="color:var(--fg-dim);font-size:.9rem">Open source, self-hosted, single Rust binary. No cloud account needed.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -588,7 +588,7 @@ uvx amux serve
 
 # Register a project and launch the dashboard
 amux register myproject --dir ~/Dev/myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
 
     <p>
       See the <a href="/guides/getting-started/">getting started guide</a> for a full walkthrough,
@@ -619,7 +619,7 @@ amux serve  # → https://localhost:8822</code></pre>
       <p>Run your first parallel agent fleet tonight. Install in 30 seconds.</p>
       <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>
       <a class="btn"
          href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"

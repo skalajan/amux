@@ -131,7 +131,7 @@
 
     <p><strong>Jules</strong> (Google) is an autonomous AI coding agent that connects to your GitHub repository and resolves issues autonomously. You assign an issue to Jules; it analyzes the problem, writes code, opens a draft PR, and asks for review. It runs entirely in Google's cloud, powered by Gemini models. Jules focuses on the single-task-at-a-time workflow: assign one issue, get back a PR.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and scheduler. Single Python file, MIT + Commons Clause licensed, zero external dependencies.</p>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and scheduler. Single Rust binary, MIT + Commons Clause licensed, zero external dependencies.</p>
 
     <h2>At a Glance</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -301,11 +301,11 @@
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with self-healing, kanban, and iOS app monitoring. Single Python file, zero dependencies, MIT licensed.</p>
+      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with self-healing, kanban, and iOS app monitoring. Single Rust binary, zero dependencies, MIT licensed.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/ai-coding-agents-overnight/" style="margin-left:0.75rem;">Overnight agent guide →</a>
     </div>

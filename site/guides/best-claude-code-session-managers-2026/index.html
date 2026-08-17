@@ -208,7 +208,7 @@
       <span style="background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:0.2rem 0.6rem;font-size:0.82rem;">macOS · Linux</span>
     </div>
 
-    <p><a href="https://amux.io/" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a dashboard or your phone. It launches, monitors, and self-heals parallel <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> sessions with built-in kanban, notes, CRM, email, browser automation, and a scheduler. It runs as a single Python file — no Docker, no build step — and exposes a live web dashboard at <code>https://localhost:8822</code> that shows every session, its current output, token count, and status.</p>
+    <p><a href="https://amux.io/" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a dashboard or your phone. It launches, monitors, and self-heals parallel <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> sessions with built-in kanban, notes, CRM, email, browser automation, and a scheduler. It runs as a single Rust binary — no Docker, no build step — and exposes a live web dashboard at <code>https://localhost:8824</code> that shows every session, its current output, token count, and status.</p>
 
     <p>What separates amux from every other tool on this list is the <strong>coordination layer</strong>: agents can send messages to each other, claim tasks atomically from a shared kanban board (preventing duplicate work via SQLite Compare-and-Swap), and read each other&rsquo;s output via a REST API. A watchdog process monitors all sessions and automatically compacts context on overflow, restarts crashed agents with <code>--resume</code> so conversations continue, and replays the last message to wake up sessions stuck at a permission prompt.</p>
 
@@ -236,7 +236,7 @@ brew install mixpeek/amux/amux
 pipx install amux
 
 <span class="comment"># Zero-install trial (no pip required)</span>
-uvx amux serve  <span class="comment"># → https://localhost:8822</span>
+uvx amux serve  <span class="comment"># → https://localhost:8824</span>
 
 <span class="comment"># Or self-host from source</span>
 git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
@@ -448,7 +448,7 @@ tmux ls</code></pre>
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the #1-rated open-source Claude Code session manager (315&#9733; GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Self-healing watchdog, mobile PWA, offline scrollback cache, stalled agent detection, built-in kanban and CRM. Run 5&ndash;50 agents from your phone or browser. MIT licensed, single Python file.</div>
+        <div style="color:var(--muted);font-size:.9rem">Self-healing watchdog, mobile PWA, offline scrollback cache, stalled agent detection, built-in kanban and CRM. Run 5&ndash;50 agents from your phone or browser. MIT licensed, single Rust binary.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
     </div>

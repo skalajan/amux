@@ -1,6 +1,12 @@
 {
   "private": true,
+  "scripts": {
+    "lint:spa": "bash scripts/spa-lint.sh"
+  },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "eslint": "^10.8.1",
+    "globals": "^17.9.0",
     "playwright": "^1.61.0"
   }
 }

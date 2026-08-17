@@ -1,0 +1,33 @@
+-- 0017: mark a column gate that a HUMAN configured (AMUX-2641).
+--
+-- ADDITIVE ONLY (shared live DB).
+--
+-- WHY A FLAG AND NOT A COMPARISON:
+--
+-- Enforcement uses `effective_gate` = card override > type defaults, and never
+-- reads `statuses.gate` for a built-in column. So editing a column's gate in the
+-- UI writes a row nothing consults — Ethan's requirement that "columns may have
+-- custom gates controlling entry into the next stage" is silently not honoured.
+--
+-- The obvious fix is to prefer `statuses.gate` whenever it is set. That is
+-- wrong twice over:
+--
+--   1. The table is TYPE-BLIND and was seeded from the CODE defaults, while
+--      `default_gates_for` is type-aware. Preferring the column gate would put
+--      "Implemented and merged / Tests / lint pass" on doc, research and
+--      investigation cards — reintroducing exactly the unsatisfiable-gate
+--      problem that made 1,143 of 1,215 cards type `code` (ethos rule 3).
+--
+--   2. "Differs from the current default" cannot mean "customised", because the
+--      seed DRIFTS. `verified` already diverges: the table says "CI/CD green
+--      (incl. e2e)" while the code default has since been refined to "CI/CD
+--      green (if e2e infra is unavailable, note why — that is not a failure)".
+--      That row is STALE SEED, not operator intent, and treating it as a
+--      customisation would resurrect the older, harsher wording as a silent
+--      regression on the one transition Ethan cares most about.
+--
+-- So the signal is explicit: 1 when a human wrote this gate through the column
+-- editor or the scope config, absent/0 otherwise. Enforcement honours a
+-- configured gate only when the flag says a person meant it, and falls back to
+-- type-aware defaults in every other case.
+-- ADDCOL: statuses gate_custom INTEGER

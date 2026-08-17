@@ -6,7 +6,7 @@
 # can list, peek, and message sessions running on another box.
 #
 # Config (env or ~/.amux/remote.env):
-#   AMUX_URL       base URL of the remote server, e.g. https://100.108.219.90:8822
+#   AMUX_URL       base URL of the remote server, e.g. https://100.108.219.90:8824
 #   AMUX_TOKEN     auth token from the remote's ~/.amux/auth_token
 #   AMUX_SSH_HOST  SSH hostname for `attach` (defaults to host extracted from AMUX_URL)
 #   AMUX_SSH_USER  SSH user for `attach` (defaults to current $USER)
@@ -184,7 +184,7 @@ usage() {
 ${BOLD}amux-remote${RESET} — drive a remote amux server over its REST API
 
 ${BOLD}Config${RESET} (env or ${REMOTE_ENV}):
-  AMUX_URL       ${DIM}e.g. https://100.108.219.90:8822${RESET}
+  AMUX_URL       ${DIM}e.g. https://100.108.219.90:8824${RESET}
   AMUX_TOKEN     ${DIM}from the remote's ~/.amux/auth_token${RESET}
   AMUX_SSH_HOST  ${DIM}SSH host for attach (default: host from AMUX_URL)${RESET}
   AMUX_SSH_USER  ${DIM}SSH user for attach (default: \$USER)${RESET}

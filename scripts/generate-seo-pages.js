@@ -2,7 +2,24 @@
 // Generate static SEO pages for amux.io
 const fs = require('fs');
 const path = require('path');
-const ROOT = path.join(__dirname, '..');
+// THE SITE LIVES IN site/, NOT THE REPO ROOT (AMUX-2771, 2026-08-11).
+//
+// This was `path.join(__dirname, '..')` — the repo root — while every page it
+// claims to generate lives under site/. So running it did not update a single
+// live page; it created ~12 stray top-level directories (blog/, guides/,
+// compare/ ...) next to crates/ and cloud/, plus a sitemap.xml and robots.txt
+// at the root, and reported "Generated 163 pages" while the real pages sat
+// untouched. It reads as success and changes nothing you can see.
+//
+// Overridable so a dry run cannot clobber the real tree: point SEO_OUT_DIR at
+// a scratch path to inspect output before committing to it.
+//
+// NOTE FOR WHOEVER REGENERATES: site/ is a MIXED tree. seo-data.js declares 155
+// slugs; only 21 of them match the 98 dirs in site/guides. The other 77 came
+// from somewhere else and are NOT reproducible from this generator, so a
+// regeneration ADDS and OVERWRITES but must never be used to prune. Diff before
+// committing — some of the 21 may carry hand edits this would silently discard.
+const ROOT = process.env.SEO_OUT_DIR || path.join(__dirname, '..', 'site');
 
 // ── Shared template ──────────────────────────────────────────────
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -282,7 +299,7 @@ amux (Agent Multiplexer) is a Python + tmux tool that runs multiple Claude Code 
 
 \`\`\`bash
 git clone https://github.com/mixpeek/amux && cd amux
-python3 amux-server.py  # opens dashboard at https://localhost:8822
+./install.sh && amux serve  # opens dashboard at https://localhost:8824
 \`\`\`
 
 ## Documentation

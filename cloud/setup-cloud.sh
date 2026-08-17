@@ -19,6 +19,10 @@ fi
 systemctl enable --now docker
 
 # ── Python deps for gateway ───────────────────────────────────────────────────
+# The GATEWAY stays python. It is a host process, not the product server: it
+# verifies Clerk JWTs, owns per-tenant docker orchestration and billing, and
+# never runs a customer's code. Deleting the python SERVER did not make it
+# python-free, and rewriting it was not part of the server cutover.
 pip3 install -q "PyJWT[crypto]" cryptography stripe
 
 # ── Directories ───────────────────────────────────────────────────────────────
@@ -31,24 +35,50 @@ else
   git -C /opt/amux pull --ff-only
 fi
 
-# ── Build and push Docker image ───────────────────────────────────────────────
-log "Building amux Docker image..."
-cp /opt/amux/amux-server.py /opt/amux/cloud/docker/
-docker build -t ghcr.io/mixpeek/amux:latest /opt/amux/cloud/docker/
+# ── Build the workspace image ─────────────────────────────────────────────────
+# The image is a RUST build now (AMUX-2619). Two things changed and both are
+# load-bearing:
+#   * there is no `cp amux-server.py cloud/docker/` step — that file was deleted
+#     from the repo; the server is compiled into the image from crates/.
+#   * the build CONTEXT is the repo root, not cloud/docker/, because the
+#     Dockerfile needs Cargo.toml, Cargo.lock, crates/ and the `amux` CLI.
+# Normally the image arrives from ghcr.io via .github/workflows/deploy-cloud.yml;
+# this local build is the bootstrap/offline path.
+log "Building amux Docker image (rust)..."
+docker build -f /opt/amux/cloud/docker/Dockerfile -t ghcr.io/mixpeek/amux:latest /opt/amux
 
 # ── Gateway env ───────────────────────────────────────────────────────────────
 mkdir -p /etc/amux
+# AC-239: these were HARDCODED here — Clerk secret, R2 access+secret, CF
+# account id — committed to a PUBLIC repo since 2026-03-11. The R2 pair is what
+# litestream uses to replicate every per-user database, so it was live storage
+# credentials for user data, not just a test key. Removing them here does NOT
+# undo git history: the values must be ROTATED, which is the owner's action.
+# What this change buys is that the file stops teaching the pattern and HEAD
+# stops carrying the values, so the CI secret scan can gate every future push.
+#
+# Provide them in the environment when running this script, e.g.
+#   CLERK_SECRET_KEY=... R2_SECRET_KEY=... ./setup-cloud.sh
+# Same shape seed.py and cloud/tests/e2e_smoke.py already use.
 if [ ! -f /etc/amux/gateway.env ]; then
-  cat > /etc/amux/gateway.env << 'EOF'
-CLERK_PUBLISHABLE_KEY=pk_test_cmVzb2x2ZWQtY3Jvdy00OS5jbGVyay5hY2NvdW50cy5kZXYk
-CLERK_SECRET_KEY=sk_test_Hk4eWnixlC1W3U1tHMqu1TeUNfO8tRxPrOtNKM0AOQ
-R2_ACCESS_KEY=5256526335d2ee72f4995ba580f5f3fb
-R2_SECRET_KEY=4f5e01fe0418108caa3b3ef5a4497b04d0759964edeaf80a6b09c229a1566c3c
-CF_ACCOUNT_ID=4507e1d25a7f5ebec509c3e4d4b39074
-GATEWAY_PORT=8080
+  : "${CLERK_PUBLISHABLE_KEY:?set CLERK_PUBLISHABLE_KEY in the environment}"
+  : "${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY in the environment}"
+  : "${R2_ACCESS_KEY:?set R2_ACCESS_KEY in the environment}"
+  : "${R2_SECRET_KEY:?set R2_SECRET_KEY in the environment}"
+  : "${CF_ACCOUNT_ID:?set CF_ACCOUNT_ID in the environment}"
+  # No quoted heredoc: these must expand. chmod BEFORE writing secrets so the
+  # values never exist in a world-readable file, even briefly.
+  install -m 600 /dev/null /etc/amux/gateway.env
+  cat > /etc/amux/gateway.env << EOF
+CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY}
+CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+R2_ACCESS_KEY=${R2_ACCESS_KEY}
+R2_SECRET_KEY=${R2_SECRET_KEY}
+CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
+GATEWAY_PORT=${GATEWAY_PORT:-8080}
 AMUX_CLOUD_DATA=/var/amux/users
 GATEWAY_DB=/var/amux/gateway.db
-IDLE_TIMEOUT=600
+IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}
 EOF
 fi
 

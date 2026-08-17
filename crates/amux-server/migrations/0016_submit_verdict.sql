@@ -1,0 +1,30 @@
+-- 0016: the submission verdict on cmd_history (AMUX-2643).
+--
+-- ADDITIVE ONLY (shared live DB; existing rows must keep working).
+--
+-- WHY: 0014 recorded HOW a message was delivered (direct / queued / fallback)
+-- and how long it waited. It did not record whether the send was ever
+-- CONFIRMED to have been submitted — which is a different fact and the one
+-- AMUX-2629 was about: keystrokes reach the pane, Claude Code's TUI does not
+-- turn them into a submitted message, and the API answers 200 {"ok":true}
+-- anyway. Thirteen lanes sat holding unsubmitted text for hours.
+--
+-- `verify_submitted` already computes the verdict and `send_outcome` already
+-- states it in the response — but the response is read once, by whoever made
+-- the call, and then it is gone. The message list, which is where anyone
+-- afterwards asks "did that actually land?", had no way to answer. Ethos rule
+-- 4 again: the fact was computed and discarded rather than kept where it is
+-- consulted.
+--
+-- Values (NULL is meaningful and must not be coalesced):
+--   confirmed   — positively observed as submitted
+--   retried     — submitted, but only after a dropped Enter was re-sent; the
+--                 send SUCCEEDED and is deliberately NOT recorded as clean, so
+--                 "the keystroke path is failing on this lane" stays countable
+--   stuck       — text was still in the composer; NOT submitted
+--   unverified  — could not tell (no UI drawn, capture failed, pane torn)
+--   NULL        — predates this column, or a path that does not verify at all
+--                 (the steering deliverer, schedules). Renders as "—", never as
+--                 a verdict, because inventing one here is exactly the
+--                 mislabelling 0014 exists to end.
+-- ADDCOL: cmd_history submit_verdict TEXT

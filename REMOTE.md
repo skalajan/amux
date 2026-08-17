@@ -1,5 +1,16 @@
 # Remote amux over Tailscale
 
+> **PORT NOTE (2026-08-10):** this guide now uses **8824**, the port
+> `./install.sh` configures (`AMUX_RS_PORT`) and the only address anything new
+> should use. It previously said 8822 — the Python server's port, inherited by
+> the Rust server as a temporary compatibility bind that is being removed. If
+> you have an existing `remote.env` pinned to 8822, change it: see
+> [docs/rust-migration/server-boundary.md](docs/rust-migration/server-boundary.md)
+> for the retirement condition.
+>
+> `amux-remote` itself is a bash companion to the removed Python server, kept
+> because it still drives the Rust server's REST API unchanged.
+
 Drive an amux server running on another machine — list, peek, message, and **attach**
 to its sessions from your laptop, with the attach rendered as **native iTerm2 tabs**
 so a remote session feels local.
@@ -15,7 +26,7 @@ and SSHes in for `attach`.
 On your **laptop** (the client), create `~/.amux/remote.env`:
 
 ```bash
-AMUX_URL=https://desktop.tail5ce8f5.ts.net:8822   # server: HTTPS, port 8822
+AMUX_URL=https://desktop.tail5ce8f5.ts.net:8824   # server: HTTPS, port 8824
 AMUX_TOKEN=<contents of the server's ~/.amux/auth_token>
 AMUX_SSH_HOST=desktop.tail5ce8f5.ts.net            # SSH target for `attach`
 # AMUX_SSH_USER=ethan                              # default: $USER
@@ -29,7 +40,7 @@ amux-remote ls                          # list the server's sessions
 amux-remote attach mixpeek-frustrations # SSH in + attach (native iTerm2 tabs in iTerm2)
 ```
 
-> The amux server listens on **HTTPS, port 8822** with a self-signed cert
+> The amux server listens on **HTTPS, port 8824** with a self-signed cert
 > (`amux-remote` uses `curl -sk`). Plain `http://host/` (port 80) is **not** the
 > server unless you've set up `tailscale serve` separately.
 
@@ -41,7 +52,7 @@ Read from the environment, or from `~/.amux/remote.env` (process env always wins
 
 | Var | Required | Meaning |
 |-----|----------|---------|
-| `AMUX_URL` | yes | Base URL of the remote server, e.g. `https://desktop.tail5ce8f5.ts.net:8822` |
+| `AMUX_URL` | yes | Base URL of the remote server, e.g. `https://desktop.tail5ce8f5.ts.net:8824` |
 | `AMUX_TOKEN` | yes | Auth token — copy from the server's `~/.amux/auth_token` |
 | `AMUX_SSH_HOST` | for `attach` | SSH hostname (defaults to the host parsed from `AMUX_URL`) |
 | `AMUX_SSH_USER` | no | SSH user for `attach` (default: `$USER`) |
@@ -125,7 +136,7 @@ Host desktop
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| `HTTP 000` / connection refused | Wrong URL — use `https://host:8822`, not `http://host/`. The server is HTTPS on 8822. |
+| `HTTP 000` / connection refused | Wrong URL — use `https://host:8824`, not `http://host/`. The server is HTTPS on 8824. |
 | `could not parse response (check AMUX_URL / AMUX_TOKEN)` | Bad/missing token, or URL not pointing at the amux server. |
 | `Permission denied (publickey)` on attach | SSH not set up — run `tailscale up --ssh` on the server, or add your key to `authorized_keys`. |
 | Attach opens classic tmux, not native tabs | You're not in iTerm2, or `AMUX_CC=0`. Use `--cc` to force, or set `AMUX_CC=1`. |

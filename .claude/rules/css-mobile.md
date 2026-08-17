@@ -1,6 +1,6 @@
 ---
-description: When editing CSS in amux-server.py — mobile and PWA considerations
-globs: ["amux-server.py"]
+description: When editing dashboard CSS — mobile and PWA considerations
+globs: ["crates/amux-dashboard/static/**"]
 ---
 
 When editing CSS:

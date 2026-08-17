@@ -58,7 +58,7 @@
     <p>A coding agent stuck in a bad loop will spend tokens indefinitely. A recursive refactor loop, a test-fix cycle that keeps generating new failures, or an agent that cannot find a file and keeps retrying can exhaust a Claude Max monthly budget in a single overnight run if nothing stops it.</p>
     <p>amux tracks per-session token usage in real time, parsed from the JSONL transcript each session writes. The usage is visible on every session card in the dashboard. Set a per-session token kill threshold in Settings &rarr; Session Limits; the watchdog process terminates any session that exceeds the limit and logs the termination event with timestamp and token count.</p>
     <pre><code># Check token usage for all active sessions
-curl -sk https://localhost:8822/api/sessions | python3 -c "
+curl -sk https://localhost:8824/api/sessions | python3 -c "
 import json, sys
 for s in json.load(sys.stdin):
     tokens = s.get('tokens_used', 0)
@@ -71,7 +71,7 @@ for s in json.load(sys.stdin):
     <p>Claude Code sessions crash when their context window fills up. In a long-running unattended session &mdash; overnight refactors, multi-file migrations, test generation at scale &mdash; context overflow is the most common failure mode. Without intervention, the session dies silently at 3am and no one is there to restart it.</p>
     <p>amux's watchdog monitors context usage on each session and intervenes before overflow. When usage crosses a configured threshold, the watchdog pauses the agent, sends a <code>/compact</code> command to Claude Code, waits for the compact to complete, and then resumes the session with the agent's last message &mdash; making the intervention transparent to the developer. The session loses no work; it just continues with a compressed context.</p>
     <pre><code># Context auto-compaction is enabled by default. Monitor it:
-curl -sk https://localhost:8822/api/sessions/myproject | python3 -c "
+curl -sk https://localhost:8824/api/sessions/myproject | python3 -c "
 import json, sys
 s = json.load(sys.stdin)
 print('context_pct:', s.get('context_pct', 'n/a'))
@@ -114,7 +114,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
     "gate_checked": ["Implemented and merged", "Tests / lint pass"],
     "desc": "PR #142 merged. CI passed on sha abc1234."
   }' \
-  https://localhost:8822/api/board/TASK-123
+  https://localhost:8824/api/board/TASK-123
 
 # Advance to verified (all four production gates required)
 curl -sk -X PATCH -H 'Content-Type: application/json' \
@@ -128,7 +128,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
     ],
     "desc": "Verified in prod: CI run https://... green; deployed sha abc1234; prod smoke passed; no regressions in health checks."
   }' \
-  https://localhost:8822/api/board/TASK-123</code></pre>
+  https://localhost:8824/api/board/TASK-123</code></pre>
 
     <h3>Stale-doing detector</h3>
     <p>A task stuck in <code>doing</code> with no progress update is a different failure mode: silent task abandonment. An agent claims a task, hits an obstacle, and stops updating the board &mdash; but the task stays in <code>doing</code> indefinitely, blocking other agents and creating false signals about session activity.</p>
@@ -208,7 +208,7 @@ amux register myproject --dir ~/Dev/myproject
 amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
 
     <p><strong>Step 3: Set a token kill threshold</strong></p>
-    <p>Open the amux dashboard at <code>https://localhost:8822</code> &rarr; Settings &rarr; Session Limits. Set a max token budget per session. The watchdog terminates sessions that exceed it and logs the event with the token count and timestamp.</p>
+    <p>Open the amux dashboard at <code>https://localhost:8824</code> &rarr; Settings &rarr; Session Limits. Set a max token budget per session. The watchdog terminates sessions that exceed it and logs the event with the token count and timestamp.</p>
 
     <p><strong>Step 4: Connect the iOS app for phone approval</strong></p>
     <p>Install <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux &ndash; Agent Multiplexer</a> from the App Store. Enter your amux server address in the app. Pending permission prompts from all active sessions appear in the app; tap to approve or deny from anywhere.</p>
@@ -220,7 +220,7 @@ amux board done TASK-ID --gate "Implemented and merged,Tests pass"
 # Via API (more explicit)
 curl -sk -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"done","gate_checked":["Implemented and merged","Tests / lint pass"],"desc":"PR merged, CI green"}' \
-  https://localhost:8822/api/board/TASK-ID</code></pre>
+  https://localhost:8824/api/board/TASK-ID</code></pre>
 
     <p><strong>Step 6: Verify in production before marking verified</strong></p>
     <pre><code>curl -sk -X PATCH -H 'Content-Type: application/json' \
@@ -234,7 +234,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
     ],
     "desc": "Verified: CI run https://ci.example.com/123 green; deployed sha abc1234; prod smoke passing; no regressions."
   }' \
-  https://localhost:8822/api/board/TASK-ID</code></pre>
+  https://localhost:8824/api/board/TASK-ID</code></pre>
 
     <h2 id="yolo">When to relax gates (YOLO mode)</h2>
     <p>YOLO mode exists because not every agent action needs a human in the loop. The right trade-off depends on the reversibility of the side effects:</p>
@@ -274,11 +274,11 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
     <div class="cta-box">
       <h3>Human-in-the-loop AI agents, built in</h3>
-      <p>amux is an open-source control plane for AI agent teams &mdash; self-healing, phone-first, single Python file, zero external dependencies, MIT licensed. Quality gates ship out of the box.</p>
+      <p>amux is an open-source control plane for AI agent teams &mdash; self-healing, phone-first, single Rust binary, zero external dependencies, MIT licensed. Quality gates ship out of the box.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject
 amux start myproject
-amux serve  # → https://localhost:8822 — open Board tab</code></pre>
+amux serve  # → https://localhost:8824 — open Board tab</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#9733; Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>

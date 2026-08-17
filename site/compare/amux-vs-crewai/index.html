@@ -180,7 +180,7 @@
         simultaneously. The native iOS app gives you remote monitoring, session steering, and push alerts
         from anywhere. A built-in kanban board lets agents atomically claim tasks so no two sessions
         duplicate work. A self-healing watchdog handles context exhaustion, crashes, and stuck prompts
-        automatically. Single Python file, MIT + Commons Clause. Install:
+        automatically. Single Rust binary, MIT + Commons Clause. Install:
         <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
         Source at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
       </p>
@@ -253,7 +253,7 @@
             </tr>
             <tr>
               <td><strong>Dashboard</strong></td>
-              <td>Web UI at <code>localhost:8822</code> — live session output, task board, scheduler, notes, CRM</td>
+              <td>Web UI at <code>localhost:8824</code> — live session output, task board, scheduler, notes, CRM</td>
               <td>No built-in dashboard — use CrewAI+ cloud UI or integrate your own observability</td>
             </tr>
             <tr>
@@ -293,7 +293,7 @@
             </tr>
             <tr>
               <td><strong>Open source</strong></td>
-              <td>Yes — MIT + Commons Clause; single Python file, zero external dependencies</td>
+              <td>Yes — MIT + Commons Clause; single Rust binary, zero external dependencies</td>
               <td>Yes — Apache 2.0</td>
             </tr>
             <tr>
@@ -449,7 +449,7 @@
 tasks = crewai_crew.kickoff()  # returns list of task dicts
 
 for task in tasks:
-    requests.post("https://localhost:8822/api/board", json={
+    requests.post("https://localhost:8824/api/board", json={
         "title": task["title"],
         "desc": task["description"],
         "status": "todo"
@@ -474,7 +474,7 @@ for task in tasks:
         A CrewAI manager agent monitors a project's GitHub issues, triages them, and assigns them to
         specific amux sessions via the inter-session message API:
       </p>
-      <pre><code>amux_url = "https://localhost:8822"
+      <pre><code>amux_url = "https://localhost:8824"
 
 # Send a task directly to a specific coding session
 requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
@@ -487,7 +487,7 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
       </p>
 
       <p>
-        The REST API at <code>localhost:8822</code> (or your cloud endpoint) is the integration point.
+        The REST API at <code>localhost:8824</code> (or your cloud endpoint) is the integration point.
         CrewAI workflows call it to enqueue work; amux agents consume it to claim tasks. The two tools
         reinforce each other's strengths without stepping on each other's domain.
       </p>
@@ -558,7 +558,7 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (311★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI agents in parallel. Built-in kanban, CRM, email, and self-healing. Single Python file, MIT licensed.</div>
+        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI agents in parallel. Built-in kanban, CRM, email, and self-healing. Single Rust binary, MIT licensed.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -568,12 +568,12 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
       <div class="cta-box">
         <h3>Get started with amux in 3 commands</h3>
         <p>
-          Run an AI engineering team from one dashboard. Open source, single Python file,
+          Run an AI engineering team from one dashboard. Open source, single Rust binary,
           zero external dependencies beyond Python 3 + tmux.
         </p>
         <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
         <a class="btn" href="/docs/" style="margin-left:8px">Read the docs</a>
       </div>

@@ -5,7 +5,7 @@ Verifies Clerk JWTs, starts/stops Docker containers per user, reverse-proxies re
 """
 
 import os, json, time, sqlite3, subprocess, threading, urllib.request, urllib.error, base64
-import hmac, hashlib, secrets, re, queue as _queue
+import hmac, hashlib, secrets, re, ssl, queue as _queue
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -43,6 +43,33 @@ ADMIN_EMAILS    = set(e.strip() for e in os.environ.get("ADMIN_EMAILS", "").spli
 # Public origin containers use to reach the Anthropic proxy on this gateway.
 PROXY_PUBLIC_BASE = os.environ.get("AMUX_PROXY_BASE", "https://cloud.amux.io")
 GATEWAY_LOG     = "/var/log/amux-gateway.log"
+
+# ── The loopback hop to a workspace container ────────────────────────────────
+# The python image ran `amux-server.py --no-tls` and spoke plain HTTP on this
+# hop. The RUST image cannot: the rust server always serves TLS and answers a
+# plain-HTTP request with a 301 to https://localhost:8822 — which, followed from
+# the HOST, points at the host's own port 8822 and not at any container. So the
+# scheme has to change WITH the image.
+#
+# It is an explicit switch and not a probe. A probe would have to distinguish
+# "python container" from "rust container" per request, and the two are
+# indistinguishable until you have already made the wrong call once; a switch is
+# read once, logged at startup, and flipped by the same deploy that pushes the
+# image. Set CONTAINER_SCHEME=https in /etc/amux/gateway.env (deploy-cloud.yml
+# does this idempotently) as part of the rust cutover. Default stays `http` so a
+# gateway deployed ahead of the image keeps the existing fleet working.
+#
+# Certificate verification is OFF on this hop by design: the cert is self-signed,
+# minted per container into its own volume, and the connection never leaves
+# loopback. The trust boundary is this gateway, which is also why the container
+# runs with AMUX_AUTH_TOKEN=none.
+CONTAINER_SCHEME = os.environ.get("CONTAINER_SCHEME", "http").strip().lower()
+_CTR_SSL = ssl._create_unverified_context() if CONTAINER_SCHEME == "https" else None
+
+
+def _ctr_url(port, path=""):
+    """Base URL for a workspace container on the loopback hop."""
+    return f"{CONTAINER_SCHEME}://127.0.0.1:{port}{path}"
 
 # ── Starting HTML (shown while container boots) ──────────────────────────────
 _STARTING_HTML = """<!DOCTYPE html>
@@ -930,15 +957,45 @@ def _write_compose(user_id, port):
     open(os.path.join(d, "litestream.yml"), "w").write(
         yml.replace("${USER_ID}", user_id))
 
+def _resolve_ctr(user_id):
+    """The workspace container's ACTUAL name, which is not always the expected one.
+
+    docker renames a container to `<shorthash>_<name>` when it recreates one whose
+    name is still held by another container. The prefix then sticks. On 2026-08-06
+    the admin workspace was running as
+    `3dabeb9214a6_amux-user-user_3AP4n5hreSZdTsJbhIt22Xv6LDh` and was perfectly
+    healthy, but `docker inspect amux-user-<id>` matched nothing, so
+    container_healthy() returned False on an empty stdout and the gateway served
+    the "Starting" page on every request, forever. Nothing recovers from that on
+    its own: the wake path starts a container that is already up, the health check
+    keeps missing it, and the user sees Starting or 502 indefinitely.
+
+    Falling back to a suffix match costs one extra subprocess ONLY on the path
+    where the exact name already failed — i.e. only when we are otherwise about to
+    be wrong. The suffix must be the full `amux-user-<id>` so sidecars
+    (`amux-litestream-user_<id>`, `amux-sync-…`, `amux-watchdog-…`) cannot match.
+    """
+    exact = f"amux-user-{user_id}"
+    r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", exact],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        return exact
+    r = subprocess.run(["docker", "ps", "-a", "--filter", f"name={exact}",
+                        "--format", "{{.Names}}"], capture_output=True, text=True)
+    for n in r.stdout.split():
+        if n == exact or n.endswith("_" + exact):
+            return n
+    return exact
+
 def container_running(user_id):
     r = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", f"amux-user-{user_id}"],
+        ["docker", "inspect", "-f", "{{.State.Running}}", _resolve_ctr(user_id)],
         capture_output=True, text=True)
     return r.stdout.strip() == "true"
 
 def container_healthy(user_id):
     r = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Health.Status}}", f"amux-user-{user_id}"],
+        ["docker", "inspect", "-f", "{{.State.Health.Status}}", _resolve_ctr(user_id)],
         capture_output=True, text=True)
     return r.stdout.strip() == "healthy"
 
@@ -1029,8 +1086,8 @@ def _is_admin_email(email):
 def _container_api(port, path, method="GET", timeout=10):
     """Call a user container's local API. Returns parsed JSON or None."""
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
-        resp = urllib.request.urlopen(req, timeout=timeout)
+        req = urllib.request.Request(_ctr_url(port, path), method=method)
+        resp = urllib.request.urlopen(req, timeout=timeout, context=_CTR_SSL)
         return json.loads(resp.read())
     except Exception:
         return None
@@ -1606,7 +1663,7 @@ def _resolve_share_token(token: str) -> int | None:
         port = row["port"]
         try:
             resp = urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/api/share/{token}/info", timeout=3)
+                _ctr_url(port, f"/api/share/{token}/info"), timeout=3, context=_CTR_SSL)
             if resp.status == 200:
                 with _share_cache_lock:
                     _share_cache[token] = (port, now + 60)
@@ -1795,23 +1852,33 @@ def _tunnel_routes(handler, path, qs):
 
 # ── Proxy helper ───────────────────────────────────────────────────────────────
 def proxy(handler, port, path, qs, user_email="", user_id=None):
-    url = f"http://127.0.0.1:{port}{path}"
+    url = _ctr_url(port, path)
     if qs:
         url += "?" + qs
     length = int(handler.headers.get("Content-Length", 0))
     body = handler.rfile.read(length) if length else None
-    # Strip auth headers so container doesn't see them
-    skip = {"host", "content-length", "authorization", "cookie"}
+    # Strip auth headers so container doesn't see them. accept-encoding joins
+    # them (AC-342): without forcing identity the container gzips its reply, we
+    # re-emit those bytes but strip content-encoding on the response below, and
+    # the client gets gzip labelled as plain — "API Error: Failed to parse JSON"
+    # on a proxied error body. Same fix and same reason as the Anthropic proxy
+    # path (~line 1250); the container path simply never got it.
+    skip = {"host", "content-length", "authorization", "cookie", "accept-encoding"}
     fwd = {k: v for k, v in handler.headers.items() if k.lower() not in skip}
+    fwd["accept-encoding"] = "identity"
     if user_email:
         fwd["X-Amux-User-Email"] = user_email
     is_sse = handler.headers.get("Accept", "") == "text/event-stream"
     req = urllib.request.Request(url, data=body, method=handler.command, headers=fwd)
     try:
-        resp = urllib.request.urlopen(req, timeout=None if is_sse else 60)
+        resp = urllib.request.urlopen(req, timeout=None if is_sse else 60, context=_CTR_SSL)
         handler.send_response(resp.status)
         for k, v in resp.headers.items():
-            if k.lower() not in ("transfer-encoding",):
+            # content-encoding stripped alongside transfer-encoding (AC-342):
+            # we forced identity upstream so the body is uncompressed, and
+            # re-emitting a stale content-encoding: gzip would relabel plain
+            # bytes as compressed — the exact garbling this card is about.
+            if k.lower() not in ("transfer-encoding", "content-encoding"):
                 handler.send_header(k, v)
         handler.end_headers()
         if is_sse:
@@ -2541,12 +2608,61 @@ class Handler(BaseHTTPRequestHandler):
 
         # GET /api/gateway/orgs → list orgs accessible to this user
         if path == "/api/gateway/orgs" and self.command == "GET":
-            rows = db.execute(
-                "SELECT o.id, o.name, o.slug, o.owner_id, o.plan, m.role "
-                "FROM org_memberships m JOIN orgs o ON m.org_id = o.id "
-                "WHERE m.user_id=? ORDER BY o.created_at",
-                (user_id,)
-            ).fetchall()
+            # GOD MODE LISTS EVERY WORKSPACE, NOT JUST ITS OWN MEMBERSHIPS.
+            #
+            # This endpoint filtered strictly on org_memberships, with no
+            # is_admin branch — while GET /api/gateway/orgs/<id> twenty lines
+            # below DOES check it. So an ADMIN_EMAILS user could open any org by
+            # id and could not LIST them, which is the only way a human finds one
+            # in the UI. hello@amux.io is a member of exactly one org (its own
+            # personal workspace), so the switcher rendered a single entry and
+            # god mode had nothing to switch TO.
+            #
+            # Reported by Ethan with a screenshot: signed in on cloud.amux.io as
+            # hello@amux.io and seeing only `hello-world` at /root/dev, with no
+            # customer environments reachable. The switcher UI was present and
+            # working the whole time (_switchOrg is in the served bundle); it was
+            # being handed a one-item list.
+            #
+            # Read-only widening, and it matches the gate already used for org
+            # DETAIL rather than inventing a second rule: same _is_admin_email /
+            # is_e2e_admin predicate, no membership rows created, nothing else
+            # about the request changes. Admins get role 'admin' for orgs they do
+            # not belong to so the UI can tell "mine" from "god mode", and
+            # is_personal stays keyed to the user's OWN id so a customer's org is
+            # never mislabelled as theirs.
+            # ORDERING IS LOAD-BEARING FOR ADMINS, in a way it never was for a
+            # normal user with two or three orgs. Widening the list turned a
+            # 1-row switcher into a 62-row one, and `ORDER BY created_at` put
+            # the three customer environments at positions ~55-60, below 59
+            # auto-created personal workspaces named by signup email. Every one
+            # of those is a real org, so hiding them would be deciding for the
+            # human what god mode may see; ordering them is not. Nothing is
+            # filtered out — the customer envs are simply first.
+            #
+            # `o.id = o.owner_id` is exactly the personal-org test the rest of
+            # this file uses (see `return user_id  # personal org`): a personal
+            # org's id IS its owner's user id. It holds precisely here — 3 rows
+            # with id != owner_id, and they are the 3 demo envs, nothing else.
+            # So the sort is: my own workspace, then real named workspaces
+            # oldest-first, then everybody's personal orgs.
+            if is_admin:
+                rows = db.execute(
+                    "SELECT o.id, o.name, o.slug, o.owner_id, o.plan, "
+                    "       COALESCE(m.role, 'admin') AS role "
+                    "FROM orgs o "
+                    "LEFT JOIN org_memberships m "
+                    "       ON m.org_id = o.id AND m.user_id = ? "
+                    "ORDER BY (o.id != ?), (o.id = o.owner_id), o.created_at",
+                    (user_id, user_id)
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT o.id, o.name, o.slug, o.owner_id, o.plan, m.role "
+                    "FROM org_memberships m JOIN orgs o ON m.org_id = o.id "
+                    "WHERE m.user_id=? ORDER BY o.created_at",
+                    (user_id,)
+                ).fetchall()
             cookies = _parse_cookies(self.headers.get("Cookie", ""))
             active = cookies.get("amux_org", user_id)
             return self._json([{
@@ -3224,6 +3340,46 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[admin] cleanup DB for {target_uid} failed: {e}", flush=True)
             return self._json({"ok": True, "container_stopped": stopped})
 
+        # ── Unmatched /api/gateway/admin/* → 404, never the container proxy ───
+        # AC-235: a DELETE to /api/gateway/admin/orgs/<id> (a route that does not
+        # exist — org teardown is DELETE /api/gateway/orgs/<id>, no "admin") fell
+        # through to the proxy below, which woke a container and answered
+        # `{"error":"starting"} 503`. A 503 is health-shaped, so five identical
+        # failures read as "the host is sick" and sent two rounds of diagnosis at
+        # a box that was idle and answering GETs in 4s. The gateway knew the route
+        # did not exist and said "service unavailable" instead.
+        #
+        # Anything under /api/gateway/admin/ is a control-plane call, never
+        # something an org container should serve. Answer for it here and name the
+        # routes, so a wrong verb or a wrong path is self-correcting rather than
+        # indistinguishable from an outage.
+        if path.startswith("/api/gateway/admin/"):
+            if not is_admin:
+                return self._json({"error": "forbidden"}, 403)
+            return self._json({
+                "error": "no such admin route",
+                "method": self.command,
+                "path": path,
+                # Keep this list complete — an INCOMPLETE list is its own bug: the
+                # first draft named 5 of the 11 routes, which would send a caller
+                # hunting for a route that exists. Verify against the handlers above
+                # when adding one.
+                "routes": [
+                    "POST   /api/gateway/admin/promo",
+                    "GET    /api/gateway/admin/promos",
+                    "GET    /api/gateway/admin/containers",
+                    "GET    /api/gateway/admin/users",
+                    "POST   /api/gateway/admin/query",
+                    "POST   /api/gateway/admin/provision",
+                    "GET    /api/gateway/admin/orgs",
+                    "PATCH  /api/gateway/admin/orgs/<org_id>",
+                    "POST   /api/gateway/admin/orgs/<org_id>/refresh-auth",
+                    "POST   /api/gateway/admin/orgs/<org_id>/refresh-spend",
+                    "DELETE /api/gateway/admin/cleanup/<user_id>",
+                ],
+                "hint": "to delete an org use DELETE /api/gateway/orgs/<org_id> (owner only, no 'admin' segment)",
+            }, 404)
+
         # ── Determine target container via active org ─────────────────────────
         active_org = _active_org_id()
         org_data = db.execute(
@@ -3323,5 +3479,21 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     get_db()
-    print(f"[gateway] listening on :{PORT}")
+    # flush=True ON BOTH STARTUP LINES, and it is load-bearing (AMUX-2958).
+    # stdout to a systemd-redirected FILE is block-buffered, so without it
+    # these lines sit in the 8KB buffer for minutes after boot. deploy-cloud's
+    # flip verify waits 30s for a NEW "container hop:" line after
+    # `systemctl restart` — it saw nothing, concluded the restart did not take,
+    # and ROLLED BACK a healthy deploy (run 31556991526; the earlier
+    # tail-1-reads-the-previous-line race amux-cloud hit on the first cutover
+    # was this same buffer). Every other operational print in this file
+    # already passes flush=True; these two predate the convention.
+    print(f"[gateway] listening on :{PORT}", flush=True)
+    # Say which scheme this process will use to reach workspaces. A gateway
+    # talking http to rust containers fails as "502 / Starting page forever",
+    # which reads as a container problem and sends you into docker logs; the
+    # one fact that discriminates it is this line (ethos rule 4).
+    print(f"[gateway] container hop: {CONTAINER_SCHEME}:// "
+          f"(cert verification {'off' if _CTR_SSL else 'n/a'}) — "
+          f"set CONTAINER_SCHEME in /etc/amux/gateway.env", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # amux cloud deploy — provision + deploy + test
 # Usage: ./deploy.sh [--destroy]
+#
+# ⚠ NOT MIGRATED TO RUST (AMUX-2619). This script provisions the SINGLE-VM GCP
+# box (`amux-dev`, main.tf + setup.sh) — a different topology from the
+# multi-tenant cloud.amux.io host, which is served by
+# .github/workflows/deploy-cloud.yml and a container image.
+#
+# It deploys `amux-server.py` to a systemd unit that runs it under python3.
+# That file was deleted from the repo (792ce1f), so every path below the
+# terraform apply is dead. It fails immediately rather than provisioning a VM
+# whose service can never start — a half-provisioned VM that looks deployed is
+# worse than a refusal.
+#
+# `--destroy` still works: tearing down infrastructure that exists must not
+# depend on the deploy path being alive.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +37,15 @@ fi
 # ── Check prerequisites ──
 command -v terraform &>/dev/null || err "terraform not found"
 command -v tailscale &>/dev/null || err "tailscale not found"
-[ -f "$AMUX_SERVER" ]           || err "amux-server.py not found at $AMUX_SERVER"
+# Name the real cause. "amux-server.py not found" invited someone to go and
+# recreate it; the file is gone on purpose and this topology needs porting to
+# the rust binary before it can deploy anything.
+[ -f "$AMUX_SERVER" ] || err "this single-VM deploy path is NOT migrated to the rust server.
+  It expects $AMUX_SERVER, which was deleted in 792ce1f — do not recreate it.
+  For the multi-tenant host use .github/workflows/deploy-cloud.yml (container image).
+  To port THIS path: build/ship target/release/amux-server and change the
+  systemd ExecStart in cloud/setup.sh from 'python3 amux-server.py' to the binary.
+  './deploy.sh --destroy' still works."
 
 # ── terraform.tfvars ──
 cd "$SCRIPT_DIR"

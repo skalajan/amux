@@ -40,7 +40,7 @@ This opens a browser for the OAuth flow and writes the three env vars to `~/.amu
 ### 3. Activate
 
 ```bash
-touch amux-server.py   # triggers reload
+launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # restart the server to reload
 ```
 
 Start a new session — it will have Google Docs tools available.

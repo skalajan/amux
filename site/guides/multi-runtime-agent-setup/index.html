@@ -220,7 +220,7 @@ GEMINI_API_KEY=AIzaSy...
 # or:
 GOOGLE_API_KEY=AIzaSy...</code></pre>
     <p>After creating or editing server.env, trigger a reload:</p>
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>touch ~/.amux/amux-server.py  # triggers auto-restart</code></pre>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>touch ~/.amux/amux-server-rs  # triggers auto-restart</code></pre>
     <p><strong>Cloud users:</strong> If you're on amux cloud, add keys via the BYO key settings panel in the dashboard — ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, and GOOGLE_API_KEY are all whitelisted as of July 2026.</p>
 
     <h2 id="register">Registering Sessions by Provider</h2>
@@ -416,20 +416,20 @@ Claiming workflow:
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — run Claude Code, Codex, and Gemini CLI from one dashboard (310★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Mix three AI coding runtimes, balance rate limits across providers, and monitor your entire fleet from your phone. Open source, single Python file.</div>
+        <div style="color:var(--muted);font-size:.9rem">Mix three AI coding runtimes, balance rate limits across providers, and monitor your entire fleet from your phone. Open source, single Rust binary.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is the open-source control plane for running Claude Code, Codex, and Gemini CLI agents together — shared kanban, self-healing watchdog, iOS app. Single Python file, zero dependencies, MIT licensed.</p>
+      <p>amux is the open-source control plane for running Claude Code, Codex, and Gemini CLI agents together — shared kanban, self-healing watchdog, iOS app. Single Rust binary, zero dependencies, MIT licensed.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 # Register Claude + Codex + Gemini sessions
 amux register claude-1 --cmd "claude" --yolo
 amux register codex-1  --cmd "codex"  --yolo
 amux register gemini-1 --cmd "antigravity" --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/scaling-to-50-agents/" style="margin-left:0.75rem;">Scaling to 50+ agents →</a>
     </div>

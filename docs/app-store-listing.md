@@ -32,7 +32,7 @@
 
 Keep your AI coding agents running—even when you're away from your desk.
 
-amux is the remote control for your AI engineering team. Monitor live Claude Code sessions, approve pending actions, inspect terminal output, coordinate work across agents, and recover from problems — directly from your iPhone.
+amux is the remote control for your AI engineering team. Monitor live Claude Code workers, approve pending actions, inspect terminal output, coordinate work across agents, and recover from problems — directly from your iPhone.
 
 Think of it like GitHub Mobile or Tailscale: the work happens on your laptop or server. amux puts the control panel in your pocket.
 
@@ -42,14 +42,14 @@ Think of it like GitHub Mobile or Tailscale: the work happens on your laptop or 
 
 **What amux does**
 
-amux runs on your Mac or Linux server, launching and managing dozens of parallel Claude Code, Codex, or Gemini CLI sessions — your AI engineering team. The iOS app is the remote control: it connects to your amux server and gives you full visibility and control from anywhere.
+amux runs on your Mac or Linux server, launching and managing dozens of parallel Claude Code, Codex, or Gemini CLI workers — your AI engineering team. The iOS app is the remote control: it connects to your amux server and gives you full visibility and control from anywhere.
 
 **What you can do from your phone**
 
 • Check overnight runs before getting out of bed
 • Approve permission prompts before agents stall
 • See exactly why an agent stopped (peek into live terminal output)
-• Assign a new task to an idle session
+• Assign a new task to an idle worker
 • Send a steering instruction to redirect an agent mid-run
 • Monitor your whole fleet at once: status dots, active tasks, token usage
 • Manage the kanban board: see what's done, doing, and stuck
@@ -82,10 +82,10 @@ claude code,AI agents,coding agents,agent monitor,remote control,developer tools
 ## Screenshots (6 recommended)
 
 1. **Your AI engineering team. Anywhere.**
-   — Full sessions view: status dots, active task labels, token counts
+   — Full workers view: status dots, active task labels, token counts
 
-2. **See every Claude Code session live.**
-   — Dashboard showing 8 active sessions, each with a task description and status
+2. **See every Claude Code worker live.**
+   — Dashboard showing 8 active workers, each with a task description and status
 
 3. **Approve agents from your phone.**
    — Peek panel showing a permission prompt with one-tap approve/deny
@@ -97,7 +97,7 @@ claude code,AI agents,coding agents,agent monitor,remote control,developer tools
    — Board view: todo/doing/done kanban with agent-assigned tasks
 
 6. **Never SSH in just to check progress.**
-   — Split view: sessions list on left, peek panel on right on iPad
+   — Split view: workers list on left, peek panel on right on iPad
 
 ---
 

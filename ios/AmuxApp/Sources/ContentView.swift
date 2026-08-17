@@ -208,7 +208,7 @@ struct AddServerView: View {
             Form {
                 Section("Server Details") {
                     TextField("Name (e.g. Home Mac)", text: $name)
-                    TextField("URL (e.g. https://amux.tail-xxxx.ts.net:8822)", text: $url)
+                    TextField("URL (e.g. https://amux.tail-xxxx.ts.net:8824)", text: $url)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)

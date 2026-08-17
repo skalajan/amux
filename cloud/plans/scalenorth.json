@@ -1,0 +1,178 @@
+{
+  "org": {
+    "email": "demo+scalenorth@amux.io",
+    "name": "ScaleNorth (demo)",
+    "trial_days": 7,
+    "budget_usd": 25,
+    "notify": false
+  },
+  "board_columns": [
+    "Matching",
+    "Exceptions",
+    "Summary"
+  ],
+  "board": [
+    {
+      "title": "Review payment-to-invoice match results",
+      "column": "Matching",
+      "tags": [
+        "matching"
+      ],
+      "desc": "Confirm clean 1:1 matches and the flagged non-zero diffs"
+    },
+    {
+      "title": "Review exception explanations",
+      "column": "Exceptions",
+      "tags": [
+        "exceptions"
+      ],
+      "desc": "~18/week: check classification and that the wording sounds like the analyst"
+    },
+    {
+      "title": "Verify summary column H equals zero",
+      "column": "Summary",
+      "tags": [
+        "summary"
+      ],
+      "desc": "Per-partner AR movement must reconcile to zero"
+    }
+  ],
+  "docs": [
+    {
+      "path": "/root/scalenorth/docs/matching-rules.md",
+      "content": "# Payment-to-Invoice Matching Rules\n\n## Data Sources\nThree exports from NetSuite, delivered as Excel tabs:\n1. **Payments** \u2014 columns: Payment Number, Payment Date, Name, Paid Amount, Paid Transaction (invoice ref), Classification, Classification, Memo\n2. **Closed** \u2014 columns: Document Number, Date, Date Closed Between, Name, Amount, Classification\n3. **Invoices** \u2014 columns: Name, Date, Document Number, Amount, Classification, Created From\n\n## Matching Algorithm\n\n### Step 1: Payment \u2192 Invoice linking\nEach payment row has a \"Paid Transaction\" field referencing an invoice (e.g., \"Invoice #INV834466\"). Extract the invoice number and look it up in the Closed tab by Document Number.\n\n### Step 2: Aggregate multi-invoice payments\nSome payments cover multiple invoices (same Payment Number, different Paid Transaction). Group by Payment Number:\n- Sum all Paid Amounts for that payment\n- List all referenced invoices\n- Sum all corresponding Closed invoice amounts\n\n### Step 3: Compute differences\nFor each payment group:\n- diff = (sum of Paid Amounts) - (sum of matched Closed invoice amounts)\n- If |diff| < $0.01: CLEAN match\n- If |diff| >= $0.01: FLAG for exception investigation\n\n### Step 4: Identify orphans\n- Closed invoices with NO matching payment \u2192 potential CM closures, write-offs, or internal transactions\n- Payments referencing invoices NOT in Closed tab \u2192 timing issues or data pull gaps\n\n### Step 5: Classification cross-check\nVerify that the Classification field matches between Payment and Closed invoice. Mismatches may indicate cross-partner payments.\n\n## Known Patterns\n- $0 invoices (TEI/internal/sample) close without payments \u2014 normal, skip\n- \"Overall Total\" row at bottom of Payments tab \u2014 exclude from matching\n- product partner structure: retailers pay importer (e.g., \"New York Direct\"), classification ties to product partner (e.g., \"the customer\")"
+    },
+    {
+      "path": "/root/scalenorth/docs/output-format.md",
+      "content": "# Matcher Output Format\n\n## clean-matches.md\nTable of all 1:1 clean matches:\n| Payment # | Customer | Paid Amount | Invoice # | Closed Amount | Diff |\n\n## multi-invoice-matches.md\nTable of payments covering multiple invoices:\n| Payment # | Customer | Total Paid | Invoices | Total Closed | Diff |\n\n## exceptions.md\nCases with non-zero differences, ordered by |diff| descending:\n| Payment # | Customer | Paid | Closed | Diff | Reason (if obvious) |\n\n## orphan-closures.md\nClosed invoices with no matching payment:\n| Invoice # | Customer | Amount | Likely Reason |\n\n## summary-stats.md\n- Total payments processed\n- Clean matches / exceptions / orphans\n- Total $ matched / unmatched\n- Match rate percentage"
+    },
+    {
+      "path": "/root/scalenorth/docs/payment-matcher-env.md",
+      "content": "# Environment for payment-matcher\n\nTreat these as configuration for every run.\n\n```\nBUSINESS_NAME=The ScaleNorth Group, LLC\nCLIENT_NAME=the customer\nANALYST_EMAIL=demo+scalenorth@amux.io\nRECONCILIATION_PERIOD=weekly\nZERO_THRESHOLD=0.01\n```\n"
+    },
+    {
+      "path": "/root/scalenorth/docs/exception-patterns.md",
+      "content": "# Exception Classification Patterns\n\nStandard AR reconciliation exceptions. Each has a detection rule and an explanation\ntemplate. These are universal to multi-invoice B2B collections and are not specific to\nany customer or industry.\n\n## Pattern 1: Credit Memo Closure\n- **Detection**: invoice appears closed with no matching payment, and a credit memo\n  document references it\n- **Explanation**: \"Closed by CM#[number] \u2014 [reason: overpayment applied, agreed\n  discount, pricing correction, return]\"\n\n## Pattern 2: Partial Payment\n- **Detection**: payment amount is less than the invoice total and the invoice remains\n  open\n- **Explanation**: \"Partial payment of [amount] applied; [balance] remains open\"\n\n## Pattern 3: Overpayment on Account\n- **Detection**: payment exceeds the sum of the invoices it references\n- **Explanation**: \"Overpayment of [amount]; remainder held on account\"\n\n## Pattern 4: One Payment, Many Invoices\n- **Detection**: a single payment reference matches two or more invoices that together\n  equal the payment amount\n- **Explanation**: \"Batch payment covering invoices [list]\"\n\n## Pattern 5: Many Payments, One Invoice\n- **Detection**: several payments sum to a single invoice total\n- **Explanation**: \"Instalment payments [list] applied to invoice [number]\"\n\n## Pattern 6: Short Pay / Deduction\n- **Detection**: payment is short by a round amount or a consistent percentage\n- **Explanation**: \"Short paid by [amount] \u2014 [deduction reason: freight, damage,\n  early-payment discount]\"\n\n## Pattern 7: Unapplied Cash\n- **Detection**: payment received with no invoice reference\n- **Explanation**: \"Unapplied \u2014 no invoice reference on remittance; requires customer\n  confirmation\"\n\n## Pattern 8: Timing Difference\n- **Detection**: payment dated in the period, invoice closed in an adjacent period\n- **Explanation**: \"Timing difference \u2014 payment [date], invoice closed [date]\"\n"
+    },
+    {
+      "path": "/root/scalenorth/docs/explanation-style.md",
+      "content": "# Explanation Style Guide\n\nEach exception gets a short note in the invoice's explanation field. The note answers\none question: what happened to this invoice?\n\nRules:\n- One sentence. State the outcome, then the reason.\n- Lead with the mechanism (Closed by CM, Partial payment, Short paid), not the symptom.\n- Name the document that resolves it \u2014 CM number, payment reference, invoice number.\n- Amounts to two decimals with the currency implied by the ledger.\n- No hedging. If it cannot be determined from the data, say \"Requires review \u2014\n  [what is missing]\" rather than guessing.\n\nGood:   \"Closed by CM#4412 \u2014 pricing correction on lines 3-5.\"\nGood:   \"Requires review \u2014 payment PR-8871 has no invoice reference on the remittance.\"\nPoor:   \"Appears to possibly be some kind of credit adjustment.\"\n"
+    },
+    {
+      "path": "/root/scalenorth/docs/exception-investigator-env.md",
+      "content": "# Environment for exception-investigator\n\nTreat these as configuration for every run.\n\n```\nBUSINESS_NAME=The ScaleNorth Group, LLC\nCLIENT_NAME=the customer\nANALYST_EMAIL=demo+scalenorth@amux.io\nEXPLANATION_STYLE=analyst\nMAX_INVESTIGATION_DEPTH=3\n```\n"
+    },
+    {
+      "path": "/root/scalenorth/docs/summary-structure.md",
+      "content": "# Summary Tab Structure\n\nThe summary tab is the final output of the weekly reconciliation. It must balance to zero in column H before the analyst can call it a day.\n\n## Formula\nold_AR_balance + new_invoices - payments - credits - adjustments = new_AR_balance\nColumn H (difference) = 0 when balanced\n\n## Layout (by partner)\n\n### Per-Partner Block\n| Column | Content |\n|--------|---------|\n| A | Partner name |\n| B | Old AR balance (last week's closing balance) |\n| C | New invoices this week (from Invoices tab) |\n| D | Payments received this week (from Payments tab) |\n| E | Credit memos applied |\n| F | Other adjustments (discounts, write-offs, bounced payments) |\n| G | New AR balance (computed) |\n| H | Difference (must be $0.00) |\n\n### Rollup\nSum all partner blocks. Grand total column H must be $0.00.\n\n## Working Backwards (the analyst's Method)\n1. Start with each resolved invoice (from Session 1 + 2 output)\n2. Group by partner/classification\n3. Sum payments, closed invoices, new invoices per partner\n4. Compute the AR movement\n5. If H \u2260 0: the exception investigations (Session 2) should explain why\n6. Adjustments from Session 2 (CMs, bounced payments, overpayments) fill columns E and F\n\n## Edge Cases\n- Bounced payments from last week: appear as negative in column D or positive adjustment in column F\n- Overpayments on account: appear in column F, carry forward to next week's old AR\n- Cross-partner payments: allocated to the correct partner block, not the paying entity\n- $0 internal invoices (TEI/sample): excluded from summary entirely"
+    },
+    {
+      "path": "/root/scalenorth/docs/ar-balance-rules.md",
+      "content": "# AR Balance Continuity Rules\n\n## Week-over-week continuity\n- This week's Old AR Balance MUST equal last week's New AR Balance\n- If not: investigate \u2014 missed invoice, backdated entry, or data pull timing issue\n\n## Reconciliation items that affect the balance\n1. **New invoices** (positive) \u2014 from Invoices tab, grouped by partner\n2. **Payments received** (negative) \u2014 from Payments tab, matched by Session 1\n3. **Credit memos** (negative) \u2014 from Session 2 exception investigations\n4. **Discounts** (negative) \u2014 pricing adjustments identified by Session 2\n5. **Bounced payments** (positive) \u2014 reversed payments, caught on summary tab\n6. **Overpayments** (negative now, positive carry-forward) \u2014 from Session 2\n\n## Partner classification\n- All items must be classified by product partner (e.g., the customer)\n- Cross-check: Payments tab \"Classification\" field should match Closed tab \"Classification\"\n- Mismatches flagged by Session 1 are resolved by Session 2 before summary"
+    },
+    {
+      "path": "/root/scalenorth/docs/summary-builder-env.md",
+      "content": "# Environment for summary-builder\n\nTreat these as configuration for every run.\n\n```\nBUSINESS_NAME=The ScaleNorth Group, LLC\nCLIENT_NAME=the customer\nANALYST_EMAIL=demo+scalenorth@amux.io\nZERO_TOLERANCE=0.01\nPARTNER_BREAKDOWN=true\n```\n"
+    },
+    {
+      "path": "/root/scalenorth/7.25.xlsx",
+      "content_file": "/Users/ethan/Dev/amux-GTM/leads/accounting/analyst-daniel/7.25.xlsx"
+    }
+  ],
+  "sessions": [
+    {
+      "name": "payment-matcher",
+      "provider": "claude",
+      "dir": "/root/scalenorth",
+      "desc": "Payment-to-Invoice Matcher \u2014 links NetSuite payments to closed invoices, computes diffs, flags exceptions",
+      "tags": [
+        "matching",
+        "reconciliation"
+      ],
+      "prompt": "You are the Payment-to-Invoice Matcher for The ScaleNorth Group's AR reconciliation (client: the customer). Read docs/payment-matcher-env.md for your configuration and every file under docs/ for your rules. The NetSuite export is 7.25.xlsx in this directory (tabs: Payments, Closed, Invoices). Do your first pass now and report what you found, citing the specific rule behind each decision.",
+      "expect": [
+        "docs/results",
+        "exception"
+      ],
+      "schedules": [
+        {
+          "title": "Process new reconciliation workbook",
+          "expr": "every 15m",
+          "command": "Check docs/inbox/ for new .xlsx files. For each unprocessed workbook: 1) Read all 3 tabs (Payments, Closed, Invoices), 2) Run the matching algorithm from docs/matching-rules.md, 3) Write results to docs/results/YYYY-MM-DD/ (clean-matches.md, multi-invoice-matches.md, exceptions.md, orphan-closures.md, summary-stats.md), 4) Post exception count to the board. Mark workbook as processed.",
+          "enabled": false
+        },
+        {
+          "title": "Weekly matching accuracy review",
+          "expr": "weekly on Friday at 5pm",
+          "command": "Compare this week's automated matches against any corrections the analyst made (edits to docs/results/). For each correction: 1) What did the matcher get wrong? 2) What rule would have caught it? 3) Update docs/matching-rules.md with the new pattern. Track accuracy in docs/analytics/accuracy-log.md. Target: 95% clean match rate by week 4.",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "exception-investigator",
+      "provider": "claude",
+      "dir": "/root/scalenorth",
+      "desc": "Exception Investigator \u2014 classifies each non-1:1 case and drafts the explanation in the analyst's style",
+      "tags": [
+        "exceptions",
+        "investigation"
+      ],
+      "prompt": "You are the Exception Investigator for The ScaleNorth Group's AR reconciliation (client: the customer). Read docs/exception-investigator-env.md for your configuration and every file under docs/ for your rules. The NetSuite export is 7.25.xlsx in this directory (tabs: Payments, Closed, Invoices). Do your first pass now and report what you found, citing the specific rule behind each decision.",
+      "expect": [
+        "classif",
+        "evidence"
+      ],
+      "schedules": [
+        {
+          "title": "Investigate flagged exceptions",
+          "expr": "every 15m",
+          "command": "Check Session 1's output (docs/results/latest/exceptions.md and orphan-closures.md) for new flagged items. For each exception: 1) Classify using the patterns in docs/exception-patterns.md, 2) Cross-reference all 3 tabs for supporting evidence, 3) Draft the explanation in the analyst's style (docs/explanation-style.md), 4) Write to docs/investigations/[invoice-number].md with: classification, evidence, draft explanation, confidence (high/medium/low). Post count to board.",
+          "enabled": false
+        },
+        {
+          "title": "Daily pattern accuracy review",
+          "expr": "daily at 6pm",
+          "command": "Review all investigations from today. For each: 1) Was the pattern classification correct? (check against any the analyst corrections), 2) Was the explanation accepted or rewritten? 3) If rewritten, extract the new pattern and add to docs/exception-patterns.md. Update docs/analytics/pattern-accuracy.md with: patterns used, accuracy per pattern, new patterns discovered. If any pattern drops below 70% accuracy, flag for review.",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "summary-builder",
+      "provider": "claude",
+      "dir": "/root/scalenorth",
+      "desc": "Summary Tab Builder \u2014 builds the AR movement summary; column H must be zero",
+      "tags": [
+        "summary",
+        "ar-balance"
+      ],
+      "prompt": "You are the Summary Tab Builder for The ScaleNorth Group's AR reconciliation (client: the customer). Read docs/summary-builder-env.md for your configuration and every file under docs/ for your rules. The NetSuite export is 7.25.xlsx in this directory (tabs: Payments, Closed, Invoices). Do your first pass now and report what you found, citing the specific rule behind each decision.",
+      "expect": [
+        "balance",
+        "partner"
+      ],
+      "schedules": [
+        {
+          "title": "Build summary from resolved data",
+          "expr": "every 30m",
+          "command": "Check if Sessions 1 and 2 have new resolved data (docs/results/latest/). If so: 1) Read clean matches, resolved exceptions, and orphan classifications, 2) Group all items by partner/classification, 3) Compute the AR movement table per partner (old balance + new invoices - payments - CMs - adjustments = new balance), 4) Calculate column H (difference) for each partner and grand total, 5) Write to docs/summary/YYYY-MM-DD.md. If column H \u2260 0 for any partner, flag which unresolved exceptions are causing it. Post summary status to board.",
+          "enabled": false
+        },
+        {
+          "title": "Weekly balance continuity check",
+          "expr": "weekly on Monday at 9am",
+          "command": "Compare last week's New AR Balance to this week's Old AR Balance (from the new workbook). If they differ: 1) Calculate the gap, 2) Check for backdated invoices, late credit memos, or data pull timing differences, 3) Write discrepancy analysis to docs/analytics/continuity-check-YYYY-WNN.md. This catches errors that wouldn't surface within a single week's reconciliation.",
+          "enabled": false
+        },
+        {
+          "title": "Monthly reconciliation report",
+          "expr": "monthly on 1 at 10am",
+          "command": "Generate monthly summary: 1) Total AR movement by partner (opening \u2192 closing), 2) Total exceptions investigated and resolution breakdown, 3) Time saved estimate (hours automated vs manual), 4) Accuracy metrics from all 3 sessions, 5) Trends: is exception rate improving? Are new patterns emerging? Write to docs/analytics/monthly-YYYY-MM.md and email to ANALYST_EMAIL.",
+          "enabled": false
+        }
+      ]
+    }
+  ],
+  "_comment": "AUTONOMOUS demo environment (AC-206). ScaleNorth is a NetSuite BPO / outsourced accounting practice running AR/AP reconciliation. NOT CONTACTED: org.email is ours, notify=false. METHODOLOGY IS GENERIC BY RULING \u2014 amux-gtm 2026-08-04: the originating prospect's exception patterns, explanation style and '14 years' framing came from a sales conversation with a non-converted prospect, and repackaging them for a competitor in the same vertical would burn that relationship. These patterns are universal multi-invoice B2B AR concepts (credit memo closure, partial payment, overpayment on account, short pay, unapplied cash, timing difference). The demo shows amux CAN automate reconciliation, not that we already know this firm's specific patterns."
+}

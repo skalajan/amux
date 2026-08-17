@@ -45,7 +45,7 @@
     "description": "Compare amux tunnel with ngrok for exposing localhost to the internet. amux gives you a stable public URL built into your agent orchestrator. ngrok wins on TCP, request inspection, and free tier. Honest side-by-side.",
     "url": "https://amux.io/compare/amux-vs-ngrok/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-07-12",
+    "dateModified": "2026-08-15",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -102,7 +102,15 @@
         "name": "Is amux tunnel open source?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The amux tunnel client code lives inside amux-server.py, which is open source (MIT + Commons Clause). The hosted cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. ngrok's client is also open source, but ngrok's server is proprietary."
+          "text": "The amux tunnel client code lives inside the amux server, which is open source (MIT + Commons Clause). The hosted cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. ngrok's client is also open source, but ngrok's server is proprietary."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux tunnel support rate limiting?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux v0.9.96 added built-in per-tunnel rate limiting — configure request caps directly in the amux dashboard without any extra tooling. ngrok also supports rate limiting on paid plans. Both tools now offer this; amux includes it as part of the subscription without a separate paid upgrade."
         }
       },
       {
@@ -134,7 +142,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs ngrok</span></div>
 
     <h1>amux vs ngrok</h1>
-    <p class="subtitle">ngrok is the industry-standard localhost tunnel — a dedicated tool, free tier, full-featured, excellent for debugging. amux tunnel is built into the amux agent orchestrator and gives you a stable public URL without paying for ngrok Pro. Now includes built-in rate limiting (v0.9.96) and a Proxies management tab (v0.9.95). Here is the honest comparison. <em>Updated July 2026.</em></p>
+    <p class="subtitle">ngrok is the industry-standard localhost tunnel — a dedicated tool, free tier, full-featured, excellent for debugging. amux tunnel is built into the amux agent orchestrator and gives you a stable public URL without paying for ngrok Pro. Now includes built-in rate limiting (v0.9.96) and a Proxies management tab (v0.9.95). Here is the honest comparison. <em>Updated August 2026.</em></p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
     <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
@@ -147,7 +155,7 @@
 
     <p><strong>ngrok</strong> is the most widely used tool for exposing a local port to the internet over a secure tunnel. Install the CLI, run <code>ngrok http 3000</code>, and you get a public HTTPS URL in seconds. The free tier works immediately — no account required for basic use — though the URL changes on every restart. Paid plans add stable subdomains, custom domains, request inspection UI, TCP tunneling, and multiple concurrent tunnels. ngrok is a mature, purpose-built product with excellent documentation, an inspection dashboard, and broad ecosystem integrations.</p>
 
-    <p><strong>amux tunnel</strong> is a built-in feature of amux — an open-source control plane for running a fleet of AI coding agents. Your machine dials out to the amux cloud gateway over a persistent long-poll connection; the gateway forwards incoming HTTP requests to your local server. No inbound port needs to be open. The public URL is derived from a SHA-256 hash of your token, so it is stable across restarts. The tunnel client is part of <code>amux-server.py</code> — no separate binary to install or maintain. The hosted gateway requires an active amux cloud subscription.</p>
+    <p><strong>amux tunnel</strong> is a built-in feature of amux — an open-source control plane for running a fleet of AI coding agents. Your machine dials out to the amux cloud gateway over a persistent long-poll connection; the gateway forwards incoming HTTP requests to your local server. No inbound port needs to be open. The public URL is derived from a SHA-256 hash of your token, so it is stable across restarts. The tunnel client is part of <code>amux-server-rs</code> — no separate binary to install or maintain. The hosted gateway requires an active amux cloud subscription.</p>
 
     <h2>At a Glance</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -245,7 +253,7 @@
     <p>ngrok runs a local agent that connects to ngrok's cloud edge. The edge terminates TLS for your public URL and proxies requests back to your local agent, which forwards them to your service. The free tier assigns a random subdomain on each startup. Paid plans lock in a static subdomain. The ngrok dashboard (web UI or <code>localhost:4040</code>) shows every request in real time — headers, body, timing, status — and lets you replay any request with one click. This inspection UI is ngrok's single most valuable feature for webhook development.</p>
 
     <h3>amux tunnel</h3>
-    <p>The amux tunnel client is built into <code>amux-server.py</code>. When you run <code>amux tunnel start 3000</code>, the amux process dials out to the cloud gateway and opens a persistent HTTP long-poll connection. No inbound port needs to be open on your machine or firewall. The gateway routes incoming requests to that connection and returns the buffered response. Because the public URL (<code>https://&lt;id&gt;.t.amux.io/</code>) is derived from a deterministic hash of your token, it never changes — you register it once (in a webhook provider, a calendar app, a third-party API) and it keeps working across every restart and network change.</p>
+    <p>The amux tunnel client is built into <code>amux-server-rs</code>. When you run <code>amux tunnel start 3000</code>, the amux process dials out to the cloud gateway and opens a persistent HTTP long-poll connection. No inbound port needs to be open on your machine or firewall. The gateway routes incoming requests to that connection and returns the buffered response. Because the public URL (<code>https://&lt;id&gt;.t.amux.io/</code>) is derived from a deterministic hash of your token, it never changes — you register it once (in a webhook provider, a calendar app, a third-party API) and it keeps working across every restart and network change.</p>
     <p><strong>Caveat:</strong> amux tunnel relays one buffered response per request. <strong>Server-Sent Events and WebSockets do not pass through</strong> — the gateway does not hold open a streaming connection. Normal HTTP request/response apps, static file servers, REST APIs, webhooks, and the amux calendar feed (<code>/api/calendar.ics</code>) all work fine. If your app uses SSE or WebSockets, use ngrok instead.</p>
 
     <pre><code># amux tunnel — three commands
@@ -274,7 +282,7 @@ amux tunnel stop         # stop tunneling</code></pre>
     <ul>
       <li><strong>You already run amux.</strong> If you are using amux for AI agent orchestration, the tunnel is built in — no extra binary, no extra auth token, no separate process to manage.</li>
       <li><strong>You need a stable URL without paying for ngrok Pro.</strong> The amux tunnel URL does not change between restarts. This matters for webhooks, calendar feeds, OAuth redirect URIs, and any URL registered with an external service.</li>
-      <li><strong>You are exposing the amux dashboard itself.</strong> Run <code>amux tunnel start 8822</code> to make your dashboard reachable from your phone or a collaborator — the same URL every time, no reconfiguration.</li>
+      <li><strong>You are exposing the amux dashboard itself.</strong> Run <code>amux tunnel start 8824</code> to make your dashboard reachable from your phone or a collaborator — the same URL every time, no reconfiguration.</li>
       <li><strong>You want zero extra tooling.</strong> One command and the tunnel is live. No daemon, no config file, no separate terminal window running ngrok.</li>
     </ul>
 
@@ -310,7 +318,12 @@ amux tunnel stop         # stop tunneling</code></pre>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Is the amux tunnel client open source?</summary>
-      <p style="margin:0.8rem 0 0;">Yes. The tunnel client lives inside <code>amux-server.py</code>, which is open source (MIT + Commons Clause). The amux cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. The client code is auditable and ships with the rest of amux.</p>
+      <p style="margin:0.8rem 0 0;">Yes. The tunnel client lives inside <code>amux-server-rs</code>, which is open source (MIT + Commons Clause). The amux cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. The client code is auditable and ships with the rest of amux.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux tunnel support rate limiting?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. amux v0.9.96 added built-in per-tunnel rate limiting — configure request caps directly in the amux dashboard without any extra tooling. ngrok also supports rate limiting on paid plans. Both tools now offer this; amux includes it as part of the subscription, so there is no separate upgrade needed. The amux Proxies tab (v0.9.95) shows active tunnels and traffic at a glance.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -324,13 +337,13 @@ amux tunnel stop         # stop tunneling</code></pre>
 
     <div class="cta-box">
       <h3>Stable tunnel URL — built into your agent control plane</h3>
-      <p>amux is an open-source control plane for AI agent teams. Tunnel, kanban, CRM, email, and browser automation — all in a single Python file. amux cloud adds a stable public URL that never changes between restarts.</p>
+      <p>amux is an open-source control plane for AI agent teams. Tunnel, kanban, CRM, email, and browser automation — all in a single Rust binary. amux cloud adds a stable public URL that never changes between restarts.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux serve  # → https://localhost:8822
+amux serve  # → https://localhost:8824
 
 # Start tunnel (requires amux cloud subscription)
 export AMUX_TUNNEL_TOKEN=your_token   # ~/.amux/server.env
-amux tunnel start 8822               # expose the dashboard
+amux tunnel start 8824               # expose the dashboard
 amux tunnel url                      # → https://&lt;id&gt;.t.amux.io/</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/pricing/" style="margin-left:0.75rem;">amux cloud pricing →</a>

@@ -1,21 +1,62 @@
-# Per-user docker-compose — instantiated by gateway.py
-# Variables replaced: USER_ID, USER_PORT, CF_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT
+# Per-user docker-compose — instantiated by gateway.py (_write_compose).
+# Variables replaced: USER_ID, USER_PORT, CF_ACCOUNT_ID, R2_ACCESS_KEY,
+# R2_SECRET_KEY, R2_ENDPOINT, POSTHOG_KEY, POSTHOG_HOST
+#
+# RUST CUTOVER (AMUX-2619). What changed from the python template, and why:
+#   * no `/opt/amux-cloud/app/amux-server.py` bind mount. There is no such file
+#     any more; the server is a BINARY IN THE IMAGE and the dashboard is
+#     embedded in it via rust-embed. The deploy unit is the image tag, not a
+#     file rsync'd under a running container — which also retires the whole
+#     "touch the mounted file to restart every container" mechanism.
+#   * no icon.svg / icon*.png mounts, same reason (embedded).
+#   * no `healthcheck:` block. It lives in the image (cloud/docker/Dockerfile)
+#     so there is exactly one copy to keep correct. `service_healthy` below
+#     still works — it reads whatever healthcheck the image declares.
+#   * the watchdog sidecar is GONE. scripts/watchdog.py now supervises the
+#     LOCAL macOS service (`launchctl kickstart gui/<uid>/com.amux.server-rs`);
+#     in a container it can only log a failure forever. Retiring it is honest;
+#     see cloud/README.md § "What no longer supervises the container" for the
+#     gap it leaves and the one-place fix.
 
 services:
   amux:
     image: ghcr.io/mixpeek/amux:latest
     container_name: amux-user-${USER_ID}
     restart: unless-stopped
+    # MEMORY CAP (AC-229). On 2026-08-06 the host OOM-killed `claude` four times
+    # between 03:40 and 13:09, every event `constraint=CONSTRAINT_NONE` — a GLOBAL
+    # kill, because nothing in this file capped anything. Under a global OOM the
+    # kernel picks by badness score, not by culpability, so at 09:41 it took
+    # amux-gateway.service — the process fronting EVERY tenant. One tenant's memory
+    # became a fleet-wide outage. A cap does not stop a container using too much;
+    # it makes that container the thing that dies instead of the box.
+    # RAISED 1500m -> 3g the same day, because 1500m produced a DIFFERENT outage:
+    # the workspace sat pinned at 99.98% with OOMKilled=false — it never exceeded
+    # the cap, so nothing was killed and nothing restarted. It just lived at the
+    # ceiling, too slow to answer the 3s healthcheck, permanently "unhealthy",
+    # and the gateway served the Starting page to every request. A cap set just
+    # under a startup spike does not kill the container, it SUSPENDS it.
+    #
+    # KEPT AT 3g THROUGH THE RUST CUTOVER. The 3g figure was sized against the
+    # python server's ~485MB steady state plus a startup spike above 1.5g; the
+    # rust server's own RSS is far smaller, but the number that matters here was
+    # never the server's — it is `claude` plus chromium plus the customer's
+    # toolchain inside the workspace, which did not change. Lowering it is a
+    # measurement someone should take on a real tenant, not a guess to ship
+    # alongside a server swap.
+    mem_limit: 3g
+    memswap_limit: 3g
     volumes:
       - root-home:/root
       - amux-data:/root/.amux
-      - /opt/amux-cloud/app/amux-server.py:/app/amux-server.py:ro
-      - /opt/amux-cloud/app/icon.svg:/app/icon.svg:ro
-      - /opt/amux-cloud/app/icon.png:/app/icon.png:ro
-      - /opt/amux-cloud/app/icon-192.png:/app/icon-192.png:ro
-      - /opt/amux-cloud/app/icon-512.png:/app/icon-512.png:ro
     environment:
-      AMUX_PORT: "8822"
+      # Also set in the image; repeated here because this file is what an
+      # operator reads when asking "what port is this thing on".
+      AMUX_RS_PORT: "8822"
+      # The gateway IS the trust boundary — it authenticates every request and
+      # strips inbound auth headers before proxying. The literal "none" is the
+      # server's documented value for "no per-request token"
+      # (crates/amux-server/src/lib.rs, AMUX_AUTH_TOKEN parity block).
       AMUX_AUTH_TOKEN: "none"
       POSTHOG_KEY: "${POSTHOG_KEY}"
       POSTHOG_HOST: "${POSTHOG_HOST}"
@@ -23,45 +64,28 @@ services:
       # SECURITY: bind loopback-only. Inside the container AMUX_AUTH_TOKEN is
       # "none" (no per-request auth — the gateway is the trust boundary), so a
       # 0.0.0.0 publish let one tenant's container reach another's over the
-      # docker bridge (172.17.0.1:<other_port>) → cross-tenant unauth RCE. The
+      # docker bridge (172.17.0.1:<other_port>) -> cross-tenant unauth RCE. The
       # gateway already proxies to 127.0.0.1:<port>, so loopback-only is enough.
+      #
+      # The container speaks HTTPS on 8822 (the rust server always serves TLS
+      # with a self-signed cert; there is no no-tls switch). gateway.py must
+      # therefore proxy https:// on this hop — it reads CONTAINER_SCHEME, which
+      # the deploy sets to `https` in /etc/amux/gateway.env.
       - "127.0.0.1:${USER_PORT}:8822"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8822/api/sessions"]
-      interval: 5s
-      timeout: 3s
-      retries: 6
-      start_period: 10s
-
-  watchdog:
-    image: ghcr.io/mixpeek/amux:latest
-    container_name: amux-watchdog-${USER_ID}
-    # on-failure:5, NOT unless-stopped. A sidecar that fails instantly under
-    # unless-stopped is a self-DoS on the shared daemon: this one exited 1 on
-    # every start, was restarted with no backoff 4318 times, and the
-    # task-create/delete churn saturated dockerd until the whole HOST went dark
-    # — docker ps timing out, sshd starved, every tenant's workspace 503
-    # (AC-162/AC-163). Capping it means a broken watchdog degrades its own
-    # workspace's monitoring and then STOPS, loudly, instead of taking the box
-    # down with it. A dead sidecar is a bug; a dead host is an outage.
-    restart: on-failure:5
-    volumes:
-      - amux-data:/root/.amux
-      - /opt/amux-cloud/app/amux-server.py:/app/amux-server.py:ro
-      - /opt/amux-cloud/app/scripts/watchdog.py:/app/scripts/watchdog.py:ro
-    environment:
-      AMUX_PORT: "8822"
-      WATCHDOG_HEALTH_URL: "http://amux:8822/health"
-      WATCHDOG_AMUX_DIR: "/app"
-      WATCHDOG_INTERVAL: "30"
-    entrypoint: ["python", "/app/scripts/watchdog.py"]
-    depends_on:
-      amux:
-        condition: service_healthy
 
   litestream:
-    image: litestream/litestream:latest
+    image: litestream/litestream:0.5.16
     container_name: amux-litestream-${USER_ID}
+    # SQLite WAL replication — steady, small, and bounded by design.
+    # Runs as root because amux.db is written 0644 root:root by the amux server;
+    # litestream must WRITE that db (it creates _litestream_seq on the first
+    # replicate), and the image default user went non-root in the 0.5.x line, so
+    # a non-root sidecar gets SQLITE_READONLY(8) on that first write while the
+    # root server keeps writing fine. The tag is pinned (never :latest) so an
+    # upstream image change cannot silently re-break DR. AMUX-3127, 2026-08-15.
+    user: "0"
+    mem_limit: 192m
+    memswap_limit: 192m
     restart: unless-stopped
     volumes:
       - amux-data:/root/.amux
@@ -78,6 +102,10 @@ services:
   sync:
     image: amazon/aws-cli:latest
     container_name: amux-sync-${USER_ID}
+    # aws-cli in a sleep loop. s3 sync streams, so this does not grow with the
+    # size of the workspace being synced.
+    mem_limit: 192m
+    memswap_limit: 192m
     restart: unless-stopped
     volumes:
       - amux-data:/root/.amux

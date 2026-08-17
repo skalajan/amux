@@ -52,7 +52,7 @@ def default_config():
             "alert": {
                 "post_board": True,          # POST amux board on NEW concerns
                 "urgent_owner_alert": False,  # push+iMessage; reserve for severe
-                "amux_base": "https://localhost:8822",
+                "amux_base": "https://localhost:8824",
                 "session": "procwarden-maintain",
             },
         },

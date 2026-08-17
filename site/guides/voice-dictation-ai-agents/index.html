@@ -60,7 +60,7 @@
     "name": "How to Dictate Instructions to AI Coding Agents Using amux",
     "description": "Set up voice dictation in amux to speak instructions to Claude Code sessions from your phone or browser.",
     "step": [
-      {"@type": "HowToStep", "position": 1, "name": "Install amux", "text": "pip install amux or clone from GitHub. Start the server: amux serve. The dashboard opens at localhost:8822."},
+      {"@type": "HowToStep", "position": 1, "name": "Install amux", "text": "pip install amux or clone from GitHub. Start the server: amux serve. The dashboard opens at localhost:8824."},
       {"@type": "HowToStep", "position": 2, "name": "Open any session in the Peek panel", "text": "Click any active session in the dashboard. The Peek panel slides out. You'll see a row of tabs: Messages, Files, Schedules, Dictation."},
       {"@type": "HowToStep", "position": 3, "name": "Go to the Dictation tab and add your Gemini API key", "text": "Click the Dictation tab. Tap Settings and enter your Gemini API key (available free from Google AI Studio). The key is stored server-side — never exposed to the browser."},
       {"@type": "HowToStep", "position": 4, "name": "Tap Dictate and speak your instruction", "text": "Tap the microphone button or select Dictate from the session's ⋯ menu. Speak your instruction clearly. Stop recording when done."},
@@ -347,7 +347,7 @@
       <li>
         <div class="step-content">
           <strong>Install amux</strong>
-          <p><code>pip install amux</code> or clone from <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. Run <code>amux serve</code> to start the dashboard at localhost:8822.</p>
+          <p><code>pip install amux</code> or clone from <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. Run <code>amux serve</code> to start the dashboard at localhost:8824.</p>
         </div>
       </li>
       <li>
@@ -428,7 +428,7 @@
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — control your AI agent fleet by voice (313★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Built-in voice dictation, self-healing sessions, kanban task board, and multi-runtime support. Open source, single Python file, install in 30 seconds.</div>
+        <div style="color:var(--muted);font-size:.9rem">Built-in voice dictation, self-healing sessions, kanban task board, and multi-runtime support. Open source, single Rust binary, install in 30 seconds.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>

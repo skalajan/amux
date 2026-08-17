@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Read Aloud — Listen to Your Coding Agents with amux TTS (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux includes a free, local TTS read-aloud button powered by Piper. Listen to what your AI coding agents accomplished overnight — no API key, no cloud, works on phone. August 2026.">
+  <meta name="keywords" content="AI agent read aloud, AI coding agent text to speech, amux TTS, Piper text to speech AI agents, listen to Claude Code output, AI agent voice output, morning briefing AI agents, AI agent audio summary">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-read-aloud/">
+  <meta property="og:title" content="AI Agent Read Aloud — Listen to Your Coding Agents with amux TTS (2026)">
+  <meta property="og:description" content="amux includes a free, local TTS read-aloud button powered by Piper. Listen to what your AI coding agents accomplished overnight — no API key, no cloud, works on phone.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-read-aloud/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AI Agent Read Aloud — amux Piper TTS Guide">
+  <meta name="twitter:description" content="amux includes a free, local TTS read-aloud button powered by Piper. Listen to your AI coding agents on your commute — no API key required.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "AI Agent Read Aloud", "item": "https://amux.io/guides/ai-agent-read-aloud/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Agent Read Aloud — Listen to Your Coding Agents with amux TTS",
+    "description": "amux includes a free, local TTS read-aloud button powered by Piper. Listen to what your AI coding agents accomplished overnight — no API key, no cloud, works on any device.",
+    "url": "https://amux.io/guides/ai-agent-read-aloud/",
+    "datePublished": "2026-08-03",
+    "dateModified": "2026-08-03",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI agent read aloud", "AI coding agent TTS", "Piper text to speech", "amux TTS", "listen to AI agents", "AI agent voice output", "morning agent briefing"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to listen to your AI coding agents with amux read-aloud",
+    "description": "Use the amux read-aloud feature to listen to AI agent output, Trends summaries, and board updates — powered by Piper TTS, free, local, no API key.",
+    "totalTime": "PT5M",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Install Piper TTS (one-time setup)",
+        "text": "Piper is a free, local text-to-speech engine. Install it with: pip install piper-tts. On macOS you can also use Homebrew: brew install piper. No account, no API key, no cloud service — Piper runs entirely on your machine.",
+        "url": "https://amux.io/guides/ai-agent-read-aloud/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Enable read-aloud in amux settings",
+        "text": "In the amux dashboard, go to Settings → Audio and enable 'Read-aloud (Piper TTS)'. Select your preferred voice model — amux ships with a default English voice, or you can download additional Piper voices for other languages and accents.",
+        "url": "https://amux.io/guides/ai-agent-read-aloud/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Tap the read-aloud button on any session card",
+        "text": "Each session card in the amux dashboard now shows a speaker icon. Tap it to hear the session's most recent output read aloud. On mobile (iOS app or PWA), this uses the device's speaker or earphones.",
+        "url": "https://amux.io/guides/ai-agent-read-aloud/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Use the Trends summary read-aloud for your morning briefing",
+        "text": "In the Trends tab, tap 'Read aloud' on any theme card to hear a spoken summary of what that cluster of agents accomplished. This is the fastest morning review: hear the entire night's fleet activity in 60-90 seconds without looking at a screen.",
+        "url": "https://amux.io/guides/ai-agent-read-aloud/"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Send voice instructions back (bonus: voice dictation)",
+        "text": "Pair read-aloud with voice dictation (built into amux via Whisper) for a fully hands-free loop: listen to what agents did, dictate your next instruction, and send it to the session. See the voice dictation guide for setup.",
+        "url": "https://amux.io/guides/voice-dictation-ai-agents/"
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can AI coding agents read their output aloud?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — amux includes a built-in read-aloud button on every session card and in the Trends view. It uses Piper TTS, a free, local text-to-speech engine that runs entirely on your machine with no API key and no cloud service. Tap the speaker icon on any session card or Trends summary to hear the agent's output spoken aloud. This is useful on your commute, while making coffee, or during morning reviews where you want to absorb what your fleet accomplished without staring at a screen."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What TTS engine does amux use for read-aloud?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux uses Piper TTS — an open-source, offline, neural text-to-speech engine originally developed at Nabu Casa for Home Assistant. Piper runs locally with no internet connection, no API key, and no per-character cost. It produces natural-sounding speech at fast inference speeds (typically under 1 second for a paragraph). amux ships with a default English voice; you can download additional Piper voice models for other languages and accents from the Piper GitHub repository."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux read-aloud work on iPhone or Android?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The amux iOS app and mobile PWA both support the read-aloud feature. When you tap the speaker icon on your phone, amux streams the synthesized audio from the server (where Piper runs) to your device's speaker or earphones. No local Piper installation is needed on the phone — only the server running amux needs Piper installed."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between amux read-aloud and voice dictation?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Read-aloud is OUTPUT — amux reads AI agent output to you. Voice dictation is INPUT — you speak instructions and amux transcribes them into text sent to an agent session. amux supports both. Read-aloud uses Piper TTS (text-to-speech). Voice dictation uses Whisper (speech-to-text), also free and local. Together they enable a fully hands-free interaction loop: listen to what agents did, speak your next instruction, done."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Piper TTS really free? What's the catch?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Piper TTS is genuinely free and open source (MIT licensed). There is no free-tier limit, no rate limit, no usage cost, and no account required. The only requirement is running it on your own hardware — it does not use a cloud API. Inference is fast on any modern CPU; a Mac M-series chip can synthesize speech faster than real-time. The voice quality is good but not identical to commercial cloud TTS services like ElevenLabs or AWS Polly — Piper is an offline neural model, not a large-scale trained cloud voice. For developer tool briefings, the quality is more than sufficient."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What gets read aloud — the raw terminal output or a summary?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Both options are available. On individual session cards, amux reads the last N lines of terminal output — useful for a quick status check. In the Trends view, amux reads a synthesized theme summary — what the fleet worked on, how many tasks were completed per theme, and any blockers. The Trends read-aloud is the better option for morning briefings because it gives you the high-level picture in 60-90 seconds rather than reading raw terminal output from each of 10-50 sessions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use a different TTS voice or engine?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux supports any Piper voice model — download additional voices from the Piper GitHub repository and select them in Settings → Audio. Common choices include high-quality English voices (en_US-lessac-high, en_US-ryan-high), non-English voices for multilingual teams, and low-latency voices for faster synthesis. If you prefer a commercial TTS engine, amux can also route read-aloud through the system TTS on macOS (say command) or any TTS API you configure — Piper is the default because it requires no setup beyond installation."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Read Aloud</span></div>
+
+    <!-- EXP-018: top-of-page CTA — 2026-08-03 -->
+    <div style="background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.9rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <span style="color:#6ee7b7;font-weight:600;font-size:.95rem;">amux is the open-source AI engineering team platform</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#10b981;color:#fff;border-radius:5px;padding:.35rem .9rem;font-size:.85rem;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free →</a>
+    </div>
+
+    <h1>AI Agent Read Aloud</h1>
+    <p class="subtitle">Listen to what your coding agents did — no screen, no API key, no cloud.</p>
+
+    <p class="answer-box">amux includes a built-in read-aloud (TTS) button on every session card and in the Trends view. Tap the speaker icon to hear AI agent output spoken aloud using <strong>Piper TTS</strong> — a free, open-source, offline neural text-to-speech engine that runs entirely on your machine. No API key required. No per-character cost. Works on the iOS app and mobile PWA so you can listen to your morning briefing while getting ready for the day, on your commute, or with your phone in your pocket.</p>
+
+    <p class="freshness-note"><strong>New in August 2026</strong> — read-aloud (Piper TTS) is a new feature shipped in amux. See the <a href="/changelog/">changelog</a> for details.</p>
+
+    <h2>Why read-aloud matters for AI agent teams</h2>
+    <p>When you run 10–50 AI coding agents overnight, the morning review is a bottleneck. You wake up, open the dashboard, and face a wall of terminal output, board cards, and status updates from sessions that ran for eight hours while you slept. Reading everything takes 20-30 minutes. Skimming misses blockers. Scrolling through raw terminal output on a phone screen is painful.</p>
+
+    <p>Read-aloud changes this. Instead of reading, you <em>listen</em>. The Trends view groups all fleet activity by theme and synthesizes a spoken summary — 60-90 seconds to hear what your team of agents accomplished overnight, which themes had the most progress, and what's blocked. You can do this with your phone on the nightstand while still in bed, or with earphones while walking to the kitchen. By the time you've made coffee, you already know what needs your attention today.</p>
+
+    <h2>How to set up Piper TTS with amux</h2>
+
+    <h3>Step 1 — Install Piper</h3>
+    <pre><code># macOS (Homebrew)
+brew install piper
+
+# Python (any platform)
+pip install piper-tts</code></pre>
+    <p>Piper is an open-source neural TTS engine from the Nabu Casa / Home Assistant team, MIT licensed. It runs locally with no internet connection after the initial model download. Installation takes under two minutes.</p>
+
+    <h3>Step 2 — Enable read-aloud in amux</h3>
+    <p>In the amux dashboard, go to <strong>Settings → Audio</strong> and enable <em>Read-aloud (Piper TTS)</em>. amux will automatically detect your Piper installation. Select your preferred voice from the dropdown — amux ships with a default high-quality English voice (<code>en_US-lessac-high</code>).</p>
+
+    <h3>Step 3 — Use the speaker button</h3>
+    <p>A speaker icon now appears on:</p>
+    <ul>
+      <li><strong>Session cards</strong> — reads the session's most recent output (last N lines)</li>
+      <li><strong>Trends theme cards</strong> — reads the synthesized theme summary (recommended for morning reviews)</li>
+      <li><strong>Board cards</strong> — reads the card's description and current status</li>
+    </ul>
+    <p>On mobile (iOS app or PWA), the audio streams from your amux server to your device's speaker or connected earphones. No Piper installation is needed on the phone itself.</p>
+
+    <h2>Morning briefing workflow</h2>
+    <p>The fastest morning review pattern with read-aloud:</p>
+    <ol>
+      <li><strong>Open amux iOS app</strong> — tap the Trends tab</li>
+      <li><strong>Tap "Read all themes"</strong> — hear a 60-90 second spoken summary of the entire night's fleet activity</li>
+      <li><strong>Check blockers</strong> — the Trends view surfaces blockers first; tap any to expand and see which session and which task is stuck</li>
+      <li><strong>Dictate instructions</strong> — if something needs your input, use voice dictation (<a href="/guides/voice-dictation-ai-agents/">Whisper</a>) to send a message to the stuck session</li>
+      <li><strong>Review PRs</strong> — the board shows completed tasks; open GitHub to review and merge pull requests</li>
+    </ol>
+    <p>Total time: 5-10 minutes, most of it hands-free. The entire workflow is usable from an iPhone without typing anything.</p>
+
+    <h2>Piper TTS vs. cloud TTS for AI agent briefings</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Comparison</th><th>Piper TTS (amux default)</th><th>Cloud TTS (ElevenLabs, AWS Polly, etc.)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Cost</td>
+            <td>Free (MIT licensed, self-hosted)</td>
+            <td>Per-character billing; agent output can be long</td>
+          </tr>
+          <tr>
+            <td>Privacy</td>
+            <td>Entirely local — agent output never leaves your machine</td>
+            <td>Agent output (code, secrets, business logic) sent to third-party servers</td>
+          </tr>
+          <tr>
+            <td>API key required</td>
+            <td>No</td>
+            <td>Yes — plus account and billing setup</td>
+          </tr>
+          <tr>
+            <td>Internet required</td>
+            <td>No — works offline, on a plane, in a dead zone</td>
+            <td>Yes — requires reliable connection for every read-aloud request</td>
+          </tr>
+          <tr>
+            <td>Voice quality</td>
+            <td>Good — neural TTS, natural prosody; not identical to top cloud voices</td>
+            <td>Excellent — large-scale trained models with expressive voices</td>
+          </tr>
+          <tr>
+            <td>Latency</td>
+            <td>&lt;1s on M-series Mac; 1-3s on older hardware</td>
+            <td>100ms-1s depending on API and network</td>
+          </tr>
+          <tr>
+            <td>Setup time</td>
+            <td>&lt;2 minutes (<code>brew install piper</code>)</td>
+            <td>10-30 minutes (account + API key + integration)</td>
+          </tr>
+          <tr>
+            <td>Voice options</td>
+            <td>100+ Piper voice models (16 languages)</td>
+            <td>Hundreds of voices, many languages</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>For AI agent briefings, Piper wins on the factors that matter most: no cost at scale (agent output can be thousands of characters per session), no privacy risk (code and business logic stay local), and no dependency on internet connectivity. The voice quality difference is noticeable but not meaningful for developer use cases — you're listening for information, not entertainment.</p>
+
+    <h2>Piper voice models</h2>
+    <p>Piper ships with dozens of voice models. amux defaults to <code>en_US-lessac-high</code>, a high-quality American English female voice. To change or add voices:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Voice model</th><th>Language</th><th>Quality</th><th>Best for</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>en_US-lessac-high</code></td>
+            <td>English (US)</td>
+            <td>High</td>
+            <td>Default — natural, clear, fast</td>
+          </tr>
+          <tr>
+            <td><code>en_US-ryan-high</code></td>
+            <td>English (US)</td>
+            <td>High</td>
+            <td>Male voice alternative</td>
+          </tr>
+          <tr>
+            <td><code>en_GB-alan-medium</code></td>
+            <td>English (UK)</td>
+            <td>Medium</td>
+            <td>British accent preference</td>
+          </tr>
+          <tr>
+            <td><code>de_DE-thorsten-high</code></td>
+            <td>German</td>
+            <td>High</td>
+            <td>German-language teams</td>
+          </tr>
+          <tr>
+            <td><code>fr_FR-upmc-medium</code></td>
+            <td>French</td>
+            <td>Medium</td>
+            <td>French-language teams</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Download additional voices from the <a href="https://github.com/rhasspy/piper/releases" target="_blank" rel="noopener">Piper GitHub releases page</a> and place them in the path configured in amux Settings → Audio.</p>
+
+    <h2>Voice output vs. voice input: the full hands-free loop</h2>
+    <p>amux supports both sides of voice interaction with your agent fleet:</p>
+    <ul>
+      <li><strong>Voice output (this guide)</strong> — Piper TTS reads agent output and summaries aloud</li>
+      <li><strong>Voice input</strong> — <a href="/guides/voice-dictation-ai-agents/">Whisper dictation</a> transcribes your spoken instructions and sends them to agent sessions</li>
+    </ul>
+    <p>Used together, these enable a fully hands-free interaction loop. In the morning review: listen to what agents did (Piper), speak your next instruction to the session that needs redirection (Whisper), hear confirmation that it was sent (Piper). No typing required. This workflow is especially powerful on a phone or tablet where typing is slow.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details open>
+        <summary><h3>Can AI coding agents read their output aloud?</h3></summary>
+        <p>Yes — amux includes a built-in read-aloud button on every session card and in the Trends view, using Piper TTS. It's free, local, and requires no API key. Tap the speaker icon on any session card to hear the agent's recent output spoken aloud, or tap "Read all themes" in the Trends tab for a spoken summary of everything your fleet accomplished overnight.</p>
+      </details>
+
+      <details>
+        <summary><h3>What TTS engine does amux use?</h3></summary>
+        <p>amux uses Piper TTS — an open-source, offline neural text-to-speech engine originally developed at Nabu Casa for Home Assistant. Piper runs locally with no internet connection, no API key, and no per-character cost. It produces natural-sounding speech at fast inference speeds (typically under 1 second for a paragraph on modern hardware). Download from <a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener">github.com/rhasspy/piper</a> or install with <code>brew install piper</code>.</p>
+      </details>
+
+      <details>
+        <summary><h3>Does read-aloud work on the amux iOS app?</h3></summary>
+        <p>Yes. The iOS app and mobile PWA both support read-aloud. When you tap the speaker icon on your phone, amux streams the synthesized audio from the server (where Piper runs) to your device's speaker or earphones. No Piper installation is needed on the phone — only the server running amux needs Piper installed.</p>
+      </details>
+
+      <details>
+        <summary><h3>What's the difference between read-aloud and voice dictation?</h3></summary>
+        <p>Read-aloud is output — amux speaks AI agent output to you. Voice dictation is input — you speak instructions and amux transcribes them to send to an agent session. amux supports both: read-aloud uses Piper TTS (text-to-speech), voice dictation uses Whisper (speech-to-text), both free and local. Together they enable a fully hands-free interaction loop: listen to what agents did, speak your next instruction, done. See the <a href="/guides/voice-dictation-ai-agents/">voice dictation guide</a> for input setup.</p>
+      </details>
+
+      <details>
+        <summary><h3>Is Piper really free? No catch?</h3></summary>
+        <p>Piper TTS is MIT licensed and free with no usage limits, no account, and no API key. The only requirement is running it on your own hardware — it does not use a cloud API. Inference is fast on any modern CPU; an M-series Mac synthesizes speech faster than real-time. Voice quality is good but not identical to large commercial cloud TTS — for developer tool briefings and agent output, the quality is more than sufficient, and the privacy and cost advantages are significant.</p>
+      </details>
+
+      <details>
+        <summary><h3>What gets read aloud — raw terminal output or a summary?</h3></summary>
+        <p>Both. On individual session cards, amux reads the last N lines of terminal output — useful for a quick status check on a specific session. In the Trends view, amux reads a synthesized theme summary — what the fleet worked on, how many tasks were completed per theme, and what's blocked. The Trends read-aloud is the better option for morning briefings because it gives you the high-level picture in 60-90 seconds rather than reading raw terminal output from each session.</p>
+      </details>
+
+      <details>
+        <summary><h3>Can I use a different voice or TTS engine?</h3></summary>
+        <p>Yes. amux supports any Piper voice model — download additional voices from the Piper GitHub repository and select them in Settings → Audio. amux can also route read-aloud through the system TTS on macOS (<code>say</code> command) or any TTS API you configure. Piper is the default because it works with no setup beyond installation and keeps agent output private on your machine.</p>
+      </details>
+    </div>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team and listen to what it builds</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions — with built-in kanban, notes, CRM, email, browser automation, a scheduler, and now read-aloud TTS. Single Rust binary, zero external dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux serve  # → https://localhost:8824</code></pre>
+      <div class="cta-buttons">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Getting started guide</a>
+        <a class="btn" href="/use-cases/ai-coding-while-you-sleep/">Run agents overnight</a>
+      </div>
+    </div>
+
+    <div class="related-guides">
+      <h3>Related guides</h3>
+      <ul>
+        <li><a href="/guides/voice-dictation-ai-agents/">Voice dictation for AI agents (Whisper, speech-to-text input)</a></li>
+        <li><a href="/guides/mobile-management-pwa/">Managing your AI agent fleet from your phone</a></li>
+        <li><a href="/use-cases/ai-coding-while-you-sleep/">Running AI coding agents overnight</a></li>
+        <li><a href="/guides/ai-agent-team-review/">Morning review: Trends view and Review dashboard</a></li>
+        <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      </ul>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

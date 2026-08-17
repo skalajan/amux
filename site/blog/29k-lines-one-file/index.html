@@ -41,6 +41,10 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>29,000 Lines of Python in a Single File</span></div>
     <h1>29,000 Lines of Python in a Single File: How amux Runs an AI Agent Fleet</h1>
 
+    <div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:0.9rem 1.1rem;border-radius:0 6px 6px 0;margin:1.25rem 0;font-size:0.9rem">
+      <strong>Historical note (August 2026):</strong> This post describes amux&rsquo;s original Python architecture, which was removed at commit <code>792ce1f</code>. amux is now a 4-crate Rust workspace that compiles to a single binary. See <a href="/features/single-file-architecture/">the current architecture page</a> for how amux is built today.
+    </div>
+
 <p class="subtitle">A Python HTTP server, real-time dashboard, kanban board, CRM, file browser, video player, torrent client, and AI agent orchestrator. One file. No build step. No framework. Here's why we did it, and what we learned.</p>
 
 <p><code>amux-server.py</code> is 29,455 lines long. It contains a <code>ThreadingHTTPServer</code>, inline HTML/CSS/JS for the entire dashboard, SQLite queries for 30+ tables, a self-healing watchdog, ffmpeg transcoding, tmux session management, Gemini voice chat, and a complete REST API. When you save the file, the server restarts itself via <code>os.execv</code>. Your running AI agent sessions survive the restart.</p>
@@ -213,7 +217,7 @@ curl -X PATCH /api/board/PROJ-5 -d '{"status":"done","desc":"Implemented OAuth2 
 <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve   # https://localhost:8822</code></pre>
+amux serve   # https://localhost:8824</code></pre>
 
 <p>The whole thing is MIT + Commons Clause. Self-host it, read the source, modify it. It's one file.</p>
 

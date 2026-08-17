@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — migrated Python dataset</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .card { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .banner { padding: 8px 16px; border-radius: 6px; margin: 8px 0; }
+  .banner-info { background: #1f6feb; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .meta { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+  .migration-note { font-size: 0.75rem; color: #f0883e; }
+</style>
+</head>
+<body>
+<!-- Seed state: after Python -> Rust migration. Shows data that came
+     from the Python-era schema (old field names, legacy types, items
+     created before the Rust server existed). The crawler must discover
+     migration-specific controls: legacy-type warnings, re-type prompts,
+     and data that survived migration intact (RR-0028c). -->
+
+<div class="shell" data-testid="dashboard-shell">
+
+  <div class="banner banner-info" data-testid="migration-banner">
+    Migrated from Python server. 47 tasks, 3 workers, 12 schedules imported.
+    <button data-testid="migration-dismiss">Dismiss</button>
+    <button data-testid="migration-view-report">View report</button>
+  </div>
+
+  <!-- Worker with Python-era config -->
+  <div class="card" data-testid="migrated-worker">
+    <div>amux-main</div>
+    <div class="meta">claude-code · migrated from Python session "amux"</div>
+    <div class="migration-note" data-testid="migrated-worker-note">
+      Legacy session name — backend_ref mapped from tmux pane to worker id
+    </div>
+    <div class="actions">
+      <button data-testid="migrated-worker-start">Start</button>
+      <button data-testid="migrated-worker-configure">Configure</button>
+      <button data-testid="migrated-worker-rename">Rename</button>
+    </div>
+  </div>
+
+  <!-- Task with legacy type needing retype -->
+  <div class="card" data-testid="migrated-task-legacy-type">
+    <div>MG-451: Fix rate limit handler</div>
+    <div class="meta">type: code · status: doing · assigned: amux-main</div>
+    <div class="migration-note" data-testid="legacy-type-warning">
+      Originally typed "code" in Python; gate criteria may differ in Rust
+    </div>
+    <div class="actions">
+      <button data-testid="migrated-task-retype">Change type</button>
+      <button data-testid="migrated-task-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Task with Python-era description containing fold residue -->
+  <div class="card" data-testid="migrated-task-fold-residue">
+    <div>MG-200: Board sweep improvements</div>
+    <div class="meta">type: code · status: todo</div>
+    <div class="migration-note" data-testid="fold-residue-warning">
+      Description contains 33 fold-residue lines from Python-era prompt folding
+    </div>
+    <div class="actions">
+      <button data-testid="migrated-task-clean-desc">Clean description</button>
+      <button data-testid="migrated-task-decompose">Decompose</button>
+      <button data-testid="migrated-task-edit-folded">Edit</button>
+    </div>
+  </div>
+
+  <!-- Schedule migrated from Python cron -->
+  <div class="card" data-testid="migrated-schedule">
+    <div>Daily board sweep</div>
+    <div class="meta">every 15m · target: amux-main</div>
+    <div class="migration-note" data-testid="migrated-schedule-note">
+      Migrated from Python scheduler SCHED-42; expression preserved
+    </div>
+    <div class="actions">
+      <button data-testid="migrated-schedule-verify">Verify target</button>
+      <button data-testid="migrated-schedule-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Memory imported from Python .amux/ -->
+  <div class="card" data-testid="migrated-memory">
+    <div>Imported memories (14 entries)</div>
+    <div class="meta">source: ~/.amux/memories/</div>
+    <div class="actions">
+      <button data-testid="migrated-memory-review">Review</button>
+      <button data-testid="migrated-memory-keep-all">Keep all</button>
+      <button data-testid="migrated-memory-discard-stale">Discard stale</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

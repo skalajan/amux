@@ -59,7 +59,7 @@ amux register tests-agent --dir ~/myproject --yolo
 amux start auth-agent api-agent tests-agent
 
 # Assign tasks via the board
-curl -sk -X POST https://localhost:8822/api/board \
+curl -sk -X POST https://localhost:8824/api/board \
   -d '{"title":"Migrate auth/ to Pydantic v2","session":"auth-agent"}'</code></pre>
 <h2>Data Science and ML</h2>
 <p>Python is the lingua franca of ML. Use amux to run parallel agents for:</p>
@@ -74,7 +74,7 @@ curl -sk -X POST https://localhost:8822/api/board \
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

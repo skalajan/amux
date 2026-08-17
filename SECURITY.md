@@ -17,9 +17,10 @@ We'll acknowledge within a few business days and keep you posted on the fix.
 amux is designed to run on your own machine and is exposed to your local network
 by default. A few things are intentional, not bugs:
 
-- **The dashboard has no built-in auth** beyond a bearer token — bind it to
-  `127.0.0.1` (default) or protect it at the network layer. See the README
-  §Security and `--bind`.
+- **The dashboard has no built-in auth** beyond a bearer token
+  (`~/.amux/auth_token`; localhost callers are exempt) — protect it at the
+  network layer (Tailscale, firewall) and never expose the server port
+  (8824; plus the retired 8822 while its compatibility bind survives) to the internet. See the README §Security.
 - **Anything exposed via the tunnel is public** — the URL is unguessable, not
   authenticated.
 

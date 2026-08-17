@@ -37,7 +37,7 @@ Both commands open a browser tab and store credentials locally. They persist acr
 
 ```bash
 echo 'GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json' >> ~/.amux/server.env
-touch /path/to/amux-server.py  # trigger reload
+launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # restart the server to reload
 ```
 
 The `GOOGLE_APPLICATION_CREDENTIALS` env var is the standard way all Google SDKs pick up service account credentials.

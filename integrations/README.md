@@ -49,7 +49,7 @@ echo 'SOME_API_KEY=your-key-here' >> ~/.amux/server.env
 ### 4. Reload
 
 ```bash
-touch /path/to/amux-server.py   # triggers auto-restart
+launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # restart the server to reload
 ```
 
 New sessions started after this point will have the integration available.

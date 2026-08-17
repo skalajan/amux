@@ -6,7 +6,6 @@ on:
     paths:
       - 'site/**'
       - 'docs/release-notes/notes.json'
-      - 'amux-server.py'
   workflow_dispatch:
 
 permissions:

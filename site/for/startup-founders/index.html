@@ -272,7 +272,7 @@
     <p>The trade-off: amux agents need clear task definitions and human review of outputs. They are not autonomous junior engineers — they are powerful execution tools that amplify a founder's direction. The founders who get the most from amux are opinionated about what to build and disciplined about reviewing what the agents produce.</p>
 
     <h2>Open Source, Self-Hosted, No Per-Seat Fees</h2>
-    <p>amux is MIT licensed. The entire server is a single Python file with zero external dependencies — no Docker, no complex build process, no cloud account required. You run it on your laptop or a small cloud VM. You pay nothing to amux. Your costs are:</p>
+    <p>amux is MIT licensed. The entire server is a single Rust binary with zero external dependencies — no Docker, no complex build process, no cloud account required. You run it on your laptop or a small cloud VM. You pay nothing to amux. Your costs are:</p>
     <ul>
       <li><strong>AI tokens</strong> — billed directly by Anthropic (Claude), OpenAI (Codex), or Google (Gemini CLI) at standard API rates</li>
       <li><strong>Server hosting</strong> (optional) — a $5–10/month VM on any cloud provider if you want 24/7 agent operation. Not required if you run agents from your laptop.</li>
@@ -289,7 +289,7 @@
         <p>The <code>--yolo</code> flag lets Claude Code run without per-command approval — appropriate for trusted codebases where you review at the PR level, not the command level.</p>
       </li>
       <li><strong>Start the dashboard</strong>:
-        <pre><code>amux serve  # → https://localhost:8822</code></pre>
+        <pre><code>amux serve  # → https://localhost:8824</code></pre>
       </li>
       <li><strong>Write a CLAUDE.md</strong> in your project root. This is the context file every agent reads on startup — project architecture, coding conventions, what to avoid, how to run tests. Clear instructions here are the single highest-leverage thing you can do to improve agent output quality.</li>
       <li><strong>Launch your first agents</strong> from the dashboard or CLI. Add tasks to the board. Watch them work.</li>
@@ -304,7 +304,7 @@
       <p>amux is open-source, free to self-host, and installs in minutes. No per-seat fees, no vendor lock-in.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myapp --dir ~/Dev/myapp --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
         <a class="btn" href="/concierge/">Set It Up for Me →</a>

@@ -8,655 +8,140 @@
   <a href="https://amux.io/changelog/"><img src="https://img.shields.io/badge/changelog-amux.io%2Fchangelog-green?style=flat-square" alt="Changelog"/></a>
 </p>
 
-<!-- EXP-006: official App Store badge for iOS CTA (started 2026-07-13) -->
-<p align="center">
-  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"><img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83&releaseDate=1736899200" alt="Download on the App Store" height="44"/></a>
-</p>
-
-<h3 align="center">💼 Want it done for you? → <a href="https://amux.io/concierge/">amux.io/concierge</a></h3>
-
-<p align="center">
-  <b>Run, build &amp; grow your business, all from your phone.</b><br/>
-  We set up your first workflow automation, teach your team to build more, and run it all for you.<br/>
-  <a href="https://amux.io/concierge/"><b>→ Schedule an onboarding call</b></a>
-</p>
-
----
-
-**Open-source control plane for AI agents.** Run dozens of parallel agent sessions from your browser or phone — with a web dashboard, kanban board, notes, CRM, email, browser automation, slash-command skills, and agent-to-agent orchestration. Self-healing, single-file, zero external dependencies. Works with Claude Code, Codex, and Gemini CLI via tmux.
+**amux is a multi-session agent orchestrator.** Run dozens of parallel AI agent workers (Claude Code, Codex, Gemini CLI) from a web dashboard or your phone: a shared kanban board with status gates, schedulers, inter-worker messaging, per-scope memory and environment, browser automation, email, and self-healing recovery. Local-first, self-hosted, SQLite-backed.
 
 > **[amux.io](https://amux.io)** · [Getting started](https://amux.io/guides/getting-started/) · [FAQ](https://amux.io/faq/) · [Blog](https://amux.io/blog/)
 
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard — run parallel agent sessions from one board" width="920"/></a></p>
 
+## Quickstart — one command
+
 ```bash
 git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve   # → https://localhost:8822
 ```
 
-**Requirements:** Python 3.10+, tmux 3.2+, and at least one of: Claude Code, Codex CLI, or Gemini CLI.
+That is the whole setup. The installer checks prerequisites (Rust toolchain, tmux; it prompts before installing anything), builds the workspace, installs the server and CLI to `~/.local/bin`, loads the launchd agents on macOS, mints `~/.amux` (DB, TLS, auth token) on first boot, waits for `/health`, and prints:
+
+```
+Dashboard   https://localhost:8824
+Auth token  ~/.amux/auth_token
+CLI         amux-rs --url https://localhost:8824 health
+```
+
+Open **https://localhost:8824**, accept the self-signed cert warning once, and add your first worker from the dashboard. Re-running `./install.sh` upgrades in place and never touches your data; `./uninstall.sh` removes the binaries and agents and leaves `~/.amux` alone.
+
+**Requirements:** macOS (primary; on Linux the installer builds and installs the binaries and prints how to run the server), tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
 
 > **License:** [MIT + Commons Clause](LICENSE) — free to use, modify, and self-host. Commercial resale requires a separate license.
 
----
+## Which server is real?
 
-## What's New
+**The Rust server (`crates/amux-server`, port 8824).** That is what `./install.sh` installs, what the dashboard talks to, and where all new work lands. Every `/api` family answers natively; the live proof is `GET /api/debug/boundary`, which reports `proxied: []`. If you are reading code, start in `crates/` — it is the only server code in the tree. The same binary also answers the retired port 8822 while a compatibility bind survives (see [Legacy](#legacy-the-python-server)), so there is no second server to reason about; the Python predecessor is gone.
 
-- **Calendar events** — a real events layer that syncs out to Google/Apple Calendar (via an iCal feed), alongside toggleable task and board-issue layers that stay in-app. Create with **+ Event**.
-- **Urgent alerts** — `amux alert "..."` fires an in-app push **and** an iMessage/SMS to the owner. A fire alarm any session can pull; configured in Settings → Alerts.
-- **[amux tunnel](https://amux.io/features/tunnel/)** — expose any localhost port at a stable public HTTPS URL (`amux tunnel start 3000`). Your machine dials out, so there's no inbound port to open. Requires an amux cloud subscription.
-- **[YOLO mode on by default](https://amux.io/changelog/)** — new sessions auto-approve tool prompts so agents never block during overnight runs. Opt out per-session if you need interactive review.
-- **[Board status gates](https://amux.io/changelog/)** — configurable checklists gate cards from moving to `done`/`verified`, preventing the failure mode of marking work done before it's confirmed in production.
-- **[Saved messages](https://amux.io/changelog/)** — store canned prompts in the DB and trigger them from the ⋮ menu in any session — one tap, no copy-pasting from notes.
+## Architecture
 
-[Full changelog →](https://amux.io/changelog/)
+One Rust workspace, four crates:
 
----
+| Crate | What |
+|---|---|
+| `crates/amux-server` | The server: axum HTTP API on **8824** (HTTPS, self-signed; plain HTTP redirected), single-writer SQLite store with an event journal, SSE + delta sync, scheduler/orchestrator runtime, embedded dashboard |
+| `crates/amux-dashboard` | The SPA, embedded into the server binary at build time (no node/npm needed) |
+| `crates/amux-cli` | `amux-rs`, the CLI (board, workers, send, schedules, health) |
+| `crates/amux-core` | Shared domain types: ids, scopes, revisions, memory, protocol |
 
-## Why amux?
+Everything in amux is built on **eight primitives**, and new capability is expressed by composing them rather than wrapping them:
 
-| Problem | amux's solution |
-|---------|----------------|
-| Claude Code crashes at 3am from context compaction | **[Self-healing watchdog](https://amux.io/features/self-healing/)** — auto-compacts, restarts, replays last message |
-| Can't monitor 10+ sessions from one place | **[Web dashboard](https://amux.io/features/web-dashboard/)** — live status, token spend, peek into any session |
-| Agents duplicate work on the same task | **Kanban board** with atomic task claiming (SQLite CAS) |
-| No remote control for your agent fleet | **[Remote control iOS app](https://amux.io/features/mobile-pwa/)** ([App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435)) + PWA — monitor, steer, and recover agents from anywhere |
-| Agents can't coordinate with each other | **[REST API orchestration](https://amux.io/features/agent-coordination/)** — send messages, peek output, claim tasks between sessions |
-| Agents operate in a vacuum — no shared context | **Channels** — 1:1 inter-session chat with @mentions so agents can coordinate in real time |
-| No persistent knowledge between sessions | **Notes** — markdown documents agents can read, write, and reference across sessions |
-| No way to automate recurring work | **Scheduler** — named cron-style recurring jobs with built-in management UI |
+- **board** — shared kanban with atomic claiming, types, and status gates (`done` ≠ `verified`)
+- **workers** — parallel agent sessions (tmux by default), each with durable identity
+- **schedulers** — cron-style recurring and one-shot jobs with an audited run history
+- **filesystem** — browse/edit/search any worker's working directory; file viewer + media pipeline
+- **groups** — tags on workers; scoping for visibility, gates, memory, and env (workers see same-group peers)
+- **memories** — layered instructions/knowledge composed global → group → worker
+- **environment** — layered env vars the same way (which 3p APIs a worker can reach)
+- **messages** — inter-worker and human-to-worker text, delivered at turn boundaries
 
----
+The uniform way to read/write per-scope configuration (memory, rules, env, board gates, status availability at global/group/worker level) is one endpoint: `GET`/`PUT /api/scope`.
 
-## Key Features
+Useful pointers:
 
-### Agent infrastructure
-- **Self-healing** — auto-compacts context, restarts on corruption, unblocks stuck prompts. [Learn more →](https://amux.io/features/self-healing/)
-- **Parallel agents** — run dozens of sessions, each with a UUID that survives stop/start
-- **Agent orchestration** — agents discover peers and delegate work via REST API + shared global memory. [Learn more →](https://amux.io/features/agent-coordination/)
-- **Channels** — 1:1 inter-session messaging with @mentions so agents can chat, delegate, and coordinate in real time
-- **Kanban board** — SQLite-backed with auto-generated keys, atomic claiming, custom columns, iCal sync
-- **Conversation fork** — clone session history to new sessions on separate branches
-- **Git conflict detection** — warns when agents share a dir + branch, one-click isolation
-- **Token tracking** — per-session daily spend with cache reads broken out
+- **Server boundary / migration status:** [docs/rust-migration/server-boundary.md](docs/rust-migration/server-boundary.md) — the full ownership matrix (all families RUST-NATIVE, zero proxied) and the contract subtleties, cross-checked by tests and served live at `/api/debug/boundary`.
+- **Cutover runbook:** [docs/rust-migration/cutover-runbook.md](docs/rust-migration/cutover-runbook.md) — the gates for retiring the Python server.
+- **Rebuild plan:** [docs/rust-rebuild-plan.md](docs/rust-rebuild-plan.md).
 
-### Dashboard & mobile
-- **Web dashboard** — session cards, live terminal peek, file explorer with markdown editor, search across all output. [Learn more →](https://amux.io/features/web-dashboard/)
-- **Mobile PWA** — installable on iOS/Android, offline action queue via Background Sync. [Learn more →](https://amux.io/features/mobile-pwa/)
-- **iOS app** — [Download on the App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) — the remote control for your AI engineering team. Monitor sessions, approve actions, steer agents from anywhere.
+### Terminal backends: tmux, herdr, and the structured protocol
 
-### Built-in tools
-- **Notes** — full markdown notes system with rich editor, find-in-page, and inter-session sharing
-- **CRM** — contacts, companies, interaction logs, follow-up tracking, and tags
-- **Email** — send, reply, and read email via the Gmail API (with your real Gmail signature auto-appended), plus a Mail.app fallback for non-Gmail accounts
-- **Browser automation** — shared Playwright instance with saved auth profiles, screenshots, and an AI agent mode
-- **Skills / slash commands** — project-level custom commands (e.g. `/commit`, `/review-pr`) that agents can invoke
-- **Scheduler** — named recurring jobs with cron expressions and a management UI
-- **Calendar** — three toggleable layers (events, tasks, board issues); real events sync out to Google/Apple Calendar via an iCal feed
-- **Urgent alerts** — a fire-alarm channel any session can use to reach you immediately (in-app push + iMessage/SMS)
-- **File explorer** — browse agent working directories, preview files, edit markdown with in-page search
-- **Tunnel** — publish any localhost port at a stable public HTTPS URL, no inbound firewall hole ([amux cloud](https://amux.io/cloud/))
+tmux is the default and fully supported backend. Sessions can instead run on [herdr](https://github.com/herdrdev/herdr): set `AMUX_HERDR_SESSION=<herdr session name>` in `~/.amux/server.env` (the herdr session that hosts amux workspaces; workers opt in per-session with `CC_BACKEND=herdr`). The herdr path is not covered by CI (its tests mock the process boundary), so treat a green build as proving backend selection, not the integration.
 
-### Architecture
-- **Single file** — one Python file with inline HTML/CSS/JS. Edit it; it restarts on save. [Learn more →](https://amux.io/features/single-file-architecture/)
+Longer term, terminal scraping is the fallback, not the plan: the `opencode` module (`crates/amux-server/src/opencode/`) defines the structured AgentProtocol through which prompts, messages, cancellation, and state queries flow directly, shrinking the scraper to a liveness check as coverage grows.
 
----
+## Logs and the daily sweep
 
-## How It Works
+Every `/api` request is recorded in a structured request log (`_amux_request_log`, served at `GET /api/logs` and the dashboard's Logs tab; raw server tracing at `~/.amux/logs/server-rs.log`; retention `AMUX_REQLOG_RETAIN_DAYS`, default 14 days).
 
-### Status Detection
-
-Parses ANSI-stripped tmux output — no hooks, no patches, no modifications to Claude Code.
-
-### Self-Healing Watchdog
-
-| Condition | Action |
-|-----------|--------|
-| Context < 50% | Sends `/compact` (5-min cooldown) |
-| `redacted_thinking … cannot be modified` | Restarts + replays last message |
-| Stuck waiting + `CC_AUTO_CONTINUE=1` | Auto-responds based on prompt type |
-| YOLO session + safety prompt | Auto-answers (never fires on model questions) |
-| `/rate-limit-options` (any session, fleet-wide) | Auto-presses 1, records reset time, auto-resumes at reset |
-
-#### Fleet-aware rate-limit handling
-
-When a single Max/Pro account's usage cap is hit, every active Claude Code
-session on that account blocks at the same `/rate-limit-options` prompt
-within seconds. amux's watchdog detects this fleet-wide, presses option 1
-("Stop and wait for limit to reset") on each blocked session, parses the
-reset time from the surrounding scrollback, and steers a resume message
-to every still-parked session once the reset time passes.
-
-The dashboard shows a per-session "Rate-limited until HH:MM" badge plus a
-header pill summarizing the fleet ("N of M rate-limited, reset HH:MM").
-
-**Per-session resume text** — set `CC_RATE_LIMIT_RESUME_TEXT` in
-`~/.amux/sessions/<name>.env` to override the default `continue`. Useful
-for orchestrators or supervisors that need a richer resume prompt:
-
-```bash
-echo 'CC_RATE_LIMIT_RESUME_TEXT="peek workers, surface phase STOPs, resume monitoring"' \
-  >> ~/.amux/sessions/orchestrator.env
-```
-
-**Fleet auto-resume mode** — set `AMUX_RATE_LIMIT_MODE` in
-`~/.amux/server.env`:
-
-| Mode | Behavior |
-|------|----------|
-| `off` | Detect prompt and press 1, but do NOT auto-resume — user must steer manually |
-| `capped` *(default)* | Auto-resume up to `AMUX_RATE_LIMIT_BUDGET` times per session per UTC day (default 3); fall back to manual after the cap |
-| `unlimited` | Auto-resume every time, no cap |
-
-A user who manually intervenes on a rate-limited session (picks option 2/3,
-types something new, archives it) is detected at reset time via a
-state-aware scrollback check, and auto-resume is skipped for that session.
-
-**Manual verification:** install the feature on a development server, then
-inject a fake prompt into a test session's tmux scrollback:
-
-```bash
-tmux send-keys -t amux-rl-test \
-  $'What do you want to do?\n❯ 1. Stop and wait for limit to reset\n  2. Add funds\n  3. Upgrade your plan\nresets 23:59\n' \
-  Enter
-```
-
-Within ~3-15 seconds the dashboard card should show the badge and
-`~/.amux/logs/server.log` should contain `[rate-limit] session=... auto-selected option 1, reset_at=...`.
-
-**Simulation caveats:** `tmux send-keys` lands text at Claude's input
-prompt, not as raw terminal output, and Claude may render or re-render
-it differently than a real rate-limit event. Two pitfalls to be aware of:
-
-- The strict reset-time parser may not match Claude's actual rendering;
-  when that happens the watchdog applies a 5-minute safety fallback so
-  the auto-resume path still exercises end-to-end. Real rate-limit
-  windows are always >1h, so the fallback never causes premature resume.
-- If the menu text persists in Claude's input area without being
-  submitted, the detector will re-fire every ~12 seconds (10s cooldown +
-  3s tick). Send `C-c` to the session after the initial detection if you
-  want to stop the loop while observing badge/pill behavior:
-
-  ```bash
-  tmux send-keys -t amux-rl-test C-c
-  ```
-
-The simulation is a sanity check; the integration test for the real
-rendering can only be done against an actual rate-limit event. If you
-hit one on a development account, capture `tmux capture-pane -p -t
-amux-<session> -S -300` to a file and feed it through the parser:
-
-```bash
-python3 -c "import sys; sys.path.insert(0,'.'); \
-  import importlib.util as iu; \
-  spec = iu.spec_from_file_location('a','amux-server.py'); \
-  m = iu.module_from_spec(spec); spec.loader.exec_module(m); \
-  print(m._parse_rate_limit_reset(open('capture.txt').read()))"
-```
-
-### Agent-to-Agent Orchestration
-
-```bash
-# Send a task to another session
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"text":"implement the login endpoint and report back"}' \
-  $AMUX_URL/api/sessions/worker-1/send
-
-# Atomically claim a board item
-curl -sk -X POST $AMUX_URL/api/board/PROJ-5/claim
-
-# Read another session's scrollback. Use `history`, not `output` — `output` is only
-# the current terminal frame, and a full-screen prompt (usage-credits modal, resume
-# picker) clears the screen, so the session's work drops off-viewport.
-curl -sk "$AMUX_URL/api/sessions/worker-1/peek?lines=600" | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))"
-```
-
-Agents get the full API reference in their global memory, so plain-English orchestration just works.
-
----
-
-## Web Dashboard
-
-- **Session cards** — live status (working / needs input / idle), token stats, quick-action chips
-- **Peek mode** — full scrollback with search, file previews, and a send bar
-- **Workspace** — full-screen tiled layout to watch multiple agents side by side
-- **Board** — kanban backed by SQLite, with atomic task claiming, iCal sync, and custom columns
-- **Notes** — markdown documents with rich Quill editor, find-in-page, and inter-session sharing
-- **CRM** — contacts with company, role, email, phone, LinkedIn, interaction history, and follow-up tracking
-- **Channels** — 1:1 inter-session chat with @mentions for real-time agent coordination
-- **Files** — browse and edit files in any session's working directory, with syntax highlighting and in-page search
-- **Scheduler** — create, edit, and monitor recurring cron-style agent jobs
-- **Reports** — pluggable spend dashboards pulling from vendor billing APIs
-
----
-
-## Configuration
-
-All server configuration lives in one file: `~/.amux/server.env` — plain
-`KEY=value` lines, loaded at startup via `os.environ.setdefault` (so
-process-level env always wins) and inherited across the server's auto-restarts.
-After editing it, `touch amux-server.py` to trigger a live reload.
-
-**[`server.env.example`](server.env.example)** in the repo root documents every
-supported variable with its built-in default, grouped by concern:
-
-| Group | What it covers |
-|-------|----------------|
-| Core server | port, auth tokens, reload debounce, tmux pane geometry |
-| Autonomy & board guards | commit/push/staged guards, WIP limits, task guard |
-| Rate limits & auto-resume | fleet-wide behavior when a model hits its cap |
-| Helper model | the one knob for every internal model one-shot |
-| Context & memory caps | payload bounds that should grow with model windows |
-| Calendar, email, alerts | iCal/S3 feed, Gmail bridge, owner push/SMS |
-| Voice, browser, tunnel | dictation/TTS, managed browser, amux cloud tunnel |
-| Providers & passthrough | Anthropic keys, and keys forwarded to every session |
-| Integrations | PostHog, GCP/Mongo/Qdrant/Render cost surfacing, CRM |
-
-Two rules worth keeping: never commit your real `server.env` anywhere (several
-values are secrets, and the iCal S3 key is a capability URL), and don't set the
-per-session variables the server manages itself (`AMUX_SESSION`, `AMUX_URL`,
-`AMUX_HOME`) — they are stamped per process at launch.
+On top of it sits a **daily log sweep**: a scheduler entry that prompts a session to run five standing queries (error families, latency p95 vs trailing norm, proxy volume — which must stay zero, auth-failure spikes, and worker-log anomalies), judge the results, and file board cards. The contract lives in [docs/rust-migration/log-sweep.md](docs/rust-migration/log-sweep.md). It is a contract for a model, not an automation: amux supplies the queries and the substrate; the session supplies the judgment.
 
 ## CLI
 
-```bash
-amux register <name> --dir <path> [--yolo] [--model sonnet]
-amux start <name>
-amux stop <name>
-amux attach <name>          # attach to tmux
-amux peek <name>            # view output without attaching
-amux send <name> <text>     # send text to a session
-amux exec <name> -- <prompt> # register + start + send in one shot
-amux ls                     # list sessions
-amux serve                  # start web dashboard
-
-# Board
-amux board add "task title"  # create a board item
-amux board doing PROJ-1      # mark in progress
-amux board done PROJ-1       # mark done
-
-# CRM
-amux crm add "Name" company=X email=Y role=Z
-amux crm list               # list contacts
-amux crm log PPL-1 "met at conference"
-amux crm fu                 # show pending follow-ups
-
-# Tunnel (amux cloud)
-amux tunnel start 3000      # publish localhost:3000 publicly
-amux tunnel url             # print the public URL
-amux tunnel stop            # take it down
-
-# Urgent alert to the owner (use sparingly)
-amux alert "prod is down" "customer-facing, need a call"
-```
-
-Session names support prefix matching — `amux attach my` resolves to `myproject` if unambiguous.
-
----
-
-## Calendar & events
-
-The **Calendar** tab shows three independently toggleable layers:
-
-| Layer | What it is | Syncs to Google/Apple? |
-|-------|------------|------------------------|
-| **Events** | Real calendar events you create | **Yes** |
-| **Tasks** | Scheduled/recurring jobs (the scheduler) | No — in-app only |
-| **Issues** | Board items with a due date | No — in-app only (off by default) |
-
-Only **events** leave amux; tasks and issues would be noise on your real calendar.
-
-**Create an event:** click **+ Event** in the calendar header (or click any empty
-slot). Set a title, all-day or a start/end time, and an optional location — Save.
-Click an event to edit or delete it.
-
-**Sync to Google/Apple Calendar:** amux serves your events as an RFC 5545 iCal feed
-at `/api/calendar.ics`. Click **Subscribe** in the calendar; it hands you a public
-URL and buttons to add it to Google (*Settings → Add calendar → From URL*) or Apple
-Calendar. Timed events are emitted in UTC so they show at the correct local time.
-
-The public URL comes from whichever exposure you have, in order:
-
-1. **[Tunnel](#tunnel)** — `https://<id>.t.amux.io/api/calendar.ics`. This is the
-   intended path: no S3, no port forwarding, works from a laptop.
-2. **S3** — set `AMUX_S3_BUCKET`; the feed auto-uploads there (always-up, even when
-   your machine is off).
-3. **Download .ics** — a static import with no live sync; zero infra, works anywhere.
-
-> Google refreshes external iCal feeds on its own slow cadence (hours) and caches
-> them **by URL**. A tunnel URL is only reachable while your machine + tunnel are up;
-> Google keeps the last snapshot otherwise.
-
-📖 **Full walkthrough:** [docs/calendar-sync.md](docs/calendar-sync.md) — step-by-step
-Google/Apple subscription, exposure tradeoffs, and the caching gotchas.
-
----
-
-## Urgent alerts
-
-A deliberately-sparse **fire alarm** to reach the owner immediately — separate from
-routine in-app notifications. It fans out to an **in-app push** and a **real
-iMessage/SMS** to the owner's phone.
+`amux-rs` finds the server via `--url`, then `$AMUX_RS_URL`, then `$AMUX_URL` (every running amux session has it), falling back to `https://localhost:8824` — the port `./install.sh` configures. So a bare invocation just works:
 
 ```bash
-amux alert "prod is down — search returning 0 results" "customer-facing, need a call"
+amux-rs health                                        # no env or flags needed
+amux-rs board add "task title" --type code
+amux-rs board list --status todo
+amux-rs board doing PROJ-1
+amux-rs board done PROJ-1 --checked "Tests / lint pass"   # gates are surfaced loudly, never bypassed silently
+amux-rs workers list
+amux-rs send worker-1 "implement the login endpoint and report back"
+amux-rs schedules list
 ```
 
-Or the raw endpoint (what sessions use):
+Board mutations are gate-aware: a 409 from a status gate prints the checklist and the exact retry command instead of failing silently.
 
-```bash
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"message":"<what happened + what you need>","reason":"<why now>","session":"'$AMUX_SESSION'"}' \
-  $AMUX_URL/api/alert/owner
-# → {"ok":true,"channels":{"push":"sent","sms":"imessage"}}
-```
+## Configuration
 
-Configure it in **Settings → Alerts**: toggle in-app push / text, set the phone
-number, and **Send test alert**. The server applies a 60-second dedupe so an
-accidental repeat can't spam you.
+Server configuration lives in `~/.amux/server.env` (plain `KEY=value`; process env wins). Highlights:
 
-**Use it only for things that genuinely can't wait** — production down, data at
-risk, a destructive action needing a go/no-go, a security incident. For everything
-else, use the board. Overuse defeats the purpose.
+| Variable | What |
+|---|---|
+| `AMUX_RS_PORT` | server port (installer sets 8824) |
+| `AMUX_HOME` | data dir (default `~/.amux`) |
+| `AMUX_DB` | SQLite path (default `$AMUX_HOME/amux.db`) |
+| `AMUX_HERDR_SESSION` | herdr session hosting amux workspaces (enables the herdr backend) |
+| `AMUX_REQLOG_RETAIN_DAYS` | request-log retention (default 14) |
+| `AMUX_SCOPE_WRITE_AGENTS` | `1` lets agent sessions write group/global scope layers (default: only their own worker layer) |
 
----
+[`server.env.example`](server.env.example) documents the full set. Never commit your real `server.env` — several values are secrets.
 
-## procwarden (optional): keep the machine clean under an agent fleet
+## Naming
 
-A fleet of agents spawns a lot of processes — browser automation servers, MCP
-sidecars, build daemons — and some get orphaned (parent dies, child lingers).
-Real case: 5 orphaned `browser_use.skill_cli.server` processes sat for up to
-**8 days** (ppid=1, ignoring SIGTERM), each showing up as a rocket icon in the
-Dock. Nothing was watching for them.
-
-[`integrations/procwarden`](integrations/procwarden) is an optional,
-self-contained process warden:
-
-- **Dry-run first**: the global `enforce=false` means every sweep only reports.
-  A safety gate protects system/critical processes regardless.
-- **Per-rule enforcement**: one rule can set `"enforce": true` (e.g. reap
-  orphaned agent-spawned servers older than 24h) while everything else stays
-  dry-run. `--dry-run` still forces everything dry.
-- **Escalation**: SIGTERM first; processes that ignore it get SIGKILL after a
-  grace period.
-- **Strike counting** (`for_sweeps: N`): a process must match N consecutive
-  sweeps before anything happens — no one-frame false kills.
-- **Menu bar app** for live visibility, plus `sweep`, `maintain`, `list`,
-  `inspect`, `kill` CLI commands.
-
-Pair it with the amux scheduler for a nightly cleanup pass whose output lands
-in your schedule run history:
-
-```bash
-curl -sk -X POST -H 'Content-Type: application/json' -d '{
-  "title": "procwarden nightly cleanup",
-  "kind": "shell",
-  "command": "cd integrations/procwarden && ./bin/procwarden sweep --quiet 2>&1 | tail -6",
-  "schedule_expr": "daily at 3:37"
-}' $AMUX_URL/api/schedules
-```
-
-Config lives in `~/.procwarden/config.json` (created on first run). Entirely
-optional — amux never invokes it unless you schedule it.
-
----
-
-## Tunnel
-
-Expose any localhost port at a stable public HTTPS URL, without opening an inbound
-port or configuring a firewall. Your machine dials **out** to the amux cloud gateway
-and long-polls it; the gateway relays public requests back down that connection.
-
-Drive it from **Settings → Tunnel (public proxy)** in the dashboard (start/stop, copy
-the URL, see the live target) or from the CLI:
-
-```bash
-amux tunnel start 3000                  # publish localhost:3000
-amux tunnel start                       # publish the amux dashboard itself
-amux tunnel status                      # state, public URL, request count
-amux tunnel stop
-```
-
-The URL is derived from your token, so it **stays the same across restarts** — safe to
-paste into a webhook or a calendar subscription.
-
-```
-https://<id>.t.amux.io/            → your local server's /
-https://<id>.t.amux.io/api/foo     → your local server's /api/foo
-```
-
-Each tunnel gets its own subdomain, so a tunneled app's root-absolute paths
-(`fetch("/api/x")`, `<script src="/app.js">`) resolve inside the tunnel. The older
-`https://cloud.amux.io/t/<id>/` path form still works for anything already pointed at
-it, but root-absolute paths escape it — prefer the subdomain.
-
-Anything HTTP works: a dev server, a webhook receiver, the amux calendar feed
-(`/api/calendar.ics`). Requests relay with method, headers, query string, body, and
-status code intact, including `HEAD`.
-
-> **Streaming isn't relayed yet.** Each request maps to a single buffered response, so
-> Server-Sent Events and WebSockets don't pass through. The amux dashboard still works
-> over a tunnel — it detects the dead SSE stream and falls back to polling — but it
-> takes ~2 minutes to fall back, and it stays in "Polling" mode.
-
-**Setup.** Put a tunnel token in `~/.amux/server.env`, then `touch amux-server.py`
-to reload:
-
-```
-AMUX_TUNNEL_TOKEN=<token>
-```
-
-The tunnel auto-starts with the server and points at the dashboard (so
-`/api/calendar.ics` is exposed) unless you give it another port. To auto-target a
-fixed local port that survives restarts, add `AMUX_TUNNEL_PORT=<port>`.
-
-### Hosted vs. self-hosted (OSS)
-
-The tunnel client is open source; the **gateway** is the piece that needs a public
-address. You have two ways to get a token that works:
-
-- **amux cloud (paid, easiest).** `cloud.amux.io` runs the gateway for you; a token
-  is included with an active [amux cloud](https://amux.io/cloud/) subscription (Clerk
-  SSO + billing). This is how the project is funded.
-- **Self-host (free).** The gateway is in [`cloud/gateway/`](cloud/gateway/) — run it
-  on your own box + domain, mint your own tokens, and point the client at it with
-  `AMUX_TUNNEL_GATEWAY=https://your-gateway`. No amux account required.
-
-Either way, only one tunnel is active per token (one public URL → one local target).
-And if you don't want a tunnel at all, the calendar still works via **S3** or a
-**downloaded .ics** (see [Calendar & events](#calendar--events)).
-
-**Worked example:** [`examples/flask-tunnel-demo/`](examples/flask-tunnel-demo/) is a
-tiny Flask app you can publish in one command (`amux tunnel start 8940`), with a
-launchd job to keep it alive across reboots.
-
-> **Anything you tunnel is public.** The URL is unguessable, not authenticated —
-> don't expose a service that assumes it's only reachable from localhost.
-
----
-
-## Install
-
-### Homebrew (macOS / Linux)
-
-```bash
-brew install mixpeek/amux/amux
-brew services start amux    # optional: run the dashboard as an always-on service
-```
-
-### pipx / uv
-
-```bash
-pipx install amux           # or: pip install amux
-amux serve
-```
-
-Try it without installing anything:
-
-```bash
-uvx amux serve
-```
-
-Requires `tmux` (`brew install tmux`). Homebrew installs it for you.
-
-### From source (the hackable way)
-
-The whole product is [one Python file](https://amux.io/features/single-file-architecture/) — clone it and it's yours to read and modify:
-
-```bash
-git clone https://github.com/mixpeek/amux && cd amux
-./install.sh   # installs amux to /usr/local/bin
-```
-
-Source installs update with `git pull` (or the dashboard's update button); Homebrew with `brew upgrade amux`; pipx with `pipx upgrade amux` — the server detects its install channel and points you at the right one.
-
-### HTTPS
-
-Auto-generates TLS in order: Tailscale cert → mkcert → self-signed fallback. For phone access, Tailscale is the easiest path. [Remote access guide →](https://amux.io/guides/remote-access-tailscale/)
-
-### Trusting the certificate on your phone
-
-The PWA uses a service worker for offline support — managing sessions, checking the board, and sending messages all work without a connection. For the service worker to register, your phone's browser must trust the HTTPS certificate. If you're using mkcert, your phone won't trust the CA by default. Serve it over HTTP so your phone can download and install it:
-
-```bash
-python3 -c "
-import http.server, os, socketserver
-CA = os.path.expanduser('~/Library/Application Support/mkcert/rootCA.pem')
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/':
-            self.send_response(200); self.send_header('Content-Type','text/html'); self.end_headers()
-            self.wfile.write(b'<a href=\"/rootCA.pem\">Download CA cert</a>')
-        elif self.path == '/rootCA.pem':
-            data = open(CA,'rb').read()
-            self.send_response(200); self.send_header('Content-Type','application/x-pem-file')
-            self.send_header('Content-Disposition','attachment; filename=\"rootCA.pem\"')
-            self.send_header('Content-Length',len(data)); self.end_headers(); self.wfile.write(data)
-socketserver.TCPServer.allow_reuse_address = True
-http.server.HTTPServer(('0.0.0.0', 8888), H).serve_forever()
-"
-```
-
-Then open `http://<your-ip>:8888` on your phone (use your Tailscale IP if on Tailscale, or LAN IP if on the same Wi-Fi).
-
-**iOS:** Settings → General → VPN & Device Management → install the profile, then Settings → General → About → Certificate Trust Settings → enable full trust.
-
-**Android:** Settings → Security → Install a certificate → CA certificate → select the downloaded file.
-
----
-
-## How amux compares
-
-| Tool | What it is | amux angle |
-|------|-----------|-----------|
-| [Cursor](https://amux.io/compare/amux-vs-cursor/) | AI-powered IDE | IDE completion vs. unattended agent fleet |
-| [GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/) | Code suggestions in your IDE | Inline hints vs. autonomous overnight runs |
-| [Devin](https://amux.io/compare/amux-vs-devin/) | Managed cloud autonomous engineer | $500+/mo cloud vs. free self-hosted fleet |
-| [Claude Managed Agents](https://amux.io/compare/amux-vs-claude-managed-agents/) | Anthropic hosted agent sessions | $0.08/session-hour cloud vs. $0 self-hosted |
-| [OpenAI Symphony](https://amux.io/compare/amux-vs-openai-symphony/) | Ticket-driven Codex orchestrator | Autonomous pipeline vs. developer-controlled dashboard |
-| [Aider](https://amux.io/compare/amux-vs-aider/) | Open-source AI pair programmer | Single interactive session vs. parallel fleet |
-| [OpenHands](https://amux.io/compare/amux-vs-openhands/) | Sandboxed autonomous agent | Container isolation vs. tmux-native zero-overhead |
-| [AutoGen](https://amux.io/compare/amux-vs-autogen/) | Microsoft multi-agent framework | Python framework vs. zero-code dashboard orchestration |
-| [DIY tmux scripts](https://amux.io/compare/amux-vs-diy-tmux/) | Rolling your own agent manager | What you're missing without amux |
-| [All comparisons →](https://amux.io/compare/) | | |
-
-## Use Cases
-
-- [Parallel feature development](https://amux.io/use-cases/parallel-feature-development/) — one agent per feature, ship a week's work in a day
-- [AI coding while you sleep](https://amux.io/use-cases/ai-coding-while-you-sleep/) — self-healing agents that work overnight
-- [Test generation at scale](https://amux.io/use-cases/test-generation-at-scale/) — full test coverage by morning
-- [Large-scale refactoring](https://amux.io/use-cases/large-scale-refactoring/) — one agent per module
-- [Automated code review](https://amux.io/use-cases/automated-code-review/) — parallel review agents across your PR
-- [Bug triage and fixing](https://amux.io/use-cases/bug-triage-and-fixing/) — assign each bug to its own agent
-- [Documentation generation](https://amux.io/use-cases/documentation-generation/) — docs written while you ship features
-- [Legacy code modernization](https://amux.io/use-cases/legacy-code-modernization/) — parallel rewrites with isolated branches
-- [All use cases →](https://amux.io/use-cases/)
-
-## For Your Stack
-
-- [Python developers](https://amux.io/for/python-developers/) — parallel agents for data pipelines, APIs, and scripts
-- [TypeScript developers](https://amux.io/for/typescript-developers/) — type-safe parallel development
-- [React developers](https://amux.io/for/react-developers/) — components, tests, and stories in parallel
-- [Go developers](https://amux.io/for/go-developers/) — fast compilation, parallel module work
-- [Rust developers](https://amux.io/for/rust-developers/) — run agents while the compiler runs
-- [Backend developers](https://amux.io/for/backend-developers/) — APIs, migrations, tests in parallel
-- [All stacks →](https://amux.io/for/)
-
-## By Role
-
-- [Solo developers](https://amux.io/solutions/solo-developers/) — replace a full team with a coordinated agent fleet
-- [Startup CTOs](https://amux.io/solutions/startup-ctos/) — multiply engineering output without hiring
-- [Engineering managers](https://amux.io/solutions/engineering-managers/) — delegate implementation, keep architectural control
-- [Freelance developers](https://amux.io/solutions/freelance-developers/) — take on more clients, deliver faster
-- [Bootstrapped founders](https://amux.io/solutions/bootstrapped-founders/) — ship a product on a solo founder's time budget
-- [All roles →](https://amux.io/solutions/)
-
-## Roadmap
-
-amux is growing from a control-plane dashboard into the **durable operating system around agents** — it owns execution, state, isolation, recovery, observability, and verification, so the model only has to own reasoning. As models get stronger (and more local), that harness keeps its value.
-
-The plan lives in **[the roadmap epic (#46)](https://github.com/mixpeek/amux/issues/46)**: a universal agent-runtime contract, event-sourced session state, automatic worktree isolation, deterministic verification gates, an MCP broker, capability-based permissions, and more.
-
-**We'd love help building it.** The foundational *seams* are maintainer-owned; the *leaves* they unlock — provider adapters, verification runners, MCP tools, eval scenarios, policy hooks — are great contributor work. See **[CONTRIBUTING.md](CONTRIBUTING.md#building-the-harness-roadmap)** and the [`help wanted`](https://github.com/mixpeek/amux/labels/help%20wanted) issues.
-
-## Resources
-
-- [Getting started guide](https://amux.io/guides/getting-started/)
-- [Running 10+ agents in parallel](https://amux.io/guides/running-10-plus-agents/)
-- [Agent-to-agent orchestration](https://amux.io/guides/agent-to-agent-orchestration/)
-- [Self-healing configuration](https://amux.io/guides/self-healing-configuration/)
-- [Setting up YOLO mode](https://amux.io/guides/setting-up-yolo-mode/)
-- [Using MCP servers with amux](https://amux.io/guides/using-mcp-servers/)
-- [Cost optimization](https://amux.io/guides/cost-optimization/)
-- [FAQ](https://amux.io/faq/)
-- [REST API reference](https://amux.io/guides/rest-api-reference/)
-- [Blog](https://amux.io/blog/)
-- [Glossary](https://amux.io/glossary/)
-
----
+A **worker** is one agent lane. A **group** is a label shared by several workers; workers see and coordinate with same-group peers. The HTTP API and env vars still carry the older `session`/`tag` spellings (`/api/sessions`, `X-Amux-Session`, `CC_TAGS`); renaming them would break every running worker at once, so the wire names migrate behind aliases. Worker = session, group = tag, wherever you see them in a request.
 
 ## Security
 
-Local-first. No auth built in — use Tailscale or bind to localhost. **Never expose port 8822 to the internet.**
-
-### Network exposure & `--bind`
-
-`amux serve` binds to `0.0.0.0` by default. On a workstation behind a router this is fine; on a public VPS it makes the dashboard reachable from the internet the moment the server starts. Verify with `ss -tlnp | grep 8822` after launch, and `curl -k https://<public-ip>:8822/` from outside.
-
-Restrict the listening interfaces with `--bind` (comma-separated list of IPs):
-
-```bash
-amux serve                                   # default: 0.0.0.0 (all interfaces)
-amux serve 8822 --bind 127.0.0.1             # loopback only
-amux serve 8822 --bind 127.0.0.1,100.64.0.5  # loopback + Tailscale IP
-amux serve 8822 --bind 127.0.0.1,172.17.0.1  # loopback + docker0 (containers)
-amux serve 8822 --bind 0.0.0.0               # opt in to every interface
-```
-
-One HTTPS server (and one HTTP cert helper on `port+1`) is spawned per listed host. `amux serve 8822` with no `--bind` keeps the current behavior.
-
-### Firewall (belt-and-braces)
-
-Even with `--bind`, a firewall rule is recommended on multi-homed hosts. Example for `iptables` (allow localhost + docker0, drop the rest):
-
-```bash
-sudo iptables -I INPUT -p tcp --dport 8822 -s 127.0.0.1     -j ACCEPT
-sudo iptables -I INPUT -p tcp --dport 8822 -s 172.17.0.0/16 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 8822 -j DROP
-sudo netfilter-persistent save   # survive reboot (Debian/Ubuntu)
-```
-
-Validate the lockdown from outside the host: `curl -k --connect-timeout 4 https://<public-ip>:8822/` should time out.
+Local-first. Auth is a bearer token minted at `~/.amux/auth_token` (localhost callers are exempt). **Never expose port 8824 to the internet** — use [Tailscale](https://amux.io/guides/remote-access-tailscale/) for phone/remote access, or the [amux tunnel](https://amux.io/features/tunnel/) for deliberately-public endpoints (tunneled URLs are unguessable, not authenticated). Report vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
 ---
 
-## Star History
+## LEGACY: the Python server
 
-If amux saves you time, a ⭐ helps others find it — GitHub's trending algorithm is star-velocity driven, so every star matters.
+> The Python predecessor (`amux-server.py`) was **removed at commit `792ce1f`** (2026-08-09) — git history has it, and [docs/rust-migration/](docs/rust-migration/) records how the Rust server replaced it (the Rust binary also answers the legacy 8822, but that bind is a countdown, not an address — `GET /api/debug/legacy-port` reports who still calls it and when it can be dropped. Use 8824).
+> `cloud/` still runs the last-built Python image pending its own Rust migration; do not build anything new on it.
+> Historical install channels that shipped Python (`pipx install amux`, Homebrew) are retired — install with `./install.sh`.
+
+---
+
+## Roadmap & contributing
+
+amux is growing into the durable operating system around agents: it owns execution, state, isolation, recovery, observability, and verification, so the model only has to own reasoning. The plan lives in [the roadmap epic (#46)](https://github.com/mixpeek/amux/issues/46); the seams are maintainer-owned, and the leaves they unlock (provider adapters, verification runners, MCP tools, eval scenarios, policy hooks) are great contributor work. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [`help wanted`](https://github.com/mixpeek/amux/labels/help%20wanted) issues.
+
+## Resources
+
+- [Getting started](https://amux.io/guides/getting-started/) · [Running 10+ agents](https://amux.io/guides/running-10-plus-agents/) · [Agent-to-agent orchestration](https://amux.io/guides/agent-to-agent-orchestration/) · [REST API reference](https://amux.io/guides/rest-api-reference/)
+- [Board system guide](docs/guide.md) (columns, types, gates, `done` vs `verified`)
+- [Remote control over Tailscale](REMOTE.md) · [Calendar sync](docs/calendar-sync.md)
+- [How amux compares](https://amux.io/compare/) · [Use cases](https://amux.io/use-cases/) · [FAQ](https://amux.io/faq/)
+- iOS app: [App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) · Managed onboarding: [amux.io/concierge](https://amux.io/concierge/)
+
+If amux saves you time, a ⭐ helps others find it.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=mixpeek/amux&type=Date)](https://star-history.com/#mixpeek/amux&Date)
-
-[View on GitHub →](https://github.com/mixpeek/amux)

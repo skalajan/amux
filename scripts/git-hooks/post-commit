@@ -1,0 +1,34 @@
+#!/bin/sh
+# amux-commit-report — attach each commit to the session's in-flight board card
+# (AMUX-2015: a card should carry its code history). No-op outside amux; always
+# exits 0 — reporting must never wedge a commit. Fail-open by design.
+#
+# TRACKED AND INSTALLED SINCE 2026-08-11 (AMUX-2941). It was the fourth amux
+# hook and the last unmanaged one: present in a single checkout, in no repo, and
+# installed by nothing. Fail-open makes that especially quiet — the curl is
+# redirected to /dev/null and the hook exits 0 either way, so a checkout with no
+# post-commit and a checkout whose endpoint 404s look exactly like a checkout
+# where everything works. Verified live before tracking: POST
+# /api/sessions/<n>/commit-report answers 200.
+#
+# Its fallback URL named the RETIRED port (the one CLAUDE.md says not to
+# re-teach) rather than the canonical 8824, so copying this hook to a new
+# checkout carried the dead address forward. The literal is deliberately not
+# repeated here: tests/legacy_port_guard.rs greps for it, and a comment
+# containing it is exactly how it spreads.
+[ -n "$AMUX_SESSION" ] || exit 0
+sha=$(git rev-parse --short HEAD 2>/dev/null)
+# tr strips the two JSON-hostile characters instead of escaping them — a
+# quote-less subject in a log line beats a sed pipeline that broke on its own
+# escaping and posted empty subjects (first live test of this hook).
+subj=$(git log -1 --format=%s 2>/dev/null | tr -d '"\' | cut -c1-120)
+[ -n "$sha" ] || exit 0
+# Send the repo dir so the server can tell whose in-flight work this commit
+# just carried (AMUX-2332). On a shared single-file checkout a commit routinely
+# includes another session's uncommitted hunks, and that session's own `git
+# commit` then reports "nothing to commit, working tree clean" — it can report
+# work as shipped under a sha it never created unless someone tells it.
+top=$(git rev-parse --show-toplevel 2>/dev/null)
+payload=$(printf '{"sha":"%s","subject":"%s","dir":"%s"}' "$sha" "$subj" "$top")
+curl -sk -m 3 -X POST -H 'Content-Type: application/json'   -H "X-Amux-Session: $AMUX_SESSION" -d "$payload"   "${AMUX_URL:-https://localhost:8824}/api/sessions/$AMUX_SESSION/commit-report" >/dev/null 2>&1
+exit 0

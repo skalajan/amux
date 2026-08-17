@@ -591,7 +591,7 @@ firejail --noprofile --net=none --private-tmp \
 # If two agents try to claim the same task, only one succeeds
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"session":"agent-1"}' \
-  https://localhost:8822/api/board/TASK-123/claim</code></pre>
+  https://localhost:8824/api/board/TASK-123/claim</code></pre>
       <p>This prevents a compromised agent from claiming all tasks to disrupt the fleet, and ensures no two agents accidentally work on the same code simultaneously.</p>
     </div>
 
@@ -662,11 +662,11 @@ ALERT_PATTERNS=(
   "reverse.*shell"
 )
 
-SESSIONS=$(curl -sk https://localhost:8822/api/sessions | \
+SESSIONS=$(curl -sk https://localhost:8824/api/sessions | \
   python3 -c "import json,sys; [print(s['name']) for s in json.load(sys.stdin)]")
 
 for session in $SESSIONS; do
-  OUTPUT=$(curl -sk "https://localhost:8822/api/sessions/$session/peek?lines=600" | \
+  OUTPUT=$(curl -sk "https://localhost:8824/api/sessions/$session/peek?lines=600" | \
     python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('history') or d.get('output',''))")
   for pattern in "${ALERT_PATTERNS[@]}"; do
     if echo "$OUTPUT" | grep -qEi "$pattern"; then
@@ -742,7 +742,7 @@ done</code></pre>
       <h3>Tunnel safety &mdash; v0.9.95&ndash;v0.9.96</h3>
       <p>Four tunnel-specific hardening items:</p>
       <ul>
-        <li><strong>Control plane never tunneled:</strong> amux's own dashboard (localhost:8822) cannot be exposed via tunnel without explicit opt-in and a hard server-side check. Prevents accidental exposure of the control plane to the public internet.</li>
+        <li><strong>Control plane never tunneled:</strong> amux's own dashboard (localhost:8824) cannot be exposed via tunnel without explicit opt-in and a hard server-side check. Prevents accidental exposure of the control plane to the public internet.</li>
         <li><strong>Loopback binding:</strong> per-tenant containers bind to loopback only; container traffic cannot reach adjacent tenants.</li>
         <li><strong>Rate limiting:</strong> tunnel traffic is rate-limited at the relay layer (v0.9.96) so a targeted service behind a tunnel cannot be hammered by a flood of requests.</li>
         <li><strong>Authentication note:</strong> the public tunnel URL is unguessable (derived from sha256(token)[:16] &mdash; 256-bit entropy) but is NOT authenticated at the relay. If your application requires access control, implement it in the application layer, not by relying on URL obscurity alone.</li>
@@ -802,7 +802,7 @@ done</code></pre>
       <p>amux provides session isolation, centralized hook enforcement, fleet monitoring, and audit logging out of the box. Run agents safely &mdash; whether you're managing 3 sessions or 30.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8822 — dashboard with fleet monitoring</code></pre>
+amux serve  # → https://localhost:8824 — dashboard with fleet monitoring</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/self-healing-configuration/" style="margin-left:0.5rem;">Self-healing guide</a>
     </div>

@@ -64,13 +64,13 @@
         "@type": "HowToStep",
         "position": 1,
         "name": "Install amux on your server",
-        "text": "Run: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. Then start the server with: amux serve. It listens on port 8822 by default."
+        "text": "Run: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. Then start the server with: amux serve. It listens on port 8824 by default."
       },
       {
         "@type": "HowToStep",
         "position": 2,
         "name": "Install the PWA on iPhone or Android",
-        "text": "On iPhone: open https://your-server:8822 in Safari, tap the Share button, then 'Add to Home Screen'. On Android: open in Chrome, tap the three-dot menu, then 'Install app' or 'Add to Home Screen'."
+        "text": "On iPhone: open https://your-server:8824 in Safari, tap the Share button, then 'Add to Home Screen'. On Android: open in Chrome, tap the three-dot menu, then 'Install app' or 'Add to Home Screen'."
       },
       {
         "@type": "HowToStep",
@@ -144,7 +144,7 @@
         "name": "Can I access my amux server from anywhere, not just my local network?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes, with a VPN or Tailscale. amux generates a self-signed TLS cert and runs HTTPS on port 8822. For remote access, set up Tailscale (free for personal use) on the server machine and your phone — you get a private DNS name and end-to-end encryption without port-forwarding. See the amux remote access guide for step-by-step setup."
+          "text": "Yes, with a VPN or Tailscale. amux generates a self-signed TLS cert and runs HTTPS on port 8824. For remote access, set up Tailscale (free for personal use) on the server machine and your phone — you get a private DNS name and end-to-end encryption without port-forwarding. See the amux remote access guide for step-by-step setup."
         }
       }
     ]
@@ -195,7 +195,7 @@
     <h2>Install on iPhone (PWA)</h2>
     <p>The PWA approach works without an app store — install directly from Safari:</p>
     <ol>
-      <li>Open <code>https://your-server:8822</code> in <strong>Safari</strong> on iPhone (Safari is required for iOS PWA installation — Chrome on iOS cannot install PWAs)</li>
+      <li>Open <code>https://your-server:8824</code> in <strong>Safari</strong> on iPhone (Safari is required for iOS PWA installation — Chrome on iOS cannot install PWAs)</li>
       <li>Tap the <strong>Share</strong> button (the box-with-arrow icon at the bottom of the screen)</li>
       <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
       <li>Give it a name (e.g. "amux") and tap <strong>Add</strong></li>
@@ -205,7 +205,7 @@
 
     <h2>Install on Android (PWA)</h2>
     <ol>
-      <li>Open <code>https://your-server:8822</code> in <strong>Chrome</strong> on Android</li>
+      <li>Open <code>https://your-server:8824</code> in <strong>Chrome</strong> on Android</li>
       <li>Tap the three-dot menu in the top-right corner</li>
       <li>Tap <strong>"Install app"</strong> or <strong>"Add to Home Screen"</strong> (label varies by Chrome version)</li>
       <li>Confirm the install — the app appears in your app drawer</li>
@@ -222,7 +222,7 @@
     <ol>
       <li>Install Tailscale on the machine running amux: <code>brew install tailscale && tailscale up</code></li>
       <li>Install Tailscale on your phone (iOS/Android app)</li>
-      <li>Your server gets a stable <code>*.ts.net</code> DNS name. Use that in the amux app or PWA: <code>https://myserver.tailnet-name.ts.net:8822</code></li>
+      <li>Your server gets a stable <code>*.ts.net</code> DNS name. Use that in the amux app or PWA: <code>https://myserver.tailnet-name.ts.net:8824</code></li>
     </ol>
     <p>amux generates a self-signed TLS certificate on first boot. Mobile browsers will show a certificate warning for self-signed certs — tap "Advanced" and "Proceed" to accept it for your private server. The iOS app handles self-signed certs transparently.</p>
     <p>See the full <a href="/guides/remote-access-tailscale/">remote access guide</a> for Tailscale setup, DNS configuration, and optional reverse-proxy options.</p>
@@ -355,7 +355,7 @@
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
         <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App Store</a>

@@ -61,7 +61,7 @@
         "@type": "HowToStep",
         "position": 1,
         "name": "Open the amux dashboard",
-        "text": "Navigate to https://localhost:8822 in your browser or open the amux iOS app. The main session list shows all registered agents with real-time status dots and token counters."
+        "text": "Navigate to https://localhost:8824 in your browser or open the amux iOS app. The main session list shows all registered agents with real-time status dots and token counters."
       },
       {
         "@type": "HowToStep",
@@ -162,7 +162,7 @@
     <!-- EXP-018: top-of-page CTA — same green/teal format as EXP-015 WIN -->
     <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
-        <p style="margin:0;font-size:0.95rem"><strong>Running 10+ AI coding agents in parallel?</strong> amux gives you fleet-level Trends view, Review dashboard, 'Unblock everything' triage, Fleet org chart, and self-healing — all from a shared dashboard or your phone. Open source, single Python file.</p>
+        <p style="margin:0;font-size:0.95rem"><strong>Running 10+ AI coding agents in parallel?</strong> amux gives you fleet-level Trends view, Review dashboard, 'Unblock everything' triage, Fleet org chart, and self-healing — all from a shared dashboard or your phone. Open source, single Rust binary.</p>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:#10b981;color:#fff;padding:10px 18px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
     </div>
@@ -422,11 +422,11 @@ done
 
     <div class="cta-box">
       <h3>Run an AI engineering team from one dashboard</h3>
-      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. MIT licensed, single Python file, zero external dependencies.</p>
+      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. MIT licensed, single Rust binary, zero external dependencies.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>

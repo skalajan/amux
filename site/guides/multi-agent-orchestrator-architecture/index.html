@@ -80,7 +80,7 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 
 # Each session gets its own tmux pane, conversation ID, and env vars
-# $AMUX_SESSION=worker-1, $AMUX_URL=https://localhost:8822</code></pre>
+# $AMUX_SESSION=worker-1, $AMUX_URL=https://localhost:8824</code></pre>
 
 <p><strong>The key design decision:</strong> agents should be <em>long-running</em>, not ephemeral. Short-lived agents lose their conversation context on every task. Long-running agents accumulate project understanding across tasks — they learn the codebase, remember past failures, and make better decisions over time.</p>
 
@@ -344,7 +344,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   <li><strong>Mobile access</strong> — PWA for monitoring from your phone</li>
 </ol>
 
-<p>Or skip the build and use <a href="https://github.com/mixpeek/amux">amux</a>, which implements all 10 in a single Python file with zero dependencies.</p>
+<p>Or skip the build and use <a href="https://github.com/mixpeek/amux">amux</a>, which implements all 10 in a single Rust binary with zero dependencies.</p>
 
 <div class="cta-box">
   <h3>Get started with amux</h3>
@@ -352,7 +352,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # &rarr; https://localhost:8822</code></pre>
+amux serve  # &rarr; https://localhost:8824</code></pre>
   <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
     <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
     <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

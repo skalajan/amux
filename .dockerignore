@@ -1,0 +1,34 @@
+# The cloud image builds with the REPO ROOT as its context
+# (`docker build -f cloud/docker/Dockerfile .`). Without this file the context
+# is ~4GB — `target/` alone dwarfs everything the build actually reads, and it
+# is uploaded to the daemon before the first instruction runs.
+#
+# Keep in step with cloud/docker/Dockerfile's COPY lines: it needs exactly
+# Cargo.toml, Cargo.lock, crates/, and the `amux` bash CLI.
+.git/
+target/
+node_modules/
+test-results/
+scratch/
+.worktrees/
+*.db
+*.db-shm
+*.db-wal
+ios/
+android/
+desktop/
+Amux.app/
+site/
+e2e/
+docs/
+skills/
+assets/
+templates/
+integrations/
+examples/
+cloud/.terraform/
+cloud/terraform.tfstate*
+cloud/docker/amux-server.py
+**/__pycache__/
+**/*.pyc
+.DS_Store

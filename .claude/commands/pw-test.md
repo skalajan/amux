@@ -51,7 +51,7 @@ const ctx = await chromium.launchPersistentContext(
   { headless: true, viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: true }
 );
 const page = await ctx.newPage();
-await page.goto('https://localhost:8822', { waitUntil: 'domcontentloaded', timeout: 10000 });
+await page.goto(process.env.AMUX_URL || 'https://localhost:8824', { waitUntil: 'domcontentloaded', timeout: 10000 });
 await page.waitForTimeout(2000);
 ```
 

@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"amux for QA Engineers","item":"https://amux.io/for/qa-engineers/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for QA Engineers","description":"QA engineers use amux to run parallel Claude Code agents for test generation, regression suites, coverage gap analysis, and automated code review at codebase scale.","url":"https://amux.io/for/qa-engineers/","datePublished":"2026-07-30","dateModified":"2026-07-30","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for QA Engineers","description":"QA engineers use amux to run parallel Claude Code agents for test generation, regression suites, coverage gap analysis, and automated code review at codebase scale.","url":"https://amux.io/for/qa-engineers/","datePublished":"2026-07-30","dateModified":"2026-08-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Parallel Test Generation with amux","description":"Use amux to run multiple Claude Code agents simultaneously, each generating tests for a different module or coverage gap.","step":[{"@type":"HowToStep","name":"Register your project","text":"Run amux register myproject --dir ~/Dev/myproject --yolo to register the project directory."},{"@type":"HowToStep","name":"Queue test generation tasks","text":"Add one task per module or coverage gap to the amux kanban board: 'Write unit tests for src/auth.py covering edge cases and error paths'."},{"@type":"HowToStep","name":"Start parallel agents","text":"Launch 10 Claude Code sessions: amux start myproject (repeat for each session). All sessions claim tasks from the shared board automatically."},{"@type":"HowToStep","name":"Monitor from your phone","text":"Open the amux iOS app or PWA to watch agents generate tests in real time. The self-healing watchdog restarts any stalled session."},{"@type":"HowToStep","name":"Review and merge","text":"Each completed task leaves a git diff or PR. Review the generated tests, run your CI pipeline, and merge the ones that pass."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents write reliable unit tests?","acceptedAnswer":{"@type":"Answer","text":"Yes, for well-defined modules with clear inputs and outputs. Claude Code generates tests that exercise public APIs, expected behaviors, and error paths. The tests should be reviewed and run against your CI pipeline before merging — treat them like code from a junior developer: useful, but needs review. amux's quality gates can enforce running tests before closing a task."}},{"@type":"Question","name":"How does amux help QA engineers differently from GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"GitHub Copilot assists you while you write tests interactively in your IDE. amux runs agents that generate tests autonomously, in parallel, overnight — without you being present. For large codebases with poor test coverage, amux can run 20 agents simultaneously, each targeting a different module, and produce comprehensive test suites while you sleep."}},{"@type":"Question","name":"What kinds of tests can AI agents generate?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents like Claude Code generate unit tests (pytest, Jest, JUnit, RSpec), integration tests, API endpoint tests, snapshot tests for UI components, and edge case coverage for specific functions. They can also analyze existing tests to find gaps and generate tests that specifically cover uncovered branches."}},{"@type":"Question","name":"How do I ensure generated tests are correct?","acceptedAnswer":{"@type":"Answer","text":"Define acceptance criteria in the task description: 'all tests must pass on the current codebase', 'coverage must increase by at least 10%'. Configure amux quality gates to run pytest or npm test before marking a task done. The agent will see test failures and fix the tests before completing. This loop typically converges within 2-3 iterations per module."}},{"@type":"Question","name":"How many parallel agents can I run for test generation?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-10 agents comfortably. On a cloud VM or dedicated machine: 20-50. The bottleneck is usually Claude API rate limits, not local compute. amux staggers task claiming naturally — agents start tasks at different times as they claim from the shared board, which distributes API load over time."}},{"@type":"Question","name":"Can agents do code review for QA as well as test generation?","acceptedAnswer":{"@type":"Answer","text":"Yes. You can run a dedicated code-review agent per PR: 'Review PR #42, checking for missing error handling, race conditions, and boundary conditions not covered by existing tests.' Multiple review dimensions can run in parallel — one agent checking security, another checking logic, another checking performance — with findings collected in the amux board."}},{"@type":"Question","name":"Is amux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is open source (MIT + Commons Clause), self-hostable on any Mac or Linux machine, and free to use. You pay only for Claude API tokens consumed by your sessions — typically $0.50–$5 per test generation session depending on module size."}}]}</script>
 </head>
@@ -80,11 +80,11 @@ amux register myapp --dir ~/Dev/myapp --yolo
 
 # Add test generation tasks to the kanban board
 # (one per module — agents claim these atomically, no duplicates)
-curl -X POST https://localhost:8822/api/board \
+curl -X POST https://localhost:8824/api/board \
   -H 'Content-Type: application/json' \
   -d '{"title":"Generate unit tests for src/auth.py — cover happy path, invalid token, expired token"}'
 
-curl -X POST https://localhost:8822/api/board \
+curl -X POST https://localhost:8824/api/board \
   -H 'Content-Type: application/json' \
   -d '{"title":"Generate unit tests for src/billing.py — cover payment success, declined, refund"}'
 
@@ -94,7 +94,7 @@ for i in $(seq 1 10); do
 done
 
 # Monitor from the dashboard or iOS app
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
 
     <h2>Quality gates for generated tests</h2>
 
@@ -146,6 +146,19 @@ Report findings with file:line references."</code></pre>
       <li><strong>9:00 AM</strong> — Open the PRs, review generated tests, merge the clean ones</li>
     </ul>
 
+    <h2>Browser and UI automation with Robots</h2>
+
+    <p>Beyond code-level testing, amux supports intent-based browser automation through <strong>Robots</strong> — reusable SOP files that describe browser tasks in plain language. Unlike brittle coordinate-recording scripts, a Robot re-resolves its intent on each run: it finds elements by meaning, not fixed position. QA workflows that work well as Robots:</p>
+
+    <ul>
+      <li><strong>Smoke test a deployed app.</strong> Navigate to production, log in with test credentials, exercise the critical path, report what succeeded and what failed. Schedule it nightly, report to the board.</li>
+      <li><strong>Form validation sweep.</strong> Submit a form with boundary values — blank, max length, invalid types — and verify error handling. Run it against every form after a UI change.</li>
+      <li><strong>Visual regression baseline.</strong> Screenshot key pages before and after a deployment. Hand the two sets to a coding agent that diffs them and files board cards for regressions it detects.</li>
+      <li><strong>End-to-end flow verification.</strong> A Robot walks the user-facing signup or checkout flow end-to-end, verifying each step. No test harness setup required — it uses the real browser, the real app.</li>
+    </ul>
+
+    <p>Robots compose with coding agents: a Robot can exercise a UI and capture output, then hand it to a Claude Code agent that processes the results and updates the board. QA pipelines that mix browser work and code analysis run as a coordinated sequence, not a custom script.</p>
+
     <h2>See also</h2>
 
     <ul>
@@ -162,7 +175,7 @@ Report findings with file:line references."</code></pre>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
     </div>
   </main>

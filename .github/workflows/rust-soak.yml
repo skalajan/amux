@@ -1,0 +1,113 @@
+name: rust-soak
+# RR-0117a — PERIODIC SOAK GATE (weekly).
+#
+# Long-running resource and lifecycle behaviour: sustained load, DB growth,
+# SSE reconnect, FD/RSS leak detection.
+#
+# THE DURATION, HONESTLY. The plan asks for a 24h soak and 48h leak detection.
+# A GitHub-hosted runner caps a single job at 6 hours, so:
+#
+#   * the default weekly run is 4 HOURS, which fits and is a real signal;
+#   * `soak_minutes` is a dispatch input, so a self-hosted runner can be given
+#     the full 24h/48h;
+#   * this workflow NEVER claims a duration it did not run — the summary prints
+#     the minutes actually soaked.
+#
+# The alternative (labelling a 20-minute run "48h soak") is the failure mode
+# where a gate's name is the only thing anyone reads.
+
+on:
+  schedule:
+    # Sunday 04:00 UTC — the quietest window, and a full weekday to react.
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: 'Minutes to soak (hosted runners cap the job at 6h = 360m)'
+        default: '240'
+      rss_growth:
+        description: 'Max fractional RSS growth from the post-warmup baseline'
+        default: '0.20'
+      fd_growth:
+        description: 'Max absolute file-descriptor growth from the post-warmup baseline'
+        default: '50'
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: sustained-load soak (FD / RSS)
+    runs-on: ubuntu-latest
+    # +30m over the soak itself for build and teardown; the hosted ceiling is
+    # 360m, so a longer soak needs a self-hosted runner and this will fail
+    # loudly rather than being silently truncated.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p amux-server
+
+      - name: Refuse a duration this runner cannot honour
+        env:
+          MINUTES: ${{ github.event.inputs.soak_minutes || '240' }}
+        run: |
+          if [ "$MINUTES" -gt 300 ]; then
+            echo "FAIL: soak_minutes=$MINUTES exceeds what a GitHub-hosted runner can complete (job cap 360m, minus build time)."
+            echo "Run this on a self-hosted runner for the plan's 24h/48h figures, or lower soak_minutes."
+            exit 1
+          fi
+          echo "soaking for $MINUTES minutes"
+
+      - name: Soak
+        env:
+          SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '240' }}
+          SOAK_SAMPLE_S: '60'
+          SOAK_RSS_GROWTH: ${{ github.event.inputs.rss_growth || '0.20' }}
+          SOAK_FD_GROWTH: ${{ github.event.inputs.fd_growth || '50' }}
+          SOAK_CONCURRENCY: '8'
+        run: bash scripts/soak-probe.sh | tee soak.log
+
+      - name: Database growth under churn
+        # DB growth/compaction from the plan's soak list. A WAL that never
+        # checkpoints is a real production failure and is invisible from
+        # request latency until the disk fills.
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          BIN=./target/release/amux-server
+          AMUX_HOME=$WORK AMUX_DB=$WORK/amux.db AMUX_RS_PORT=18977 $BIN >$WORK/s.log 2>&1 &
+          PID=$!
+          for _ in $(seq 1 60); do curl -sk --max-time 2 https://localhost:18977/health >/dev/null 2>&1 && break; sleep 0.5; done
+          TOKEN=$(cat $WORK/auth-token 2>/dev/null || echo "")
+          for i in $(seq 1 500); do
+            curl -sk -o /dev/null -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+              -H "X-Amux-Session: soak" -d "{\"title\":\"soak card $i\",\"status\":\"todo\"}" \
+              https://localhost:18977/api/board
+          done
+          SIZE_A=$(stat -c%s $WORK/amux.db 2>/dev/null || stat -f%z $WORK/amux.db)
+          WAL_A=$(stat -c%s $WORK/amux.db-wal 2>/dev/null || stat -f%z $WORK/amux.db-wal 2>/dev/null || echo 0)
+          echo "after 500 writes: db=${SIZE_A}B wal=${WAL_A}B"
+          kill $PID; sleep 2
+          WAL_B=$(stat -c%s $WORK/amux.db-wal 2>/dev/null || stat -f%z $WORK/amux.db-wal 2>/dev/null || echo 0)
+          echo "after clean shutdown: wal=${WAL_B}B"
+          # WAL must checkpoint on close (db/mod.rs relies on this for shutdown).
+          if [ "$WAL_B" -gt 4194304 ]; then
+            echo "FAIL: WAL is ${WAL_B}B after a clean shutdown — it is not checkpointing"
+            exit 1
+          fi
+          echo "db growth check OK"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-log
+          path: soak.log
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        env:
+          MINUTES: ${{ github.event.inputs.soak_minutes || '240' }}
+        run: echo "SOAK GATE ran for ${MINUTES} minutes on a github-hosted runner (plan asks 24h/48h; that needs a self-hosted runner)"

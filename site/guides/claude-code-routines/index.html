@@ -244,7 +244,7 @@ $ amux cron list
     <pre><code><span class="comment"># Trigger an agent from a GitHub webhook</span>
 $ curl -sk -X POST -H 'Content-Type: application/json' \
     -d '{"text":"A new PR was opened: #142 - Add retry logic"}' \
-    https://localhost:8822/api/sessions/reviewer/send</code></pre>
+    https://localhost:8824/api/sessions/reviewer/send</code></pre>
 
     <h3 style="margin-top:1.5rem;">Board-driven orchestration</h3>
     <p>For complex workflows where multiple agents need to coordinate: post tasks to the kanban board, agents claim and execute them atomically. No duplicate work, no manual assignment.</p>
@@ -253,7 +253,7 @@ $ curl -sk -X POST -H 'Content-Type: application/json' \
 $ for task in "Update auth module" "Refactor config" "Add API tests"; do
     curl -sk -X POST -H 'Content-Type: application/json' \
       -d "{\"title\":\"$task\",\"status\":\"todo\"}" \
-      https://localhost:8822/api/board
+      https://localhost:8824/api/board
   done
 
 <span class="comment"># Agents claim tasks automatically via atomic /claim endpoint</span></code></pre>
@@ -341,7 +341,7 @@ $ amux cron add pr-review "0 9 * * 1-5" \
 
     <h3 style="margin-top:1.5rem;">Step 4: Start the dashboard</h3>
     <pre><code>$ amux serve
-<span class="ok">Dashboard: https://localhost:8822</span></code></pre>
+<span class="ok">Dashboard: https://localhost:8824</span></code></pre>
     <p>You now have a web dashboard showing the session status, cost tracking, and cron schedule. The same PR review runs on the same schedule, but on your machine, with access to your full environment, and no daily cap.</p>
 
     <h3 style="margin-top:1.5rem;">Step 5: Add persistent state (optional)</h3>

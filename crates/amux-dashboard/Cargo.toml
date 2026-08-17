@@ -1,0 +1,9 @@
+[package]
+name = "amux-dashboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build-time embedding of the amux dashboard SPA."
+
+[dependencies]
+rust-embed.workspace = true

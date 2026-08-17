@@ -100,7 +100,7 @@ fun ServerPickerScreen(serverManager: ServerManager) {
         OutlinedTextField(
             value = customUrl,
             onValueChange = { customUrl = it; urlError = false },
-            label = { Text("https://amux.tail-xxxx.ts.net:8822") },
+            label = { Text("https://amux.tail-xxxx.ts.net:8824") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             shape = RoundedCornerShape(10.dp),
@@ -121,7 +121,7 @@ fun ServerPickerScreen(serverManager: ServerManager) {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Find your Tailscale hostname in the Tailscale app. Port is 8822 by default.",
+            "Find your Tailscale hostname in the Tailscale app. Port is 8824 by default.",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp)

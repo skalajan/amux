@@ -1,0 +1,62 @@
+[package]
+name = "amux-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "amux server binary: HTTP API, SQLite store, orchestrator runtime, backends."
+
+[dependencies]
+amux-core = { path = "../amux-core" }
+amux-dashboard = { path = "../amux-dashboard" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+ulid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+regex.workspace = true
+rcgen.workspace = true
+reqwest.workspace = true
+cron.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+# flate2: decode gzip error bodies in the request log. The log middleware is
+# the OUTERMOST layer (it must see the raw client path), so it runs after
+# CompressionLayer and captures already-gzipped bytes (AF-57). Already in the
+# tree via tower-http's compression-gzip, so this adds no new transitive weight.
+flate2 = "1"
+sha2.workspace = true
+sha1.workspace = true
+hex.workspace = true
+p256.workspace = true
+hkdf.workspace = true
+aes-gcm.workspace = true
+base64.workspace = true
+toml.workspace = true
+futures.workspace = true
+tokio-tungstenite.workspace = true
+# getrlimit(RLIMIT_NOFILE) for the FD-pressure detector (AMUX-2812). The
+# process's OWN limit is the only number that matters — `launchctl limit
+# maxfiles` reports the system default and disagreed with the service's actual
+# limit during the incident.
+libc.workspace = true
+# Runtime (not just dev): the native dictation engine hands the whisper
+# worker its audio via a named temp file, exactly as the Python engine does.
+tempfile.workspace = true
+portable-pty = "0.9.0"
+serde_yaml = "0.9.34"
+
+[dev-dependencies]
+proptest.workspace = true

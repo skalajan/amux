@@ -69,7 +69,7 @@ struct ServerPickerView: View {
                             .background(Color(uiColor: .secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                        TextField("https://amux.tail-xxxx.ts.net:8822", text: $customURL)
+                        TextField("https://amux.tail-xxxx.ts.net:8824", text: $customURL)
                             .keyboardType(.URL)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
@@ -77,7 +77,7 @@ struct ServerPickerView: View {
                             .background(Color(uiColor: .secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                        Text("Find your Tailscale hostname in the Tailscale app. Port is 8822 by default.")
+                        Text("Find your Tailscale hostname in the Tailscale app. Port is 8824 by default.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 4)

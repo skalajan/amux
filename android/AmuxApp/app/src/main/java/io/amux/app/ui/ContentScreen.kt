@@ -294,7 +294,7 @@ fun AddServerForm(onAdd: (String, String) -> Unit, onCancel: () -> Unit) {
             value = url,
             onValueChange = { url = it; error = false },
             label = { Text("URL") },
-            placeholder = { Text("https://amux.tail-xxxx.ts.net:8822") },
+            placeholder = { Text("https://amux.tail-xxxx.ts.net:8824") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             shape = RoundedCornerShape(10.dp),

@@ -339,7 +339,7 @@ Total: ~$858/month</div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;margin:1.5rem 0;">
       <code style="display:block;font-size:0.85rem;line-height:1.7;"># View per-session token usage in amux
-curl -sk http://localhost:8822/api/sessions | python3 -c "
+curl -sk http://localhost:8824/api/sessions | python3 -c "
 import json, sys
 sessions = json.load(sys.stdin)
 for s in sessions:
@@ -347,7 +347,7 @@ for s in sessions:
     print(f\"{s['name']:30} {tokens:>10,} tokens\")
 "
 
-# Or open the amux dashboard at http://localhost:8822
+# Or open the amux dashboard at http://localhost:8824
 # → Sessions tab → each session shows token usage</code>
     </div>
 

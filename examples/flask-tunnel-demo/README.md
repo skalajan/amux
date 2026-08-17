@@ -19,7 +19,7 @@ paths), and the `/api/ping` JSON all transit the cloud gateway.
 
 - **Across amux restarts:** set `AMUX_TUNNEL_PORT=8940` in `~/.amux/server.env`
   so the tunnel auto-targets this app (otherwise a restart reverts it to the
-  dashboard on 8822).
+  dashboard on 8824).
 - **Across reboots / logout:** load the launchd job:
   ```bash
   cp com.amux.flask-demo.plist ~/Library/LaunchAgents/

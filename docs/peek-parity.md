@@ -1,6 +1,6 @@
 # Peek ↔ tmux parity — success criteria
 
-The session peek must be a faithful window onto the tmux pane. Every peek bug
+The worker peek must be a faithful window onto the tmux pane. Every peek bug
 we have shipped traces back to violating one of the criteria below, so treat
 this list as the contract: a change to peek, send, or status detection is done
 only when it can point at the criterion it preserves, and the automated checks
@@ -37,10 +37,10 @@ reload cycle behind is expected, more is a bug).
 The status badge is derived from the live pane tail and must never contradict
 what a human would infer from iTerm:
 - banners echoed from **subagents** or sitting in scrollback never flag the
-  parent (limit detection is scoped below the session's last own output);
-- a session the **user interrupted** sits at a usable prompt → `idle`, not
+  parent (limit detection is scoped below the worker's last own output);
+- a worker the **user interrupted** sits at a usable prompt → `idle`, not
   "needs input";
-- an actively generating session is never simultaneously "limited".
+- an actively generating worker is never simultaneously "limited".
 
 ### P5 — Sends are exactly-once
 One logical send = exactly one submitted message in the pane, across every
@@ -53,7 +53,7 @@ failure mode we have hit in production:
   server restart);
 - **boot races** — a send within 20s of `last_started` waits for the
   in-flight boot instead of double-starting Claude (a second start causes a
-  session-ID conflict whose auto-restart replays the message);
+  worker-ID conflict whose auto-restart replays the message);
 - **verification** — submission is confirmed against the pane (wrap-aware
   pending-input read, two consecutive clear looks), not assumed from
   `send-keys` succeeding.
@@ -61,7 +61,7 @@ failure mode we have hit in production:
 ### P6 — Keys are capture-justified
 Automation never presses a key the current capture does not justify. Known
 traps, learned the hard way: `Left` at the prompt opens *Background this
-session?* whose **default stops all agents**; `x` in the agents panel kills
+worker?* whose **default stops all agents**; `x` in the agents panel kills
 the selected agent; with agent rows hidden, `↓` opens the background-shells
 manager instead. The agent switcher (`/agent-nav`) re-captures between every
 step and refuses rather than guesses.
@@ -72,7 +72,7 @@ strip appends "plan last updated Nh ago" when the newest task file is >6h old,
 and a freshly restarted conversation (splash with zero turns) shows no plan at
 all rather than a dead conversation's plan. A plan untouched beyond the
 dead-plan cutoff (`AMUX_PLAN_STALE_HIDE_HOURS`, default 24h) is suppressed
-entirely — a session that moved on to new work without maintaining its plan
+entirely — a worker that moved on to new work without maintaining its plan
 must not headline the old, finished one (the task header already shows the
 real current task).
 

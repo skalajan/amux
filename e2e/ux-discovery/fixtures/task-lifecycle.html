@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — task lifecycle</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .task { border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .task-header { display: flex; justify-content: space-between; align-items: center; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .meta { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+  .gate-info { font-size: 0.8rem; color: #f0883e; margin-top: 4px; }
+  .terminal { opacity: 0.6; }
+</style>
+</head>
+<body>
+<!-- Seed state: one task in each TaskStatus variant. The crawler must
+     discover the status-specific actions available for each lifecycle
+     position (RR-0028c). Matches amux-core::board::TaskStatus::ALL. -->
+
+<div class="shell" data-testid="dashboard-shell">
+  <h2>Board</h2>
+
+  <!-- Backlog -->
+  <div class="task" data-testid="task-backlog">
+    <div class="task-header">
+      <span data-testid="task-backlog-title">Investigate flaky e2e test</span>
+      <span class="badge" data-testid="task-backlog-badge" style="background:#484f58">backlog</span>
+    </div>
+    <div class="meta" data-testid="task-backlog-type">type: investigation</div>
+    <div class="actions">
+      <button data-testid="task-backlog-promote">Move to todo</button>
+      <button data-testid="task-backlog-edit">Edit</button>
+      <button data-testid="task-backlog-discard">Discard</button>
+    </div>
+  </div>
+
+  <!-- Todo -->
+  <div class="task" data-testid="task-todo">
+    <div class="task-header">
+      <span data-testid="task-todo-title">Add rate limit headers</span>
+      <span class="badge" data-testid="task-todo-badge" style="background:#1f6feb">todo</span>
+    </div>
+    <div class="meta" data-testid="task-todo-type">type: code</div>
+    <div class="actions">
+      <button data-testid="task-todo-assign">Assign</button>
+      <button data-testid="task-todo-start">Start</button>
+      <button data-testid="task-todo-edit">Edit</button>
+      <button data-testid="task-todo-discard">Discard</button>
+    </div>
+  </div>
+
+  <!-- Doing -->
+  <div class="task" data-testid="task-doing">
+    <div class="task-header">
+      <span data-testid="task-doing-title">Implement SSE reconnection</span>
+      <span class="badge" data-testid="task-doing-badge" style="background:#238636">doing</span>
+    </div>
+    <div class="meta" data-testid="task-doing-worker">assigned: charlie</div>
+    <div class="actions">
+      <button data-testid="task-doing-done">Mark done</button>
+      <button data-testid="task-doing-review">Request review</button>
+      <button data-testid="task-doing-block">Block</button>
+      <button data-testid="task-doing-needsyou">Needs you</button>
+      <button data-testid="task-doing-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Review -->
+  <div class="task" data-testid="task-review">
+    <div class="task-header">
+      <span data-testid="task-review-title">Refactor config loader</span>
+      <span class="badge" data-testid="task-review-badge" style="background:#8957e5">review</span>
+    </div>
+    <div class="meta" data-testid="task-review-reviewer">reviewer: ethan</div>
+    <div class="actions">
+      <button data-testid="task-review-approve">Approve</button>
+      <button data-testid="task-review-reject">Reject</button>
+      <button data-testid="task-review-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- NeedsYou -->
+  <div class="task" data-testid="task-needsyou">
+    <div class="task-header">
+      <span data-testid="task-needsyou-title">Choose auth provider</span>
+      <span class="badge" data-testid="task-needsyou-badge" style="background:#f0883e">needs you</span>
+    </div>
+    <div class="meta" data-testid="task-needsyou-question">Which OAuth provider should we use?</div>
+    <div class="actions">
+      <button data-testid="task-needsyou-respond">Respond</button>
+      <button data-testid="task-needsyou-resume">Resume doing</button>
+      <button data-testid="task-needsyou-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Blocked -->
+  <div class="task" data-testid="task-blocked">
+    <div class="task-header">
+      <span data-testid="task-blocked-title">Deploy to staging</span>
+      <span class="badge" data-testid="task-blocked-badge" style="background:#da3633">blocked</span>
+    </div>
+    <div class="meta" data-testid="task-blocked-reason">blocked by: "Implement SSE reconnection"</div>
+    <div class="actions">
+      <button data-testid="task-blocked-unblock">Unblock</button>
+      <button data-testid="task-blocked-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Done (unverified) -->
+  <div class="task" data-testid="task-done">
+    <div class="task-header">
+      <span data-testid="task-done-title">Add health endpoint</span>
+      <span class="badge" data-testid="task-done-badge" style="background:#238636">done</span>
+    </div>
+    <div class="gate-info" data-testid="task-done-gate">gate: Implemented and merged, Tests pass</div>
+    <div class="actions">
+      <button data-testid="task-done-verify">Verify</button>
+      <button data-testid="task-done-reopen">Reopen</button>
+      <button data-testid="task-done-archive">Archive</button>
+    </div>
+  </div>
+
+  <!-- Verified (terminal) -->
+  <div class="task terminal" data-testid="task-verified">
+    <div class="task-header">
+      <span data-testid="task-verified-title">Set up CI pipeline</span>
+      <span class="badge" data-testid="task-verified-badge" style="background:#3fb950">verified</span>
+    </div>
+    <div class="meta" data-testid="task-verified-evidence">verified in prod, CI green, e2e passing</div>
+    <div class="actions">
+      <button data-testid="task-verified-archive">Archive</button>
+    </div>
+  </div>
+
+  <!-- Discarded (terminal) -->
+  <div class="task terminal" data-testid="task-discarded">
+    <div class="task-header">
+      <span data-testid="task-discarded-title">Add CRM module</span>
+      <span class="badge" data-testid="task-discarded-badge" style="background:#484f58">discarded</span>
+    </div>
+    <div class="actions">
+      <button data-testid="task-discarded-restore">Restore</button>
+      <button data-testid="task-discarded-archive">Archive</button>
+    </div>
+  </div>
+
+  <!-- Armed (dormant) -->
+  <div class="task" data-testid="task-armed">
+    <div class="task-header">
+      <span data-testid="task-armed-title">Watch: deploy regression</span>
+      <span class="badge" data-testid="task-armed-badge" style="background:#9e6a03">armed</span>
+    </div>
+    <div class="meta" data-testid="task-armed-trigger">trigger: deploy failure in prod</div>
+    <div class="actions">
+      <button data-testid="task-armed-fire">Fire</button>
+      <button data-testid="task-armed-disarm">Disarm</button>
+      <button data-testid="task-armed-edit">Edit</button>
+    </div>
+  </div>
+
+  <!-- Quarantined (terminal) -->
+  <div class="task terminal" data-testid="task-quarantined">
+    <div class="task-header">
+      <span data-testid="task-quarantined-title">Auto-format legacy module</span>
+      <span class="badge" data-testid="task-quarantined-badge" style="background:#f85149">quarantined</span>
+    </div>
+    <div class="meta" data-testid="task-quarantined-reason">limits exhausted, decomposition failed twice</div>
+    <div class="actions">
+      <button data-testid="task-quarantined-inspect">Inspect</button>
+      <button data-testid="task-quarantined-archive">Archive</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

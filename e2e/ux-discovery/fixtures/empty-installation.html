@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux — empty installation</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+  .shell { padding: 16px; }
+  .empty { text-align: center; padding: 80px 16px; color: #8b949e; }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; }
+  .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { border-color: #58a6ff; color: #f0f6fc; }
+  .setup-card { border: 1px solid #30363d; border-radius: 8px; padding: 24px; margin: 24px auto; max-width: 480px; }
+</style>
+</head>
+<body>
+<!-- Seed state: fresh install, zero workers/tasks/schedules.
+     The crawler must discover onboarding controls that only appear
+     when the installation is empty (RR-0028c). -->
+
+<div class="shell" data-testid="dashboard-shell">
+  <header>
+    <div class="tabs" role="tablist">
+      <div class="tab active" role="tab" data-testid="tab-sessions" tabindex="0">Sessions</div>
+      <div class="tab" role="tab" data-testid="tab-board" tabindex="0">Board</div>
+      <div class="tab" role="tab" data-testid="tab-schedules" tabindex="0">Schedules</div>
+      <div class="tab" role="tab" data-testid="tab-calendar" tabindex="0">Calendar</div>
+      <div class="tab" role="tab" data-testid="tab-settings" tabindex="0">Settings</div>
+    </div>
+  </header>
+
+  <!-- Sessions panel: empty -->
+  <div data-testid="sessions-panel">
+    <div class="empty">
+      <p>No workers configured.</p>
+      <button data-testid="add-first-worker">Add your first worker</button>
+    </div>
+  </div>
+
+  <!-- Board panel: empty -->
+  <div data-testid="board-panel" style="display:none">
+    <div class="empty">
+      <p>No tasks yet.</p>
+      <button data-testid="create-first-task">Create a task</button>
+    </div>
+  </div>
+
+  <!-- Schedules panel: empty -->
+  <div data-testid="schedules-panel" style="display:none">
+    <div class="empty">
+      <p>No schedules configured.</p>
+      <button data-testid="create-first-schedule">Create a schedule</button>
+    </div>
+  </div>
+
+  <!-- Settings panel -->
+  <div data-testid="settings-panel" style="display:none">
+    <div class="setup-card">
+      <h3>Setup</h3>
+      <label data-testid="setting-backend-label">Default backend
+        <select data-testid="setting-default-backend">
+          <option value="herdr">herdr</option>
+          <option value="tmux">tmux</option>
+        </select>
+      </label>
+      <label data-testid="setting-provider-label">Default provider
+        <select data-testid="setting-default-provider">
+          <option value="claude-code">Claude Code</option>
+          <option value="gemini-cli">Gemini CLI</option>
+          <option value="codex-cli">Codex CLI</option>
+        </select>
+      </label>
+      <button data-testid="save-settings">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const tabs = document.querySelectorAll('[role=tab]');
+const panels = {
+  'tab-sessions': 'sessions-panel',
+  'tab-board': 'board-panel',
+  'tab-schedules': 'schedules-panel',
+  'tab-calendar': 'calendar-panel',
+  'tab-settings': 'settings-panel',
+};
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    Object.values(panels).forEach(id => {
+      const el = document.getElementById(id) || document.querySelector(`[data-testid="${id}"]`);
+      if (el) el.style.display = 'none';
+    });
+    const target = panels[tab.dataset.testid];
+    const el = document.getElementById(target) || document.querySelector(`[data-testid="${target}"]`);
+    if (el) el.style.display = '';
+  });
+});
+</script>
+</body>
+</html>

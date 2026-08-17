@@ -144,7 +144,7 @@ amux register myproject --dir ~/Dev/myproject
 
 # Start sessions
 amux start myproject</code></pre>
-    <p>Now you can assign tasks to individual sessions. Each session gets its own branch, its own working directory, and its own Claude Code instance. The amux dashboard (at <code>https://localhost:8822</code>) shows all sessions, their output, and their status in real time.</p>
+    <p>Now you can assign tasks to individual sessions. Each session gets its own branch, its own working directory, and its own Claude Code instance. The amux dashboard (at <code>https://localhost:8824</code>) shows all sessions, their output, and their status in real time.</p>
     <p>A typical multi-session workflow:</p>
     <pre><code># Session 1: working on auth
 amux send auth "Implement Google OAuth2 login flow"
@@ -174,8 +174,8 @@ amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
     <h2>Step 7: Mobile monitoring</h2>
     <p>The amux dashboard is a web app, which means you can monitor your agents from your phone. Start the server and access it from any device on your network:</p>
     <pre><code>amux serve
-# Dashboard available at https://localhost:8822
-# Or on your local network: https://192.168.x.x:8822</code></pre>
+# Dashboard available at https://localhost:8824
+# Or on your local network: https://192.168.x.x:8824</code></pre>
     <p>From the mobile dashboard you can:</p>
     <ul>
       <li>See real-time output from all sessions</li>
@@ -218,7 +218,7 @@ amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
     <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

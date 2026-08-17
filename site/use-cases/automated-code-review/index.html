@@ -108,7 +108,7 @@ jobs:
     steps:
       - name: Queue AI review
         run: |
-          curl -X POST https://your-amux-server:8822/api/board \
+          curl -X POST https://your-amux-server:8824/api/board \
             -H 'Content-Type: application/json' \
             -d "{\"title\":\"Review PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}\"}"</code></pre>
 
@@ -159,7 +159,7 @@ jobs:
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register reviewer --dir ~/Dev/myproject --yolo
 amux start reviewer
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
     </div>
   </main>

@@ -179,7 +179,7 @@
 
     <h3 style="margin-top:1.5rem;">Step 1: Register your project</h3>
     <pre><code>$ amux register myapp --dir ~/Dev/myapp --yolo
-$ amux serve  <span class="comment"># → https://localhost:8822</span></code></pre>
+$ amux serve  <span class="comment"># → https://localhost:8824</span></code></pre>
 
     <h3 style="margin-top:1.5rem;">Step 2: Create audit tasks on the board</h3>
     <p>Post one task per audit zone. Each task includes the scope (which directories/files) and the specific threat model to investigate:</p>
@@ -187,17 +187,17 @@ $ amux serve  <span class="comment"># → https://localhost:8822</span></code></
     <pre><code><span class="comment"># Auth audit</span>
 $ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Security audit: auth & session management","status":"todo","desc":"Scope: src/auth/, src/middleware/session.*, templates/login*\nFocus: session fixation, credential storage, password reset flow, OAuth state validation, brute-force protection, token expiration"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 <span class="comment"># API endpoints audit</span>
 $ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Security audit: API endpoints","status":"todo","desc":"Scope: src/api/, src/routes/\nFocus: input validation, authorization checks on every endpoint, IDOR, mass assignment, rate limiting, error message information leakage"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 <span class="comment"># Database layer audit</span>
 $ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Security audit: database layer","status":"todo","desc":"Scope: src/models/, src/db/, migrations/\nFocus: SQL injection (raw queries, ORM bypasses), NoSQL injection, migration rollback safety, connection string handling, privilege escalation via DB"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 <span class="comment"># Repeat for each audit zone...</span></code></pre>
 
@@ -212,11 +212,11 @@ $ curl -sk -X POST -H 'Content-Type: application/json' \
 for session in sec-auth sec-api sec-db sec-files sec-integrations sec-frontend sec-infra sec-crypto; do
   curl -sk -X POST -H 'Content-Type: application/json' \
     -d '{"text":"Check the board for your security audit task. Claim one task, read the scope and focus areas, then perform a thorough security audit of those files. For each finding, report: severity (critical/high/medium/low), file and line number, vulnerability type (OWASP category), description, proof of concept or exploit scenario, and recommended fix. Post each finding as a separate board item with severity in the title."}' \
-    https://localhost:8822/api/sessions/$session/send
+    https://localhost:8824/api/sessions/$session/send
 done</code></pre>
 
     <h3 style="margin-top:1.5rem;">Step 5: Monitor from the dashboard</h3>
-    <p>Open <code>https://localhost:8822</code> in your browser. The dashboard shows all 8 agents working in parallel, with live output streaming and per-session cost tracking. Findings appear on the kanban board as agents discover them.</p>
+    <p>Open <code>https://localhost:8824</code> in your browser. The dashboard shows all 8 agents working in parallel, with live output streaming and per-session cost tracking. Findings appear on the kanban board as agents discover them.</p>
 
     <p>A typical 8-agent audit of a medium codebase takes 30&ndash;60 minutes and costs $15&ndash;40 in API tokens.</p>
 
@@ -295,7 +295,7 @@ Ignore anything listed under "Known accepted risks" in CLAUDE.md.</code></pre>
     <pre><code>$ amux start sec-triage
 $ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"Review all security findings on the board. For each one: (1) read the referenced file and line number, (2) verify the vulnerability is real and exploitable, (3) check if it is covered by Known Accepted Risks in CLAUDE.md, (4) if it is a false positive, move it to done with a note explaining why. If it is real, add an exploitation difficulty rating (trivial/moderate/difficult) to the description. Prioritize critical and high findings first."}' \
-  https://localhost:8822/api/sessions/sec-triage/send</code></pre>
+  https://localhost:8824/api/sessions/sec-triage/send</code></pre>
 
     <p>The triage agent typically eliminates 30&ndash;50% of findings as false positives, saving significant human review time.</p>
 
@@ -305,7 +305,7 @@ $ curl -sk -X POST -H 'Content-Type: application/json' \
     <pre><code><span class="comment"># The same agent that found the bug can fix it</span>
 $ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"Fix the SQL injection vulnerability you found in src/db/reports.py:47. Use parameterized queries. Write a test that verifies the fix. Create the fix on a new git branch named fix/sql-injection-reports."}' \
-  https://localhost:8822/api/sessions/sec-db/send</code></pre>
+  https://localhost:8824/api/sessions/sec-db/send</code></pre>
 
     <p>Each fix goes to its own branch, keeping the main branch clean until a human reviews and merges.</p>
 

@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code vs OpenAI Codex vs Gemini CLI: Runtime Comparison 2026 &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Side-by-side comparison of Claude Code, OpenAI Codex CLI, and Gemini CLI — context windows, cost models, headless support, parallelism, and how to run all three in a single agent fleet.">
+  <meta name="keywords" content="claude code vs codex, claude code vs gemini cli, codex vs gemini cli, ai coding agent comparison 2026, best ai coding runtime, claude code gemini cli codex comparison, terminal ai coding agents">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/">
+  <meta property="og:title" content="Claude Code vs OpenAI Codex vs Gemini CLI (2026) &mdash; amux">
+  <meta property="og:description" content="Which AI coding runtime wins? Side-by-side comparison of all three — cost, context, headless support, parallelism, and how to run a mixed fleet.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code vs Codex vs Gemini CLI","item":"https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code vs OpenAI Codex vs Gemini CLI: Runtime Comparison 2026","description":"Side-by-side comparison of Claude Code, OpenAI Codex CLI, and Gemini CLI for AI-assisted software development — context windows, cost models, headless support, and multi-agent parallelism.","url":"https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/","datePublished":"2026-08-12","dateModified":"2026-08-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is Claude Code better than Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Claude Code consistently scores higher on SWE-bench and produces stronger code reasoning, but Gemini CLI's 1M-token context window is a meaningful advantage for large codebases. Which is 'better' depends on your task: Claude Code for nuanced architecture and refactoring, Gemini CLI for codebase-wide comprehension, Codex for OpenAI ecosystem integration. Most serious fleets run two or more runtimes in parallel."}},{"@type":"Question","name":"What is the difference between Claude Code and OpenAI Codex CLI?","acceptedAnswer":{"@type":"Answer","text":"Claude Code is Anthropic's terminal-native coding agent using Claude Sonnet/Opus models. OpenAI Codex CLI is OpenAI's terminal coding agent using GPT-4o, o4-mini, and o3 models. Claude Code has a stronger reputation for code quality and complex reasoning. Codex CLI integrates natively with OpenAI's API and is a natural choice if you're already on the OpenAI platform. Both are open source and run locally."}},{"@type":"Question","name":"Can I run Claude Code and Gemini CLI at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is an open-source control plane that runs Claude Code, Codex, and Gemini CLI sessions in parallel from a single dashboard. Each agent gets its own isolated tmux session, the same CLAUDE.md context, and a shared kanban board. You can run 5–50 agents across multiple runtimes overnight and review their work from your phone the next morning."}},{"@type":"Question","name":"Is Gemini CLI free?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI has a generous free tier: 1,000 requests per day and 60 requests per minute using the Gemini 2.5 Pro model. Above those limits, or for higher quotas, it uses Google AI API tokens. This makes it the cheapest option for development use and a natural complement to paid Claude Code or Codex usage."}},{"@type":"Question","name":"Which AI coding agent has the largest context window?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI uses Gemini 2.5 Pro, which has a 1,000,000-token (1M) context window — the largest of the three. Claude Code uses Claude Sonnet/Opus models with 200,000-token context. OpenAI Codex CLI uses GPT-4o (128K) and o4-mini/o3 (200K). For tasks that require loading a large portion of a codebase at once, Gemini CLI has a meaningful advantage."}},{"@type":"Question","name":"How do I switch between Claude Code and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"With amux, you don't switch — you run both. amux registers each runtime as a named session, each with its own working directory and context. You can assign different runtimes to different tasks from the kanban board, or run them in parallel on the same task to compare outputs. The amux dashboard shows all sessions regardless of which AI backend powers them."}}]}</script>
+  <style>
+    table { width:100%; border-collapse:collapse; margin:1.5rem 0; font-size:.9rem; }
+    th, td { padding:.65rem .8rem; text-align:left; border-bottom:1px solid rgba(255,255,255,.08); }
+    th { font-weight:600; white-space:nowrap; }
+    td:first-child { font-weight:500; }
+    .win { color:#6ee7b7; font-weight:600; }
+    .ok  { color:#93c5fd; }
+    .mid { color:#fbbf24; }
+    .rt-card { background:var(--bg-card,#232838); border-radius:12px; padding:1.5rem; margin-bottom:1.25rem; border:1px solid rgba(255,255,255,.06); }
+    .rt-card h3 { margin-top:0; }
+    .rt-label { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:#6ee7b7; font-weight:600; margin-bottom:.3rem; }
+    .install-block { background:rgba(0,0,0,.35); border-radius:8px; padding:1rem 1.25rem; font-family:'JetBrains Mono',monospace; font-size:.85rem; margin:.8rem 0; overflow-x:auto; }
+    .verdict-box { background:rgba(110,231,183,.08); border:1px solid rgba(110,231,183,.2); border-radius:10px; padding:1.25rem; margin:1.5rem 0; }
+    .verdict-box strong { color:#6ee7b7; }
+    .fleet-step { display:flex; gap:.9rem; align-items:flex-start; padding:.8rem 0; border-bottom:1px solid rgba(255,255,255,.05); }
+    .fleet-step:last-child { border-bottom:none; }
+    .step-num { width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#10b981,#059669); color:#fff; font-weight:700; font-size:.85rem; display:flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:2px; }
+    .step-body { flex:1; }
+    .step-body strong { display:block; margin-bottom:.25rem; }
+    [data-theme="light"] .rt-card { border-color:var(--border); }
+    [data-theme="light"] .rt-label { color:var(--ok); }
+    [data-theme="light"] .install-block { background:rgba(0,0,0,.06); }
+    [data-theme="light"] .win { color:var(--ok); }
+    [data-theme="light"] .verdict-box { background:oklch(.36 .18 145/.07); border-color:oklch(.36 .18 145/.25); }
+    [data-theme="light"] .verdict-box strong { color:var(--ok); }
+    [data-theme="light"] th, [data-theme="light"] td { border-bottom-color:var(--border); }
+    [data-theme="light"] .step-num { background:var(--ok); }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code vs Codex vs Gemini CLI</span></div>
+    <h1>Claude Code vs OpenAI Codex vs Gemini CLI (2026)</h1>
+    <p class="subtitle">If you're picking one AI coding agent for solo use, the choice is personal preference. If you're running a fleet of 5–20 parallel agents overnight, the question isn't "which one" — it's "which mix, and how do you manage all of them." This guide covers both questions.</p>
+
+    <!-- EXP-030: top-of-page CTA — runtimes comparison guide, started 2026-08-12 -->
+    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:24px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Running Claude Code, Codex, and Gemini CLI in parallel?</div>
+        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for mixed-runtime agent fleets — orchestration, self-healing, shared kanban, and mobile monitoring, all for $0.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp030_runtimes_compare_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">Contents</strong>
+      <ol style="margin:.6rem 0 0;padding-left:1.2rem;font-size:.88rem;line-height:2">
+        <li><a href="#tldr">TL;DR — side-by-side comparison</a></li>
+        <li><a href="#claude-code">Claude Code</a></li>
+        <li><a href="#codex">OpenAI Codex CLI</a></li>
+        <li><a href="#gemini-cli">Gemini CLI</a></li>
+        <li><a href="#fleet">Running all three in parallel with amux</a></li>
+        <li><a href="#decision">Decision guide — which runtime for your use case</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="tldr">TL;DR — side-by-side comparison</h2>
+    <p>All three are open-source, terminal-native, and capable of autonomous coding tasks. Here's where they differ.</p>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th>Claude Code</th>
+          <th>OpenAI Codex CLI</th>
+          <th>Gemini CLI</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Underlying model</td>
+          <td>Claude Sonnet 5 / Opus 5</td>
+          <td>GPT-4o, o4-mini, o3</td>
+          <td>Gemini 2.5 Pro</td>
+        </tr>
+        <tr>
+          <td>Context window</td>
+          <td class="ok">200K tokens</td>
+          <td class="ok">128K–200K tokens</td>
+          <td class="win">1M tokens</td>
+        </tr>
+        <tr>
+          <td>Install</td>
+          <td><code>npm i -g @anthropic-ai/claude-code</code></td>
+          <td><code>npm i -g @openai/codex</code></td>
+          <td><code>npm i -g @google/gemini-cli</code></td>
+        </tr>
+        <tr>
+          <td>Cost model</td>
+          <td>API tokens or $20/mo Max plan</td>
+          <td>OpenAI API tokens</td>
+          <td class="win">Free tier (1K req/day) + API</td>
+        </tr>
+        <tr>
+          <td>Headless / CI support</td>
+          <td class="win">&#10003; <code>--headless</code> flag</td>
+          <td class="win">&#10003; <code>--headless</code> flag</td>
+          <td class="ok">&#10003; non-interactive mode</td>
+        </tr>
+        <tr>
+          <td>Parallelism (multi-instance)</td>
+          <td class="win">&#10003; Unlimited local sessions</td>
+          <td class="win">&#10003; Unlimited local sessions</td>
+          <td class="win">&#10003; Unlimited local sessions</td>
+        </tr>
+        <tr>
+          <td>CLAUDE.md / context file</td>
+          <td class="win">&#10003; Native CLAUDE.md system</td>
+          <td class="ok">Via system prompt / --instructions</td>
+          <td class="ok">Via GEMINI.md or --system-prompt</td>
+        </tr>
+        <tr>
+          <td>SWE-bench score (mid-2026)</td>
+          <td class="win">~72% (Opus 5)</td>
+          <td class="ok">~68% (o3)</td>
+          <td class="ok">~65% (2.5 Pro)</td>
+        </tr>
+        <tr>
+          <td>Ecosystem / plugins</td>
+          <td class="win">MCP servers, hooks, skills, memory</td>
+          <td class="ok">OpenAI tool-use, function calling</td>
+          <td class="ok">Google tools, Workspace integration</td>
+        </tr>
+        <tr>
+          <td>Mobile / web dashboard</td>
+          <td>No native fleet UI</td>
+          <td>No native fleet UI</td>
+          <td>No native fleet UI</td>
+        </tr>
+        <tr>
+          <td>Self-healing / auto-restart</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Multi-runtime fleet support</td>
+          <td>No (single runtime)</td>
+          <td>No (single runtime)</td>
+          <td>No (single runtime)</td>
+        </tr>
+        <tr>
+          <td>Open source</td>
+          <td class="win">MIT</td>
+          <td class="win">Apache 2.0</td>
+          <td class="win">Apache 2.0</td>
+        </tr>
+        <tr>
+          <td>Best for</td>
+          <td>Complex reasoning, refactoring, architecture</td>
+          <td>OpenAI-native workflows, o3 reasoning</td>
+          <td>Large-codebase comprehension, free-tier use</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="verdict-box">
+      <strong>One-sentence verdict:</strong> Claude Code leads on code quality and ecosystem depth; Gemini CLI wins on context window and cost; Codex is the right choice if you're already on the OpenAI platform. In a well-run fleet, you use all three.
+    </div>
+
+    <h2 id="claude-code">Claude Code</h2>
+    <div class="rt-card">
+      <div class="rt-label">Anthropic &bull; Terminal AI coding agent</div>
+      <h3 style="margin-top:.3rem">The benchmark leader with the deepest harness support</h3>
+      <p>Claude Code is Anthropic's official terminal-native coding agent. It runs locally, sends code to Anthropic's API, and supports the most mature harness ecosystem of the three: CLAUDE.md context files, <a href="/guides/harness-engineering/">hooks</a>, skills, memories, and a growing library of MCP servers.</p>
+
+      <p><strong>Install:</strong></p>
+      <div class="install-block">npm install -g @anthropic-ai/claude-code</div>
+
+      <p><strong>Cost:</strong> Two paths — the <em>Claude Max</em> plan ($20–100/month depending on tier) includes Claude Code with rate limits that are fine for a single developer. For parallel fleets, the API pay-per-token model scales better: Claude Sonnet 5 is $3/MTok input, $15/MTok output at Anthropic's standard pricing.</p>
+
+      <p><strong>Context window:</strong> 200K tokens with Sonnet 5 or Opus 5. Sufficient for most codebases. For very large monorepos, plan your context loading strategy using CLAUDE.md and <a href="/guides/context-engineering/">context engineering</a>.</p>
+
+      <p><strong>Headless / CI:</strong></p>
+      <div class="install-block">claude --headless "Fix all TypeScript errors in src/"</div>
+
+      <p><strong>Strengths:</strong></p>
+      <ul>
+        <li>Highest SWE-bench scores (~72% with Opus 5) — strongest performance on realistic software engineering tasks</li>
+        <li>Native CLAUDE.md context system — one file configures every instance across your fleet, inherited per-directory</li>
+        <li>Rich hook system (PreToolUse, PostToolUse, Stop, UserPromptSubmit) for automated gates and reporting</li>
+        <li>MCP server ecosystem — connects to databases, APIs, browser automation, and more</li>
+        <li>Memory system for cross-session persistence</li>
+      </ul>
+
+      <p><strong>Weaknesses:</strong></p>
+      <ul>
+        <li>200K context ceiling — Gemini CLI outperforms on very large codebase comprehension tasks</li>
+        <li>API costs add up quickly in high-throughput parallel fleets — budget tracking matters</li>
+        <li>Rate limits on the Max plan constrain parallelism; API billing required for serious overnight runs</li>
+      </ul>
+
+      <p><strong>When to use Claude Code:</strong> Complex reasoning tasks (architecture decisions, refactors, writing tests for poorly-documented code), harness-heavy workflows that rely on CLAUDE.md, hooks, and MCP, and teams that want the strongest baseline performance.</p>
+    </div>
+
+    <h2 id="codex">OpenAI Codex CLI</h2>
+    <div class="rt-card">
+      <div class="rt-label">OpenAI &bull; Terminal AI coding agent</div>
+      <h3 style="margin-top:.3rem">Native OpenAI integration, o3/o4-mini reasoning models</h3>
+      <p>OpenAI Codex CLI is OpenAI's answer to Claude Code — a terminal-native coding agent that uses GPT-4o, o4-mini, or o3 depending on the task. It's the natural choice if you're already invested in the OpenAI platform: existing API keys, function-calling integrations, and GPT-fine-tuned models all carry over.</p>
+
+      <p><strong>Install:</strong></p>
+      <div class="install-block">npm install -g @openai/codex</div>
+
+      <p><strong>Cost:</strong> API tokens only — no subscription option. GPT-4o is $2.50/MTok input, $10/MTok output. o4-mini is cheaper ($1.10/$4.40). o3 is more expensive but useful for hard reasoning tasks. Budget carefully for parallel fleet use.</p>
+
+      <p><strong>Context window:</strong> GPT-4o supports 128K tokens. o4-mini and o3 support up to 200K. For most codebase tasks, this is sufficient.</p>
+
+      <p><strong>Headless / CI:</strong></p>
+      <div class="install-block">codex --headless --model o4-mini "Refactor auth module to use the new token schema"</div>
+
+      <p><strong>Strengths:</strong></p>
+      <ul>
+        <li>Native integration with the full OpenAI ecosystem — existing API keys, fine-tuned models, and function-calling setups all work</li>
+        <li>o3 model excels at structured reasoning tasks — math, logic, and precise code generation with chain-of-thought</li>
+        <li>o4-mini is a strong cost/quality trade-off for parallel fleets — capable reasoning at a lower per-token price</li>
+        <li>GPT-4o's broad multilingual and multimodal capabilities (images, structured outputs) carry into Codex CLI</li>
+      </ul>
+
+      <p><strong>Weaknesses:</strong></p>
+      <ul>
+        <li>No native context file system equivalent to CLAUDE.md — system prompts must be passed explicitly or via configuration</li>
+        <li>Harness ecosystem less mature than Claude Code's (fewer hooks, no native memory or skill system)</li>
+        <li>SWE-bench scores slightly below Claude Code for complex reasoning tasks</li>
+      </ul>
+
+      <p><strong>When to use Codex CLI:</strong> Teams already on the OpenAI platform who want a consistent vendor, o3 reasoning tasks (hard math, proofs, precise spec implementations), and mixed fleets where some tasks are GPT-fine-tuned or multimodal.</p>
+    </div>
+
+    <h2 id="gemini-cli">Gemini CLI</h2>
+    <div class="rt-card">
+      <div class="rt-label">Google &bull; Terminal AI coding agent</div>
+      <h3 style="margin-top:.3rem">1M-token context window, generous free tier</h3>
+      <p>Gemini CLI is Google's terminal coding agent using Gemini 2.5 Pro. Two things set it apart: a 1,000,000-token context window (5x Claude Code, 8x GPT-4o), and a free tier that covers 1,000 requests per day. It's the cheapest path to capable AI coding, and the best-equipped for tasks that require loading a substantial portion of a codebase in a single context.</p>
+
+      <p><strong>Install:</strong></p>
+      <div class="install-block">npm install -g @google/gemini-cli</div>
+
+      <p><strong>Cost:</strong> Free tier — 1,000 requests/day, 60 requests/minute with Gemini 2.5 Pro. Above that, Google AI API tokens: $1.25/MTok input (under 200K tokens) and $2.50/MTok input (above 200K tokens, where few other models can compete). For an overnight fleet run staying under the daily free limit, Gemini CLI costs $0.</p>
+
+      <p><strong>Context window:</strong> 1,000,000 tokens — the largest of the three by a factor of 5. For a monorepo with hundreds of files, Gemini CLI can load far more codebase context than the alternatives before hitting a ceiling.</p>
+
+      <p><strong>Headless / CI:</strong></p>
+      <div class="install-block">gemini -p "Audit all API endpoints for missing auth checks" --yolo</div>
+
+      <p><strong>Strengths:</strong></p>
+      <ul>
+        <li>1M-token context window — load entire codebases, documentation, test suites, and API specs simultaneously</li>
+        <li>Free tier makes it an excellent second agent in a mixed fleet — run Gemini tasks at zero marginal cost</li>
+        <li>GEMINI.md context file (equivalent to CLAUDE.md) for per-project agent configuration</li>
+        <li>Google Workspace integration — Docs, Sheets, Drive access built into the tool ecosystem</li>
+        <li>Strong performance on tasks requiring broad codebase comprehension and cross-file analysis</li>
+      </ul>
+
+      <p><strong>Weaknesses:</strong></p>
+      <ul>
+        <li>SWE-bench scores slightly lower than Claude Code on complex reasoning tasks</li>
+        <li>Smaller hook/plugin ecosystem compared to Claude Code</li>
+        <li>Free tier rate limits (60 req/min) require throttling in high-concurrency fleet scenarios</li>
+        <li>Less mature harness documentation and community tooling than Claude Code</li>
+      </ul>
+
+      <p><strong>When to use Gemini CLI:</strong> Large-codebase comprehension tasks (audit, review, dependency analysis), budget-conscious fleets where free-tier capacity can replace paid API calls, Google Workspace workflows, and as a complement to Claude Code where context window overflow is a risk.</p>
+    </div>
+
+    <h2 id="fleet">Running all three in parallel with amux</h2>
+    <p>Each runtime has a domain where it excels. The fastest teams don't pick one — they assign tasks to the right runtime and run everything simultaneously. amux is the open-source control plane that makes this practical.</p>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> gives every runtime session the same environment: a shared CLAUDE.md (or equivalent context file), a common kanban board for task assignment, self-healing crash recovery, and a web + mobile dashboard for monitoring and steering. You can run 5 Claude Code sessions, 3 Codex sessions, and 4 Gemini sessions simultaneously, all visible in one place.</p>
+
+    <div class="fleet-step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <strong>Install amux</strong>
+        <div class="install-block">brew install mixpeek/amux/amux
+amux start</div>
+      </div>
+    </div>
+    <div class="fleet-step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <strong>Register agents for each runtime</strong>
+        <div class="install-block">amux register claude-1 --runtime claude-code --dir ~/Dev/myproject
+amux register codex-1 --runtime codex --dir ~/Dev/myproject
+amux register gemini-1 --runtime gemini --dir ~/Dev/myproject</div>
+      </div>
+    </div>
+    <div class="fleet-step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <strong>Assign tasks via the kanban board</strong>
+        <p style="margin:.3rem 0 0">Create board cards and assign them to sessions by runtime. Claude Code handles the complex refactors; Gemini CLI handles codebase-wide audits (using its 1M context); Codex handles the o3 reasoning tasks. All sessions report status to the same board.</p>
+      </div>
+    </div>
+    <div class="fleet-step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <strong>Monitor and steer from your phone</strong>
+        <p style="margin:.3rem 0 0">The amux iOS app and PWA give you a live view of every session across all runtimes. If a Claude Code session gets stuck, you can steer it. If a Gemini session finishes early, you can assign it a new task. All from your phone while the fleet runs overnight.</p>
+      </div>
+    </div>
+    <div class="fleet-step">
+      <div class="step-num">5</div>
+      <div class="step-body">
+        <strong>Review in the morning</strong>
+        <p style="margin:.3rem 0 0">The Review dashboard groups all agent activity by theme — commits, blockers, and open PRs across all runtimes. The Cost tab shows token spend per session and per runtime so you can optimize your fleet composition over time.</p>
+      </div>
+    </div>
+
+    <h2 id="decision">Decision guide</h2>
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Use case</th>
+          <th>Recommended runtime</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Complex refactor or architecture decision</td>
+          <td class="win">Claude Code (Opus 5)</td>
+          <td>Highest SWE-bench scores, strongest reasoning on ambiguous requirements</td>
+        </tr>
+        <tr>
+          <td>Codebase-wide audit or analysis</td>
+          <td class="win">Gemini CLI</td>
+          <td>1M-token context loads the entire codebase; no chunking required</td>
+        </tr>
+        <tr>
+          <td>Cost-sensitive overnight fleet</td>
+          <td class="win">Gemini CLI</td>
+          <td>Free tier (1K req/day) can cover a meaningful portion of fleet work at $0</td>
+        </tr>
+        <tr>
+          <td>OpenAI platform integration</td>
+          <td class="win">Codex CLI</td>
+          <td>Consistent vendor, existing API key, fine-tuned model support</td>
+        </tr>
+        <tr>
+          <td>Hard math or precise spec implementation</td>
+          <td class="win">Codex CLI (o3)</td>
+          <td>o3 reasoning model excels at structured, step-by-step problem solving</td>
+        </tr>
+        <tr>
+          <td>Greenfield feature with tight deadline</td>
+          <td class="ok">Claude Code (Sonnet 5)</td>
+          <td>CLAUDE.md + hooks + skills let you encode your team's patterns for consistent output</td>
+        </tr>
+        <tr>
+          <td>Parallel fleet of 10+ agents</td>
+          <td class="ok">Mixed runtime via amux</td>
+          <td>Assign task types to the right runtime; amux manages all sessions from one dashboard</td>
+        </tr>
+        <tr>
+          <td>Google Workspace tasks</td>
+          <td class="win">Gemini CLI</td>
+          <td>Native Docs, Sheets, Drive tool integration; Google AI ecosystem</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h2 id="faq">FAQ</h2>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">Is Claude Code better than Gemini CLI?</summary>
+      <p style="margin:.75rem 0 0">Claude Code scores higher on SWE-bench and has a more mature harness ecosystem. Gemini CLI has a 5x larger context window and a free tier. "Better" depends on the task. For nuanced architecture and refactoring, Claude Code. For large-codebase comprehension and cost efficiency, Gemini CLI. Most serious fleets use both.</p>
+    </details>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">What is the difference between Claude Code and OpenAI Codex CLI?</summary>
+      <p style="margin:.75rem 0 0">Claude Code uses Anthropic's Claude Sonnet/Opus models. Codex CLI uses OpenAI's GPT-4o, o4-mini, and o3. Claude Code has stronger reputation for code quality and complex reasoning. Codex CLI is the natural choice on the OpenAI platform. Both are open source and run locally.</p>
+    </details>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">Can I run Claude Code and Gemini CLI at the same time?</summary>
+      <p style="margin:.75rem 0 0">Yes. amux runs Claude Code, Codex, and Gemini CLI sessions in parallel from a single dashboard. Each agent gets its own isolated tmux session, the same context, and a shared kanban board. Run 5–50 agents across multiple runtimes and review their work from your phone in the morning.</p>
+    </details>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">Is Gemini CLI free?</summary>
+      <p style="margin:.75rem 0 0">Yes. The free tier is 1,000 requests per day and 60 requests per minute using Gemini 2.5 Pro. Above those limits, or for higher quotas, you pay Google AI API token rates. This makes Gemini CLI the cheapest option for development use and a natural complement to paid Claude Code or Codex sessions in a mixed fleet.</p>
+    </details>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">Which AI coding agent has the largest context window?</summary>
+      <p style="margin:.75rem 0 0">Gemini CLI uses Gemini 2.5 Pro with a 1,000,000-token (1M) context window — the largest of the three. Claude Code offers 200K tokens. OpenAI Codex CLI ranges from 128K (GPT-4o) to 200K (o4-mini, o3). For tasks requiring a full codebase in context, Gemini CLI has a decisive advantage.</p>
+    </details>
+
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:1rem 1.25rem;margin-bottom:.75rem">
+      <summary style="cursor:pointer;font-weight:600;list-style:none">How do I switch between Claude Code and Gemini CLI?</summary>
+      <p style="margin:.75rem 0 0">With amux, you don't switch — you run both simultaneously. amux registers each runtime as a named session, each with its own working directory and context. Assign different runtimes to different tasks from the kanban board, or run them in parallel on the same task to compare outputs.</p>
+    </details>
+
+    <hr style="margin:2.5rem 0;border:none;border-top:1px solid rgba(255,255,255,.08)">
+    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:22px 26px;margin:2rem 0">
+      <h3 style="margin:0 0 .4rem;font-size:1.1rem">Run a mixed-runtime agent fleet tonight</h3>
+      <p style="margin:0 0 1rem;color:var(--fg-dim);font-size:.9rem">amux orchestrates Claude Code, Codex, and Gemini CLI sessions in parallel — shared kanban board, self-healing, mobile dashboard. Free, open-source, single Rust binary.</p>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 22px;border-radius:7px;font-weight:600;text-decoration:none;font-size:.9rem">View amux on GitHub ★</a>
+        <a href="/guides/harness-engineering/" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:var(--fg);padding:10px 18px;border-radius:7px;font-weight:500;text-decoration:none;font-size:.9rem">Harness Engineering Guide →</a>
+      </div>
+    </div>
+
+    <p style="font-size:.82rem;color:var(--fg-dim);margin-top:1.5rem">Related: <a href="/compare/amux-vs-codex/">amux vs OpenAI Codex</a> &bull; <a href="/blog/ai-coding-tools-pricing-2026/">AI coding tools pricing 2026</a> &bull; <a href="/guides/claude-code-headless/">Running Claude Code headless</a> &bull; <a href="/guides/context-engineering/">Context engineering</a></p>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand"><a href="/" class="logo">amux</a><span class="footer-copy">&copy; 2026 amux. Open source under MIT.</span></div>
+      <nav class="footer-links">
+        <a href="/guides/">guides</a>
+        <a href="/compare/">compare</a>
+        <a href="/docs/">docs</a>
+        <a href="/blog/">blog</a>
+        <a href="/press/">press</a>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

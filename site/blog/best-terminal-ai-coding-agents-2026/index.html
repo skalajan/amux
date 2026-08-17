@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-11",
-    "dateModified":"2026-07-28",
+    "dateModified":"2026-08-03",
     "mainEntityOfPage":"https://amux.io/blog/best-terminal-ai-coding-agents-2026/"
   }</script>
   <script type="application/ld+json">{
@@ -137,8 +137,16 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>Best Terminal AI Coding Agents 2026</span></div>
 
     <h1>Best Terminal AI Coding Agents in 2026</h1>
-    <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.5rem">Updated July 2026 — new: Antigravity CLI note, amux v0.9.202 features, freshened star counts</p>
+    <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.5rem">Updated August 2026 — new: Gemini CLI full parity, amux read-aloud (Piper TTS), amux v0.9.202+ features</p>
     <p class="subtitle">The IDE is optional. In 2026, the most productive developers run AI coding agents directly in the terminal &mdash; headless, scriptable, parallelizable. Eight CLI tools now dominate this space: <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">OpenCode</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://www.warp.dev/" target="_blank" rel="noopener">Warp</a>, <a href="https://github.com/block/goose" target="_blank" rel="noopener">Goose</a>, and <a href="https://aws.amazon.com/q/developer/" target="_blank" rel="noopener">Amazon Q Developer CLI</a>. This guide compares all of them.</p>
+
+    <!-- EXP-020: top-of-page CTA — 174 PVs / 2 GH clicks (1.2% CVR); same pattern as EXP-015 WIN +200% -->
+    <div style="background:oklch(0.85 0.15 145 / .1);border:1px solid oklch(0.75 0.15 145 / .4);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <p style="margin:0;font-size:0.9rem;color:var(--text);line-height:1.5">Running Claude Code, Gemini CLI, and Codex in parallel? amux orchestrates a fleet of terminal agents with self-healing, a shared kanban board, and a web + mobile dashboard.</p>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog.capture('exp020_blog_topofpage_cta_click',{page:window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.4rem;background:oklch(0.65 0.18 145);color:#fff;padding:0.5rem 1rem;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;white-space:nowrap">View amux on GitHub ★</a>
+    </div>
 
     <!-- ───────── TL;DR ───────── -->
     <div class="tldr">
@@ -707,7 +715,7 @@
     <div class="axis-grid">
       <div class="axis-card">
         <h4><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></h4>
-        <p>Open-source control plane for <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agent fleets. Web dashboard, mobile PWA, self-healing watchdog, shared kanban board with atomic task claiming. Single Python file, zero dependencies.</p>
+        <p>Open-source control plane for <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agent fleets. Web dashboard, mobile PWA, self-healing watchdog, shared kanban board with atomic task claiming. Single Rust binary, zero dependencies.</p>
       </div>
       <div class="axis-card">
         <h4>DIY tmux</h4>
@@ -726,7 +734,7 @@
         <span>Open source (MIT)</span>
         <span><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></span>
       </div>
-      <p>The terminal agents above are powerful individually. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> makes them powerful <em>at scale</em>: spawn 10&ndash;50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or Antigravity CLI (agy) sessions, monitor them from a web dashboard or your phone, auto-recover from crashes, and coordinate tasks through a shared board. <strong>315★ GitHub</strong>, MIT licensed. One Python file. No Docker. No npm. Installs in one command.</p>
+      <p>The terminal agents above are powerful individually. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> makes them powerful <em>at scale</em>: spawn 10&ndash;50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or Antigravity CLI (agy) sessions, monitor them from a web dashboard or your phone, auto-recover from crashes, and coordinate tasks through a shared board. <strong>315★ GitHub</strong>, MIT licensed. One Rust binary. No Docker. No npm. Installs in one command.</p>
       <ul style="margin:0.8rem 0 0;font-size:0.88rem;color:var(--dim);">
         <li><strong>Mobile dashboard + PWA</strong> — manage your entire agent fleet from your phone; iOS app available</li>
         <li><strong>Offline scrollback cache (v0.9.200)</strong> — every agent's output cached locally so you can review work during commutes, flights, or dead zones</li>
@@ -740,7 +748,7 @@
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — orchestrate your entire agent fleet from one dashboard (315★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Open-source control plane for Claude Code, Codex CLI, and Antigravity CLI. Self-healing, offline scrollback, voice dictation, mobile PWA, kanban, CRM — MIT licensed, single Python file.</div>
+        <div style="color:var(--muted);font-size:.9rem">Open-source control plane for Claude Code, Codex CLI, and Antigravity CLI. Self-healing, offline scrollback, voice dictation, mobile PWA, kanban, CRM — MIT licensed, single Rust binary.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -749,7 +757,7 @@
 git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux scale myproject --count 5
-amux serve  <span class="dim"># → https://localhost:8822</span></code></pre>
+amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
     <p>See our <a href="/blog/best-multi-agent-orchestrators-2026/">complete orchestrator comparison</a> for the full landscape.</p>
 

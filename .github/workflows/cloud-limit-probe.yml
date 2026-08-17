@@ -72,11 +72,24 @@ jobs:
             echo
             echo "=== stage probe (SHIPPED functions vs LIVE pane) ==="
             docker exec -i "$C" python3 - "$SESSION" <<'PROBE'
-          import re, subprocess, sys, time
+          import os, re, subprocess, sys, time
           SESSION = sys.argv[1] if len(sys.argv) > 1 else "stacking-copilot"
           ps = subprocess.run(["sh","-c","ps ax -o command | grep 'amux-server.py' | grep -v grep | head -1"],
                               capture_output=True, text=True).stdout
           SRC = next((t for t in ps.split() if t.endswith("amux-server.py")), "/app/amux-server.py")
+          # RUST CUTOVER (AMUX-2619). This probe reads _LIMIT_ACTIVITY_RE and
+          # _API_ERROR_RE out of the RUNNING PYTHON SOURCE and exec()s them.
+          # Against the rust image there is no such file, and the honest failure
+          # is a named one: a traceback here, or a skipped section, is easy to
+          # read as "no rate limiting detected", which is the opposite of what
+          # this probe found. Port the two regexes from crates/amux-server (they
+          # live in api/session_verbs.rs) or delete this section.
+          if not os.path.exists(SRC):
+              print("::warning::stage probe SKIPPED — this container runs the rust "
+                    "server, so there is no amux-server.py to read the regexes from. "
+                    "This is NOT a finding: it means the probe could not look.")
+              print("stage probe: unavailable on the rust image (see the warning above)")
+              sys.exit(0)
           print("server file:", SRC)
           src = open(SRC, encoding="utf-8").read()
           def grab(a, b):

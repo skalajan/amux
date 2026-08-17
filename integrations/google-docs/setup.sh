@@ -74,4 +74,4 @@ EOF
 echo ""
 echo "Credentials written to $SERVER_ENV"
 echo ""
-echo "Next: touch amux-server.py to reload, then start a new session."
+echo "Next: restart the server to reload (launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs), then start a new session."

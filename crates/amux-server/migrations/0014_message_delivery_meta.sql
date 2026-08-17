@@ -1,0 +1,27 @@
+-- 0014: durable delivery metadata on cmd_history.
+--
+-- ADDITIVE ONLY (shared live DB; 12.4k existing rows must keep working).
+--
+-- WHY: today "was this direct or queued" is INFERRED from `type='steering'` —
+-- a string comparison standing in for a delivery fact. That inference cannot
+-- express the case that actually bit this fleet: `amux send` degrading to raw
+-- tmux keystroke injection when POST /api/workers/<n>/send returned 405. Those
+-- messages were delivered by a third path with no origin stamp, no audit row
+-- and unverified arrival, and `type` had no way to say so — every one of them
+-- records identically to a clean direct send.
+--
+-- The wait duration has the same shape: `steering_history` already stores
+-- queued_at/delivered_at for 2.7k messages, but it is a SEPARATE table that the
+-- message list never joins, so "this sat in the queue for 2h6m" is recorded and
+-- unreadable. Copying the two timestamps onto the row makes the fact visible
+-- where it is consulted (ethos rule 4: a tag in a store the reader never opens
+-- is the same failure as no tag).
+--
+-- NULL is meaningful in all three columns and must not be coalesced to a
+-- default on read: these are back-filled for new rows only, so NULL means "not
+-- recorded", NOT "direct" and NOT "zero wait". Rendering an unrecorded value as
+-- a confident `direct` would be the unknown-is-not-zero bug in a new place.
+
+-- ADDCOL: cmd_history delivery TEXT
+-- ADDCOL: cmd_history queued_at INTEGER
+-- ADDCOL: cmd_history delivered_at INTEGER

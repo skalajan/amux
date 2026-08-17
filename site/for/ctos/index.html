@@ -39,7 +39,7 @@
     "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, self-healing overnight operation, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
     "url": "https://amux.io/for/ctos/",
     "datePublished": "2026-07-24",
-    "dateModified": "2026-07-24",
+    "dateModified": "2026-08-10",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -56,7 +56,7 @@
         "name": "What is amux and how does it help CTOs manage AI engineering teams?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is an open-source control plane for AI coding agent fleets. CTOs deploy it on their own infrastructure and their developers use it to run Claude Code, Codex, and Gemini CLI sessions in parallel — coordinated through a shared kanban board with atomic task claiming, monitored via a web dashboard or iOS app, and self-healed automatically on crash or context overflow. The result is engineering velocity that scales with agent count, not headcount. MIT + Commons Clause, single Python file, zero external dependencies."
+          "text": "amux is an open-source control plane for AI coding agent fleets. CTOs deploy it on their own infrastructure and their developers use it to run Claude Code, Codex, and Gemini CLI sessions in parallel — coordinated through a shared kanban board with atomic task claiming, monitored via a web dashboard or iOS app, and self-healed automatically on crash or context overflow. The result is engineering velocity that scales with agent count, not headcount. MIT + Commons Clause, single Rust binary, zero external dependencies."
         }
       },
       {
@@ -126,7 +126,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>CTOs</span></div>
 
     <h1>amux for CTOs</h1>
-    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated July 2026.</em></p>
+    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated August 2026.</em></p>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
       <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, self-healing watchdog, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
@@ -230,6 +230,45 @@
       </table>
     </div>
 
+    <h2>Declare your AI engineering team as code (amux IaC)</h2>
+    <p>As of August 2026, amux supports declarative team configuration via a single YAML file — the same Infrastructure as Code pattern CTOs already use for Terraform and Kubernetes. Instead of configuring workers, groups, schedules, and skills through the dashboard, you declare them once and apply idempotently:</p>
+    <pre><code># engineering-team.yaml
+workers:
+  - name: architect
+    runtime: claude-code
+    group: backend
+    yolo: true
+    description: "Architecture decisions and code review"
+
+  - name: generator-1
+    runtime: codex-cli
+    group: backend
+    description: "Standard feature generation"
+
+  - name: generator-2
+    runtime: codex-cli
+    group: backend
+    description: "Standard feature generation"
+
+groups:
+  - name: backend
+    description: "Backend services team"
+
+schedules:
+  - title: "Daily standup summary"
+    session: architect
+    command: "Summarize what the backend group accomplished yesterday"
+    schedule_expr: "daily at 9am"</code></pre>
+    <pre><code>amux iac apply engineering-team.yaml</code></pre>
+    <p>The apply is idempotent — run it again and amux reconciles to the declared state without creating duplicates. For CTOs, this means:</p>
+    <ul>
+      <li><strong>Version control your agent team:</strong> Check the YAML into your repo. PRs to the team config go through the same review process as infrastructure changes.</li>
+      <li><strong>Onboard instantly:</strong> New developer joins the team? They run <code>amux iac apply team.yaml</code> and their instance matches the org standard in seconds.</li>
+      <li><strong>Audit team config history:</strong> <code>git log team.yaml</code> shows every time the agent team was changed, by whom, and why.</li>
+      <li><strong>CI/CD integration:</strong> A GitHub Actions workflow can auto-apply team.yaml when it changes in main — agents update automatically on merge.</li>
+    </ul>
+    <p>See the full guide: <a href="/guides/declarative-ai-agent-setup/">Declarative AI Agent Setup with amux IaC →</a></p>
+
     <h2>What a CTO actually sees on day 1</h2>
     <p>Here's a realistic first-week picture for a 5-developer engineering team that deploys amux on a shared server:</p>
     <ol>
@@ -323,8 +362,8 @@
     <!-- EXP-014 -->
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (310★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI sessions from one dashboard. Self-healing, kanban, mobile oversight, and audit trail. Single Python file, MIT licensed, self-hosted.</div>
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (336★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI sessions from one dashboard. Self-healing, kanban, mobile oversight, and audit trail. Single Rust binary, MIT licensed, self-hosted.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -334,7 +373,7 @@
       <p>Get a shared dashboard, self-healing agents, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
       <pre><code>pip install amux
 # or: brew install mixpeek/amux/amux
-amux serve  # → https://your-server:8822</code></pre>
+amux serve  # → https://your-server:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
       <a class="btn" href="/for/enterprise/" style="margin-left:0.75rem;">Enterprise deployment →</a>
       <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Get set up with Concierge →</a>

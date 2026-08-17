@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Graph Agent Orchestration: Why Graphs Are Taking Over AI Agent Architecture — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Graph-based agent architecture has become the dominant pattern for production AI systems. Learn what a graph agent is, why graphs beat chains and trees, and how amux implements a complete graph control plane for AI agent fleets.">
+  <meta name="keywords" content="graph agent orchestration, what is a graph agent, graph-based multi-agent system, graph agent architecture 2026, amux graph agent, LangGraph alternative, multi-agent graph orchestration, agent graph topology, graph of agents, agentic graph">
+  <link rel="canonical" href="https://amux.io/guides/graph-agent-orchestration/">
+  <meta property="og:title" content="Graph Agent Orchestration: Why Graphs Are Taking Over AI Agent Architecture">
+  <meta property="og:description" content="Graph-based architecture is now the dominant pattern for production AI agent systems. What a graph agent is, why it wins, and how amux implements the pattern as a control plane.">
+  <meta property="og:url" content="https://amux.io/guides/graph-agent-orchestration/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},
+      {"@type":"ListItem","position":3,"name":"Graph Agent Orchestration","item":"https://amux.io/guides/graph-agent-orchestration/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Graph Agent Orchestration: Why Graphs Are Taking Over AI Agent Architecture",
+    "description": "Graph-based agent architecture has become the dominant pattern for production AI systems. This guide explains what a graph agent is, why graphs beat chains and trees for multi-agent coordination, and how amux implements a graph control plane for running AI agent fleets.",
+    "url": "https://amux.io/guides/graph-agent-orchestration/",
+    "datePublished": "2026-08-06",
+    "dateModified": "2026-08-06",
+    "author": {"@type":"Organization","name":"amux","url":"https://amux.io/"},
+    "publisher": {"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
+    "keywords": ["graph agent", "graph agent orchestration", "multi-agent graph", "agentic graph", "LangGraph", "amux"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is a graph agent?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A graph agent is an AI agent that operates within a graph-structured coordination system. Instead of following a linear sequence of steps or a fixed tree, agents are nodes in a graph where edges represent relationships: task dependencies, communication channels, group membership, and scheduling triggers. The graph can be traversed, mutated, and extended by agents themselves at runtime. The term covers both the orchestration pattern (how multiple agents coordinate via a shared graph) and individual agent architectures (like LangGraph's StateGraph, where a single agent's reasoning steps are arranged as a directed cyclic graph)."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Why are graph-based agent architectures replacing chains and trees?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Three problems make chains and trees inadequate for real multi-agent work. First, chains are sequential by design — they cannot represent concurrent work without forking into something that is already a graph. Second, trees impose a strict parent-child hierarchy that breaks as soon as two agents need to coordinate as peers rather than as supervisor and subordinate. Third, neither chains nor trees can represent feedback loops: cycles where an agent's output feeds back into an earlier stage for refinement. Graph structures handle all three cases naturally. Gartner reported a 1,445% increase in enterprise inquiries about multi-agent systems between Q1 2024 and Q2 2025, and the dominant production implementations — LangGraph, Salesforce Agentforce's Agent Graph, Amazon Strands — all use directed graph models."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between amux and LangGraph?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "LangGraph is a Python library you embed in your application code to define an individual agent's reasoning as a directed graph of LLM calls and tool invocations. amux is a control plane you run alongside your agents to coordinate a fleet of them. LangGraph controls what happens inside one agent turn; amux controls what happens across many agents running in parallel over days or weeks. You can run LangGraph-based agents inside an amux fleet. The two operate at different levels: LangGraph = single-agent internal graph; amux = multi-agent external coordination graph."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What are the node types in amux's graph?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux has four node types. Workers (formerly called sessions) are the active compute nodes — running AI agent processes that can receive prompts, produce output, and call the API. Board issues are work nodes — durable tasks with lifecycle states (todo, doing, done, verified) that agents can atomically claim, preventing duplicate work. Schedules are trigger nodes — time-based or cron-based events that inject messages into worker nodes. Shared notes and global memory are context nodes — durable knowledge that multiple workers can read and write, persisting across individual agent context windows. Groups connect worker nodes into coordination neighborhoods, scoping peer discovery and shared context."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux prevent two agents from claiming the same task?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Claiming a board issue in amux is a compare-and-swap operation enforced by SQLite. When a worker calls POST /api/board/:id/claim, the server atomically checks that the issue's status is still 'todo' and that no other session has claimed it. If both conditions hold, the status transitions to 'doing' and the claiming worker's identity is written to the record. A second worker calling claim on the same issue at the same time receives a 409 Conflict response. This is equivalent to acquiring a distributed lock on a graph node — once owned, the node cannot be double-claimed."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can agents modify the graph at runtime?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Workers have access to the same REST API the human dashboard uses. An agent can create new board issues (adding nodes), set depends_on relationships (adding edges), send tasks to other workers (traversing communication edges), create schedules (adding trigger nodes), and write shared notes (updating context nodes). The graph is mutable and open-ended — it is not a static workflow defined before execution begins. An orchestrator agent typically builds the initial graph structure; worker agents traverse and extend it."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux handle task dependencies between agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Board issues have a depends_on field that accepts another issue's ID. When a worker tries to claim an issue that has depends_on set, the server checks whether the dependency has reached the 'done' state. If not, the claim returns 409 and the worker moves on to other available tasks. This makes dependency enforcement automatic and serverside — no agent needs to check dependency status manually. A fleet of 20 agents will naturally complete tasks in topological order without any orchestration logic in their prompts."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between the task graph and the session graph in amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux has two overlapping graphs. The task graph is durable: board issues as nodes, depends_on and reviewer as typed directed edges, status as node state. It survives agent restarts and persists across sessions. The session graph is ephemeral: running worker processes as nodes, send/peek/channel messages as directed edges, groups as subgraph partitions. It exists only while agents are running and represents the live communication topology. Real fleet deployments use both: an orchestrator creates task graph structure, then routes work through the session graph to specific workers."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    .node-card {
+      background: var(--bg-card, #232838);
+      border-radius: 10px;
+      padding: 1.4rem 1.5rem;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(255,255,255,0.06);
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.75rem 1.25rem;
+      align-items: start;
+    }
+    .node-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.25rem 0.6rem;
+      border-radius: 5px;
+      white-space: nowrap;
+      margin-top: 0.1rem;
+    }
+    .node-badge.worker   { background: rgba(110,231,183,0.15); color: #6ee7b7; }
+    .node-badge.work     { background: rgba(96,165,250,0.15);  color: #60a5fa; }
+    .node-badge.trigger  { background: rgba(251,191,36,0.15);  color: #fbbf24; }
+    .node-badge.context  { background: rgba(167,139,250,0.15); color: #a78bfa; }
+    .node-badge.topology { background: rgba(251,113,133,0.15); color: #fb7185; }
+    .node-content h3 { margin: 0 0 0.3rem; font-size: 1rem; }
+    .node-content p  { margin: 0; font-size: 0.88rem; color: var(--muted, #9ca3af); line-height: 1.5; }
+    .stat-row { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1.5rem 0; }
+    .stat-box {
+      flex: 1; min-width: 160px;
+      background: var(--bg-card, #232838);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      text-align: center;
+    }
+    .stat-box .num { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; color: #6ee7b7; display: block; }
+    .stat-box .lbl { font-size: 0.78rem; color: var(--muted, #9ca3af); margin-top: 0.2rem; display: block; }
+    .compare-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin: 1.25rem 0; }
+    .compare-table th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border, #333); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted, #9ca3af); }
+    .compare-table td { padding: 0.65rem 0.8rem; border-bottom: 1px solid var(--border, #333); vertical-align: top; }
+    .compare-table td:first-child { font-weight: 600; white-space: nowrap; }
+    .check { color: #6ee7b7; }
+    .dash  { color: var(--muted, #9ca3af); }
+    .ascii-graph { font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.65; background: var(--surface-2, #1a1f2e); border: 1px solid var(--border, #333); border-radius: 8px; padding: 1.25rem 1.5rem; overflow-x: auto; color: #e5e7eb; white-space: pre; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Graph Agent Orchestration</span></div>
+
+    <h1>Graph Agent Orchestration</h1>
+    <p class="subtitle">Graph-based architecture has become the dominant pattern for production AI agent systems. This guide explains what a graph agent is, why graphs beat chains and trees, and how amux implements the full graph as a control plane for AI agent fleets. August 2026.</p>
+
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px;font-size:.9rem">
+        <strong>amux is a graph control plane for AI agent fleets.</strong> <span style="color:var(--muted)">Workers, board issues, schedules, groups, and shared notes form a live, mutable graph your agents traverse and extend at runtime — open source, zero external dependencies.</span>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <h2>The shift to graph-based agent architecture</h2>
+
+    <p>Enterprise AI adoption did not grow linearly. Between Q1 2024 and Q2 2025, Gartner tracked a <strong>1,445% increase</strong> in enterprise inquiries about multi-agent AI systems — the steepest growth signal in enterprise software since cloud adoption. By mid-2025, 72% of enterprise AI projects involved multi-agent architectures, up from 23% the year before.</p>
+
+    <p>The pattern that emerged as the production standard across those deployments is graph-based orchestration. LangGraph reached over 32,000 GitHub stars and is in production at Uber, LinkedIn, Replit, and Klarna (85 million users, 80% reduction in resolution time). Salesforce built Agentforce around an explicit Agent Graph. Amazon Strands documents a Graph Multi-Agent Pattern. Microsoft's research arm released GraphRAG in mid-2024 and integrated graph-native memory into its Agent Framework.</p>
+
+    <p>The question is no longer whether to use graph architecture for multi-agent AI. It is which layer of the graph your tooling operates at.</p>
+
+    <div class="stat-row">
+      <div class="stat-box">
+        <span class="num">1,445%</span>
+        <span class="lbl">increase in enterprise multi-agent inquiries, Q1 2024 – Q2 2025 (Gartner)</span>
+      </div>
+      <div class="stat-box">
+        <span class="num">72%</span>
+        <span class="lbl">of enterprise AI projects now involve multi-agent architectures (Gartner, 2025)</span>
+      </div>
+      <div class="stat-box">
+        <span class="num">40%</span>
+        <span class="lbl">of enterprise applications will include AI agents by 2026, up from &lt;5% in 2025 (Gartner)</span>
+      </div>
+    </div>
+
+    <h2>What is a graph agent?</h2>
+
+    <p>A graph agent is an AI agent that operates within a graph-structured coordination system. The term applies at two levels:</p>
+
+    <p><strong>Internal graph</strong> — the agent's own reasoning steps are arranged as a directed graph rather than a linear chain. LangGraph's StateGraph is the canonical example: nodes are LLM calls or tool invocations, edges are routing rules (direct or conditional), and state flows through the graph with checkpointing between steps. A directed cyclic graph (DCG) allows feedback loops; a DAG does not.</p>
+
+    <p><strong>External graph</strong> — multiple agents are nodes in a larger coordination graph. Their relationships — which agent owns which task, which agent can talk to which, which schedule triggers which agent, which shared knowledge connects them — are the graph's edges. This is where amux operates.</p>
+
+    <p>The two levels compose. You can run LangGraph-based agents (internal graph) inside an amux fleet (external graph). What matters is understanding which layer a given tool addresses.</p>
+
+    <h2>Why graphs beat chains and trees</h2>
+
+    <p>Sequential chains — the original pattern for LLM workflows — break on three problems that graphs solve naturally.</p>
+
+    <p><strong>Concurrency.</strong> A chain runs one step at a time. When two tasks are independent, a chain still serializes them. A graph represents parallel work as two disconnected subgraphs; both execute simultaneously without any special-case logic.</p>
+
+    <p><strong>Peer coordination.</strong> A tree enforces a strict parent-child hierarchy. The moment two agents need to coordinate as peers — an orchestrator handing off to a reviewer who then updates the task graph — the tree model breaks down. Graph edges are typed and directional; there is no required hierarchy. An agent can be both a worker (receiving tasks) and an orchestrator (creating tasks for others).</p>
+
+    <p><strong>Feedback loops.</strong> Neither chains nor trees can represent cycles without becoming something else. Iterative refinement — an agent produces output, a reviewer requests changes, the agent revises — is a directed cycle. Graphs model it directly. This is why LangGraph uses a directed <em>cyclic</em> graph rather than a DAG: real agent workflows loop.</p>
+
+    <h2>The five node types in amux's graph</h2>
+
+    <p>amux models every coordination primitive as a typed node. Five types form the complete graph:</p>
+
+    <div class="node-card">
+      <span class="node-badge worker">WORKER</span>
+      <div class="node-content">
+        <h3>Workers — active compute nodes</h3>
+        <p>A worker is one durable AI agent lane: a tmux session running Claude Code, Codex, Gemini, or any terminal-based agent. Workers are addressable actors — they receive prompts via <code>POST /api/workers/:name/send</code>, expose history via <code>/peek</code>, and persist their identity across restarts. The API still accepts the legacy name <code>session</code>; both spellings are counted and routed identically. Workers are the nodes that traverse and mutate the rest of the graph.</p>
+      </div>
+    </div>
+
+    <div class="node-card">
+      <span class="node-badge work">BOARD ISSUE</span>
+      <div class="node-content">
+        <h3>Board issues — durable work nodes</h3>
+        <p>Every task, bug, and decision is a board issue node. Each node carries a lifecycle state (<code>todo → doing → done → verified</code>) and two types of typed outgoing edges: <code>depends_on</code> (prerequisite — the target cannot start until this node reaches <code>done</code>) and <code>reviewer</code> (completion gate — the node cannot close until the named reviewer signs off). Claiming is atomic: SQLite compare-and-swap ensures no two workers can claim the same node. The board is the coordination memory that prevents duplicate traversal of the same work.</p>
+      </div>
+    </div>
+
+    <div class="node-card">
+      <span class="node-badge trigger">SCHEDULE</span>
+      <div class="node-content">
+        <h3>Schedules — temporal trigger nodes</h3>
+        <p>A schedule is a time-based trigger edge connecting a moment in time to a worker node. It contains a target worker, a command to inject, and either a one-time timestamp or a cron expression. The schedule does not execute the cognitive work — it injects a message into the worker, which interprets and acts on it. This decouples the timing concern from the execution concern. A schedule can also watch the worker's output for a completion pattern and then disable itself or create a follow-up, producing a small control loop back through the graph.</p>
+      </div>
+    </div>
+
+    <div class="node-card">
+      <span class="node-badge context">NOTES &amp; MEMORY</span>
+      <div class="node-content">
+        <h3>Shared context nodes</h3>
+        <p>Notes and global memory are durable context nodes that survive individual agent context windows. Multiple workers can read and write the same note; board issues can reference notes by slug. This creates a third class of graph relationship — contextual edges — where workers share knowledge without direct communication. A worker can leave behind reusable state (an API contract, a research finding, a decision record) that any later worker can pick up without being told about it explicitly.</p>
+      </div>
+    </div>
+
+    <div class="node-card">
+      <span class="node-badge topology">GROUP</span>
+      <div class="node-content">
+        <h3>Groups — topology partitions</h3>
+        <p>A group is a label shared by several workers. Groups partition the session graph into coordination neighborhoods: a worker's peer-discovery, scope visibility, and channel access are scoped to its group. Instead of every worker being equally related to every other, groups create local subgraphs. A project, phase, or team maps to a group. Workers inside a group can coordinate directly; workers outside need explicit routing through the board or the send API.</p>
+      </div>
+    </div>
+
+    <h2>The edge types amux enforces</h2>
+
+    <div class="ascii-graph">WORKER ──claims──▶ BOARD ISSUE        (atomic, server-enforced; prevents double-claim)
+BOARD ISSUE ──depends_on──▶ BOARD ISSUE  (prerequisite; blocks claim until source reaches done)
+BOARD ISSUE ──reviewer──▶ WORKER         (completion gate; blocks done→verified transition)
+WORKER ──sends──▶ WORKER                  (directed message; POST /api/workers/:name/send)
+WORKER ──peeks──▶ WORKER                  (directed observation; GET /api/workers/:name/peek)
+SCHEDULE ──triggers──▶ WORKER             (time-based; injects command at T)
+SCHEDULE ──watches──▶ WORKER              (feedback; pattern-match on output → action)
+WORKER ──member-of──▶ GROUP               (topology; scopes peer discovery and context)
+WORKER ──reads/writes──▶ NOTE             (context; shared durable knowledge)</div>
+
+    <p>These edges are not stored in a generalized graph database. Each relationship is represented in the most appropriate store: issue edges in SQLite columns, communication edges as REST calls, schedule edges in schedule rows containing a worker name, context edges in Markdown files on disk. The graph is real; the representation is pragmatic.</p>
+
+    <h2>How agents traverse and extend the graph</h2>
+
+    <p>Workers have access to the same REST API the dashboard uses. A running agent can:</p>
+
+    <ul>
+      <li><strong>Read the graph state</strong> — <code>GET /api/board</code> returns all task nodes with their edge fields; <code>GET /api/workers</code> lists all active nodes in the session graph.</li>
+      <li><strong>Claim a task node</strong> — <code>POST /api/board/:id/claim</code> acquires an atomic ownership edge. Returns 409 if the node is already owned or if a <code>depends_on</code> prerequisite is not yet done.</li>
+      <li><strong>Create new task nodes</strong> — <code>POST /api/board</code> with <code>depends_on</code> and <code>reviewer</code> fields adds nodes and typed edges to the graph in a single write.</li>
+      <li><strong>Route work to another worker</strong> — <code>POST /api/workers/:name/send</code> creates a directed communication edge, passing a task or message to a peer.</li>
+      <li><strong>Observe another worker</strong> — <code>GET /api/workers/:name/peek</code> reads the terminal history of a peer, without interrupting it.</li>
+      <li><strong>Schedule future work</strong> — <code>POST /api/schedules</code> adds a trigger node that will fire later, even after the current worker exits.</li>
+      <li><strong>Write shared context</strong> — <code>POST /api/notes/:slug</code> leaves knowledge on a context node that outlives the current context window.</li>
+    </ul>
+
+    <p>The graph is open-ended and dynamic. An orchestrator worker typically builds initial structure; specialist workers traverse and extend it. No agent needs a pre-authored workflow to participate — it reads the graph, claims available nodes, and adds to it as it works.</p>
+
+    <h2>A complete fleet topology in ASCII</h2>
+
+    <div class="ascii-graph">                    ┌─────────────┐
+                    │  SCHEDULE   │ (trigger node)
+                    └──────┬──────┘
+                           │ every day at 9am
+                           ▼
+┌──────────┐  contains  ┌────────────────┐  claimed by  ┌───────────────┐
+│  BOARD   │──────────▶ │  BOARD ISSUE   │─────────────▶│ WORKER: orch  │
+└──────────┘            └───────┬────────┘              └───────┬───────┘
+                                │ depends_on                        │
+                                ▼                         sends task │
+                        ┌──────────────┐                            │
+                        │ BOARD ISSUE  │◀───────────────────────────┘
+                        └──────┬───────┘
+                               │ claimed by
+                               ▼
+                        ┌──────────────┐  member-of  ┌──────────┐
+                        │ WORKER: dev  │────────────▶│  GROUP   │
+                        └──────┬───────┘             └────┬─────┘
+                               │ reads/writes              │ also contains
+                               ▼                           ▼
+                        ┌──────────────┐            ┌──────────────┐
+                        │    NOTE      │◀───────────│ WORKER: qa   │
+                        └──────────────┘  reads     └──────────────┘</div>
+
+    <h2>amux vs LangGraph: different layers of the graph</h2>
+
+    <p>LangGraph is the most widely deployed graph agent library. Understanding how amux relates to it clarifies where each tool fits.</p>
+
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th>LangGraph</th>
+          <th>amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Layer</td>
+          <td>Inside a single agent turn — controls the agent's internal reasoning graph</td>
+          <td>Across an agent fleet — controls how multiple agents coordinate over time</td>
+        </tr>
+        <tr>
+          <td>Graph model</td>
+          <td>StateGraph: directed (cyclic) graph of LLM calls and tool invocations, typed state flowing through nodes</td>
+          <td>Property graph: workers, board issues, schedules, groups, and notes as typed nodes with typed edges</td>
+        </tr>
+        <tr>
+          <td>State persistence</td>
+          <td>Checkpointed in-memory or external store, per-run</td>
+          <td>SQLite on disk — survives agent restarts, server restarts, and multi-day runs</td>
+        </tr>
+        <tr>
+          <td>Who uses the graph</td>
+          <td>The application code that instantiates and runs the graph</td>
+          <td>The agents themselves, via REST API — they can read and mutate the graph while running</td>
+        </tr>
+        <tr>
+          <td>Dependency enforcement</td>
+          <td>Manual in graph edge definitions</td>
+          <td>Automatic at claim time — a worker cannot claim a task whose depends_on is incomplete</td>
+        </tr>
+        <tr>
+          <td>Composition</td>
+          <td>Can be used inside an amux-managed worker</td>
+          <td>Can manage LangGraph-based agents as worker nodes</td>
+        </tr>
+        <tr>
+          <td>Human-in-the-loop</td>
+          <td>Interrupt/resume hooks inside a single graph run</td>
+          <td>Reviewer edges on board issues; needs:you queue; mobile alerts</td>
+        </tr>
+        <tr>
+          <td>Agent providers</td>
+          <td>Any LangChain-compatible LLM</td>
+          <td>Any terminal-based agent: Claude Code, Codex CLI, Gemini CLI, Aider</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The right mental model: LangGraph defines what happens inside one agent's turn. amux defines what happens between agents, across turns, over time. Teams building production multi-agent systems often use both.</p>
+
+    <h2>The architectural insight: coordination state vs execution state</h2>
+
+    <p>The graph pattern works because amux separates two kinds of state that are usually conflated:</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0">
+      <div style="background:var(--bg-card,#232838);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:1.25rem">
+        <strong style="display:block;margin-bottom:0.75rem;color:#6ee7b7;font-size:0.85rem;letter-spacing:0.04em">COORDINATION STATE</strong>
+        <ul style="margin:0;padding-left:1.2rem;font-size:0.88rem;color:var(--muted,#9ca3af);line-height:1.7">
+          <li>Board issues and their edges</li>
+          <li>Task ownership and lifecycle</li>
+          <li>Group membership</li>
+          <li>Schedule definitions</li>
+          <li>Shared notes and memory</li>
+          <li>Review and dependency gates</li>
+        </ul>
+      </div>
+      <div style="background:var(--bg-card,#232838);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:1.25rem">
+        <strong style="display:block;margin-bottom:0.75rem;color:#60a5fa;font-size:0.85rem;letter-spacing:0.04em">EXECUTION STATE</strong>
+        <ul style="margin:0;padding-left:1.2rem;font-size:0.88rem;color:var(--muted,#9ca3af);line-height:1.7">
+          <li>Running tmux process</li>
+          <li>Terminal history and output</li>
+          <li>Agent context window</li>
+          <li>Browser session</li>
+          <li>Token consumption</li>
+          <li>Watchdog status</li>
+        </ul>
+      </div>
+    </div>
+
+    <p>A board issue can exist without a running worker. A worker can restart without losing the board. A schedule can reactivate a worker days later. A note outlives every worker that wrote it. This is what makes the pattern durable: the graph persists independent of any individual execution.</p>
+
+    <h2>The academic foundation: Graph of Agents</h2>
+
+    <p>The graph agent pattern has formal academic backing. The Graph-of-Agents (GoA) framework (Yun et al., arXiv:2604.17148, submitted ICLR 2026) formalizes multi-agent collaboration as a directed graph with node sampling (selecting relevant agents), directed message passing (flowing information from high-relevance to low-relevance nodes), and graph-based pooling (aggregating outputs). The key finding: graph-structured agent selection achieves superior performance using 3 agents versus baselines requiring 6 — the topology enables efficiency gains that flat ensembles cannot.</p>
+
+    <p>Separately, the broader taxonomy paper "Graphs Meet AI Agents" (arXiv:2506.18019) maps the space from static knowledge graphs through graph RAG to fully agentic graph systems where agents construct and traverse the graph at runtime. amux sits at the agentic end of that spectrum: the graph structure is not predefined — agents build it as they work.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">What is a graph agent?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">A graph agent is an AI agent that operates within a graph-structured coordination system. The term applies at two levels: the agent's internal reasoning (LangGraph's StateGraph — nodes are LLM calls, edges are routing rules) and the external coordination between multiple agents (amux — workers, board issues, schedules, and groups form a live property graph). The two levels compose: LangGraph-based agents can be nodes in an amux fleet.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">Why are graph-based agent architectures replacing chains and trees?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">Chains are sequential — they cannot represent concurrent work without becoming a graph. Trees impose a strict hierarchy that breaks when two agents need to coordinate as peers. Neither can represent feedback loops. Graph structures handle concurrency, peer coordination, and feedback loops natively. The production evidence confirms the shift: LangGraph (directed graph model) is in production at Uber, LinkedIn, Replit, and Klarna; Salesforce Agentforce runs on an explicit Agent Graph; Amazon Strands documents a Graph Multi-Agent Pattern.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">What is the difference between amux and LangGraph?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">LangGraph is a Python library you embed in your application code to define an individual agent's reasoning as a directed graph of LLM calls and tool invocations. amux is a control plane you run alongside your agents to coordinate a fleet of them. LangGraph controls what happens inside one agent turn; amux controls what happens across many agents running in parallel over days or weeks. You can run LangGraph-based agents inside an amux fleet — the two operate at different levels.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">How does amux prevent two agents from claiming the same task?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">Claiming a board issue is a compare-and-swap operation enforced by SQLite. The server atomically checks that the issue's status is still <code>todo</code> and no other worker has claimed it. If both hold, status transitions to <code>doing</code> and the claiming worker's identity is recorded. A second worker calling claim at the same time receives 409. This is equivalent to acquiring a distributed lock on a graph node.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">Can agents modify the graph at runtime?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">Yes. Workers access the same REST API the dashboard uses. An agent can create board issues (adding nodes), set <code>depends_on</code> relationships (adding edges), send tasks to other workers (traversing communication edges), create schedules (adding trigger nodes), and write shared notes (updating context nodes). The graph is mutable and open-ended — not a static workflow defined before execution begins.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">Is there academic evidence that graph agents outperform other architectures?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">The Graph-of-Agents (GoA) paper (Yun et al., arXiv:2604.17148) shows graph-structured multi-agent collaboration achieves superior performance using 3 agents versus baselines requiring 6. The graph topology enables efficiency gains that flat ensembles cannot: relevant agents are selected by node sampling, information flows directionally rather than broadcasting, and outputs are aggregated by graph-based pooling rather than naive voting.</p>
+    </details>
+
+    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+      <summary style="font-weight:600;cursor:pointer">What is the difference between GraphRAG and an agentic graph?</summary>
+      <p style="margin-top:0.75rem;font-size:0.9rem">GraphRAG (Microsoft Research, 2024) uses an LLM to induce a graph structure over a document corpus, then retrieves across that graph during queries — it is a retrieval method, not an agent orchestration method. An agentic graph (the pattern amux implements) is a live system where agents are the nodes and their coordination relationships are the edges. GraphRAG improves what an agent knows; an agentic graph coordinates what multiple agents do.</p>
+    </details>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/ai-agent-graph/">amux Is a Graph — complete task and session topology with API reference</a></li>
+      <li><a href="/guides/ai-agent-orchestration-2026/">AI Agent Orchestration in 2026 — patterns, tools, and architecture guide</a></li>
+      <li><a href="/guides/agent-to-agent-orchestration/">Agent-to-agent orchestration — send, peek, and channel primitives</a></li>
+      <li><a href="/guides/multi-agent-orchestrator-architecture/">Multi-agent orchestrator architecture — hub-and-spoke patterns</a></li>
+      <li><a href="/guides/agent-control-plane/">Agent control plane — what it means to run agents as a fleet</a></li>
+    </ul>
+
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="/">amux</a> &mdash; <a href="https://github.com/mixpeek/amux">open source</a> &mdash; <a href="/docs/">docs</a> &mdash; <a href="/blog/">blog</a> &mdash; <a href="/privacy/">privacy</a>
+    </div>
+  </footer>
+</body>
+</html>

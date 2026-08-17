@@ -672,6 +672,63 @@ TEMPLATE = {
 }
 
 
+def seed_via_envspec(org, plan):
+    """AMUX-2779 convergence: seed the DECLARATIVE env through the ONE applier
+    (`POST /api/env/apply`) that export_env.py emits for and save->redeploy
+    consumes, instead of the per-primitive create loops in main().
+
+    Ownership split, deliberate:
+      * /api/env/apply owns everything declarative and idempotent — worker
+        CONFIG (model/tags/dir/desc, written as the SAME `<name>.env` a normal
+        create writes — verified field-for-field against create_session_legacy),
+        groups, files (docs), schedules, and cards, plus the first-run prompt
+        (steered once, to newly-created workers only).
+      * seed.py keeps ONLY the two imperative side-effects apply refuses to do:
+        provisioning the org (the caller already did that) and BOOTING the tmux
+        panes. apply writes a worker's .env but never starts its pane — starting
+        a pane is not idempotent, so it stays here. The panes boot from the .env
+        apply just wrote, and the prompt apply queued lands as each pane comes up
+        (steer_enqueue delivers at the pane's first turn boundary; the applier is
+        built for exactly this "provisioned separately" order).
+
+    Returns the worker list (name-bearing dicts) so the caller can boot + verify.
+    """
+    import export_env  # lazy: export_env imports seed, so avoid an import cycle
+    envspec, retained = export_env.plan_to_envspec(plan)
+    workers = envspec.get("workers", [])
+
+    step("Apply declarative env (/api/env/apply — groups/workers/files/schedules/cards)")
+    code, resp = gw_json("POST", "/api/env/apply", body=envspec, org=org, timeout=180)
+    if code != 200 or not isinstance(resp, dict):
+        bad(f"env apply failed: HTTP {code} {str(resp)[:240]}")
+        return []
+
+    # Summarize the report by (kind, action) so a --via-apply run reads like the
+    # create loops it replaces ("worker create x3, group create x7, file create
+    # x12…"), and surface every error/write-failure loudly rather than as a 200.
+    from collections import Counter
+    report = resp.get("report", [])
+    errors = resp.get("errors", [])
+    tally = Counter((r.get("kind"), r.get("action")) for r in report)
+    for (kind, action), n in sorted(tally.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")):
+        if action == "error":
+            for r in report:
+                if r.get("kind") == kind and r.get("action") == "error":
+                    where = r.get("name") or r.get("path") or r.get("title") or ""
+                    warn(f"{kind} error: {r.get('detail', '')} [{where}]")
+        elif action == "not-yet-applied":
+            log(f"{kind} x{n} — phase-2 (parsed + reported, not written)")
+        else:
+            ok(f"{kind} {action} x{n}")
+    for e in errors:
+        bad(f"apply write error: {e}")
+
+    n_prompts = sum(1 for r in report if r.get("kind") == "worker" and r.get("prompt"))
+    if n_prompts:
+        log(f"{n_prompts} first-run prompt(s) queued — land as each pane boots")
+    return workers
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan")
@@ -691,6 +748,14 @@ def main():
                          "(enabled/command/expr) and exit, touching nothing else")
     ap.add_argument("--apply", action="store_true",
                     help="with a --prune-* mode, actually delete")
+    ap.add_argument("--via-apply", action="store_true",
+                    help="AMUX-2779 converged path: seed the declarative env "
+                         "(groups/workers/files/schedules/cards/prompts) through the "
+                         "single /api/env/apply applier — the SAME path export_env.py "
+                         "emits for and save->redeploy consumes — instead of the "
+                         "per-primitive create loops. Org provisioning and pane-booting "
+                         "stay seed-side. OPT-IN while it is proven against a live "
+                         "provision; the default flow is untouched.")
     ap.add_argument("--emit-template", action="store_true")
     a = ap.parse_args()
 
@@ -703,7 +768,15 @@ def main():
         print("FATAL: COOKIE_SECRET not set")
         return 1
 
-    plan = json.load(open(a.plan))
+    # Accept YAML or JSON. The convergence (AMUX-2779) is toward ONE format —
+    # the EnvSpec YAML that /api/env/apply reads and export_env.py emits — so a
+    # plan authored or exported as .yaml loads here without a separate converter.
+    # JSON still loads unchanged (superset), so existing plans/*.json keep working.
+    if a.plan.endswith((".yaml", ".yml")):
+        import yaml
+        plan = yaml.safe_load(open(a.plan))
+    else:
+        plan = json.load(open(a.plan))
     print(f"═══ amux workspace seed: {os.path.basename(a.plan)} ═══")
     print(f"    gateway: {GATEWAY}")
 
@@ -767,32 +840,50 @@ def main():
         print(f"  ORG: {org}")
         return 0 if FAIL == 0 else 1
 
-    if plan.get("docs"):
-        step("Upload context docs")
-        upload_docs(org, plan["docs"])
-    columns = {}
-    if plan.get("board_columns"):
-        step("Create work-category columns")
-        columns = create_board_columns(org, plan["board_columns"])
-    if plan.get("board"):
-        step("Seed board")
-        create_board(org, plan["board"], columns)
+    if a.via_apply:
+        # AMUX-2779 converged path (opt-in): one applier for all declarative
+        # content, then the two imperative side-effects apply won't do.
+        if a.run:
+            warn("--run with --via-apply: apply already steered each worker's "
+                 "first-run prompt; --run will re-send it (double-dispatch)")
+        workers = seed_via_envspec(org, plan)
+        # Boot list: prefer the plan's sessions (they carry prompt/expect that
+        # --verify reads for echo-stripping); fall back to the envspec worker
+        # names when the input was already an EnvSpec with no `sessions`.
+        sessions = plan.get("sessions") or [{"name": w["name"]} for w in workers]
+        # apply wrote each .env but never starts a pane — boot them here.
+        step("Ensure sessions are actually running")
+        ensure_sessions_live(org, sessions)
+        step("Remove first-run scaffold")
+        remove_scaffold(org, sessions)
+        schedules = []  # apply created them; run_once only fires plan schedules
+    else:
+        if plan.get("docs"):
+            step("Upload context docs")
+            upload_docs(org, plan["docs"])
+        columns = {}
+        if plan.get("board_columns"):
+            step("Create work-category columns")
+            columns = create_board_columns(org, plan["board_columns"])
+        if plan.get("board"):
+            step("Seed board")
+            create_board(org, plan["board"], columns)
 
-    step("Create sessions")
-    sessions = create_sessions(org, plan.get("sessions", []))
+        step("Create sessions")
+        sessions = create_sessions(org, plan.get("sessions", []))
 
-    # Creating a session and having one RUNNING are different facts. Re-seeding
-    # after a container was recreated finds every record intact and every tmux
-    # session gone, and without this the seeder reports a fully seeded workspace
-    # that shows nothing but the scaffold.
-    step("Ensure sessions are actually running")
-    ensure_sessions_live(org, sessions)
+        # Creating a session and having one RUNNING are different facts. Re-seeding
+        # after a container was recreated finds every record intact and every tmux
+        # session gone, and without this the seeder reports a fully seeded workspace
+        # that shows nothing but the scaffold.
+        step("Ensure sessions are actually running")
+        ensure_sessions_live(org, sessions)
 
-    step("Create schedules")
-    schedules = create_schedules(org, sessions)
+        step("Create schedules")
+        schedules = create_schedules(org, sessions)
 
-    step("Remove first-run scaffold")
-    remove_scaffold(org, sessions)
+        step("Remove first-run scaffold")
+        remove_scaffold(org, sessions)
 
     if a.run:
         step("Run once")

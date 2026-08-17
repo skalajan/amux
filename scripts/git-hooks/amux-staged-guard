@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+# ============================================================================
+# TRACKED SOURCE. Edit THIS file, then run scripts/install-hooks.sh.
+#
+# This file used to be GENERATED — `_install_amux_precommit_guard()` in
+# amux-server.py wrote it per work_dir from `_AMUX_GUARD_BODY`, and a previous
+# session's tracked copy was correctly reverted for being a SECOND producer of
+# a generated file (2026-08-06).
+#
+# That is no longer the situation, and the difference is the whole reason this
+# file exists again: amux-server.py is DELETED (rust cutover) and nothing in
+# the rust server writes this hook. The first producer is gone, so a tracked
+# copy is not a second producer — it is the ONLY one. Do not re-revert it
+# without first checking that something still generates it; if a generator
+# comes back, delete this file in the same commit that adds it.
+# ============================================================================
+# amux-staged-guard — blocks a commit whose staged set contains files that a
+# DIFFERENT amux session edited in this shared checkout (staged-state sweep,
+# AMUX-1730: two sessions share one git index, so `git add -A` in one sweeps
+# the other's in-flight WIP into an unrelated commit). Outside amux
+# ($AMUX_SESSION unset) it is a no-op — the human is always allowed.
+# Intentional cross-session commit: AMUX_ALLOW_FOREIGN=1 git commit ...
+#
+# FAIL-OPEN, BUT NEVER SILENT (2026-08-09). The previous version wrapped the
+# whole server call in `except Exception: return 0  # fail open` and printed
+# NOTHING. When the rust cutover left POST /api/git/staged-guard unrouted, the
+# endpoint answered 405 about 1,147 times an hour and this hook swallowed every
+# one: it exited 0, printed nothing, and every commit on every shared checkout
+# went unguarded for the entire window — during which two real sweeps landed.
+# Blocking commits on a server hiccup would be worse, so fail-open stays; what
+# changes is that a failure now SAYS SO, loudly, with the reason. A guard that
+# cannot report its own absence is indistinguishable from a guard that passed.
+import json, os, ssl, subprocess, sys, time, urllib.error, urllib.request
+
+# Bump on ANY change to this file, not only on a request/response contract
+# change. It is what the installed-copy inventory greps
+# (`grep -L 'GUARD_VERSION = 4' */.git/hooks/amux-staged-guard`), so a tracked
+# file that changed without moving this number makes every stale installed copy
+# read as current — the two-components-disagreeing shape this hook exists to
+# report. `scripts/install-hooks.sh` still compares bytes; this is the cheap
+# read for "which checkouts are behind".
+GUARD_VERSION = 4
+
+
+def amux_base_url():
+    """Where to reach the amux server, self-healing a STALE INHERITED PORT.
+
+    A git hook runs as a child of the `claude` process that invoked git, so it
+    inherits that process's `AMUX_URL`. About 55 live sessions predate the
+    8822 -> 8824 cutover and carry `AMUX_URL=https://localhost:8822` in their
+    process env, which cannot be rotated without killing them. That is why
+    "just fix the default" does nothing here: `os.environ.get("AMUX_URL",
+    <default>)` only consults the default when the variable is UNSET, and it
+    never is. The retired port stayed the busiest one on the machine while
+    three separate "fixes" to defaults were in place (ethos rule 1 — capability
+    that reaches nobody).
+
+    A one-shot hook has exactly one way to know its inherited URL is stale: ask
+    something on this machine that knows better. `endpoint.json` is written by
+    the server itself at boot, so the numbers are never hardcoded here — which
+    matters because they are REVERSED in the cloud image (8822 is canonical
+    there), and a hook with a baked-in `8822 -> 8824` rewrite would break it.
+
+    The rule is deliberately narrow: swap ONLY a localhost URL that is on the
+    port the server itself calls retired. A session pointed at a dev instance on
+    some other port, or at a remote amux, has made a deliberate choice and is
+    left alone.
+    """
+    url = (os.environ.get("AMUX_URL") or "").strip().rstrip("/")
+    home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+    try:
+        with open(os.path.join(home, "endpoint.json")) as fh:
+            ep = json.load(fh)
+        canonical = (ep.get("canonical_url") or "").rstrip("/")
+        # RETIRED ports, not just the currently-bound legacy one (AMUX-2946).
+        # This used to read `if legacy and canonical` — so the self-heal died
+        # the instant the legacy bind was dropped and `legacy_port` began
+        # publishing null, which is the one moment it was needed. Observed
+        # immediately: "staged-guard: NOT ENFORCED — connection refused",
+        # cross-session sweep protection off for every pre-cutover session.
+        # A retired address has to stay KNOWN after it stops being served,
+        # because the processes still naming it cannot be told anything else.
+        stale = list(ep.get("retired_ports") or [])
+        if ep.get("legacy_port"):
+            stale.append(ep["legacy_port"])
+        if canonical and stale:
+            from urllib.parse import urlsplit
+            sp = urlsplit(url)
+            # Only loopback, and only a port we KNOW we retired: a session
+            # aimed at a dev instance or a remote amux made a deliberate
+            # choice and is left alone.
+            if sp.hostname in ("localhost", "127.0.0.1", "::1") and sp.port in stale:
+                return canonical
+    except Exception:
+        # Missing/garbled file is not an error: fall back to the inherited URL,
+        # which is what every version before this one did. NB the old comment
+        # here reasoned "the legacy bind still answers, so the worst case is the
+        # status quo" — true until 2026-08-11, when the bind went and the worst
+        # case became a guard that cannot reach the server at all. It fails
+        # LOUDLY and records to staged-guard-unenforced.jsonl, which is how this
+        # was caught, but the fallback is no longer harmless.
+        pass
+    return url or "https://localhost:8824"
+
+
+# ---------------------------------------------------------------------------
+# THE UNENFORCED LEDGER (AMUX-2807).
+#
+# This guard FAILS OPEN, which is the right default — failing closed would brick
+# every lane whenever the server bounces, and the server bounces on every commit
+# that touches crates/ (the builder installs a new binary and the running server
+# self-adopts). But a bypass that leaves no trace is the ethos-6 defect: the one
+# escape from the whole protection is the one action with no record, while the
+# message says "OFF for this commit" and then forgets.
+#
+# So every NOT-ENFORCED outcome is appended here, on the LOCAL disk, deliberately
+# not via the server — the server being unreachable is the commonest reason we
+# are in this path at all. A dependency you cannot reach cannot be your audit log.
+UNENFORCED_LOG = os.path.join(
+    os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),
+    "staged-guard-unenforced.jsonl")
+
+
+def record_unenforced(reason, sess, paths):
+    """Append one unguarded commit. Never raises: an audit failure must not
+    become a commit failure."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        with open(UNENFORCED_LOG, "a") as fh:
+            fh.write(json.dumps({
+                "ts": time.time(), "session": sess, "reason": reason,
+                "paths": len(paths), "head_before": head,
+                "guard_version": GUARD_VERSION,
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def report_unenforced_backlog(w, sess):
+    """Surface the ledger WHERE THE READER ALREADY IS — on the next commit whose
+    guard actually ran. A count in a file nobody opens is the same failure as no
+    count (ethos rule 4, second layer: the blindness just moves). Entries are
+    marked reported so this announces a backlog once, not forever."""
+    try:
+        if not os.path.exists(UNENFORCED_LOG):
+            return
+        with open(UNENFORCED_LOG) as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+        new = [r for r in rows if not r.get("reported")]
+        if not new:
+            return
+        oldest = min(r.get("ts", 0) for r in new)
+        mine = sum(1 for r in new if r.get("session") == sess)
+        w("\namux staged-guard: %d COMMIT(S) LANDED UNGUARDED since %s (%d by you, %s).\n"
+          "  Sweep protection was off for those — a peer's work could be in them and nothing compared it.\n"
+          "  %s\n"
+          "  Reasons: %s\n"
+          % (len(new), time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)), mine, sess,
+             UNENFORCED_LOG,
+             ", ".join(sorted({(r.get("reason") or "?")[:60] for r in new}))))
+        for r in rows:
+            r["reported"] = True
+        with open(UNENFORCED_LOG, "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+    except Exception:
+        pass
+
+
+def main():
+    sess = os.environ.get("AMUX_SESSION", "")
+    # AMUX_VERIFIED_SOLO is the HONEST half of the same exit (AF-26). Both skip the
+    # check; they differ in what the operator asserts, and that difference is the point —
+    # ALLOW_FOREIGN says "their work is in it and I mean to ship it", VERIFIED_SOLO says
+    # "I read the staged diff and none of it is theirs". Clearing a FALSE positive
+    # previously required claiming the first, which is ethos rule 3: a constraint with no
+    # truthful path forward in a legitimate state.
+    if not sess or os.environ.get("AMUX_ALLOW_FOREIGN") or os.environ.get("AMUX_VERIFIED_SOLO"):
+        return 0
+    w = sys.stderr.write
+    try:
+        staged = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"],
+                                capture_output=True, text=True, timeout=10)
+        paths = [p for p in staged.stdout.split("\0") if p.strip()]
+        if not paths:
+            return 0
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True,
+                             timeout=10).stdout.strip() or os.getcwd()
+    except Exception as e:
+        # Even the local git calls report themselves now. This branch means the
+        # guard never got as far as asking, which is not the same as "clean".
+        w("amux staged-guard: SKIPPED — could not read the staged set (%r). "
+          "Cross-session sweep protection is OFF for this commit.\n" % (e,))
+        record_unenforced("staged-set-unreadable: %r" % (e,), sess, [])
+        return 0
+
+    url = amux_base_url() + "/api/git/staged-guard"
+    body = json.dumps({"session": sess, "dir": top, "paths": paths,
+                       "op": "commit", "guard_version": GUARD_VERSION}).encode()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json", "X-Amux-Session": sess})
+    # THREE distinct failure classes, three distinct messages. They used to be
+    # one silent `except`, and the difference between them is the difference
+    # between "start the server", "your server is too old / the route is gone",
+    # and "the server is broken" — a reader who is told only "it failed" cannot
+    # act, and a reader who is told nothing does not know to.
+    # RETRY A CONNECTION FAILURE, ONCE-PLUS. A single 5s attempt is brittle
+    # against a dependency that THIS WORKFLOW restarts: committing to crates/
+    # makes the builder install a new binary and the running server self-adopt,
+    # so the very next lane's commit can arrive mid-bounce. amux-cloud lost two
+    # consecutive commits' protection to timeouts (AMUX-2807).
+    #
+    # Only connection-level failures are retried. An HTTP error is a DEFINITIVE
+    # answer — a 404 means the route is gone and no amount of waiting fixes it,
+    # and retrying it would just triple the delay before the same message.
+    raw = None
+    last_err = None
+    t0 = time.time()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+                raw = r.read().decode()
+            break
+        except urllib.error.HTTPError:
+            # Definitive — re-raised below so the existing per-code messages,
+            # which tell the reader how to ACT on each, stay the only place
+            # those are written.
+            raw = None
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(1.5)
+    if raw is None and last_err is not None:
+        # Report the MEASURED elapsed, not a guess at it: a connection refused
+        # instantly and a connection that timed out three times are ~3s and ~18s,
+        # and telling the reader which one they had is the difference between
+        # "the server is down" and "the server is wedged or the network is".
+        w("\namux staged-guard: NOT ENFORCED — could not reach the amux server at %s "
+          "after 3 attempts over %.1fs (%r).\n"
+          "  Cross-session sweep protection is OFF for this commit — RECORDED in %s\n"
+          % (url, time.time() - t0, last_err, UNENFORCED_LOG))
+        record_unenforced("unreachable after %.1fs: %r" % (time.time() - t0, last_err), sess, paths)
+        return 0
+    try:
+        if raw is None:
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+                raw = r.read().decode()
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (e.read().decode() or "")[:200]
+        except Exception:
+            pass
+        if e.code in (404, 405, 501):
+            w("\namux staged-guard: NOT ENFORCED — the amux server does not route "
+              "POST /api/git/staged-guard (HTTP %d).\n"
+              "  Cross-session sweep protection is OFF for this commit and every other "
+              "commit on this machine.\n"
+              "  This is the exact failure that went unnoticed for the whole rust cutover. "
+              "Update the server, then check:  curl -sk -X POST -d '{}' %s\n"
+              % (e.code, url))
+        else:
+            w("\namux staged-guard: NOT ENFORCED — the server errored (HTTP %d) %s\n"
+              "  Cross-session sweep protection is OFF for this commit.\n"
+              % (e.code, detail))
+        record_unenforced("http-%d" % e.code, sess, paths)
+        return 0
+    except Exception as e:
+        w("\namux staged-guard: NOT ENFORCED — could not reach the amux server at %s (%r).\n"
+          "  Cross-session sweep protection is OFF for this commit.\n" % (url, e))
+        return 0
+    try:
+        d = json.loads(raw)
+    except Exception:
+        w("\namux staged-guard: NOT ENFORCED — the server answered non-JSON (%r).\n"
+          "  Cross-session sweep protection is OFF for this commit.\n" % (raw[:200],))
+        record_unenforced("non-json", sess, paths)
+        return 0
+    if not isinstance(d, dict):
+        w("\namux staged-guard: NOT ENFORCED — unexpected response shape.\n")
+        record_unenforced("bad-shape", sess, paths)
+        return 0
+
+    # UNDECIDED is not ALL-CLEAR. The server says so explicitly because the two
+    # are byte-identical otherwise: empty foreign/shared/unclaimed lists (ethos
+    # rule 4 — a wrong answer must be detectable from what you keep).
+    # The guard reached the server, so this is the moment the reader is looking
+    # at its output — the only moment a backlog of unguarded commits will be
+    # read. Announced before the verdict so it is not lost under a long report.
+    report_unenforced_backlog(w, sess)
+
+    if d.get("undecided"):
+        w("\namux staged-guard: COULD NOT DECIDE — %s\n"
+          "  The empty verdict below is NOT a clean bill of health; nothing was compared.\n"
+          % (d.get("reason") or "no reason given",))
+    for note in (d.get("degraded") or []):
+        # A verdict WAS computed but may UNDER-report — the dangerous direction.
+        w("amux staged-guard: PARTIAL — %s\n" % note)
+    if d.get("enabled") is False:
+        w("amux staged-guard: DISABLED on the server (AMUX_STAGED_GUARD=0) — "
+          "cross-session sweep protection is OFF.\n")
+
+    # SHARED paths are not blocked — both sessions edited them, so the committer
+    # has a legitimate claim and blocking would deadlock the file. But say it out
+    # loud (AMUX-2332): in a single-file project this is the NORMAL case on the
+    # only file that matters, so the guard was silent on exactly the sweeps most
+    # likely to happen. `git add -A` here takes the other session's in-flight
+    # hunks too, and their `git commit` then reports "nothing to commit".
+    for f in (d.get("shared") or []):
+        mins = int((f.get("age_secs") or 0) / 60)
+        _n = ""
+        try:
+            _ns = subprocess.run(
+                ["git", "diff", "--cached", "--numstat", "--", f.get("path") or ""],
+                capture_output=True, text=True, timeout=5).stdout.split()
+            if len(_ns) >= 2 and _ns[0].isdigit():
+                _n = " This commit stages %s insertions / %s deletions there — if that is " \
+                     "MORE than you wrote, their work is in it." % (_ns[0], _ns[1])
+        except Exception:
+            _n = ""
+        # AC-297: upgrade from NOTE to WARNING when the file has unstaged changes
+        # right now. That is the FACT — someone has uncommitted work in a file
+        # you are about to commit whole.
+        _level = "WARNING" if f.get("has_unstaged_changes") else "NOTE"
+        # RECIPE CORRECTED (AC-303). This printed `git diff -U0` + `git apply
+        # --cached`, and that pairing produced FOUR unbuildable commits on
+        # 2026-08-08 — all the same shape, a `try:` in main() whose body came
+        # from the hunk that was trimmed out. Zero-context hunks carry no anchor
+        # lines, so a trimmed patch lands at a stale offset precisely when the
+        # hunks you dropped share a region with the ones you kept, which is the
+        # normal case for co-edited code and therefore the only case this notice
+        # fires in. Default context + --check makes git VERIFY placement and
+        # refuse.
+        # AF-24: '(unknown)' is the NO-PEER placeholder from the server's shared
+        # branch, not a session name. Rendering it as "also edited by session
+        # '(unknown)'" asserts a co-editor who does not exist — the real fact is
+        # that YOU edited it and it has uncommitted changes.
+        _who = ("was also edited by session '%s' %dm ago" % (f.get("owner"), mins)
+                if f.get("peer")
+                else "is yours and has uncommitted changes right now — no other "
+                     "session edited it")
+        w("amux staged-guard: %s — %s %s.%s\n"
+          "  Reconcile the count above against what you believe you wrote — that is the "
+          "check that caught this class twice.\n"
+          "  Keep only your hunks:  git diff %s > /tmp/mine.patch  (trim to yours)  &&  "
+          "git apply --cached --check /tmp/mine.patch  &&  git apply --cached /tmp/mine.patch\n"
+          "  Do NOT use -U0/--unidiff-zero: it disables context checking and lands hunks at "
+          "stale offsets (four unbuildable commits, 2026-08-08).\n"
+          "  Then verify the STAGED blob, not the worktree:  git show \":%s\" | "
+          "python3 -c 'import ast,sys; ast.parse(sys.stdin.read())'\n"
+          % (_level, f.get("path"), _who, _n, f.get("path"), f.get("path")))
+    # THE BELT (AMUX-2443 / AF-19 residual / AC-297 — three sightings, one gap):
+    # staged paths with NO edit record from ANY session in the window were
+    # invisible to both classifications above, and a plain commit ships them
+    # under the committer's name (762e06e swept exactly this shape, hours past
+    # the window). Not blocked — no owner to defer to — but silence is what
+    # made it a sweep.
+    _unc = d.get("unclaimed") or []
+    if _unc:
+        _up = ", ".join((f.get("path") or "") for f in _unc[:6]) \
+              + ((" (+%d more)" % (len(_unc) - 6)) if len(_unc) > 6 else "")
+        w("amux staged-guard: UNCLAIMED STAGED PATHS — no edit record from ANY "
+          "session in the window: " + _up + "\n"
+          "  If these are yours from earlier, fine. If you do not recognize one, "
+          "a peer staged it before the window and a plain commit ships it under "
+          "YOUR name. Commit path-scoped (git commit -- <your paths>) or "
+          "unstage (git restore --staged -- <path>).\n")
+    foreign = d.get("foreign") or []
+    if not foreign:
+        return 0
+    w("\namux staged-guard: COMMIT BLOCKED — staged files were edited by "
+      "OTHER amux sessions sharing this checkout:\n\n")
+    for f in foreign:
+        mins = int((f.get("age_secs") or 0) / 60)
+        _w = f.get("why")
+        w("  %s   (edited by session '%s' %dm ago)%s\n"
+          % (f.get("path"), f.get("owner"), mins,
+             ("\n      %s" % _w) if _w else ""))
+    w("\nUnstage them:   git restore --staged "
+      + " ".join(f.get("path", "") for f in foreign) + "\n")
+    # AF-26. Two separate defects, both about an honest exit.
+    #
+    # 1. This verdict is derived from edit RECORDS in a time window; it never reads
+    #    the staged patch. So it can fire when the staged diff verifiably contains
+    #    none of the peer's work. Tell the reader how to CHECK that, instead of
+    #    leaving "am I about to sweep someone?" unanswerable at the moment they
+    #    must answer it.
+    # 2. The only documented escape was AMUX_ALLOW_FOREIGN=1, described as "if this
+    #    cross-session commit is intentional". Clearing a FALSE positive therefore
+    #    required asserting the commit was cross-session when it was not — ethos
+    #    rule 3. The honest case now has an honest name.
+    w("\nVERIFY BEFORE OVERRIDING — this verdict comes from edit records in a time\n"
+      "window, NOT from the staged diff, so check whether their work is actually in it:\n")
+    for f in foreign:
+        w("  git diff --cached -- %s        # is any of this theirs?\n" % f.get("path", ""))
+    w("\nThen take the exit that is TRUE:\n"
+      "  AMUX_ALLOW_FOREIGN=1 git commit ...   # yes, their work is in it, and I mean to ship it\n"
+      "  AMUX_VERIFIED_SOLO=1 git commit ...   # I checked the staged diff: none of it is theirs\n\n")
+    return 1
+
+
+# Guarded so `amux_base_url` can be imported (install-hooks.sh reuses it rather
+# than writing a THIRD copy of the stale-port rule — a rule spelled three ways
+# is a rule that will disagree with itself the first time one copy changes).
+if __name__ == "__main__":
+    sys.exit(main())

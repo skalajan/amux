@@ -40,12 +40,21 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/lists/">Lists</a> <span class="sep">›</span> <span>Open Source AI Coding Tools 2026</span></div>
 
     <h1>Best Open Source AI Coding Tools 2026</h1>
-    <p class="subtitle">Only OSS tools — license, GitHub stars, language, and honest strengths. No SaaS wrappers. Last updated July 2026.</p>
+    <p class="subtitle">Only OSS tools — license, GitHub stars, language, and honest strengths. No SaaS wrappers. Last updated August 2026.</p>
+
+    <!-- EXP-032: top-of-page CTA — open-source list, started 2026-08-12 -->
+    <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1rem 1.4rem;margin:1.2rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600;font-size:.92rem;margin-bottom:3px">amux is the open-source fleet orchestrator on this list</div>
+        <div style="font-size:0.82rem;color:var(--dim)">MIT licensed. Single Rust binary. Run Claude Code, Codex, and Gemini CLI agents in parallel from your terminal or phone.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:.5rem 1.1rem;border-radius:6px;font-weight:600;font-size:.85rem;white-space:nowrap;flex-shrink:0" onclick="typeof posthog!=='undefined'&&posthog.capture('exp032_oss_list_topofpage_cta_click')">View on GitHub ★</a>
+    </div>
 
     <table>
       <thead><tr><th>Tool</th><th>License</th><th>Language</th><th>Type</th><th>Model provider</th></tr></thead>
       <tbody>
-        <tr><td><strong>amux</strong></td><td>MIT + Commons Clause</td><td>Python</td><td>Fleet orchestrator</td><td>Any (Claude Code, Codex, Gemini CLI)</td></tr>
+        <tr><td><strong>amux</strong></td><td>MIT + Commons Clause</td><td>Rust</td><td>Fleet orchestrator</td><td>Any (Claude Code, Codex, Gemini CLI)</td></tr>
         <tr><td><strong>Aider</strong></td><td>Apache 2.0</td><td>Python</td><td>Terminal agent</td><td>Any LLM (incl. local Ollama)</td></tr>
         <tr><td><strong>Cline / Roo Code</strong></td><td>Apache 2.0 / MIT</td><td>TypeScript</td><td>VS Code extension</td><td>Any (Claude, GPT-4, Gemini, local)</td></tr>
         <tr><td><strong>OpenHands</strong></td><td>MIT</td><td>Python</td><td>Autonomous agent + sandbox</td><td>Claude, GPT-4, local</td></tr>
@@ -57,7 +66,7 @@
     </table>
 
     <h2>amux — Fleet orchestrator</h2>
-    <p>amux is the only tool on this list focused purely on orchestration rather than being a coding agent itself. It manages fleets of Claude Code, Codex, or Gemini CLI sessions — self-healing, shared kanban board, web dashboard, native iOS app. Single Python file, zero external dependencies. <strong>The essential complement to any terminal-based coding agent.</strong></p>
+    <p>amux is the only tool on this list focused purely on orchestration rather than being a coding agent itself. It manages fleets of Claude Code, Codex, or Gemini CLI sessions — self-healing, shared kanban board, web dashboard, native iOS app. Single Rust binary, zero external dependencies. <strong>The essential complement to any terminal-based coding agent.</strong></p>
     <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a> · <a href="/">amux.io</a></p>
 
     <h2>Aider — The original open-source coding agent</h2>

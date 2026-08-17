@@ -389,7 +389,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   $AMUX_URL/api/board
 
 # Subscribe to the iCal feed
-# Local: https://localhost:8822/api/calendar.ics
+# Local: https://localhost:8824/api/calendar.ics
 # S3 (public, stable): configure AMUX_S3_BUCKET in ~/.amux/server.env</code></pre>
 
     <p>Subscribe the iCal URL from Google Calendar, Apple Calendar, or any calendar app that supports iCal feeds. The feed auto-updates on every board write — when an agent marks a task done, the calendar event disappears within the next calendar sync.</p>
@@ -433,7 +433,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem"><code>POST</code></td>
           <td style="padding:0.6rem 0.75rem"><code>/api/board/clear-done</code></td>
-          <td style="padding:0.6rem 0.75rem">Archive all tasks in done or verified status</td>
+          <td style="padding:0.6rem 0.75rem">Archive every task with status <code>done</code> (recoverable; returns the count)</td>
         </tr>
         <tr>
           <td style="padding:0.6rem 0.75rem"><code>GET</code></td>
@@ -456,9 +456,9 @@ amux board todo TASK-ID          # move back to todo</code></pre>
 
     <div class="cta-box">
       <h3>Coordinate your AI engineering team with amux</h3>
-      <p>Open-source control plane for parallel Claude Code, Codex, and Gemini CLI agents. SQLite-backed kanban, atomic claiming, iCal sync, phone management. Single Python file, zero external dependencies.</p>
+      <p>Open-source control plane for parallel Claude Code, Codex, and Gemini CLI agents. SQLite-backed kanban, atomic claiming, iCal sync, phone management. Single Rust binary, zero external dependencies.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux serve  # → https://localhost:8822
+amux serve  # → https://localhost:8824
 amux board add "First task"  # post work for your agents</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>

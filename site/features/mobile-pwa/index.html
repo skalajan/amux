@@ -23,7 +23,7 @@
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"iOS App & Mobile","item":"https://amux.io/features/mobile-pwa/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux iOS App — The Remote Control for Your AI Engineering Team (2026)","description":"The amux iOS app is the remote control for your AI engineering team. Monitor live Claude Code sessions, approve actions, inspect terminal output, and recover stalled agents — from anywhere.","datePublished":"2026-07-11","dateModified":"2026-07-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/features/mobile-pwa/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What does the amux iOS app actually do?","acceptedAnswer":{"@type":"Answer","text":"It's the remote control for your AI engineering team. The app connects to your amux server and lets you monitor live Claude Code sessions, approve pending actions, inspect terminal output via the peek panel, steer agents with new instructions, manage the kanban board, and recover stalled sessions — all from your iPhone. It doesn't create agents; it monitors and manages them while they run on your laptop or server."}},{"@type":"Question","name":"Is the iOS app different from the web dashboard?","acceptedAnswer":{"@type":"Answer","text":"The iOS app is optimized for one-handed mobile use with touch targets ≥44px, a native SwiftUI feel, and a peek panel that reflows to phone width. The web dashboard is the full desktop experience. Both connect to the same amux server, so changes sync in real time."}},{"@type":"Question","name":"How do I connect when I'm away from home?","acceptedAnswer":{"@type":"Answer","text":"Use amux tunnel (amux tunnel start 8822 — requires amux cloud subscription) for a stable public HTTPS URL at https://<id>.t.amux.io/. Or use Tailscale for encrypted remote access. Both work with the iOS app."}},{"@type":"Question","name":"What can I do from the iOS app?","acceptedAnswer":{"@type":"Answer","text":"You can: see all agent sessions with live status; peek at terminal output and the plan strip for any agent; send steering instructions; continue, stop, or restart sessions; manage board issues; check notes and CRM; and approve permission prompts before agents stall."}},{"@type":"Question","name":"Is there an Android app?","acceptedAnswer":{"@type":"Answer","text":"There's no native Android app, but amux's dashboard is a full Progressive Web App (PWA). Open your amux URL in Chrome for Android and tap 'Add to Home Screen' — you get a standalone installable app with offline action queuing via Background Sync."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What does the amux iOS app actually do?","acceptedAnswer":{"@type":"Answer","text":"It's the remote control for your AI engineering team. The app connects to your amux server and lets you monitor live Claude Code sessions, approve pending actions, inspect terminal output via the peek panel, steer agents with new instructions, manage the kanban board, and recover stalled sessions — all from your iPhone. It doesn't create agents; it monitors and manages them while they run on your laptop or server."}},{"@type":"Question","name":"Is the iOS app different from the web dashboard?","acceptedAnswer":{"@type":"Answer","text":"The iOS app is optimized for one-handed mobile use with touch targets ≥44px, a native SwiftUI feel, and a peek panel that reflows to phone width. The web dashboard is the full desktop experience. Both connect to the same amux server, so changes sync in real time."}},{"@type":"Question","name":"How do I connect when I'm away from home?","acceptedAnswer":{"@type":"Answer","text":"Use amux tunnel (amux tunnel start 8824 — requires amux cloud subscription) for a stable public HTTPS URL at https://<id>.t.amux.io/. Or use Tailscale for encrypted remote access. Both work with the iOS app."}},{"@type":"Question","name":"What can I do from the iOS app?","acceptedAnswer":{"@type":"Answer","text":"You can: see all agent sessions with live status; peek at terminal output and the plan strip for any agent; send steering instructions; continue, stop, or restart sessions; manage board issues; check notes and CRM; and approve permission prompts before agents stall."}},{"@type":"Question","name":"Is there an Android app?","acceptedAnswer":{"@type":"Answer","text":"There's no native Android app, but amux's dashboard is a full Progressive Web App (PWA). Open your amux URL in Chrome for Android and tap 'Add to Home Screen' — you get a standalone installable app with offline action queuing via Background Sync."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -96,7 +96,7 @@
     </ul>
 
     <h3>B. Progressive Web App (iOS &amp; Android)</h3>
-    <p>Open your amux server URL (<code>http://&lt;your-laptop-ip&gt;:8822</code>) in Safari (iOS) or Chrome (Android) and tap &ldquo;Add to Home Screen.&rdquo;</p>
+    <p>Open your amux server URL (<code>http://&lt;your-laptop-ip&gt;:8824</code>) in Safari (iOS) or Chrome (Android) and tap &ldquo;Add to Home Screen.&rdquo;</p>
     <ul>
       <li>Standalone full-screen icon &mdash; feels like a native app</li>
       <li>Offline action queue via Background Sync</li>
@@ -111,7 +111,7 @@
           <tr><th>Option</th><th>Setup</th><th>Works away from home</th><th>Cost</th></tr>
         </thead>
         <tbody>
-          <tr><td><strong>amux tunnel</strong></td><td><code>amux tunnel start 8822</code></td><td>Yes &mdash; stable <code>*.t.amux.io</code> URL</td><td><a href="/cloud/">Cloud subscription</a></td></tr>
+          <tr><td><strong>amux tunnel</strong></td><td><code>amux tunnel start 8824</code></td><td>Yes &mdash; stable <code>*.t.amux.io</code> URL</td><td><a href="/cloud/">Cloud subscription</a></td></tr>
           <tr><td><strong>Tailscale</strong></td><td>Install on laptop + phone, join same tailnet</td><td>Yes &mdash; encrypted mesh VPN</td><td>Free tier available</td></tr>
           <tr><td><strong>LAN only</strong></td><td>None</td><td>No &mdash; same network only</td><td>Free</td></tr>
           <tr><td><strong>Cloud VPS</strong></td><td>Run amux on a server with public IP</td><td>Yes &mdash; direct IP access</td><td>VPS cost</td></tr>
@@ -147,7 +147,7 @@
     <p>The iOS app is optimized for one-handed mobile use with touch targets &ge;44px, a native SwiftUI feel, and a peek panel that reflows to phone width. The web dashboard is the full desktop experience. Both connect to the same amux server, so changes sync in real time.</p>
 
     <h3>How do I connect when I&rsquo;m away from home?</h3>
-    <p>Use <a href="/features/tunnel/">amux tunnel</a> (<code>amux tunnel start 8822</code> &mdash; requires <a href="/cloud/">amux cloud</a>) for a stable public HTTPS URL. Or use Tailscale for encrypted remote access over any network. Both work seamlessly with the iOS app.</p>
+    <p>Use <a href="/features/tunnel/">amux tunnel</a> (<code>amux tunnel start 8824</code> &mdash; requires <a href="/cloud/">amux cloud</a>) for a stable public HTTPS URL. Or use Tailscale for encrypted remote access over any network. Both work seamlessly with the iOS app.</p>
 
     <h3>What can I do from the iOS app?</h3>
     <p>You can: see all agent sessions with live status dots; peek at terminal output and the plan strip for any agent; send steering instructions; continue, stop, or restart sessions; manage board issues; check notes and CRM; and approve permission prompts before agents stall.</p>
@@ -157,11 +157,11 @@
 
     <div class="cta-box">
       <h3>Build agents anywhere. Operate them from anywhere.</h3>
-      <p>amux is an open-source control plane for AI coding agents &mdash; self-healing, phone-first, MIT licensed, single Python file.</p>
+      <p>amux is an open-source control plane for AI coding agents &mdash; self-healing, phone-first, MIT licensed, single Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;align-items:center">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#11088; Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>

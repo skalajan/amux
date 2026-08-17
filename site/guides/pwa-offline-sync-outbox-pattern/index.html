@@ -395,7 +395,7 @@ runOutboxReplay();</code></pre>
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — AI engineering team dashboard, offline-first PWA (311★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Run dozens of Claude Code, Codex, and Gemini CLI agents from your phone. The outbox pattern described here is live in the amux iOS PWA — open source, single Python file, MIT licensed. The full implementation is in amux-server.py.</div>
+        <div style="color:var(--muted);font-size:.9rem">Run dozens of Claude Code, Codex, and Gemini CLI agents from your phone. The outbox pattern described here is live in the amux iOS PWA — open source, single Rust binary, MIT licensed. The full implementation is in amux-server-rs.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -419,10 +419,10 @@ runOutboxReplay();</code></pre>
 
     <div class="cta-box">
       <h3>Try amux — offline-first AI agent dashboard</h3>
-      <p>Open-source control plane for AI agent teams with offline sync, self-healing watchdog, and phone-first management. Single Python file, MIT licensed.</p>
+      <p>Open-source control plane for AI agent teams with offline sync, self-healing watchdog, and phone-first management. Single Rust binary, MIT licensed.</p>
       <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/getting-started/">Getting Started</a>
     </div>

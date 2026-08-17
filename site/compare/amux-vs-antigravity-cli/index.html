@@ -82,11 +82,11 @@
 
     <p>
       amux is an <strong>open-source control plane for AI agent teams</strong> — run dozens of parallel coding agents from your phone or browser with self-healing, kanban, CRM, and email built in.
-      It is distributed as a single Python file with zero external dependencies, and installs in under a minute. MIT licensed.
+      It is distributed as a single Rust binary with zero external dependencies, and installs in under a minute. MIT licensed.
     </p>
     <p>
       At its core, amux wraps any terminal-based AI agent — Claude Code, Antigravity CLI, OpenAI Codex CLI, or any headless subprocess — in a named tmux session, then monitors that session for health.
-      If a session goes silent (context overflow, stuck tool call, network hiccup), amux compacts or restarts it automatically. The dashboard at <code>https://localhost:8822</code> shows every session's last output and status in real time, from any device.
+      If a session goes silent (context overflow, stuck tool call, network hiccup), amux compacts or restarts it automatically. The dashboard at <code>https://localhost:8824</code> shows every session's last output and status in real time, from any device.
     </p>
     <p>
       Beyond session management: amux ships with a built-in kanban board for task routing across sessions, a notes system for shared context, a CRM for contacts, an email API, browser automation, and a scheduler for recurring agent tasks. It is designed to be the single place where a small team runs an AI engineering function.

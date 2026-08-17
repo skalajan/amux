@@ -268,7 +268,7 @@ CDN layer is sufficient. Write a brief analysis and a test suite. PR draft."</co
 
     <h3>Step 4: Monitor from the dashboard</h3>
     <p>All three forks post updates to the amux board. Open the dashboard to see their progress in the kanban view:</p>
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux serve  # → https://localhost:8822</code></pre>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux serve  # → https://localhost:8824</code></pre>
     <p>Each fork's status is visible under its session name. You can peek at any fork's output without switching terminals:</p>
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux peek myproject-fork-1 --lines 50
 amux peek myproject-fork-2 --lines 50</code></pre>
@@ -516,11 +516,11 @@ the hot path, one prototyping the new search feature. Post results to board.",
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Single Python file, zero external dependencies, MIT licensed.</p>
+      <p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Single Rust binary, zero external dependencies, MIT licensed.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/running-10-plus-agents/" style="margin-left:0.75rem;">Running 10+ agents →</a>
     </div>

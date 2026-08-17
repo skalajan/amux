@@ -77,7 +77,7 @@ amux start webapp/api --prompt "Add pagination to the /users endpoint"
 amux start webapp/frontend --prompt "Build the user list page with infinite scroll"
 amux start webapp/tests --prompt "Write integration tests for the /users endpoint"
 amux start webapp/docs --prompt "Update the API docs for the /users endpoint"</code></pre>
-    <p>Each session is an independent Claude Code instance running in its own tmux pane, with full access to the repository. The amux dashboard at <code>https://localhost:8822</code> gives you a real-time view of what every agent is doing, including live terminal output, token spend, and git diffs.</p>
+    <p>Each session is an independent Claude Code instance running in its own tmux pane, with full access to the repository. The amux dashboard at <code>https://localhost:8824</code> gives you a real-time view of what every agent is doing, including live terminal output, token spend, and git diffs.</p>
 
     <h2>Pattern: test writer + implementer</h2>
     <p>One of the most effective multi-agent pair programming patterns is running a test-writing agent alongside an implementation agent. This mirrors the test-driven development (TDD) workflow, but with actual parallelism:</p>
@@ -129,16 +129,16 @@ amux start myapp/refactor-tests --prompt "Update all test files in tests/
     <pre><code># A lead agent can create subtasks for other agents
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Implement user model","session":"worker-1","status":"todo"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Write API endpoints","session":"worker-2","status":"todo"}' \
-  https://localhost:8822/api/board
+  https://localhost:8824/api/board
 
 # Worker agents poll for their tasks and claim them atomically
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"session":"worker-1"}' \
-  https://localhost:8822/api/board/TASK-ID/claim</code></pre>
+  https://localhost:8824/api/board/TASK-ID/claim</code></pre>
 
     <h2>Managing git with multiple agents</h2>
     <p>The biggest practical challenge with multi-agent pair programming is git. When multiple agents are writing code in the same repository, merge conflicts are inevitable without guardrails.</p>
@@ -178,13 +178,13 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject --sessions 4
 
 # Open the dashboard to see all agents working
-amux serve  # https://localhost:8822</code></pre>
+amux serve  # https://localhost:8824</code></pre>
     <p>From the dashboard, you can watch each agent's terminal output in real-time, see token spend per session, review git diffs, and send messages to individual agents. The shift from single-agent to multi-agent pair programming is less a new tool and more a new way of thinking about your role as a developer: less typing, more directing.</p>
 
     <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

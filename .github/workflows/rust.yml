@@ -1,0 +1,78 @@
+name: rust
+# CI for the Rust rebuild (Phase 0 seed of the RR-Phase-10 pipeline).
+# Grows stages as phases land: Playwright golden scenarios, perf baselines,
+# migration rehearsal. Every stage here must be able to FAIL (ethos rule 7).
+on:
+  push:
+    branches: [main]
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**', '.github/workflows/rust.yml']
+  pull_request:
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (workspace)
+        run: cargo check --workspace --all-targets
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+
+  e2e:
+    # PR Full Gate tier (plan §CI tiers): the golden scenarios in a real
+    # browser against the real server + real extracted dashboard.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Install Playwright
+        # webkit is NOT optional: the ios-safari project (devices['iPhone 15'])
+        # is a webkit project, and this job runs EVERY project (no --project
+        # filter below). A missing browser is a hard error, not a skip:
+        # "browserType.launch: Executable doesn't exist at .../webkit-2336".
+        # Installing it here rather than gating the project to skip is
+        # deliberate — a skipping ios-safari target reads as covered and is
+        # worse than none, and the whole reason that project exists is that
+        # desktop+mobile chromium at 375px went green while the real phone was
+        # broken (AMUX-3057).
+        run: npm ci --ignore-scripts 2>/dev/null || npm install; npx playwright install --with-deps chromium webkit
+      - name: SPA static gate (no-undef kills the silent-dead-handler class)
+        # Two silent-dead-handler bugs shipped in one week (schedule delete,
+        # worker delete 2026-08-09): an undefined name in an async handler makes
+        # the click do nothing. This gate fails the build on that class.
+        run: bash scripts/spa-lint.sh
+      # The CI checkout IS committed HEAD, so serve-head's worktree hop is
+      # pure duplicate work here — and worse: without these env vars the
+      # prebuild below went to ./target while serve-head defaulted to
+      # ~/.amux/rust-build-target, so CI paid a SECOND, uncached cold build
+      # inside the webServer boot on every run (the old step comment claimed
+      # the profile was "shared with webServer"; it stopped being true the
+      # day serve-head started setting CARGO_TARGET_DIR — AMUX-2961).
+      - name: Build server (the exact debug profile the webServer boots)
+        run: cargo build -p amux-server
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Golden scenarios (desktop + mobile + ios-safari)
+        run: npx playwright test --config e2e/playwright.config.ts
+        env:
+          AMUX_E2E_WORKING_TREE: '1'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7

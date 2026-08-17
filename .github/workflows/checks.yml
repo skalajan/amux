@@ -1,7 +1,11 @@
 name: checks
-# Contribution gate: syntax + the full test suite on every push and PR.
-# Collaborators push straight to main (no local hook guaranteed) — this is the
-# net that catches what a missing pre-commit hook lets through.
+# Contribution gate. The Python-era steps (ast.parse of amux-server.py, inline
+# <script> extraction, check_client_refs, pytest) were removed with the Python
+# server on 2026-08-09 — the Rust build/lint/test gates live in rust.yml.
+# What remains is the repo-wide SECRET SCAN, which is language-agnostic and
+# must run on every push: collaborators push straight to main (no local hook
+# guaranteed), and AC-239 was four credentials committed in a PUBLIC repo that
+# only a CI-side scan would have caught.
 on:
   push:
     branches: [main]
@@ -13,29 +17,65 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - name: Python syntax (amux-server.py parses)
-        run: python3 -c "import ast; ast.parse(open('amux-server.py').read())"
-      - name: JS syntax (inline dashboard script parses)
+      - name: Secret scan (the pre-commit hook, in CI)
         run: |
-          python3 - <<'PY'
-          import re, subprocess, sys, tempfile, os
-          content = open('amux-server.py').read()
-          m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
-          if not m:
-              print('WARNING: no <script> block found'); sys.exit(0)
-          fd, path = tempfile.mkstemp(suffix='.js')
-          os.write(fd, m.group(1).encode()); os.close(fd)
-          r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
-          os.unlink(path)
-          if r.returncode != 0:
-              print(r.stderr); sys.exit(1)
-          print('JS OK')
-          PY
-      - name: Tests
+          set -euo pipefail
+          PATTERNS=(
+            "sk-ant-api[0-9a-zA-Z-]{20,}" "AKIA[0-9A-Z]{16}" "ghp_[A-Za-z0-9]{36}"
+            "sk_(test|live)_[A-Za-z0-9]{20,}"
+            "(R2|AWS)_SECRET(_ACCESS)?_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9/+]{32,}"
+            "CLERK_SECRET_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{20,}"
+            "xox[baprs]-[A-Za-z0-9-]{10,}" "glpat-[A-Za-z0-9_-]{20,}"
+          )
+          # Self-test FIRST: a planted secret must be caught, or a green run
+          # here means nothing (the scanner that missed AC-239 was also green).
+          # Built at RUNTIME, never written literally in this file — a literal
+          # here would be found by the scan below and fail the repo on its own
+          # self-test, forever. (Caught before shipping: the first cut did
+          # exactly that.)
+          printf 'CLERK_SECRET_KEY=sk_%s_%s\n' "test" "$(printf 'A%.0s' $(seq 28))" > /tmp/_probe
+          grep -Eq -e "sk_(test|live)_[A-Za-z0-9]{20,}" /tmp/_probe \
+            || { echo "SELF-TEST FAILED: scanner cannot catch a planted secret"; exit 1; }
+          rm -f /tmp/_probe
+          fail=0
+          for p in "${PATTERNS[@]}"; do
+            if out=$(grep -REn -e "$p" --include='*.py' --include='*.sh' --include='*.yml' \
+                      --include='*.yaml' --include='*.json' --include='*.ts' --include='*.js' \
+                      --include='*.rs' --include='*.toml' . 2>/dev/null); then
+              echo "SECRET PATTERN MATCHED: $p"; echo "$out" | head -3 | cut -c1-120; fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "secret scan clean" || exit 1
+
+      # frustrations.md structural integrity (AF-28). NOT a reintroduction of the
+      # Python-era pytest gate removed above — this validates a committed MARKDOWN
+      # file's contract, is language-agnostic like the secret scan, and exists
+      # because the check that used to run it was deleted with tests/ on the same
+      # day the utility it runs was deliberately KEPT. A script nobody runs is
+      # decoration (ethos rule 1), and this one already caught a real defect on its
+      # first run: an entry using `FIX-NOTE:` where the contract says `FIX:`, which
+      # `grep '^FIX:'` silently skipped.
+      #
+      # Exit codes are load-bearing: 0 clean, 1 real problems, 2 board unreachable.
+      # 2 is EXPECTED in CI (no localhost board) and must not fail the build — the
+      # structural half still ran and is what we are gating on. Only 1 fails, so a
+      # green run here means "every entry has its required fields", never "the
+      # board agreed", which CI cannot check and should not claim.
+      # The `|| rc=$?` is LOAD-BEARING, not style. GitHub runs this with
+      # `shell: bash -e {0}`, and `set -uo pipefail` does NOT clear `-e` — so
+      # the previous form (`python3 …` on its own line, then `rc=$?`) aborted
+      # the whole step the instant the script exited non-zero, and `rc` was
+      # never read. Every exit code became a failure, including the 2 that the
+      # comment above explicitly says must not fail the build. That made
+      # `checks` — the ONLY required status check on main — red on every push
+      # for reasons unrelated to what it gates, which is how a required check
+      # becomes something people bypass by reflex. A command inside a `||` list
+      # is exempt from `-e`, so this reads the code instead of dying on it.
+      - name: frustrations.md structure (AF-28)
         run: |
-          pip install -q pytest psutil
-          python3 -m pytest tests/ -q
+          set -uo pipefail
+          rc=0
+          python3 scripts/frustrations_audit.py || rc=$?
+          echo "frustrations_audit exit=$rc (0 clean, 1 real problems, 2 board unreachable)"
+          if [ "$rc" = "1" ]; then exit 1; fi
+          exit 0

@@ -1,0 +1,556 @@
+_comment: 'ACCOUNTING FIRM vertical template (from RothCo/Roth&Co). Save-and-redeploy: edit org name +
+  firm specifics, POST to /api/env/apply. groups+workers apply now; files/schedules/columns are AMUX-2977
+  phase-2 (accepted, not-yet-applied).'
+groups:
+- name: multi-office-ops
+  department: IT / Operations
+  goal: Daily health across all offices, no surprises before the CIO wakes
+- name: tax-practice
+  department: Tax
+  goal: Every client's documents in before the filing deadline
+- name: engagement-billing
+  department: Finance
+  goal: Every engagement letter signed, every renewal on time
+workers:
+- name: ops-pulse
+  dir: /root/rothco
+  provider: claude
+  model: sonnet
+  desc: Multi-Office Ops Pulse -- daily green/yellow/red digest across Roth&Co's 5 offices in 3 time zones
+  groups:
+  - multi-office-ops
+- name: doc-chaser
+  dir: /root/rothco
+  provider: claude
+  model: sonnet
+  desc: Client Document Chaser -- per-client checklists, automated follow-up cadence, partner escalation
+  groups:
+  - tax-practice
+- name: billing-pilot
+  dir: /root/rothco
+  provider: claude
+  model: sonnet
+  desc: Engagement & Billing Pilot -- letter lifecycle, signature tracking, renewals, monthly billing
+  groups:
+  - engagement-billing
+columns:
+- Documents
+- Engagements
+- Office Health
+files:
+- path: /root/rothco/docs/pulse-entities-lou.md
+  content: '# Multi-Office Pulse -- Lou Moran, Roth&Co
+
+
+    ## Office 1: Brooklyn, NY (HQ)
+
+    - Staff: ~80
+
+    - Metrics: VPN/system uptime, open IT tickets, printer/scanner status, phone system status
+
+    - Systems: CCH Axcess, SharePoint, RingCentral
+
+
+    ## Office 2: Lakewood, NJ (Primary)
+
+    - Staff: ~100
+
+    - Metrics: Same as Brooklyn + server room temperature, backup completion status
+
+    - Systems: Same stack, dedicated file server
+
+
+    ## Office 3: Chicago, IL
+
+    - Staff: ~30
+
+    - Metrics: VPN tunnel status, remote desktop availability, bandwidth utilization
+
+    - Systems: Thin client setup, all cloud-based
+
+
+    ## Office 4: Jerusalem, Israel
+
+    - Staff: ~25
+
+    - Metrics: International VPN latency, local system uptime, timezone-shifted support ticket queue
+
+    - Time offset: UTC+3 (7 hours ahead of ET)
+
+
+    ## Office 5: Manila, Philippines
+
+    - Staff: ~30
+
+    - Metrics: BPO workstation availability, overnight processing completion rates, data entry accuracy
+    metrics
+
+    - Time offset: UTC+8 (12-13 hours ahead of ET)
+
+
+    ## Alert Thresholds
+
+    - System outage: any office offline > 15 minutes -> immediate alert
+
+    - Open tickets: any office > 20 unresolved tickets -> flag in digest
+
+    - Backup failure: any office backup missed -> flag + escalate if 2 consecutive
+
+    - International VPN latency: > 200ms sustained -> flag in digest
+
+    '
+- path: /root/rothco/docs/pulse-digest-sample.md
+  content: "# Sample Daily Ops Pulse -- Mon Mar 22, 2027\n\nTo: lmoran@rothcocpa.com\nSubject: Daily Ops\
+    \ Pulse -- Mon Mar 22, 2027 -- 1 RED, 1 YELLOW, 3 GREEN\n\nRed items first.\n\n==================================================\n\
+    MANILA, PHILIPPINES -- RED\n==================================================\nBPO workstations online:\
+    \   28 of 30            [OK]\nOvernight processing:      COMPLETED 04:12 local\nBackup completion:\
+    \         MISSED -- 2nd consecutive night   [!! ESCALATE]\nData entry accuracy:       99.1%      \
+    \         [OK]\n\nACTION: Backup missed Sunday and Monday nights. Per threshold (2 consecutive\nmisses\
+    \ = escalate), the Manila site lead has been notified and a board issue\nopened in Office Health.\
+    \ Verify the NAS target and re-run before Manila close\nof business.\n\n==================================================\n\
+    LAKEWOOD, NJ -- YELLOW\n==================================================\nVPN/system uptime:   \
+    \      100% last 24h       [OK]\nOpen IT tickets:           14 unresolved (threshold 20)   [OK]\n\
+    Server room temperature:   78F                 [! HVAC ticket opened]\nBackup completion:        \
+    \ COMPLETED 01:47 ET\nPrinters/phones:           All online\n\nACTION: HVAC vendor scheduled; monitoring\
+    \ the file-server rack hourly. If\ntemperature crosses 82F, begin graceful file-server shutdown per\
+    \ runbook.\n\n==================================================\nBROOKLYN, NY (HQ) -- GREEN\n==================================================\n\
+    VPN/system uptime:         100% last 24h\nOpen IT tickets:           9 unresolved (threshold 20)\n\
+    Printers/scanners:         All online\nPhone system:              RingCentral OK\n\nNo action items.\n\
+    \n==================================================\nCHICAGO, IL -- GREEN\n==================================================\n\
+    VPN tunnel:                UP, latency normal\nRemote desktop:            Available\nBandwidth utilization:\
+    \     41% peak\n\nNo action items.\n\n==================================================\nJERUSALEM,\
+    \ ISRAEL -- GREEN\n==================================================\nIntl VPN latency:         \
+    \ 128ms avg (threshold 200ms)   [OK]\n                           Yesterday's 340ms spike resolved\
+    \ -- watching for recurrence\nLocal system uptime:       100%\nSupport ticket queue:      6 open,\
+    \ all routine\n\nNo action items.\n\nNote: Jerusalem (UTC+3) and Manila (UTC+8) run ahead of ET --\
+    \ their full day\nis already reflected in this digest.\n\n==================================================\n\
+    SUMMARY\n==================================================\nGreen:  Brooklyn, Chicago, Jerusalem\n\
+    Yellow: Lakewood (server room temperature, HVAC ticket open)\nRed:    Manila (backup missed 2 consecutive\
+    \ nights -- escalated)\n\nThis digest was generated automatically by amux at 7:00 AM ET.\nReply to\
+    \ this email with questions or to adjust thresholds.\n"
+- path: /root/rothco/docs/ops-pulse-env.md
+  content: '# Environment for ops-pulse
+
+
+    Treat these as configuration for every run.
+
+
+    ```
+
+    BUSINESS_NAME=Roth&Co
+
+    CIO_NAME=Lou Moran
+
+    CIO_EMAIL=lmoran@rothcocpa.com
+
+    OFFICES=Brooklyn NY (HQ); Lakewood NJ; Chicago IL; Jerusalem; Manila
+
+    DIGEST_TIME=07:00 ET
+
+    OUTAGE_ALERT_MINUTES=15
+
+    TICKET_FLAG_THRESHOLD=20
+
+    BACKUP_ESCALATE_CONSECUTIVE=2
+
+    VPN_LATENCY_THRESHOLD_MS=200
+
+    ```
+
+    '
+- path: /root/rothco/docs/doclist-brooklyn-bridge-ventures.md
+  content: '## Brooklyn Bridge Ventures LLC (CLI-004)
+
+
+    Filing: 1065 + 12 K-1s | Deadline: 2027-03-15 | Partner: Avi Greenbaum
+
+
+    ### Outstanding Documents
+
+    - [ ] Bank statements (Dec reconciliation - 3 accounts) -- requested Jan 10, 4 follow-ups
+
+    - [ ] Capital contribution/distribution schedule -- requested Jan 10, 4 follow-ups
+
+    - [ ] Partner ownership changes (2026) -- requested Jan 10, 3 follow-ups
+
+    - [ ] 1099s issued to vendors -- requested Jan 15, 3 follow-ups
+
+    - [ ] Real estate closing statements (2 acquisitions) -- requested Jan 20, 2 follow-ups
+
+    - [ ] Depreciation schedule updates -- requested Feb 1, 2 follow-ups
+
+    - [ ] Management fee calculations -- requested Feb 1, 2 follow-ups
+
+
+    ### Received
+
+    - [x] Year-end trial balance (Jan 28)
+
+    - [x] Legal fee invoices - Fried Frank (Feb 12)
+
+    - [x] Prior year return 2025 1065 (Jan 5)
+
+
+    ### Contacts
+
+    - Shimon Katz (Managing Partner, skatz@bbventuresllc.com, 718-555-0901) -- travels constantly, unresponsive
+    to email
+
+    - Devorah Klein (Operations Manager, devorah@bbventuresllc.com, 718-555-0902) -- responsive, but needs
+    Shimon''s sign-off on capital schedules
+
+
+    ### Escalation status
+
+    Filing deadline (Mar 15) MISSED. 4 follow-ups sent to Devorah. 12 K-1s blocked,
+
+    which blocks 12 partners'' personal returns (Apr 15). Escalated to Avi Greenbaum;
+
+    extension filing for the 1065 recommended (buys time to Sept 15).
+
+    '
+- path: /root/rothco/docs/doclist-berger-dds.md
+  content: '## Moshe Berger DDS, PLLC (CLI-002)
+
+
+    Filing: 1120-S + K-1s | Deadline: 2027-03-15 | Partner: Avi Greenbaum
+
+
+    ### Outstanding Documents
+
+    - [ ] 1099-NEC issued to contractors (3 hygienists) -- requested Jan 20, 1 follow-up
+
+    - [ ] Equipment purchase invoices (new dental chair, X-ray unit, ~$85K -- Section 179) -- requested
+    Jan 20, 2 follow-ups
+
+    - [ ] Loan amortization schedule (TD Bank equipment loan) -- requested Feb 5, 0 follow-ups
+
+    - [ ] Health insurance premiums (owner) -- requested Feb 5, 0 follow-ups
+
+
+    ### Received
+
+    - [x] Year-end P&L, QuickBooks export (Jan 25)
+
+    - [x] Year-end Balance Sheet (Jan 25)
+
+    - [x] Payroll summary, ADP annual report (Feb 3)
+
+    - [x] Vehicle mileage log, business use (Feb 8)
+
+    - [x] Prior year return 2025 1120-S (Jan 10)
+
+
+    ### Notes
+
+    Dental practice in Lakewood, NJ. 3 hygienists as 1099 contractors. Bought ~$85K
+
+    in equipment mid-year -- invoices needed for the Section 179 deduction. Moshe is
+
+    responsive but disorganized; his office manager handles most doc collection --
+
+    route follow-ups through her.
+
+    '
+- path: /root/rothco/docs/doclist-weiss-family.md
+  content: '## Jacob & Miriam Weiss (CLI-003)
+
+
+    Filing: 1040 (Joint) | Deadline: 2027-04-15 | Partner: Sarah Feldman
+
+
+    ### Outstanding Documents
+
+    - [ ] W-2 (Jacob - B&H Photo) -- requested Jan 15, 0 follow-ups
+
+    - [ ] K-1 (Weiss Family LP - rental properties) -- requested Jan 15, 0 follow-ups
+
+    - [ ] 1099-DIV (Fidelity brokerage) -- requested Jan 15, 0 follow-ups
+
+    - [ ] 1099-INT (bank accounts) -- requested Jan 15, 0 follow-ups
+
+    - [ ] 1098 mortgage interest statements (3 properties) -- requested Jan 15, 0 follow-ups
+
+    - [ ] Real property tax statements (Monsey and Spring Valley properties) -- requested Jan 15, 0 follow-ups
+
+    - [ ] Rental income/expense summary (all units) -- requested Jan 15, 0 follow-ups
+
+    - [ ] Charitable donation receipts (over $250 each) -- requested Jan 15, 0 follow-ups
+
+    - [ ] Prior year return (2025) -- requested Jan 15, 0 follow-ups
+
+
+    ### Received
+
+    (none -- new client, initial request sent Jan 15, no response yet)
+
+
+    ### Notes
+
+    New client referral from Rabbi Friedman. Complex return: W-2 income plus family
+
+    LP with 3 rental properties in Monsey/Spring Valley. The K-1 is not available
+
+    until the LP files (mid-Feb at the earliest), so it cannot be chased directly --
+
+    chase everything else in parallel.
+
+    '
+- path: /root/rothco/docs/clients-status.md
+  content: "# Client Document Status -- Overview\n\n| ID | Client | Filing | Deadline | Partner | Status\
+    \ | Outstanding |\n|---|---|---|---|---|---|---|\n| CLI-001 | David & Rachel Goldstein | 1040 (Joint)\
+    \ | Apr 15 | Sarah Feldman | ALL DOCS RECEIVED | 0 of 7 |\n| CLI-002 | Moshe Berger DDS, PLLC | 1120-S\
+    \ + K-1s | Mar 15 | Avi Greenbaum | Partially complete | 4 of 9 |\n| CLI-003 | Jacob & Miriam Weiss\
+    \ | 1040 (Joint) | Apr 15 | Sarah Feldman | Not started (new client) | 9 of 9 |\n| CLI-004 | Brooklyn\
+    \ Bridge Ventures LLC | 1065 + 12 K-1s | Mar 15 -- OVERDUE | Avi Greenbaum | Overdue, escalated |\
+    \ 7 of 10 |\n| CLI-005 | Telomir Pharmaceuticals, Inc. | 1120 + NY/NJ/DE | Apr 15 | Managing Partner\
+    \ (direct) | VIP rush | 3 of 9 |\n\n## Notes per client\n\n- **CLI-001 Goldstein**: 6th year filing,\
+    \ both W-2 employees, straightforward\n  joint return with itemized deductions. Ready to prepare.\n\
+    - **CLI-002 Berger DDS**: see docs/doclist-berger-dds.md. Section 179 equipment\n  invoices are the\
+    \ big-ticket blocker.\n- **CLI-003 Weiss**: see docs/doclist-weiss-family.md. Zero response since\
+    \ the\n  Jan 15 initial request.\n- **CLI-004 Brooklyn Bridge Ventures**: see docs/doclist-brooklyn-bridge-ventures.md.\n\
+    \  HIGH priority -- deadline missed, 12 K-1s block 12 partners' personal returns.\n- **CLI-005 Telomir\
+    \ Pharma**: urgent -- public C-Corp with SEC reporting\n  obligations; the 10-K references the tax\
+    \ provision. R&D credit backup is the\n  big-ticket item (~$340K estimated). Intercompany transaction\
+    \ docs with MIRA\n  Pharmaceuticals needed urgently to avoid transfer pricing issues.\n"
+- path: /root/rothco/docs/doc-chaser-env.md
+  content: '# Environment for doc-chaser
+
+
+    Treat these as configuration for every run.
+
+
+    ```
+
+    BUSINESS_NAME=Roth&Co
+
+    FIRM_DOCS_EMAIL=docs@rothcocpa.com
+
+    FOLLOW_UP_CADENCE_DAYS=3,7,14,21
+
+    POLITE_REMINDER_WHILE_FOLLOW_UPS_UNDER=2
+
+    FIRMER_FOLLOW_UP_WHILE_FOLLOW_UPS_UNDER=4
+
+    ESCALATE_TO_PARTNER_AT_FOLLOW_UPS=4
+
+    ENTITY_FILING_DEADLINE=2027-03-15
+
+    INDIVIDUAL_FILING_DEADLINE=2027-04-15
+
+    EXTENSION_DEADLINE=2027-10-15
+
+    ```
+
+    '
+- path: /root/rothco/docs/engagement-template-tax.md
+  content: '# Engagement Letter Template -- Tax Compliance
+
+
+    Fields: {{CLIENT_NAME}}, {{ENTITY_TYPE}}, {{FILING_TYPES}}, {{SCOPE_DESCRIPTION}}, {{FEE_AMOUNT}},
+    {{BILLING_FREQUENCY}}, {{HOURLY_RATE}}, {{ENGAGEMENT_START}}, {{ENGAGEMENT_END}}, {{PARTNER_NAME}}
+
+
+    ---
+
+
+    Dear {{CLIENT_NAME}},
+
+
+    We are pleased to confirm our engagement to provide the following services for the fiscal year ending
+    December 31, 2026:
+
+
+    **Scope of Services:**
+
+    {{SCOPE_DESCRIPTION}}
+
+
+    **Fees:**
+
+    Our fee for the above services will be {{FEE_AMOUNT}}, billed {{BILLING_FREQUENCY}}. Additional services
+    outside the scope described above will be billed at {{HOURLY_RATE}} per hour.
+
+
+    **Terms:**
+
+    This engagement begins {{ENGAGEMENT_START}} and continues through {{ENGAGEMENT_END}}. [Standard terms
+    re: client responsibilities, limitations, confidentiality, dispute resolution...]
+
+
+    Please sign below and return a copy to our office to confirm your agreement.
+
+
+    Sincerely,
+
+    {{PARTNER_NAME}}
+
+    '
+- path: /root/rothco/docs/engagement-friedman-family-office.md
+  content: '# Engagement: Friedman Family Office LLC (ENG-001)
+
+
+    Status: DRAFT -- needs review by Avi Greenbaum before sending
+
+
+    ---
+
+
+    Dear Mr. Friedman,
+
+
+    We are pleased to confirm our engagement to provide the following services for the Friedman Family
+    Office LLC and related personal returns for the fiscal year ending December 31, 2027:
+
+
+    **Scope of Services:**
+
+    - Annual partnership return (Form 1065) with 6 Schedule K-1s for Friedman Family Office LLC
+
+    - Personal income tax returns (Form 1040, joint) for Yossi and Rivka Friedman
+
+    - Quarterly estimated tax payment calculations
+
+    - Year-end tax planning consultation (one session, approximately 2 hours)
+
+    - Ad-hoc advisory on real estate transactions, up to 10 hours per year included
+
+
+    **Fees:**
+
+    - Annual fixed fee: $42,000, billed monthly at $3,500
+
+    - Additional advisory beyond the included 10 hours: $375 per hour
+
+    - Real estate transaction advisory (closings, 1031 exchanges): billed separately at project rates,
+    quoted in advance
+
+
+    **Terms:**
+
+    - Engagement period: January 1, 2027 through December 31, 2027
+
+    - Auto-renewal unless either party provides 60 days written notice
+
+    - Payment terms: Net 15 from invoice date
+
+
+    Please sign and return a copy of this letter to confirm your agreement. We will not begin work or
+    accept documents until this letter is executed.
+
+
+    We look forward to working with you.
+
+
+    Sincerely,
+
+    Avi Greenbaum, CPA
+
+    Partner
+
+    '
+- path: /root/rothco/docs/engagements-status.md
+  content: "# Engagement Pipeline -- Overview\n\n| ID | Client | Type | Status | Fee | Partner |\n|---|---|---|---|---|---|\n\
+    | ENG-001 | Friedman Family Office LLC | Tax Compliance + Advisory | NEW -- needs letter | $42,000/yr\
+    \ ($3,500/mo, Net 15) | Avi Greenbaum |\n| ENG-002 | Moshe Berger DDS, PLLC | Tax Compliance (S-Corp\
+    \ + Personal) | RENEWAL -- unsigned, 38 days overdue | $18,500/yr, quarterly at $4,625 (was $17,000)\
+    \ | Avi Greenbaum |\n| ENG-003 | Brooklyn Bridge Ventures LLC | Partnership + Audit Support | ACTIVE\
+    \ -- signed Dec 2, 2026 | $67,000 base monthly at $5,583 + $4,500/acquisition | Avi Greenbaum |\n\
+    | ENG-004 | Schwartz & Lichtenstein LLP | Tax Compliance (Partnership) | COMPLETED -- filed Mar 10,\
+    \ paid Mar 28 | $14,200/yr, semi-annual at $7,100 | Sarah Feldman |\n\n## Notes per engagement\n\n\
+    - **ENG-001 Friedman**: $15M family office, multifamily real estate in the\n  Hudson Valley. Referred\
+    \ by Rabbi Friedman (same referral source as the Weiss\n  family, CLI-003). Yossi wants to start ASAP\
+    \ but will not send documents until\n  the letter is signed. Draft in docs/engagement-friedman-family-office.md.\n\
+    - **ENG-002 Berger**: renewal letter sent Dec 1, still unsigned. 8.8% fee\n  increase ($17,000 ->\
+    \ $18,500) for new equipment purchases and contractor 1099\n  filings going from 1 to 3. Moshe verbally\
+    \ confirmed but has not returned the\n  signed letter; he is already sending 2027 documents (see CLI-002).\
+    \ His wife\n  Leah handles the personal finances -- likely the better contact. Firm policy:\n  no\
+    \ filing without a signed engagement letter. Payment terms Net 30.\n- **ENG-003 Brooklyn Bridge Ventures**:\
+    \ largest engagement by revenue. 2026\n  actual billings were $76,000 (base + 2 acquisition transactions).\
+    \ 12 K-1s mean\n  high downstream impact when documents are late (see CLI-004). Auto-renews with\n\
+    \  90 days notice; next renewal review Oct 2027.\n- **ENG-004 Schwartz & Lichtenstein**: the clean-lifecycle\
+    \ example -- all docs\n  by Jan 31, filed Mar 10, final invoice paid Mar 28. Four-partner law firm\
+    \ in\n  Teaneck, NJ. Auto-renewed for 2027, letter already countersigned.\n"
+- path: /root/rothco/docs/billing-pilot-env.md
+  content: '# Environment for billing-pilot
+
+
+    Treat these as configuration for every run.
+
+
+    ```
+
+    BUSINESS_NAME=Roth&Co
+
+    PARTNER_COUNT=21
+
+    BILLING_DAY_OF_MONTH=1
+
+    UNSIGNED_FOLLOW_UP_AFTER_DAYS=7
+
+    UNSIGNED_ESCALATE_AFTER_DAYS=21
+
+    RENEWAL_REVIEW_DAYS_BEFORE_EXPIRY=90
+
+    DEFAULT_PAYMENT_TERMS=Net 30
+
+    ```
+
+    '
+schedules:
+- worker: ops-pulse
+  title: 'Daily ops pulse: Lou Moran (5 offices)'
+  expr: every weekday at 07:00
+  enabled: false
+  command: 'Read docs/pulse-entities-lou.md for office definitions and thresholds. For each office: check
+    system status (VPN dashboards, ticketing system, backup monitoring). Note that Jerusalem (UTC+3) and
+    Manila (UTC+8) run ahead -- their full day''s data is already available by 7am ET. Compile a single
+    digest with per-office green/yellow/red status, red items first, in the format of docs/pulse-digest-sample.md.
+    Send via the email API to lmoran@rothcocpa.com. If any office has a red-status metric (outage > 15
+    min, backup missed 2 consecutive nights, > 20 unresolved tickets), flag it prominently at the top
+    and open a board issue in the Office Health column.'
+- worker: ops-pulse
+  title: Weekly office health review
+  expr: weekly on Monday at 08:00
+  enabled: false
+  command: 'Review the week''s daily digests and the Office Health board column. For each office: 1) ticket
+    backlog trend (growing or shrinking?), 2) repeated yellow/red flags -- the same metric flagged 2+
+    times in a week is systemic, not incidental (e.g. Jerusalem VPN latency, Manila backups), 3) backup
+    completion rate, 4) VPN latency trend for Jerusalem and Manila. Write the review to docs/analytics/office-health-YYYY-WNN.md
+    and email a summary to lmoran@rothcocpa.com. Recommend one concrete infrastructure fix per recurring
+    flag.'
+- worker: doc-chaser
+  title: 'Document chaser: check outstanding items and send follow-ups'
+  expr: daily at 08:00
+  enabled: false
+  command: 'Read all docs/doclist-*.md files. For each client with outstanding items: if days since last
+    follow-up >= 3 and total follow-ups < 2, send a polite reminder. If follow-ups >= 2 and < 4, send
+    a firmer follow-up. If follow-ups >= 4, escalate to the assigned partner via board issue + email.
+    Update the doc file with the new follow-up count and date. Mark board issues done when all docs received.'
+- worker: doc-chaser
+  title: Weekly deadline risk review
+  expr: weekly on Friday at 16:00
+  enabled: false
+  command: 'Review every docs/doclist-*.md against its filing deadline (entities Mar 15, individuals Apr
+    15, extensions Oct 15). For each client: compute days remaining, documents outstanding, and response
+    rate so far. Rank clients by filing risk. Any client that cannot realistically be filed on time gets
+    a board issue recommending an extension, with the downstream impact named (e.g. CLI-004''s 12 blocked
+    K-1s block 12 partners'' personal returns). Write the ranking to docs/analytics/deadline-risk-YYYY-WNN.md.'
+- worker: billing-pilot
+  title: 'Monthly billing cycle: generate and send invoices'
+  expr: monthly on 1 at 09:00
+  enabled: false
+  command: 'Read all docs/engagement-*.md files. For each active engagement: calculate the current month
+    billing amount based on fee structure (monthly, quarterly, semi-annual -- e.g. ENG-003 bills $5,583
+    monthly, ENG-002 bills $4,625 quarterly). Draft invoice summary emails. Check for any overdue unpaid
+    invoices from prior months. Send invoices via the email API. Create board issues for any invoices
+    unpaid past Net terms. Update engagement docs with billing history.'
+- worker: billing-pilot
+  title: 'Engagement letter follow-up: check for unsigned letters'
+  expr: every weekday at 09:30
+  enabled: false
+  command: 'Check the board''s Engagements column for letters still awaiting signature. For letters sent
+    more than 7 days ago without a signature, send a follow-up email (see the ENG-002 Berger pattern:
+    offer a DocuSign version, offer the alternate signer -- Leah handles the business paperwork). For
+    letters more than 21 days overdue, escalate to the assigned partner. Also check renewal dates: any
+    engagement within 90 days of expiration without a renewal letter drafted gets a board issue.'

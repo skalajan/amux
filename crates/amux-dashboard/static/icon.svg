@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="iosClip">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+    
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0C1017"/>
+      <stop offset="100%" stop-color="#080B10"/>
+    </linearGradient>
+
+    <linearGradient id="tealGrad" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#00C4E0"/>
+      <stop offset="100%" stop-color="#00F0D4"/>
+    </linearGradient>
+
+    <linearGradient id="amberGrad" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#FF9234"/>
+      <stop offset="100%" stop-color="#FFB84D"/>
+    </linearGradient>
+
+    <linearGradient id="crossbarGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00E8D0"/>
+      <stop offset="35%" stop-color="#EEFFFF"/>
+      <stop offset="65%" stop-color="#FFF5E8"/>
+      <stop offset="100%" stop-color="#FFB84D"/>
+    </linearGradient>
+
+    <filter id="tealGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feFlood flood-color="#00E5CC" flood-opacity="0.45"/>
+      <feComposite in2="blur" operator="in" result="colorBlur"/>
+      <feMerge>
+        <feMergeNode in="colorBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="amberGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feFlood flood-color="#FFB84D" flood-opacity="0.4"/>
+      <feComposite in2="blur" operator="in" result="colorBlur"/>
+      <feMerge>
+        <feMergeNode in="colorBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="barGlow" x="-30%" y="-50%" width="160%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.35"/>
+      <feComposite in2="blur" operator="in" result="colorBlur"/>
+      <feMerge>
+        <feMergeNode in="colorBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="bigGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="55"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#iosClip)">
+    <!-- Background -->
+    <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+    
+    <!-- Subtle grid -->
+    <g opacity="0.025" stroke="#ffffff" stroke-width="1">
+      <line x1="256" y1="0" x2="256" y2="1024"/>
+      <line x1="512" y1="0" x2="512" y2="1024"/>
+      <line x1="768" y1="0" x2="768" y2="1024"/>
+      <line x1="0" y1="256" x2="1024" y2="256"/>
+      <line x1="0" y1="512" x2="1024" y2="512"/>
+      <line x1="0" y1="768" x2="1024" y2="768"/>
+    </g>
+
+    <!-- Ambient glow -->
+    <ellipse cx="512" cy="440" rx="200" ry="180" fill="#00E5CC" opacity="0.04" filter="url(#bigGlow)"/>
+
+    <!-- ============================================ -->
+    <!-- LAYER 1: A LEGS                              -->
+    <!-- ============================================ -->
+
+    <!-- LEFT LEG (teal) -->
+    <g filter="url(#tealGlow)">
+      <line x1="512" y1="170" x2="185" y2="830" stroke="url(#tealGrad)" stroke-width="48" stroke-linecap="round"/>
+    </g>
+
+    <!-- RIGHT LEG (amber) -->
+    <g filter="url(#amberGlow)">
+      <line x1="512" y1="170" x2="839" y2="830" stroke="url(#amberGrad)" stroke-width="48" stroke-linecap="round"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- LAYER 2: CROSSBAR (drawn LAST = on top)      -->
+    <!-- This is the multiplexer bar                  -->
+    <!-- ============================================ -->
+    
+    <!-- Dark backing to cut through the legs cleanly -->
+    <line x1="278" y1="600" x2="746" y2="600" stroke="#080B10" stroke-width="58" stroke-linecap="round"/>
+    
+    <!-- The visible crossbar -->
+    <g filter="url(#barGlow)">
+      <line x1="278" y1="600" x2="746" y2="600" stroke="url(#crossbarGrad)" stroke-width="42" stroke-linecap="round"/>
+    </g>
+
+    <!-- MUX routing dots on crossbar -->
+    <circle cx="310" cy="600" r="15" fill="#00F0D4" opacity="0.95"/>
+    <circle cx="390" cy="600" r="10" fill="#00F0D4" opacity="0.55"/>
+    <circle cx="512" cy="600" r="19" fill="#ffffff" opacity="1.0"/>
+    <circle cx="512" cy="600" r="32" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.2"/>
+    <circle cx="634" cy="600" r="10" fill="#FFB84D" opacity="0.55"/>
+    <circle cx="714" cy="600" r="15" fill="#FFB84D" opacity="0.95"/>
+
+    <!-- ============================================ -->
+    <!-- LAYER 3: ENDPOINT ACCENTS                    -->
+    <!-- ============================================ -->
+    
+    <!-- Apex node -->
+    <circle cx="512" cy="170" r="18" fill="#ffffff" opacity="0.95"/>
+    <circle cx="512" cy="170" r="32" fill="none" stroke="#ffffff" stroke-width="2.5" opacity="0.25"/>
+
+    <!-- Left foot node -->
+    <circle cx="185" cy="830" r="14" fill="#00F0D4" opacity="0.9"/>
+    <circle cx="185" cy="830" r="26" fill="none" stroke="#00F0D4" stroke-width="2.5" opacity="0.35"/>
+
+    <!-- Right foot node -->
+    <circle cx="839" cy="830" r="14" fill="#FFB84D" opacity="0.9"/>
+    <circle cx="839" cy="830" r="26" fill="none" stroke="#FFB84D" stroke-width="2.5" opacity="0.35"/>
+  </g>
+</svg>

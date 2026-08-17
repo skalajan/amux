@@ -53,7 +53,7 @@
 
     <p><strong>GitHub Copilot</strong> (Microsoft/GitHub) is the world's most widely used AI coding assistant with over 1.8 million paid users. It lives inside your IDE — VS Code, JetBrains, Neovim, Xcode, Eclipse — providing inline completions, a chat interface, and Copilot Workspace for autonomous multi-file tasks. Powered by OpenAI GPT-4o/4.5 and GitHub's code-specialized models. Pricing ranges from $10/month individual to $39/month enterprise.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It launches, monitors, and self-heals dozens of Claude Code sessions simultaneously from a web dashboard or iOS app. Built-in kanban board, browser automation, scheduler, and skills. Single Python file, MIT + Commons Clause licensed, zero external dependencies. Free to self-host.</p>
+    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It launches, monitors, and self-heals dozens of Claude Code sessions simultaneously from a web dashboard or iOS app. Built-in kanban board, browser automation, scheduler, and skills. Single Rust binary, MIT + Commons Clause licensed, zero external dependencies. Free to self-host.</p>
 
     <h2>Different layers of the stack</h2>
 
@@ -83,7 +83,7 @@
         <tr><td>PR review</td><td>No</td><td>Yes — Copilot for PRs</td></tr>
         <tr><td>Model</td><td>Claude Code (Anthropic Sonnet/Opus)</td><td>GPT-4o/4.5 + GitHub fine-tunes</td></tr>
         <tr><td>Open source</td><td>Yes (MIT + Commons Clause)</td><td>No</td></tr>
-        <tr><td>Self-hostable</td><td>Yes — single Python file, runs on any Linux/Mac</td><td>No — SaaS only</td></tr>
+        <tr><td>Self-hostable</td><td>Yes — single Rust binary, runs on any Linux/Mac</td><td>No — SaaS only</td></tr>
         <tr><td>Cost</td><td>Free + Claude API tokens (~$5–$20/session-hour)</td><td>$10/mo individual · $19/mo business · $39/mo enterprise</td></tr>
         <tr><td>Paid user count (2026)</td><td>—</td><td>~1.8 million</td></tr>
       </tbody>
@@ -188,7 +188,7 @@
     <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
 
     <p>Add tasks to the kanban board, open the dashboard on your laptop or phone, and watch sessions claim and run them in parallel. The watchdog restarts any session that stalls.</p>
 

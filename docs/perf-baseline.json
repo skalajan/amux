@@ -1,0 +1,12 @@
+{
+  "_comment": "Phase 9 baseline, release build vs a copy of the live 640k-row DB (scripts/perf-baseline.sh). CI compares against these; >10% p95 regression fails (Phase 10). Python server reference points measured 2026-08-09: board payload 6.2MB, RSS 888MB, dashboard first-byte >1s under load.",
+  "dashboard_avg_ms": 3,
+  "health_avg_ms": 2,
+  "board_avg_ms": 28,
+  "board_full_avg_ms": 34,
+  "workers_avg_ms": 3,
+  "rss_mb": 66,
+  "board_default_bytes": 622020,
+  "measured": "2026-08-09",
+  "targets": { "dashboard_ms": 500, "health_ms": 50, "board_ms": 200, "rss_mb": 200 }
+}

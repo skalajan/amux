@@ -63,7 +63,7 @@
         "name": "Can enterprise teams run AI coding agents on their own infrastructure?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. amux is a single Python file with zero external dependencies — it deploys on any Linux VM, internal server, or on-prem machine your team controls. There are no SaaS accounts, no API calls to amux servers, and no data leaving your network. Agents use your own Claude Code, OpenAI Codex, or Gemini CLI credentials. This makes amux suitable for enterprises with data residency requirements, air-gapped environments, or code security policies that prohibit sending source code to third-party platforms."
+          "text": "Yes. amux is a single Rust binary with zero external dependencies — it deploys on any Linux VM, internal server, or on-prem machine your team controls. There are no SaaS accounts, no API calls to amux servers, and no data leaving your network. Agents use your own Claude Code, OpenAI Codex, or Gemini CLI credentials. This makes amux suitable for enterprises with data residency requirements, air-gapped environments, or code security policies that prohibit sending source code to third-party platforms."
         }
       },
       {
@@ -122,10 +122,10 @@
     <p class="subtitle">Run a parallel AI engineering team on your own infrastructure. Self-hosted, audit-logged, no vendor lock-in — Claude Code, Codex, and Gemini CLI agents working from a shared task board across all your repositories. <em>Published July 2026.</em></p>
 
     <div class="answer-box" style="border-left:4px solid var(--accent);background:var(--card);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0;">
-      <strong>Quick answer:</strong> amux is a self-hosted, single-Python-file control plane that gives enterprise engineering teams a shared dashboard for running dozens of parallel AI coding agents (Claude Code, Codex CLI, Gemini CLI) with atomic task coordination, per-repo CLAUDE.md style enforcement, append-only audit logs, and zero external dependencies. It deploys on any Linux server your team controls. Code never leaves your network.
+      <strong>Quick answer:</strong> amux is a self-hosted, single-binary control plane that gives enterprise engineering teams a shared dashboard for running dozens of parallel AI coding agents (Claude Code, Codex CLI, Gemini CLI) with atomic task coordination, per-repo CLAUDE.md style enforcement, append-only audit logs, and zero external dependencies. It deploys on any Linux server your team controls. Code never leaves your network.
     </div>
 
-    <p>amux is an open-source control plane for AI agent teams. It launches, monitors, and self-heals simultaneous AI coding sessions across every repository your team owns — with a shared kanban board for task coordination, event-sourced execution logs for compliance, and CLAUDE.md–enforced code quality standards. One Python file. Zero external services. Deploy on a VM inside your VPC. 300 GitHub stars, MIT + Commons Clause licensed.</p>
+    <p>amux is an open-source control plane for AI agent teams. It launches, monitors, and self-heals simultaneous AI coding sessions across every repository your team owns — with a shared kanban board for task coordination, event-sourced execution logs for compliance, and CLAUDE.md–enforced code quality standards. One Rust binary. Zero external services. Deploy on a VM inside your VPC. 300 GitHub stars, MIT + Commons Clause licensed.</p>
 
     <h2>What enterprise engineering teams are solving with AI agents in 2026</h2>
     <p>The question most engineering leaders are navigating right now is not whether to use AI coding agents — it is how to use them at team scale without losing code quality, introducing security risk, or creating an ungoverned shadow-IT situation where individual engineers run agents however they prefer.</p>
@@ -133,16 +133,16 @@
     <p>amux addresses this at the infrastructure level. It is a coordination layer, not just a launcher — it enforces isolation, logs everything, and gives the team a single pane of glass for every running agent across every repo.</p>
 
     <h2>Self-hosted deployment: code stays inside your network</h2>
-    <p>amux runs on any server your team controls — an EC2 instance in your VPC, an internal GCP VM, an on-prem box. There are no amux cloud accounts, no data transmitted to amux servers, and no external API dependencies beyond the AI model providers your team already uses (Anthropic, OpenAI, or Google). The server is a single Python file. Deploy it in under five minutes:</p>
+    <p>amux runs on any server your team controls — an EC2 instance in your VPC, an internal GCP VM, an on-prem box. There are no amux cloud accounts, no data transmitted to amux servers, and no external API dependencies beyond the AI model providers your team already uses (Anthropic, OpenAI, or Google). The server is a single Rust binary. Deploy it in under five minutes:</p>
 
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># On your team's VM or server
 pip install amux   # or: uvx amux serve (zero-install)
 # or: brew install mixpeek/amux/amux (macOS)
 
-amux serve --host 0.0.0.0 --port 8822
-# Dashboard accessible at https://your-server:8822 for your whole team</code></pre>
+amux serve --host 0.0.0.0 --port 8824
+# Dashboard accessible at https://your-server:8824 for your whole team</code></pre>
 
-    <p>Because amux is a single Python file with no external dependencies, it passes most enterprise security review processes faster than SaaS tools: the full source is auditable, there is no third-party CDN, and you can pin a specific commit and diff upgrades before deploying. For environments that prohibit internet egress during code execution, amux can run fully air-gapped — agents use only locally installed CLI tools and your internal git remotes.</p>
+    <p>Because amux is a single Rust binary with no external dependencies, it passes most enterprise security review processes faster than SaaS tools: the full source is auditable, there is no third-party CDN, and you can pin a specific commit and diff upgrades before deploying. For environments that prohibit internet egress during code execution, amux can run fully air-gapped — agents use only locally installed CLI tools and your internal git remotes.</p>
 
     <h2>Shared kanban board with atomic task coordination</h2>
     <p>The core coordination primitive in amux is a kanban board backed by a SQLite database on the server. Every engineer and every agent shares the same board. Tasks move through `todo → doing → done → verified`. Agents claim tasks atomically via SQLite compare-and-swap — if two agents try to claim the same task simultaneously, exactly one succeeds and the other gets the next task. This prevents the most common multi-agent failure: two agents writing conflicting implementations of the same feature.</p>
@@ -195,7 +195,7 @@ amux board add "Write integration tests for PaymentProcessor class"
     </ul>
 
     <h2>Team dashboard: one view for all agent activity</h2>
-    <p>The amux web dashboard at <code>https://your-server:8822</code> is designed for team visibility. Multiple engineers can have it open simultaneously. Changes update in real time via SSE — when an agent claims a task, it appears as "doing" on everyone's board within about 2 seconds. When a session emits output, the live-tail view updates for anyone who has it open.</p>
+    <p>The amux web dashboard at <code>https://your-server:8824</code> is designed for team visibility. Multiple engineers can have it open simultaneously. Changes update in real time via SSE — when an agent claims a task, it appears as "doing" on everyone's board within about 2 seconds. When a session emits output, the live-tail view updates for anyone who has it open.</p>
 
     <p>Key team-facing views in the dashboard:</p>
     <ul>
@@ -263,7 +263,7 @@ amux board add "Write integration tests for PaymentProcessor class"
           <tr>
             <td style="padding:10px 16px;">Ops overhead</td>
             <td style="padding:10px 16px;">None (but ungoverned)</td>
-            <td style="padding:10px 16px;">Single Python file, no Docker, auto-restarts on file save</td>
+            <td style="padding:10px 16px;">Single Rust binary, no Docker, auto-restarts on file save</td>
           </tr>
         </tbody>
       </table>
@@ -279,7 +279,7 @@ amux board add "Write integration tests for PaymentProcessor class"
 pipx install amux
 
 # Zero-install alternative (no pip)
-uvx amux serve --host 0.0.0.0 --port 8822</code></pre>
+uvx amux serve --host 0.0.0.0 --port 8824</code></pre>
       </li>
       <li>
         <strong>Add org-wide CLAUDE.md to each repository.</strong> Start with your most important repo. The CLAUDE.md should encode standards that currently live only in team memory — things a new engineer would get wrong on their first PR. Commit and have it reviewed like any other change.
@@ -307,7 +307,7 @@ amux register infra-agents --dir /repos/infrastructure --yolo</code></pre>
     <h2>Frequently asked questions</h2>
 
     <h3>Can enterprise teams run AI coding agents on their own infrastructure?</h3>
-    <p>Yes. amux is a single Python file with zero external dependencies. It deploys on any Linux server your team controls — EC2, GCP, on-prem — with no data leaving your network except AI model API calls to your chosen provider. Full source is auditable. No third-party CDN. Deploy from a pinned commit.</p>
+    <p>Yes. amux is a single Rust binary with zero external dependencies. It deploys on any Linux server your team controls — EC2, GCP, on-prem — with no data leaving your network except AI model API calls to your chosen provider. Full source is auditable. No third-party CDN. Deploy from a pinned commit.</p>
 
     <h3>How do agents coordinate on a shared codebase without overwriting each other?</h3>
     <p>Atomic SQLite compare-and-swap task claiming means exactly one agent can hold a task at a time. Each agent works in its own isolated git worktree — structurally preventing file-level conflicts. The shared board is the coordination layer. Two agents cannot work on the same task simultaneously by design.</p>
@@ -323,10 +323,10 @@ amux register infra-agents --dir /repos/infrastructure --yolo</code></pre>
 
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
-      <p>Self-hosted, single Python file, zero external dependencies. Your code stays inside your network. Runs on any Linux server in under five minutes.</p>
+      <p>Self-hosted, single Rust binary, zero external dependencies. Your code stays inside your network. Runs on any Linux server in under five minutes.</p>
       <pre><code>pip install amux
-amux serve --host 0.0.0.0 --port 8822
-# Dashboard at https://your-server:8822 for the whole team</code></pre>
+amux serve --host 0.0.0.0 --port 8824
+# Dashboard at https://your-server:8824 for the whole team</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star amux on GitHub</a>
       <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Talk to us about team setup →</a>
     </div>

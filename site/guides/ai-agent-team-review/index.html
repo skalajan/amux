@@ -182,7 +182,7 @@
     <!-- EXP-018: top-of-page CTA — same green/teal format as EXP-015 WIN -->
     <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
-        <p style="margin:0;font-size:0.95rem"><strong>Running a team of AI coding agents?</strong> amux is the open-source control plane built for this — shared kanban board, Trends view, Review dashboard, Fleet org chart, and self-healing all in one Python file. 327+ engineering teams use it to ship overnight.</p>
+        <p style="margin:0;font-size:0.95rem"><strong>Running a team of AI coding agents?</strong> amux is the open-source control plane built for this — shared kanban board, Trends view, Review dashboard, Fleet org chart, and self-healing all in one Rust binary. 327+ engineering teams use it to ship overnight.</p>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:#10b981;color:#fff;padding:10px 18px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
     </div>
@@ -413,11 +413,11 @@
     <p>Yes. amux is runtime-agnostic. The board, Trends view, Review dashboard, and Fleet org chart work identically for Claude Code, Codex CLI, and Gemini CLI sessions — and for mixed teams running multiple runtimes simultaneously.</p>
 
     <h3>How do I get started with amux for team management?</h3>
-    <p>Install amux (<code>pip install amux</code> or <code>brew install amux</code>), register your project directories with <code>amux register</code>, and start sessions with <code>amux start session-name</code>. The dashboard runs at https://localhost:8822. The Review tab, Trends view, and Fleet org chart are always available — they populate as you assign work to your agents. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="/concierge/">request a managed setup</a> from the amux team.</p>
+    <p>Install amux (<code>pip install amux</code> or <code>brew install amux</code>), register your project directories with <code>amux register</code>, and start sessions with <code>amux start session-name</code>. The dashboard runs at https://localhost:8824. The Review tab, Trends view, and Fleet org chart are always available — they populate as you assign work to your agents. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="/concierge/">request a managed setup</a> from the amux team.</p>
 
     <div class="cta-box" style="margin:2.5rem 0;padding:1.5rem;background:var(--surface-2);border-radius:10px;text-align:center">
       <p style="font-size:1.05rem;margin:0 0 1rem"><strong>Ready to run your AI engineering team from one dashboard?</strong></p>
-      <p style="color:var(--fg-dim);margin:0 0 1.25rem;font-size:0.93rem">Open source, single Python file, zero external dependencies. 327+ developers shipping overnight with amux.</p>
+      <p style="color:var(--fg-dim);margin:0 0 1.25rem;font-size:0.93rem">Open source, single Rust binary, zero external dependencies. 327+ developers shipping overnight with amux.</p>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--accent,#c75b2e);color:#fff;padding:12px 28px;border-radius:8px;font-weight:600;text-decoration:none;font-size:0.97rem">⭐ Star amux on GitHub</a>
     </div>
 

@@ -9,19 +9,19 @@
   },
   "docs": [
     {
-      "path": "/root/demo/credit-box.md",
+      "path": "/root/capital-express/credit-box.md",
       "content": "# Capital Express \u2014 Credit Box (DEMO DATA)\n\n## Hard declines\n- Time in business < 6 months\n- Average monthly revenue < $15,000\n- More than 2 open advances (stacking)\n- Negative days > 5 in trailing 30\n- Restricted industries: cannabis, firearms, adult, crypto trading\n\n## Tiers\n| Tier | TIB | Avg monthly rev | Max advance | Factor |\n|------|-----|-----------------|-------------|--------|\n| A | 24m+ | $50k+ | 150% of monthly | 1.22 |\n| B | 12-24m | $30k-50k | 100% of monthly | 1.32 |\n| C | 6-12m | $15k-30k | 75% of monthly | 1.45 |\n\n## Manual review triggers\n- Revenue declining 3 consecutive months\n- Single customer > 40% of deposits\n- NSF count 3-5 in trailing 90 days\n"
     },
     {
-      "path": "/root/demo/pricing-matrix.md",
+      "path": "/root/capital-express/pricing-matrix.md",
       "content": "# Pricing Matrix (DEMO DATA)\n\nFactor rate by tier and term:\n\n| Tier | 6 mo | 9 mo | 12 mo |\n|------|------|------|-------|\n| A | 1.18 | 1.22 | 1.28 |\n| B | 1.28 | 1.32 | 1.38 |\n| C | 1.40 | 1.45 | 1.52 |\n\nHoldback: 10-15% of daily deposits (tier A 10%, B 12%, C 15%).\nOrigination fee: 2.5% of funded amount, netted at funding.\nEarly payoff: no discount before 50% of RTR is repaid.\n"
     },
     {
-      "path": "/root/demo/compliance.md",
+      "path": "/root/capital-express/compliance.md",
       "content": "# Compliance Requirements (DEMO DATA)\n\n- Every declined application needs a documented reason code retained 25 months.\n- Reg B adverse action notice within 30 days of the decision.\n- No decisioning on protected-class attributes; log the attributes actually used.\n- Broker submissions require a signed ISO agreement on file before funding.\n- All merchant bank data is confidential; never include account numbers in summaries.\n- Every automated recommendation must be traceable to a rule in credit-box.md.\n"
     },
     {
-      "path": "/root/demo/applications.csv",
+      "path": "/root/capital-express/applications.csv",
       "content": "app_id,merchant,industry,tib_months,avg_monthly_rev,open_advances,nsf_90d,negative_days_30,requested\nAPP-1001,Riverside Auto Repair,auto services,31,72000,0,0,0,90000\nAPP-1002,Bella Nail Spa,personal care,9,21000,1,2,1,20000\nAPP-1003,Kingsway Freight LLC,trucking,18,44000,2,1,0,45000\nAPP-1004,Summit Cannabis Co,cannabis,26,95000,0,0,0,120000\nAPP-1005,Delgado Construction,construction,14,38000,3,4,2,50000\nAPP-1006,Nora's Bakery,food service,5,12000,0,1,0,15000\nAPP-1007,Pinnacle Dental Group,healthcare,44,110000,1,0,0,140000\n"
     }
   ],
@@ -57,7 +57,7 @@
     {
       "name": "stacking-copilot",
       "provider": "claude",
-      "dir": "/root/demo",
+      "dir": "/root/capital-express",
       "desc": "Flags stacking risk and hard declines across the submission queue",
       "prompt": "Read credit-box.md and applications.csv in this directory. For every application, determine whether it is a HARD DECLINE, needs MANUAL REVIEW, or is CLEAR TO PRICE, citing the specific credit-box rule for each. Call out stacking risk explicitly (open_advances). Write your findings to stacking-report.md as a markdown table, then print a one-paragraph summary.",
       "expect": [
@@ -81,7 +81,7 @@
     {
       "name": "decision-accelerator",
       "provider": "claude",
-      "dir": "/root/demo",
+      "dir": "/root/capital-express",
       "desc": "Assigns tier, advance size and factor rate for clear applications",
       "prompt": "Read credit-box.md and pricing-matrix.md, then applications.csv. For each application that is not a hard decline, assign a tier (A/B/C), a maximum advance amount, a recommended term, and the factor rate from the pricing matrix. Show the arithmetic for the advance cap. Write the result to pricing-recommendations.md and print a summary table.",
       "expect": [
@@ -103,7 +103,7 @@
     {
       "name": "compliance-audit",
       "provider": "claude",
-      "dir": "/root/demo",
+      "dir": "/root/capital-express",
       "desc": "Builds the adverse-action and audit trail for every decision",
       "prompt": "Read compliance.md, credit-box.md and applications.csv. For every application you would decline, produce a Reg B adverse action entry: app_id, decision date placeholder, reason code, the exact credit-box rule cited, and the 25-month retention date. Verify no protected-class attribute was used and state which attributes were. Write it to audit-trail.md and print any compliance gaps you find.",
       "expect": [

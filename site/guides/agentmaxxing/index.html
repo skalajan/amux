@@ -308,14 +308,14 @@ EOF</code></pre>
 amux start --all
 
 # Open the dashboard to monitor
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
     <p>Each agent picks up a task from the board, works on it independently, and marks it done when finished. You watch the dashboard, review PRs, and merge.</p>
 
     <h2 id="monitoring">Fleet Monitoring and Observability</h2>
     <p>Running one agent is like pair programming. Running ten is like managing a team. You need observability.</p>
 
     <h3>The amux dashboard</h3>
-    <p>The web dashboard (<code>https://localhost:8822</code>) shows all agents at a glance:</p>
+    <p>The web dashboard (<code>https://localhost:8824</code>) shows all agents at a glance:</p>
     <ul>
       <li><strong>Status:</strong> running, idle, crashed, or stuck (no output for N minutes)</li>
       <li><strong>Token spend:</strong> per-session and cumulative cost tracking</li>
@@ -422,8 +422,8 @@ free -h  # or `top` on macOS
 amux serve --host 0.0.0.0  # or use Tailscale for secure access
 
 # From your laptop
-ssh -L 8822:localhost:8822 user@your-vm
-# Open https://localhost:8822 locally</code></pre>
+ssh -L 8824:localhost:8824 user@your-vm
+# Open https://localhost:8824 locally</code></pre>
     <p>See the <a href="/guides/scaling-to-50-agents/">Scaling to 50+ Agents</a> and <a href="/guides/remote-access-tailscale/">Remote Access with Tailscale</a> guides for detailed setup.</p>
 
     <h3>Staggering agent starts</h3>
@@ -695,7 +695,7 @@ amux board add "Update documentation references to UserManager"</code></pre>
     <div class="cta-box" style="margin-top:3rem;"><h3>Start agentmaxxing with amux</h3><p>Run dozens of Claude Code agents in parallel. Self-healing, web dashboard, mobile monitoring, and token tracking. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register worker-1 --dir ~/Dev/myproject --yolo
 amux start worker-1
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

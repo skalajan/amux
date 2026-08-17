@@ -144,7 +144,7 @@ their config flag is on; only the reap is gated behind `enforce`.
   "health": { "mem_used_pct_above": 90, "swap_used_mb_above": 6000,
               "daemon_cpu_above": 80 },
   "alert":  { "post_board": true, "urgent_owner_alert": false,
-              "amux_base": "https://localhost:8822",
+              "amux_base": "https://localhost:8824",
               "session": "procwarden-maintain" }
 }
 ```

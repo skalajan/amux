@@ -55,13 +55,13 @@
         "@type": "HowToStep",
         "position": 3,
         "name": "Verify the session is running",
-        "text": "Run amux status or amux ls to confirm the session is active. Open https://localhost:8822 or the amux iOS app to see the live session output."
+        "text": "Run amux status or amux ls to confirm the session is active. Open https://localhost:8824 or the amux iOS app to see the live session output."
       },
       {
         "@type": "HowToStep",
         "position": 4,
         "name": "Monitor and steer from your phone or browser",
-        "text": "Open the amux dashboard (amux serve → https://localhost:8822) or the iOS app. You can watch the session output, send new instructions, and approve changes without ever attaching to the terminal."
+        "text": "Open the amux dashboard (amux serve → https://localhost:8824) or the iOS app. You can watch the session output, send new instructions, and approve changes without ever attaching to the terminal."
       }
     ]
   }
@@ -112,7 +112,7 @@
         "name": "How do I monitor a detached agent session?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Open the amux web dashboard at https://localhost:8822 (start it with amux serve) or the iOS app. Both show live streaming output from all running sessions. You can also run amux status to list sessions and peek at their recent output, or use tmux attach -t SESSION_NAME to attach directly."
+          "text": "Open the amux web dashboard at https://localhost:8824 (start it with amux serve) or the iOS app. Both show live streaming output from all running sessions. You can also run amux status to list sessions and peek at their recent output, or use tmux attach -t SESSION_NAME to attach directly."
         }
       },
       {
@@ -247,7 +247,7 @@ amux ls</code></pre>
       <li>
         <strong>Start the dashboard</strong> (if not already running):
         <pre><code>amux serve &amp;</code></pre>
-        The dashboard at <code>https://localhost:8822</code> shows all sessions with live streaming output. Access it from your phone via the iOS app or browser PWA.
+        The dashboard at <code>https://localhost:8824</code> shows all sessions with live streaming output. Access it from your phone via the iOS app or browser PWA.
       </li>
       <li>
         <strong>Peek at session output</strong> without attaching:
@@ -263,7 +263,7 @@ amux ls</code></pre>
 amux serve --host 0.0.0.0
 
 # Or use the amux tunnel for remote access from anywhere
-amux tunnel start 8822</code></pre>
+amux tunnel start 8824</code></pre>
 
     <p>See <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a> for the full setup.</p>
 
@@ -311,7 +311,7 @@ amux tunnel start 8822</code></pre>
 
     <details>
       <summary>How do I monitor a detached agent session?</summary>
-      <p>Use <code>amux peek SESSION</code> for a snapshot, <code>amux status</code> to list all sessions, the web dashboard at <code>https://localhost:8822</code>, or the iOS app. You can also <code>tmux attach -t SESSION</code> to join the live terminal any time.</p>
+      <p>Use <code>amux peek SESSION</code> for a snapshot, <code>amux status</code> to list all sessions, the web dashboard at <code>https://localhost:8824</code>, or the iOS app. You can also <code>tmux attach -t SESSION</code> to join the live terminal any time.</p>
     </details>
 
     <h2>See also</h2>
@@ -325,9 +325,9 @@ amux tunnel start 8822</code></pre>
 
     <div class="cta-box">
       <h3>Run your AI engineering team while you sleep</h3>
-      <p>amux runs dozens of Claude Code, Codex CLI, and Gemini CLI agents in detached mode with self-healing. Monitor from your phone. Open source — single Python file.</p>
+      <p>amux runs dozens of Claude Code, Codex CLI, and Gemini CLI agents in detached mode with self-healing. Monitor from your phone. Open source — single Rust binary.</p>
       <pre><code>amux start my-agent --detach  # non-blocking, returns immediately
-amux serve &amp;                  # dashboard at localhost:8822
+amux serve &amp;                  # dashboard at localhost:8824
 # agent runs, self-heals, you sleep</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
     </div>

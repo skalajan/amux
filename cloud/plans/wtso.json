@@ -1,0 +1,169 @@
+{
+  "_comment": "AUTONOMOUS demo environment (AC-224), third customer from amux-gtm. WTSO is an e-commerce wine flash-sale retailer. Sessions, schedule cadences and policy docs are taken VERBATIM from customers/wtso/workflows/demo-workflows.md in the PRIVATE amux-GTM repo (commit 64d44c3); nothing from customers/ is copied here except this demo's own synthetic mock data \u2014 no real customer data, since the amux repo is public. EVERY schedule is enabled=false: Ethan's requirement is that schedulers may exist but must never fire autonomously, only be triggered manually and verified. budget_usd is 25, matching the other AUTONOMOUS demos (mny-capital, scalenorth). The 5 belongs to the two REAL-customer plans (elliot-wexus, capital-express). I had first flagged 25 as inconsistent by comparing against the wrong peer group; Ethan delegated the call and this restores class consistency. MOCK DATA IS REFERENCED VIA content_file, NOT EMBEDDED: support-tickets.json contains consumer-looking email addresses and this repo is PUBLIC. seed.py reads content_file as bytes at provision time from the PRIVATE amux-GTM checkout, so the demo is still self-contained in the workspace without the addresses ever entering git here.",
+  "org": {
+    "email": "demo+wtso@amux.io",
+    "name": "WTSO (demo)",
+    "trial_days": 7,
+    "budget_usd": 25,
+    "notify": false
+  },
+  "board_columns": [
+    "Triage",
+    "Campaigns",
+    "Ops"
+  ],
+  "board": [
+    {
+      "title": "Review auto-drafted support replies before send",
+      "column": "Triage",
+      "tags": [
+        "support"
+      ],
+      "desc": "Agent drafts replies from the shipping/state/hold/FAQ policy notes. Confirm tone and policy accuracy; escalations go to a human."
+    },
+    {
+      "title": "Approve flash-sale campaign packages",
+      "column": "Campaigns",
+      "tags": [
+        "marketing"
+      ],
+      "desc": "Subject lines, body copy and SMS drafted from brand-voice and discount-rules. Marketing reviews before anything goes live."
+    },
+    {
+      "title": "Daily pulse + weekly compliance scan",
+      "column": "Ops",
+      "tags": [
+        "ops",
+        "compliance"
+      ],
+      "desc": "Morning metrics digest and the state-restriction compliance scan. Anomalies raise a flag here."
+    }
+  ],
+  "docs": [
+    {
+      "path": "/root/wtso/docs/wtso-shipping-policy.md",
+      "content": "# WTSO Shipping Policy\n\n- Orders ship Mon-Fri from our climate-controlled warehouse in Moorestown, NJ.\n- Standard shipping: UPS Ground, 3-7 business days depending on destination.\n- Orders placed before 2pm ET ship same business day. Orders after 2pm ship next business day.\n- Friday orders may not ship until Monday.\n- Shipping confirmation with tracking number sent via email once the order leaves the warehouse.\n- Signature required for all deliveries (21+ age verification).\n- WTSO is not responsible for delays caused by weather, carrier issues, or incorrect addresses.\n- Expedited shipping is not available for wine orders due to temperature sensitivity."
+    },
+    {
+      "path": "/root/wtso/docs/wtso-state-restrictions.md",
+      "content": "# WTSO State Shipping Restrictions\n\nWTSO cannot ship to the following states/territories due to local alcohol shipping laws:\n\n- **Arkansas (AR)**\n- **Kentucky (KY)**\n- **Michigan (MI)**\n- **Mississippi (MS)**\n- **South Dakota (SD)**\n- **Utah (UT)**\n- **Puerto Rico (PR)**\n\nThis list is current as of July 2026. State laws change periodically.\n\nIf a customer is in a restricted state, we cannot fulfill their order. Recommend they check back periodically as laws may change. We cannot suggest workarounds (e.g., shipping to a friend in another state) as this violates compliance rules.\n\nAll other US states and DC are eligible for shipping."
+    },
+    {
+      "path": "/root/wtso/docs/wtso-hold-policy.md",
+      "content": "# WTSO Hold Policy\n\n- Customers can hold bottles from multiple flash sales to combine into a single shipment (saves on shipping costs).\n- Maximum hold period: 7 days from the date of the FIRST bottle placed on hold.\n- After 7 days, the hold auto-ships to the address on file.\n- Customers can add bottles to an existing hold at any time within the 7-day window.\n- To add to a hold: place a new order as usual \u2014 the system automatically detects the existing hold and adds to it.\n- To release a hold early (ship now): contact customer service or use the My Account page.\n- Hold applies per shipping address. Different addresses = separate holds.\n- Maximum hold: 12 bottles per hold (2 cases). Orders beyond 12 bottles ship separately."
+    },
+    {
+      "path": "/root/wtso/docs/wtso-faq.md",
+      "content": "# WTSO FAQ Context\n\n## Wine availability\n- Flash sales are limited quantity. Once sold out, the wine is gone \u2014 we do not restock flash sale wines.\n- No waitlist system exists. Recommend customers enable push notifications and act fast.\n- \"Last Chance\" emails go out for wines approaching sellout.\n\n## Account issues\n- Password reset: use the Forgot Password link on wtso.com/login.\n- Update email/address: My Account page or contact CS.\n\n## Returns and damage\n- Damaged bottles: contact CS with photos. We issue replacements or refunds.\n- Returns for taste preference: not accepted (wine is perishable).\n- Incorrect items shipped: contact CS for replacement at no charge.\n\n## Brands\n- WTSO: flash-sale wines\n- The Wine Market: curated boutique wines (not flash-sale format)\n- Served Neat: spirits and bourbon"
+    },
+    {
+      "path": "/root/wtso/docs/wtso-brand-voice.md",
+      "content": "# WTSO Brand Voice Guide\n\n## Tone\n- Enthusiastic but not breathless. We are excited about great wine at great prices, but we are not a carnival barker.\n- Knowledgeable but accessible. Use wine language when it adds value, but never be snobby. A first-time buyer should feel welcome.\n- Urgent but honest. The flash-sale model creates natural urgency \u2014 lean into it, but never manufacture false scarcity.\n\n## Discount framing\n- Always show the retail price and the WTSO price. Let the math speak.\n- Use percentage off when it is 50% or higher (\"55% off retail\").\n- Use dollar savings when percentage is under 50% (\"Save $12 per bottle\").\n- Round to the nearest whole number for percentages.\n\n## Subject line rules\n- Keep under 50 characters when possible (mobile preview).\n- Lead with the hook: price, rating, or region.\n- Avoid ALL CAPS except for the brand name \"WTSO\".\n- No clickbait. The deal IS the hook.\n- Include the price in at least one variant.\n\n## SMS rules\n- 160 characters max.\n- Include: wine name (abbreviated OK), price, link.\n- One emoji max (wine glass or pointing hand).\n- No hashtags.\n\n## Push notification rules\n- Title: 40 chars max. Body: 80 chars max.\n- Include price and one compelling detail (rating, region, discount)."
+    },
+    {
+      "path": "/root/wtso/docs/wtso-subject-lines.md",
+      "content": "# WTSO Top-Performing Subject Lines (Reference)\n\nThese are real subject line patterns that have driven above-average open rates (>25%). Use them as templates.\n\n| Subject line pattern | Open rate | Notes |\n|---|---|---|\n| \"90-Point [Region] \u2014 $X/bottle\" | 28.4% | Rating + price is the strongest combo |\n| \"[Varietal] under $10 \u2014 [X]% off retail\" | 26.1% | Price anchor works for value wines |\n| \"Just dropped: [Producer] [Varietal]\" | 25.8% | Works for known producers |\n| \"Last chance: [Wine] almost gone\" | 27.2% | Only use when genuinely low stock |\n| \"[Region] [Varietal] \u2014 rated [X] pts\" | 24.9% | Rating-led for 90+ point wines |\n| \"$X [Varietal] (retail: $XX)\" | 25.3% | Direct price comparison |\n\n## Patterns that underperform (<18% open rate)\n- Generic \"New arrivals this week\" (14.2%)\n- Long subject lines over 60 chars\n- Multiple exclamation marks\n- \"You wont believe this price\" style clickbait"
+    },
+    {
+      "path": "/root/wtso/docs/wtso-discount-rules.md",
+      "content": "# WTSO Discount & Copy Framing Rules\n\n## Price tiers and framing\n\n| Flash price | Framing approach |\n|---|---|\n| Under $10 | Lead with absolute price (\"$8/bottle\"). Under-$10 is the psychological hook. |\n| $10-$15 | Lead with percentage off if >45%, otherwise lead with rating or region. |\n| $15-$25 | Lead with rating (if 90+) or producer reputation. Price is secondary. |\n| $25+ | Premium positioning \u2014 \"Collectors Drop\", \"Allocated\", \"Rare find\". Never discount-forward. |\n\n## Urgency language\n- OK: \"Limited quantity\", \"While it lasts\", \"Flash sale\", \"Selling fast\"\n- NOT OK: \"HURRY!!!\", \"Once in a lifetime\", \"You will regret missing this\"\n- Only use \"Last Chance\" when stock is genuinely below 15% of starting quantity\n\n## Food pairing copy\n- Always include 2-3 food pairings. These drive clicks.\n- Be specific: \"grilled lamb chops with rosemary\" not just \"meat\"\n- Seasonal awareness: suggest grilling in summer, braised dishes in winter\n\n## Tasting note rewrites\n- Rewrite supplier tasting notes into conversational language.\n- Keep 2-3 key descriptors. Drop technical winemaking details (\"aged in 225L barriques\").\n- Always mention the finish \u2014 it signals quality to wine buyers."
+    },
+    {
+      "path": "/root/wtso/docs/wtso-campaign-mordoree.md",
+      "content": "# Campaign Package: Domaine de la Mordoree CdR Rouge\n\nGenerated: 2026-07-23 06:00 ET | Brand: WTSO | Goes live: 10am ET\n\n---\n\n## Email Subject Lines (pick 2 for A/B test)\n\n1. **90-Point Rhone Red \u2014 $9.99/bottle** (41 chars) [RECOMMENDED \u2014 rating + price combo, top-performing pattern]\n2. **French GSM Blend, 55% Off \u2014 Under $10** (40 chars)\n3. **Domaine de la Mordoree \u2014 $9.99** (33 chars) [use if audience skews toward producer-aware buyers]\n\n## Email Body Copy\n\n**Headline:** 90-Point Cotes du Rhone \u2014 $9.99 (Retail: $21.99)\n\n**Body:**\n\nThis southern Rhone blend from Domaine de la Mordoree is the kind of wine that makes the flash-sale model worth it \u2014 a 90-point bottle for under ten dollars.\n\nThe 2021 La Dame Rousse is a Grenache-Syrah-Mourvedre blend with ripe black cherry and crushed raspberry up front, layered with wild herbs and a kick of white pepper. Medium-bodied with soft tannins and a long, spicy finish that keeps you reaching for the glass.\n\nAt $9.99 (55% off the $21.99 retail), this is an easy case buy. 840 bottles available \u2014 it will not last the morning.\n\n**Perfect with:** Grilled lamb chops, summer ratatouille, or a wedge of aged Comte.\n\n**CTA:** Get yours before it is gone.\n\n---\n\n## SMS (158 chars)\n\n90-pt Rhone red just dropped \u2014 $9.99/bottle (55% off). Domaine de la Mordoree GSM blend. Limited qty. Grab it: [link]\n\n## Push Notification\n\n**Title:** $9.99 \u2014 90-Point Rhone Red (37 chars)\n**Body:** Domaine de la Mordoree GSM blend. 55% off retail. Limited quantity. (69 chars)\n\n---\n\n## Last Chance Variant (trigger when <15% stock remains)\n\n**Subject:** Almost gone: 90-pt Rhone for $9.99\n**SMS:** Last call \u2014 90-pt Domaine de la Mordoree, $9.99. Almost sold out: [link]\n\n---\n\n*Status: DRAFT \u2014 awaiting marketing review*"
+    },
+    {
+      "path": "/root/wtso/docs/wtso-anomaly-thresholds.md",
+      "content": "# WTSO Anomaly Detection Thresholds\n\n## Revenue\n- ALERT if daily revenue is >25% below trailing 7-day average\n- WARN if daily revenue is >15% below trailing 7-day average\n- INFO if a wine has been live >2x the average sellout time for its category\n\n## Customer Service\n- ALERT if new tickets are >50% above trailing 7-day average\n- WARN if avg first response time exceeds 60 minutes\n- INFO if open backlog exceeds 40 tickets\n\n## Email Marketing\n- ALERT if unsubscribe rate exceeds 0.1% on any single campaign\n- WARN if unsubscribes are >50% above trailing 7-day daily average\n- INFO if open rate drops below 18% (well below the ~22% baseline)\n\n## Escalation rules\n- ALERT level: send email to Joe + Julie + Art immediately, post to amux board\n- WARN level: include in daily digest with highlight, post to amux board\n- INFO level: include in daily digest, no separate notification"
+    },
+    {
+      "path": "/root/wtso/docs/mock-data/daily-metrics.json",
+      "content_file": "/Users/ethan/Dev/amux-gtm/customers/wtso/data/mock-data/daily-metrics.json"
+    },
+    {
+      "path": "/root/wtso/docs/mock-data/flash-sales.json",
+      "content_file": "/Users/ethan/Dev/amux-gtm/customers/wtso/data/mock-data/flash-sales.json"
+    },
+    {
+      "path": "/root/wtso/docs/mock-data/support-tickets.json",
+      "content_file": "/Users/ethan/Dev/amux-gtm/customers/wtso/data/mock-data/support-tickets.json"
+    }
+  ],
+  "sessions": [
+    {
+      "name": "wtso-support",
+      "provider": "claude",
+      "dir": "/root/wtso",
+      "desc": "Support Ticket Triage & Auto-Draft \u2014 categorises the Zendesk queue, drafts policy-grounded replies, flags anything needing human judgement.",
+      "tags": [
+        "support",
+        "triage"
+      ],
+      "prompt": "You are WTSO's support triage agent. Read tickets from docs/mock-data/support-tickets.json. For each: categorise it, then draft a reply grounded ONLY in docs/wtso-shipping-policy.md, docs/wtso-state-restrictions.md, docs/wtso-hold-policy.md and docs/wtso-faq.md. Never invent policy. If a ticket needs human judgement (refunds, damage claims, anything the notes do not cover), do NOT draft a reply - put it on the board tagged escalation and say why.",
+      "expect": [
+        "docs/wtso-shipping-policy",
+        "escalation"
+      ],
+      "schedules": [
+        {
+          "title": "Triage the support queue",
+          "expr": "every 15m",
+          "enabled": false,
+          "command": "Read docs/mock-data/support-tickets.json. Categorise each new ticket, draft a policy-grounded reply, and post drafts to the board under Triage. Escalate anything the policy notes do not cover."
+        }
+      ]
+    },
+    {
+      "name": "wtso-campaigns",
+      "provider": "claude",
+      "dir": "/root/wtso",
+      "desc": "Flash Sale Campaign Copilot \u2014 turns the day's wine queue into a reviewable campaign package (subject lines, body copy, SMS).",
+      "tags": [
+        "marketing",
+        "campaigns"
+      ],
+      "prompt": "You are WTSO's campaign copilot. Read the day's wines from docs/mock-data/flash-sales.json and produce a campaign package per wine: 3 subject-line options, email body, and an SMS variant. Follow docs/wtso-brand-voice.md and docs/wtso-discount-rules.md strictly, and use docs/wtso-subject-lines.md as reference for what has performed. docs/wtso-campaign-mordoree.md is a worked example of the expected output shape. Everything is a DRAFT for marketing review - post to the board under Campaigns, never send.",
+      "expect": [
+        "docs/wtso-brand-voice",
+        "campaign"
+      ],
+      "schedules": [
+        {
+          "title": "Draft the day's campaign packages",
+          "expr": "daily at 6am",
+          "enabled": false,
+          "command": "Read docs/mock-data/flash-sales.json and draft a full campaign package for each wine, following brand-voice and discount-rules. Post each as a board item under Campaigns for marketing approval."
+        }
+      ]
+    },
+    {
+      "name": "wtso-ops",
+      "provider": "claude",
+      "dir": "/root/wtso",
+      "desc": "Daily Business Pulse + Compliance Monitor \u2014 compiles the morning metrics digest and runs the state-restriction compliance scan.",
+      "tags": [
+        "ops",
+        "compliance"
+      ],
+      "prompt": "You are WTSO's ops analyst. For the daily pulse, read docs/mock-data/daily-metrics.json and compile a leadership digest: sales, email/SMS performance, Zendesk volume, and any anomaly that breaches docs/wtso-anomaly-thresholds.md. For the weekly compliance scan, re-check docs/wtso-state-restrictions.md and report any state whose status may have changed. Post findings to the board under Ops. Do not email or alert anyone unless a human asks.",
+      "expect": [
+        "docs/wtso-anomaly-thresholds",
+        "pulse"
+      ],
+      "schedules": [
+        {
+          "title": "Daily business pulse",
+          "expr": "daily at 7am",
+          "enabled": false,
+          "command": "Read docs/mock-data/daily-metrics.json, compile the leadership digest, and flag anything breaching docs/wtso-anomaly-thresholds.md. Post to the board under Ops."
+        },
+        {
+          "title": "Weekly compliance scan",
+          "expr": "weekly on Monday at 8am",
+          "enabled": false,
+          "command": "Re-read docs/wtso-state-restrictions.md and report any state whose shipping status may have changed since the list was last dated. Post findings to the board under Ops."
+        }
+      ]
+    }
+  ]
+}

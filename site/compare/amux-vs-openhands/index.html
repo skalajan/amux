@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs OpenHands — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with OpenHands (formerly OpenDevin), the open-source autonomous AI developer.">
-  <meta name="keywords" content="amux vs openhands, opendevin alternative, open source AI developer, autonomous coding">
+  <title>amux vs OpenHands (OpenDevin) 2026 — Fleet Orchestration vs Autonomous Agent</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs OpenHands (OpenDevin) comparison 2026. Cloud-based autonomous agent vs open-source multi-agent orchestration. Compare architecture, cost, control, and when to use each.">
+  <meta name="keywords" content="amux vs openhands, amux vs opendevin, openhands alternative, opendevin alternative, autonomous ai developer, ai agent fleet orchestration, open source ai agent comparison 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-openhands/">
-  <meta property="og:title" content="amux vs OpenHands — amux">
-  <meta property="og:description" content="Compare amux with OpenHands (formerly OpenDevin), the open-source autonomous AI developer.">
+  <meta property="og:title" content="amux vs OpenHands (OpenDevin) 2026 — Fleet Orchestration vs Autonomous Agent">
+  <meta property="og:description" content="OpenHands executes single complex tasks in a Docker sandbox. amux orchestrates a fleet of 5-50 parallel agents from your own machine. Different tools for different workflows.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-openhands/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,14 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
+
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenHands","item":"https://amux.io/compare/amux-vs-openhands/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs OpenHands","description":"Compare amux with OpenHands (formerly OpenDevin), the open-source autonomous AI developer.","url":"https://amux.io/compare/amux-vs-openhands/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenHands (OpenDevin) 2026: Fleet Orchestration vs Autonomous Agent","description":"OpenHands executes single complex tasks autonomously in a Docker sandbox. amux orchestrates a fleet of 5-50 parallel Claude Code, Codex, or Gemini CLI agents from your own machine. Here is when to use each.","url":"https://amux.io/compare/amux-vs-openhands/","datePublished":"2026-08-11","dateModified":"2026-08-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is OpenHands the same as OpenDevin?","acceptedAnswer":{"@type":"Answer","text":"Yes. OpenDevin was renamed OpenHands in mid-2024 after the project moved under the All Hands AI organization. The codebase, community, and GitHub repository (github.com/All-Hands-AI/OpenHands) are the same project. When you search for OpenDevin, you will find OpenHands."}},{"@type":"Question","name":"Does amux replace OpenHands?","acceptedAnswer":{"@type":"Answer","text":"No. They operate at different levels. OpenHands is a fully autonomous single agent: you give it a task, it plans and executes in a Docker container, running tests and fixing errors by itself. amux is an orchestration layer: you coordinate a fleet of 5-50 coding agents (Claude Code, Codex, Gemini CLI), distributing tasks via a shared kanban board and keeping them running overnight with self-healing. Many teams use OpenHands for complex isolated tasks and amux for coordinating the fleet."}},{"@type":"Question","name":"Can I run OpenHands as a worker inside amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages tmux sessions, and you can run any CLI tool inside a tmux session, including the OpenHands CLI. This lets you coordinate multiple OpenHands instances from the amux dashboard, assign them tasks from the kanban board, and monitor their output alongside Claude Code or Codex workers in the same fleet view."}},{"@type":"Question","name":"Which is better for overnight runs?","acceptedAnswer":{"@type":"Answer","text":"amux is designed for overnight multi-task fleet runs. Its self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. You queue 50 tasks, close your laptop, and wake up to results. OpenHands is better suited for single complex isolated tasks where deep autonomy (running tests, searching the web, fixing errors) matters more than fleet scale."}},{"@type":"Question","name":"What does OpenHands cost compared to amux?","acceptedAnswer":{"@type":"Answer","text":"OpenHands cloud (openhands.ai) uses a per-task credit model on top of LLM API costs. The self-hosted OSS version is free but requires Docker and your own LLM API keys. amux is free open-source software under MIT + Commons Clause. You pay only for the LLM API tokens your agents consume. There is no per-task fee, no per-seat charge, and no usage cap on the self-hosted version."}}]}</script>
+
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -37,20 +42,273 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
     </nav>
   </header>
+
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs OpenHands</span></div>
-    <h1>amux vs OpenHands</h1>
-<p class="subtitle">Both are open source. Different architectures for different needs.</p>
-<p><strong>OpenHands</strong> (formerly OpenDevin) is an open-source autonomous AI developer with a sandboxed Docker environment. <strong>amux</strong> orchestrates Claude Code agents directly on your machine.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>OpenHands</th></tr></thead><tbody><tr><td>Environment</td><td>Direct machine access</td><td>Docker sandbox</td></tr><tr><td>Agent count</td><td>Unlimited parallel tmux sessions</td><td>Typically single agent</td></tr><tr><td>Self-healing</td><td>Auto-compact, restart, unstick</td><td>Relies on sandbox isolation</td></tr><tr><td>Dashboard</td><td>Built-in web UI with peek/board</td><td>Web UI for single agent</td></tr><tr><td>Dependencies</td><td>Python 3 + tmux only</td><td>Docker required</td></tr><tr><td>Model lock-in</td><td>Claude Code specific</td><td>Multi-provider</td></tr></tbody></table>
-<h2>When to choose amux</h2>
-<p>If you're already using Claude Code and want to <strong>scale to many parallel agents</strong> with self-healing and coordination, amux is purpose-built for that. OpenHands is better if you need provider flexibility or sandboxed execution.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>amux vs OpenHands (OpenDevin) 2026</h1>
+    <p class="subtitle">Autonomous single-agent sandbox vs open-source fleet orchestration. Different tools for different workflows, and why many teams use both.</p>
+
+    <!-- EXP-007: compare pages GitHub CTA (green pattern) -->
+    <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.2rem 1.6rem;margin:1.8rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+      <div>
+        <div style="font-weight:600;margin-bottom:4px;">Orchestrate OpenHands at fleet scale</div>
+        <div style="font-size:0.875rem;color:var(--dim);">amux can manage OpenHands sessions alongside Claude Code and Codex workers — unified board, self-healing, mobile monitoring.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;font-size:.875rem;white-space:nowrap;flex-shrink:0;" onclick="typeof posthog!=='undefined'&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})">View amux on GitHub ★</a>
+    </div>
+
+    <!-- Direct answer -->
+    <section>
+      <p>
+        <strong>OpenHands</strong> (formerly OpenDevin, by All Hands AI, ~42k GitHub stars) is an autonomous AI developer. You give it a task via a web UI, it spins up a Docker container, writes code, runs tests, searches the web, and fixes errors by itself until the task is done or it gets stuck. One task at a time in the default interface.
+        <strong>amux</strong> is an open-source orchestration layer that runs a fleet of AI coding agents in parallel on your own machine. Where OpenHands goes deep on a single task, amux goes wide across 5-50 tasks simultaneously. Both tools are genuinely open source, both are free to self-host, and they complement each other rather than compete.
+      </p>
+    </section>
+
+    <!-- Key differences table -->
+    <section>
+      <h2>Key differences at a glance</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Feature</th>
+              <th>amux</th>
+              <th>OpenHands (OpenDevin)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Architecture</strong></td>
+              <td>Fleet orchestrator — manages many agents on your machine</td>
+              <td>Autonomous single agent — one Docker sandbox per task</td>
+            </tr>
+            <tr>
+              <td><strong>Deployment</strong></td>
+              <td>Runs locally on macOS or Linux, single Rust binary</td>
+              <td>Cloud (openhands.ai) or self-hosted (Docker required)</td>
+            </tr>
+            <tr>
+              <td><strong>Concurrency</strong></td>
+              <td>5-50 agents running simultaneously</td>
+              <td>1 task at a time in default UI</td>
+            </tr>
+            <tr>
+              <td><strong>Task assignment</strong></td>
+              <td>Shared SQLite kanban board, atomic claiming, no duplicate work</td>
+              <td>One task per session, no built-in queue</td>
+            </tr>
+            <tr>
+              <td><strong>Self-healing</strong></td>
+              <td>Watchdog auto-compacts context, restarts crashed agents, replays last message</td>
+              <td>Docker isolation handles crashes; no automatic session replay</td>
+            </tr>
+            <tr>
+              <td><strong>Mobile monitoring</strong></td>
+              <td>Native iOS app + installable PWA</td>
+              <td>Responsive web UI (no native app)</td>
+            </tr>
+            <tr>
+              <td><strong>Sandboxing / isolation</strong></td>
+              <td>Each agent runs in its own tmux session; git worktrees for parallel branches</td>
+              <td>Full Docker container per task; sandboxed filesystem</td>
+            </tr>
+            <tr>
+              <td><strong>Model support</strong></td>
+              <td>Claude Code, Codex CLI, Gemini CLI (your own API keys)</td>
+              <td>Multi-provider: Claude, GPT-4, Gemini, local models</td>
+            </tr>
+            <tr>
+              <td><strong>Context persistence</strong></td>
+              <td>Persistent tmux sessions; auto-compaction before context limit</td>
+              <td>Per-task sessions; context limited to task window</td>
+            </tr>
+            <tr>
+              <td><strong>Cost model</strong></td>
+              <td>Free software + your own LLM API tokens only</td>
+              <td>Cloud: per-task credits + LLM costs; OSS: free + your API keys + Docker compute</td>
+            </tr>
+            <tr>
+              <td><strong>Open source</strong></td>
+              <td>Yes — MIT + Commons Clause, ~338 stars</td>
+              <td>Yes — MIT, ~42,000 stars</td>
+            </tr>
+            <tr>
+              <td><strong>Setup complexity</strong></td>
+              <td>~30 seconds: single binary, no containers, no build step</td>
+              <td>Requires Docker; cloud signup for managed version</td>
+            </tr>
+            <tr>
+              <td><strong>Best for</strong></td>
+              <td>Parallel overnight coding runs, fleet coordination, task queues</td>
+              <td>Complex single-task autonomy: write, test, fix in one shot</td>
+            </tr>
+            <tr>
+              <td><strong>Claude Code integration</strong></td>
+              <td>Native — purpose-built around Claude Code sessions</td>
+              <td>Uses Claude API but not Claude Code CLI natively</td>
+            </tr>
+            <tr>
+              <td><strong>Fleet-scale (5-50 agents)</strong></td>
+              <td>Core use case — board gates, WIP limits, reviewer assignments</td>
+              <td>Requires custom scripting to parallelize</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Architecture deep-dive -->
+    <section>
+      <h2>How each tool works</h2>
+
+      <h3>How OpenHands works</h3>
+      <p>
+        OpenHands is a fully autonomous AI software developer. You provide a task in natural language via the web UI or API, and it plans, executes, and iterates in a sandboxed Docker container until the task is complete. Inside the container it has access to a filesystem, a terminal, a browser, and your configured LLM. It can write code, run tests, install packages, search the web, and diagnose its own errors.
+      </p>
+      <p>
+        The agent operates in a continuous loop: observe state, think, act, observe result. It handles multi-step tasks that require planning, like "implement feature X with tests and a docs update" — without you guiding each step. The Docker sandbox means the agent's actions cannot affect your host machine beyond the project directory you mount.
+      </p>
+      <p>
+        OpenHands supports multiple LLM backends: Claude (via the Anthropic API), GPT-4, Gemini, and local models via Ollama. The cloud version at openhands.ai adds managed sandboxing and per-task billing. The OSS version is self-hosted and requires Docker and your own LLM API keys.
+      </p>
+
+      <h3>How amux works</h3>
+      <p>
+        amux is a control plane for a fleet of AI coding agents. Instead of one agent doing one task autonomously, amux manages 5-50 agents simultaneously, each running in its own tmux session on your local machine. Each agent gets tasks from a shared SQLite kanban board with atomic compare-and-swap claiming, so no two agents work the same task.
+      </p>
+      <p>
+        The self-healing watchdog monitors every session. When an agent nears its context limit, it auto-compacts; when it crashes, the watchdog restarts it and replays the last message so work continues without human intervention. The web dashboard and native iOS app let you peek into any session, send messages, and monitor token spend from anywhere.
+      </p>
+      <p>
+        amux is purpose-built around Claude Code but also manages Codex CLI and Gemini CLI sessions. It installs in ~30 seconds as a single Rust binary with no Docker, no containers, and no external dependencies beyond tmux.
+      </p>
+    </section>
+
+    <!-- When to use each -->
+    <section>
+      <h2>When to use OpenHands</h2>
+      <ul>
+        <li>You have a single complex task that requires deep autonomy: write tests, fix failures, search for context, iterate.</li>
+        <li>You want an isolated Docker sandbox so the agent cannot affect your host filesystem.</li>
+        <li>You need multi-provider model support without committing to Claude Code.</li>
+        <li>You are exploring autonomous AI development and want a polished single-agent experience out of the box.</li>
+      </ul>
+
+      <h2>When to use amux</h2>
+      <ul>
+        <li>You want to run 5-50 coding tasks in parallel overnight and wake up to finished pull requests.</li>
+        <li>You are already using Claude Code and want to scale from 1 agent to a coordinated fleet.</li>
+        <li>You need shared task coordination across agents (no duplicate work, atomic claiming).</li>
+        <li>You want mobile monitoring via an iOS app or PWA while agents run unattended.</li>
+        <li>You want zero-overhead setup: no Docker, no containers, no cloud account.</li>
+      </ul>
+    </section>
+
+    <!-- Why not both -->
+    <section>
+      <h2>Using amux and OpenHands together</h2>
+      <p>
+        These tools are not mutually exclusive. A practical workflow: use amux to coordinate the fleet and OpenHands for the tasks that benefit from deep sandbox autonomy.
+      </p>
+
+      <p><strong>Pattern 1: amux routes, OpenHands executes complex tasks.</strong> The amux board queues 50 tasks. Most go to Claude Code workers. Tasks flagged as "requires sandbox autonomy" route to an OpenHands CLI session managed by amux. amux monitors the OpenHands session alongside the rest of the fleet.</p>
+
+      <p><strong>Pattern 2: OpenHands for research, amux for implementation.</strong> Use OpenHands to explore an unfamiliar codebase autonomously (browse files, run tests, understand the system). Distill the findings into specs. Push specs to the amux board. Run the implementation phase with 10 parallel Claude Code agents.</p>
+
+      <p><strong>Pattern 3: amux manages OpenHands instances directly.</strong> amux manages any CLI process in a tmux session. You can run the OpenHands CLI inside a tmux session, assign it tasks from the amux board, and monitor it from the amux dashboard alongside other workers. You get the deep autonomy of OpenHands with the fleet visibility of amux.</p>
+    </section>
+
+    <!-- Cost comparison -->
+    <section>
+      <h2>Cost comparison</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario</th>
+              <th>amux</th>
+              <th>OpenHands (cloud)</th>
+              <th>OpenHands (self-hosted)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Software license</td>
+              <td>Free (MIT)</td>
+              <td>Per-task credits</td>
+              <td>Free (MIT)</td>
+            </tr>
+            <tr>
+              <td>Infrastructure</td>
+              <td>Your machine (no extra cost)</td>
+              <td>Managed by openhands.ai</td>
+              <td>Docker compute on your machine or VM</td>
+            </tr>
+            <tr>
+              <td>LLM tokens</td>
+              <td>Your API keys (pay as you go)</td>
+              <td>Included in per-task credits</td>
+              <td>Your API keys (pay as you go)</td>
+            </tr>
+            <tr>
+              <td>10 parallel overnight tasks</td>
+              <td>~$2-8 in Claude API tokens</td>
+              <td>Per-task credits x 10 (check current pricing)</td>
+              <td>~$2-8 in API tokens + Docker compute</td>
+            </tr>
+            <tr>
+              <td>Setup time</td>
+              <td>~30 seconds</td>
+              <td>~5 minutes (sign up + connect)</td>
+              <td>~10-20 minutes (Docker + config)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section>
+      <h2>Frequently asked questions</h2>
+
+      <h3>Is OpenHands the same as OpenDevin?</h3>
+      <p>Yes. OpenDevin was renamed OpenHands in mid-2024 when the project moved to the All Hands AI organization. The GitHub repository is now at github.com/All-Hands-AI/OpenHands. The codebase, community, and goals are identical. Search results for "OpenDevin" will often surface OpenHands pages.</p>
+
+      <h3>Does amux replace OpenHands?</h3>
+      <p>No. They solve different problems at different levels. OpenHands is a fully autonomous agent for individual complex tasks: give it a task, it handles the planning and execution loop inside a Docker sandbox. amux is a fleet orchestration layer: it coordinates 5-50 coding agents running in parallel, with shared task queues, self-healing, and mobile monitoring. The two complement each other.</p>
+
+      <h3>Can I run OpenHands as a worker inside amux?</h3>
+      <p>Yes. amux manages any process inside a tmux session. You can run the OpenHands CLI inside a tmux session that amux monitors, assign it tasks from the amux kanban board, and watch its output from the amux dashboard alongside Claude Code or Codex workers. This gives you OpenHands' deep autonomy with amux's fleet visibility.</p>
+
+      <h3>Which is better for overnight runs?</h3>
+      <p>amux is purpose-built for overnight multi-task fleet operation. The self-healing watchdog auto-compacts agent context before it hits the limit, restarts crashed sessions, and replays the last message so no work is lost. You queue 50 tasks, close your laptop, and wake up to results. OpenHands is better suited for single complex tasks where you want deep autonomy: plan, write, run tests, fix failures, iterate.</p>
+
+      <h3>What does OpenHands cost compared to amux?</h3>
+      <p>amux is free open-source software. You pay only for the LLM API tokens your agents consume. There is no per-task fee and no per-seat charge. OpenHands cloud (openhands.ai) uses a per-task credit model on top of LLM API costs. The self-hosted OSS version is free but requires Docker and your own LLM API keys. For high-volume parallel workloads, amux's pay-only-for-tokens model scales more predictably.</p>
+    </section>
+
+    <!-- Quick start -->
+    <section>
+      <h2>Get started with amux</h2>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # web dashboard at https://localhost:8824</code></pre>
+
+      <p>No Docker. No containers. No cloud account. Single Rust binary, runs on macOS and Linux.</p>
+
+      <div class="cta-box">
+        <h3>Run a parallel agent fleet tonight</h3>
+        <p>amux is open source, free, and installs in under a minute. Queue 10 tasks, close your laptop, wake up to finished PRs.</p>
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View amux on GitHub (338 stars)</a>
+      </div>
+    </section>
+
+    <p style="margin-top:2rem">Also see: <a href="/compare/">all comparisons</a>, <a href="/compare/amux-vs-devin/">amux vs Devin</a>, <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers 2026</a></p>
   </main>
+
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">
@@ -97,6 +355,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

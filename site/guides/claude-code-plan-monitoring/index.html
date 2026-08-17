@@ -411,7 +411,7 @@
     <h2>Frequently asked questions</h2>
 
     <h3>How do I see what my Claude Code agent is doing right now?</h3>
-    <p>Open the amux dashboard at <code>https://localhost:8822</code> (or the iOS app) and click any session card. The peek panel opens with live streaming output and the plan strip showing the agent's current task list. No terminal needed.</p>
+    <p>Open the amux dashboard at <code>https://localhost:8824</code> (or the iOS app) and click any session card. The peek panel opens with live streaming output and the plan strip showing the agent's current task list. No terminal needed.</p>
 
     <h3>What is the Claude Code plan strip?</h3>
     <p>The plan strip (v0.9.44) is a structured view inside the amux peek panel that reads Claude Code's native task list. It displays completed tasks, the current in-progress task, and pending tasks — updated in real time as the agent works. A stale plan warning (v0.9.81) shows "plan last updated Nh ago" when the plan hasn't changed recently. The raw data is available at <code>GET /api/sessions/{name}/plan</code>.</p>
@@ -440,7 +440,7 @@
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>

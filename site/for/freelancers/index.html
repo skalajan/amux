@@ -121,7 +121,7 @@
     <h1>amux for Freelancers</h1>
     <p class="subtitle">Run an AI engineering team from one dashboard. Bill hours while agents do the coding, manage every client relationship in one place, and deliver completed features overnight. <em>Updated July 2026.</em></p>
 
-    <p>amux is an open-source control plane that gives freelance developers a parallel AI engineering team — without hiring. It launches, monitors, and self-heals simultaneous Claude Code, Codex, or Gemini CLI sessions across your client projects, with a built-in kanban board, notes, CRM, Gmail API integration, browser automation, and a scheduler. One Python file, zero external dependencies, runs on your MacBook, and is controllable from your iPhone at a client meeting.</p>
+    <p>amux is an open-source control plane that gives freelance developers a parallel AI engineering team — without hiring. It launches, monitors, and self-heals simultaneous Claude Code, Codex, or Gemini CLI sessions across your client projects, with a built-in kanban board, notes, CRM, Gmail API integration, browser automation, and a scheduler. One Rust binary, zero external dependencies, runs on your MacBook, and is controllable from your iPhone at a client meeting.</p>
 
     <h2>How freelancers use amux to deliver more while working less</h2>
     <p>The ceiling on freelance income is usually hours. There are only so many billable hours in a week, and adding more clients means working longer — or turning work down. Most freelancers plateau at 2-3 clients because context-switching alone eats 20% of their available time.</p>
@@ -146,7 +146,7 @@ amux board add "Implement CSV export for reports page" --session client-acme
 amux board add "Fix checkout flow redirect bug" --session client-beta
 amux board add "Add rate limiting to /api/search endpoint" --session client-gamma</code></pre>
 
-    <p>The amux dashboard at <code>https://localhost:8822</code> shows all sessions in a single view — live output, board status, agent health — so you can see what every client's agent is doing at a glance. The <a href="/guides/mobile-management-pwa/">mobile PWA</a> gives you the same view from your phone.</p>
+    <p>The amux dashboard at <code>https://localhost:8824</code> shows all sessions in a single view — live output, board status, agent health — so you can see what every client's agent is doing at a glance. The <a href="/guides/mobile-management-pwa/">mobile PWA</a> gives you the same view from your phone.</p>
     <p>Agents follow the <a href="/guides/team-workflow-setup/">CLAUDE.md style guide</a> in each project root, so code for Client A follows Client A's conventions and code for Client B follows theirs. Quality is consistent because the agent is always working from the same written spec you gave it — not guessing from context.</p>
 
     <h2>The CRM is built in — manage clients where you manage agents</h2>
@@ -292,7 +292,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
           <tr>
             <td style="padding:10px 16px;">Ops overhead</td>
             <td style="padding:10px 16px;">—</td>
-            <td style="padding:10px 16px;">Single Python file, zero cloud dependency</td>
+            <td style="padding:10px 16px;">Single Rust binary, zero cloud dependency</td>
           </tr>
         </tbody>
       </table>
@@ -310,7 +310,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
       <li>
         <strong>Register your first client project (2 minutes).</strong>
         <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;"><code>amux register client-a --dir ~/Dev/client-a-app --yolo
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       </li>
       <li>
         <strong>Write a CLAUDE.md for the project (5 minutes).</strong> Add project context, coding conventions, and two or three "gotchas" you've learned about the codebase. This is the most important investment you'll make — better context means better overnight output. See the <a href="/guides/getting-started/">getting started guide</a> for a template.
@@ -355,7 +355,7 @@ amux crm add "Marcus Roy" company="Beta Tech" email="marcus@betahq.io" role="VP 
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register client-a --dir ~/Dev/client-a --yolo
 amux start client-a
-amux serve  # → https://localhost:8822</code></pre>
+amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Concierge setup →</a>
     </div>
