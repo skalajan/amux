@@ -4,6 +4,11 @@ allowed-tools: Bash, Read, Edit, Write
 argument-hint: [ITEM-ID or leave empty to pick next open issue]
 ---
 
+> **Auth:** every `curl` below sends `-H "$AMUX_AUTH"`. Define it once per shell:
+> `export AMUX_AUTH="Authorization: Bearer $(cat ~/.amux/auth_token)"`
+> This fork runs the server with `AMUX_RS_NO_LOOPBACK_BYPASS=1`, so localhost is
+> NOT trusted — an unauthenticated request gets 401, including reads.
+
 # aissue — amux issue runner
 
 Pull an open issue from the local amux issue tracker, transition it through the board (`todo` → `doing` → `done`), and do the actual work in between.
@@ -36,7 +41,7 @@ amux board doing <ITEM-ID>
 Or via REST:
 
 ```bash
-curl -sk -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"doing"}' \
   $AMUX_URL/api/board/<ITEM-ID>
 ```
@@ -60,7 +65,7 @@ amux board done <ITEM-ID>
 Or via REST:
 
 ```bash
-curl -sk -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"done"}' \
   $AMUX_URL/api/board/<ITEM-ID>
 ```

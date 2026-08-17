@@ -4,6 +4,11 @@ allowed-tools: Bash
 argument-hint: [task title or description]
 ---
 
+> **Auth:** every `curl` below sends `-H "$AMUX_AUTH"`. Define it once per shell:
+> `export AMUX_AUTH="Authorization: Bearer $(cat ~/.amux/auth_token)"`
+> This fork runs the server with `AMUX_RS_NO_LOOPBACK_BYPASS=1`, so localhost is
+> NOT trusted — an unauthenticated request gets 401, including reads.
+
 # Add to amux board
 
 You are adding an item to the **amux local kanban board** at `$AMUX_URL/api/board` (`$AMUX_URL` defaults to `https://localhost:8822` when unset).
@@ -12,19 +17,19 @@ You are adding an item to the **amux local kanban board** at `$AMUX_URL/api/boar
 
 ```bash
 # Add item
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X POST -H 'Content-Type: application/json' \
   -d '{"title":"...","desc":"...","status":"todo","session":"..."}' \
   $AMUX_URL/api/board
 
 # List all items
-curl -sk $AMUX_URL/api/board
+curl -sk -H "$AMUX_AUTH" $AMUX_URL/api/board
 
 # Update item
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X PATCH -H 'Content-Type: application/json' \
   -d '{"status":"doing"}' $AMUX_URL/api/board/ITEM_ID
 
 # Delete item
-curl -sk -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE $AMUX_URL/api/board/ITEM_ID
+curl -sk -H "$AMUX_AUTH" -H "X-Amux-Write-Token: $(cat ~/.amux/write_token 2>/dev/null)" -X DELETE $AMUX_URL/api/board/ITEM_ID
 ```
 
 ## Fields
@@ -48,7 +53,7 @@ The user's request is: **$ARGUMENTS**
    - Current state if known
 3. Set **status** to `todo` unless the user indicates it's in-progress (`doing`) or already done (`done`)
 4. Set **session** to the most relevant amux session name if the task belongs to a specific project (leave empty if general)
-5. Add the item using `curl -sk` (the server uses a self-signed cert)
+5. Add the item using `curl -sk -H "$AMUX_AUTH"` (the server uses a self-signed cert)
 6. Confirm success by showing the created item's title and ID
 
 Do not ask clarifying questions — infer context from the arguments and current conversation. If the arguments are empty, add a generic task titled "Untitled task" with an empty desc.

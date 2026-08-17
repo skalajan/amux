@@ -4,6 +4,11 @@ allowed-tools: Bash, Read, Write
 argument-hint: -g "goal description" -s "session-a, session-b, ..."
 ---
 
+> **Auth:** every `curl` below sends `-H "$AMUX_AUTH"`. Define it once per shell:
+> `export AMUX_AUTH="Authorization: Bearer $(cat ~/.amux/auth_token)"`
+> This fork runs the server with `AMUX_RS_NO_LOOPBACK_BYPASS=1`, so localhost is
+> NOT trusted — an unauthenticated request gets 401, including reads.
+
 # /orchestrate — Scaffold a closed orchestrator loop
 
 Parse the arguments, generate a filled-in orchestrator loop note from the v2 template, create companion notes, and wire up a scheduler entry.
@@ -43,7 +48,7 @@ For each session in `-s`, derive its likely lane and issue prefix using this map
 
 Fetch the v2 template:
 ```bash
-curl -sk $AMUX_URL/api/notes/orchestrator-loop-v2 | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))"
+curl -sk -H "$AMUX_AUTH" $AMUX_URL/api/notes/orchestrator-loop-v2 | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))"
 ```
 
 Do the substitution in Python — fetch the template text, replace every placeholder with real values, write to a temp file, POST it. Do NOT write the note content from scratch.
@@ -85,21 +90,21 @@ with open('/tmp/orch-note.json', 'w') as f:
 print('template filled')
 PYEOF
 
-curl -sk -X POST -H 'Content-Type: application/json' -d @/tmp/orch-note.json $AMUX_URL/api/notes/<slug>
+curl -sk -H "$AMUX_AUTH" -X POST -H 'Content-Type: application/json' -d @/tmp/orch-note.json $AMUX_URL/api/notes/<slug>
 ```
 
 ### 4. Create companion notes
 
 **State note** (blank initial state):
 ```bash
-curl -sk -X POST -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -X POST -H 'Content-Type: application/json' \
   -d '{"content": "## Status\n\nNot yet run. Orchestrator will populate on first tick."}' \
   $AMUX_URL/api/notes/<slug>-state
 ```
 
 **Constraints note** (seed with one standing rule):
 ```bash
-curl -sk -X POST -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -X POST -H 'Content-Type: application/json' \
   -d '{"content": "# Constraints — <slug>\n\nAppend-only. Never edit existing lines.\n\n```\n[YYYY-MM-DD] — stage explicit git paths only, never git add -A. Reason: 5407ac1473 swept another session'\''s deletions into wrong commit (AMUX-1315).\n```\n"}' \
   $AMUX_URL/api/notes/<slug>-constraints
 ```
@@ -157,7 +162,7 @@ with open('/tmp/orch-sched.json', 'w') as f:
 print('prompt ready, length:', len(prompt))
 PYEOF
 
-curl -sk -X POST -H 'Content-Type: application/json' -d @/tmp/orch-sched.json $AMUX_URL/api/schedules
+curl -sk -H "$AMUX_AUTH" -X POST -H 'Content-Type: application/json' -d @/tmp/orch-sched.json $AMUX_URL/api/schedules
 ```
 
 **Important:** The prompt embeds the note content at schedule-creation time. If you later update the mission note, re-run `/orchestrate` with `--no-schedule` to get an updated note, then manually patch the schedule via `PATCH /api/schedules/<id>` with the new embedded content. The notes are the source of truth; the scheduler prompt is a snapshot.
@@ -165,7 +170,7 @@ curl -sk -X POST -H 'Content-Type: application/json' -d @/tmp/orch-sched.json $A
 ### 6. Create the scheduler entry (skip if --no-schedule)
 
 ```bash
-curl -sk -X POST -H 'Content-Type: application/json' \
+curl -sk -H "$AMUX_AUTH" -X POST -H 'Content-Type: application/json' \
   -d "{
     \"title\": \"Orchestrator loop: <slug>\",
     \"session\": \"mixpeek-orchestrator\",
