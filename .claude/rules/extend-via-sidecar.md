@@ -117,21 +117,26 @@ git diff --cached -- amux | grep -q '^+.*AMUX-LOCAL:' \
   || true
 ```
 
-(This used to also cover `amux-server.py`; that half is retired with the file.)
+(This used to also cover `amux-server.py`. `amux-server.py` itself isn't going anywhere —
+this fork keeps it deliberately as a frozen rollback path and parity oracle, see
+`single-file.md` — but it stops being a target for *new* changes at cutover, so this check
+no longer needs to watch it.)
 
-**The `AMUX_AUTO_UPDATE_REPO` guardrail is retired along with the file it protected.**
+**The `AMUX_AUTO_UPDATE_REPO` guardrail stops mattering once `amux-server.py` stops being
+the live server — the file is retained, but the mechanism it guarded isn't.**
 `_auto_update_check` was a Python-server feature: an env var told it which repo's raw
 `amux-server.py` to pull and overwrite the local file with on every restart check, and this
 guardrail existed to make sure that var never pointed at `upstream` (which would have let
-the auto-updater self-clobber every local delta). With `amux-server.py` gone, that mechanism
-has nothing left to update. **What replaces it is not yet decided.** The Rust-side
-equivalent of "stay current with upstream" is a manual re-baseline SOP
-([`upstream-sync.md`](../../docs/upstream-sync.md)), not an in-process auto-updater, and
-mac-server's own deploy model (rebuild-on-pull vs. shipping a signed binary) is an open
-decision (`.omc/plans/rust-migration.md` phase P5). Don't assume any particular auto-update
-behavior exists on the Rust side until it's confirmed by reading `crates/amux-server`
-directly — upstream's docs are leads, not evidence (see `upstream-sync.md`'s standing
-principle on this).
+the auto-updater self-clobber every local delta). At cutover, `amux-server.py` becomes a
+frozen artifact nothing restarts or self-updates against, so `_auto_update_check` has
+nothing left to call. **What replaces it is not yet decided.** The Rust-side equivalent of
+"stay current with upstream" is a real `git merge upstream/main`
+([`upstream-sync.md`](../../docs/upstream-sync.md) Part B — history-preserving, not a
+reset), not an in-process auto-updater, and mac-server's own deploy model (rebuild-on-pull
+vs. shipping a signed binary) is an open decision (`.omc/plans/rust-migration.md` phase
+P5). Don't assume any particular auto-update behavior exists on the Rust side until it's
+confirmed by reading `crates/amux-server` directly — upstream's docs are leads, not
+evidence (see `upstream-sync.md`'s standing principle on this).
 
 Related: [`single-file.md`](single-file.md) covers the retirement of `amux-server.py` itself
 and why there's no fork-owned application file to split anymore; this rule covers where new
