@@ -4,8 +4,10 @@ This fork is migrating from a single-file Python server (`amux-server.py`, Pytho
 HTML/CSS/JS dashboard) onto upstream's Rust workspace — see
 [`.omc/plans/rust-migration.md`](.omc/plans/rust-migration.md) for the phased plan and
 current status. As of this writing (2026-08-17), `amux-server.py` is still what runs in
-production (port 8822) and cutover has not landed, but it is deprecated: dead upstream
-since `792ce1f4`, and not where new work goes. See
+production (port 8822) and cutover has not landed. After cutover it stops being the live
+server, but it stays in the repo on purpose — the rollback path, and the only surviving
+Python oracle for the parity harness (upstream deleted theirs at `792ce1f4`). Either way,
+it is not where new work goes. See
 [`.claude/rules/single-file.md`](.claude/rules/single-file.md) and
 [`.claude/rules/extend-via-sidecar.md`](.claude/rules/extend-via-sidecar.md) for what that
 means for where fork-local code belongs — new capability goes to a sidecar, not into that
@@ -57,8 +59,9 @@ your task, not the platform.
 
 ## Structure
 
-- `amux-server.py` — the current production server + dashboard (single file); deprecated,
-  not where new work goes (see `.claude/rules/single-file.md`).
+- `amux-server.py` — the production server + dashboard (single file) pre-cutover; retained
+  post-cutover as the frozen rollback path and parity oracle. Not where new work goes,
+  either way (see `.claude/rules/single-file.md`).
 - `amux` — the bash CLI; survives the migration as a legacy client (`MODIFICATIONS.md`).
 - Fork-local sidecars (`amux-telegram.py`, `amux-chat.py`, `amux-drain-restart.py`, ...) —
   talk to whichever server is live over its HTTP/SSE API. New fork-local functionality goes
