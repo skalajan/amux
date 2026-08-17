@@ -13,9 +13,15 @@ only (`crates/amux-server/src/lib.rs:533`: "THE LEGACY 8822 BIND IS GONE"). This
 migrating onto it — see `.omc/plans/rust-migration.md` for the phased plan and status.
 
 **As of this writing (2026-08-17), `amux-server.py` still exists in this repo and still
-runs in production on mac-brain (port 8822); cutover is plan phase P4 and has not landed.**
-It is deprecated, not deleted: dead upstream, a permanent solo-maintenance burden if kept,
-and on its way out. Treat it as read-only history, not a place to build:
+runs in production on mac-brain (port 8822); cutover is plan phase P4 and has not landed.
+After cutover, it stays in the repo — deliberately.** It is dead upstream (nothing has
+touched it since `792ce1f4`) and it stops being the live server, but this fork keeps it as
+a frozen reference implementation: it is the rollback path, and it is the only surviving
+Python oracle the recovered parity harness (`e2e/parity-tasks.mjs`) can ever run against —
+upstream deleted their own copy in the same commit that killed the file, so they can never
+regenerate one. Upstream's own cutover runbook said to keep the Python server 30 days as
+the reference implementation and then didn't, by accident; this fork is doing what they
+intended. Treat it as frozen, not as a place to build:
 
 - **Do not add new capability to `amux-server.py`, and don't add it directly into the Rust
   workspace either.** New fork-local functionality goes to a sidecar or another external
