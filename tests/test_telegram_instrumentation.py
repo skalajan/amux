@@ -176,4 +176,82 @@ assert latched and all(on[k] == "ring" for k in latched), \
 print(f"quiet-scope ok — /quiet changes exactly {len(changed)} cells, all terminal failures; "
       "questions and the answer-latch are never gated")
 
+
+
+# ── 4. transport: retry TRANSPORT failures, never an HTTP status (C5b) ─────────
+# 439 of 501 forward failures in a 19-day sample were the sidecar failing to reach
+# the amux server. None LOST a message (the `since` cursor is not advanced on
+# failure), but each dropped a session's whole forward for that cycle.
+import urllib.error
+
+
+class _Opener:
+    """Fails the first `fail_n` attempts with a transport error, then succeeds."""
+
+    def __init__(self, fail_n=0, http_status=None):
+        self.fail_n, self.http_status, self.attempts = fail_n, http_status, 0
+
+    def open(self, req, timeout=None):
+        self.attempts += 1
+        if self.http_status is not None:
+            raise urllib.error.HTTPError(req.full_url, self.http_status, "nope", {}, None)
+        if self.attempts <= self.fail_n:
+            raise urllib.error.URLError("Connection refused")
+
+        class _R:
+            status = 200
+
+            def read(self_inner):
+                return b'{"ok":true}'
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+        return _R()
+
+
+def _client(opener):
+    return tg.AmuxClient("https://x", "wt", opener=opener, auth_token="t")
+
+
+_slept = []
+_real_sleep = tg.time.sleep
+tg.time.sleep = lambda s: _slept.append(s)
+try:
+    op = _Opener(fail_n=0)
+    assert _client(op)._call("GET", "/api/chat", retries=1)[0] == 200
+    assert op.attempts == 1, "a healthy call must not retry"
+
+    op = _Opener(fail_n=1)
+    code, _ = _client(op)._call("GET", "/api/chat", retries=1)
+    assert code == 200 and op.attempts == 2, f"one transient failure is retried: {op.attempts}"
+
+    op = _Opener(fail_n=5)
+    try:
+        _client(op)._call("GET", "/api/chat", retries=1)
+        raise AssertionError("exhausting retries must raise AmuxError")
+    except tg.AmuxError:
+        pass
+    assert op.attempts == 2, f"retries are BOUNDED, not infinite: {op.attempts}"
+
+    op = _Opener(http_status=401)
+    code, _ = _client(op)._call("GET", "/api/chat", retries=3)
+    assert code == 401, "an HTTP status is returned, not raised"
+    assert op.attempts == 1, "an HTTP status is an ANSWER — retrying it multiplies load"
+finally:
+    tg.time.sleep = _real_sleep
+print(f"transport ok — transient failures retried (bounded), HTTP statuses never retried; "
+      f"backoff {_slept}")
+
+# The poll-path timeout bounds head-of-line blocking across the serial sweep.
+assert tg.CHAT_TIMEOUT_SECS <= 10, (
+    "GET /api/chat runs once per session per ~2s sweep and the sweep is SERIAL, so "
+    "this value bounds how long one unresponsive session blocks every other "
+    "session's updates. 231 read timeouts at the old 20s default cost ~77 min of "
+    "stalled polling.")
+assert "8822" not in tg.DEFAULT_AMUX_BASE, \
+    "8822 was retired at the Rust cutover — a hardcoded dead port fails every request"
+print(f"transport-config ok — chat timeout {tg.CHAT_TIMEOUT_SECS}s, base {tg.DEFAULT_AMUX_BASE}")
 print("\nALL TELEGRAM-INSTRUMENTATION CHECKS PASSED")

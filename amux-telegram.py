@@ -77,11 +77,30 @@ PERM_GRACE_SECS = float(os.environ.get("TG_PERM_GRACE_SECS", "90") or 90)
 # prompt he might need to answer remotely). TG_SUPPRESS_ATTACHED=0 disables.
 SUPPRESS_ATTACHED = os.environ.get("TG_SUPPRESS_ATTACHED", "1") != "0"
 TMUX_PREFIX = os.environ.get("AMUX_TMUX_PREFIX", "amux-")
+# Timeout for the per-session GET /api/chat in the outbound sweep. Short by
+# design: the sweep is serial, so this bounds how long one slow session can block
+# every other session's updates.
+CHAT_TIMEOUT_SECS = float(os.environ.get("TG_CHAT_TIMEOUT_SECS", "8") or 8)
 PERM_PEEK_LINES = 40
 PERM_PROMPT_MAX_CHARS = 1500
 
 DEFAULT_TG_API_BASE = "https://api.telegram.org"
-DEFAULT_AMUX_BASE = "https://localhost:8822"
+# 8822 was retired at the Rust cutover (2026-08-17) and nothing listens there.
+# The server writes its live address to ~/.amux/endpoint.json on every boot, so
+# resolve from that and fall back to the current canonical port — a hardcoded dead
+# port is how a config-less start silently fails every request.
+def _default_amux_base():
+    try:
+        with open(os.path.join(AMUX_DIR, "endpoint.json"), encoding="utf-8") as f:
+            url = (json.load(f) or {}).get("canonical_url")
+            if url:
+                return str(url).rstrip("/")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "https://localhost:8824"
+
+
+DEFAULT_AMUX_BASE = _default_amux_base()
 
 # Per-topic display mode for outbound session replies. "smart" is the DEFAULT
 # for every topic (new and pre-existing) unless overridden by /mode or
@@ -880,7 +899,21 @@ class AmuxClient:
             ctx.verify_mode = ssl.CERT_NONE
             self._opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
-    def _call(self, method, path, params=None, body=None, timeout=20):
+    def _call(self, method, path, params=None, body=None, timeout=20, retries=0):
+        """One HTTP call to amux. `retries` re-attempts TRANSPORT failures only
+        (never an HTTP status) with a short fixed backoff.
+
+        Why this exists: 439 of 501 forward failures in a 19-day sample were the
+        sidecar failing to reach the amux server — 231 read timeouts, 114
+        connection-refused, 63 TLS handshake timeouts. None of them lost a message
+        (the `since` cursor is not advanced on failure, so the next poll refetches),
+        but each one dropped that session's whole forward for a cycle, and a
+        connection-refused during a server restart would reliably fail every session
+        in the sweep. One immediate retry converts most restart-window failures into
+        a ~0.4s delay instead of a lost cycle.
+
+        Deliberately NOT retried: any HTTP status. A 401/404/500 is an answer, and
+        retrying it just multiplies load."""
         base = self.chat_base if path.startswith("/api/chat") else self.base
         url = base + path
         if params:
@@ -898,18 +931,25 @@ class AmuxClient:
         if self.auth_token:
             headers["Authorization"] = "Bearer " + self.auth_token
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with self._opener.open(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8")
-                return resp.status, (json.loads(raw) if raw else {})
-        except urllib.error.HTTPError as e:
+        attempt = 0
+        while True:
             try:
-                payload = json.loads(e.read().decode("utf-8"))
-            except Exception:
-                payload = {}
-            return e.code, payload
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            raise AmuxError(f"{method} {path}: {e}")
+                with self._opener.open(req, timeout=timeout) as resp:
+                    raw = resp.read().decode("utf-8")
+                    return resp.status, (json.loads(raw) if raw else {})
+            except urllib.error.HTTPError as e:
+                try:
+                    payload = json.loads(e.read().decode("utf-8"))
+                except Exception:
+                    payload = {}
+                return e.code, payload            # a status is an answer — never retry
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                if attempt >= retries:
+                    raise AmuxError(f"{method} {path}: {e}")
+                attempt += 1
+                log.info("%s %s transport error (%s) — retry %d/%d",
+                         method, path, e, attempt, retries)
+                time.sleep(0.4 * attempt)
 
     def health(self):
         code, body = self._call("GET", "/health", timeout=8)
@@ -927,8 +967,14 @@ class AmuxClient:
         return body
 
     def get_chat(self, session, since=0):
+        # Poll-path call, once per session per ~2s sweep. The default 20s timeout
+        # meant one unresponsive session stalled the ENTIRE sweep for 20s — 231
+        # read timeouts in the sample, i.e. ~77 minutes of blocked polling. Failing
+        # fast and retrying is strictly better here than waiting: the cursor is not
+        # advanced, so nothing is lost either way.
         code, body = self._call("GET", "/api/chat",
-                                params={"session": session, "since": since})
+                                params={"session": session, "since": since},
+                                timeout=CHAT_TIMEOUT_SECS, retries=1)
         if code != 200:
             raise AmuxError(f"GET /api/chat -> {code}: {body}")
         return body
@@ -2215,7 +2261,19 @@ class Bot:
                 newest_reply = item
                 continue
             # Legacy path (status unknown) + all system rows: immediate send.
-            tid = self._ensure_topic(session)
+            # _ensure_topic can raise (createForumTopic 429 under fleet load), and
+            # it sits OUTSIDE the send's `except TelegramError` below — so the
+            # exception escaped forward_session entirely and outbound_loop logged
+            # "forward <s> crashed" with a full traceback, killing the rest of that
+            # session's thread for the poll. 36 of those in 19 days, all on
+            # 2026-07-31 when several topics were created at once.
+            # Treat it like any other transient Telegram error: leave the item
+            # un-marked and retry next poll.
+            try:
+                tid = self._ensure_topic(session)
+            except TelegramError as e:
+                log.warning("ensure_topic for %s failed: %s — retry next poll", session, e)
+                break
             if role == "system" and status_label is not None:
                 # Quiet mode: a system row is the FAILURE class — ring regardless
                 # of origin / ring_off, unless this usage-limit episode already
