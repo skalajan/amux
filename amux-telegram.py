@@ -1793,6 +1793,17 @@ class Bot:
 
     def handle_command(self, update, cmd, args):
         topic_id = message_topic_id(update)
+        # Log EVERY accepted command. Nothing here used to log at all except /type
+        # and /keys, which meant "the log contains no /mute traffic" was a silent
+        # probe: a grep that could not have produced a positive. During planning
+        # that non-evidence was read as proof the mute controls had never been
+        # used, and the conclusion was wrong. One line per command makes "did Jan's
+        # command arrive?" answerable instead of unknowable. Args are logged for
+        # routing commands only — never for /type, whose payload may be an OAuth
+        # code or other secret (it logs its own length-only line).
+        log.info("owner-cmd %s%s topic=%s", cmd,
+                 "" if cmd in ("/type", "/keys") else (" " + " ".join(args) if args else ""),
+                 topic_id)
         try:
             if cmd == "/sessions":
                 self._reply(topic_id, self._render_sessions())
@@ -1808,6 +1819,8 @@ class Bot:
                 self._cmd_mute(topic_id, False)
             elif cmd == "/ring":
                 self._cmd_ring(topic_id, args)
+            elif cmd == "/quiet":
+                self._cmd_quiet(topic_id, args)
             elif cmd == "/type":
                 self._cmd_type(update, topic_id)
             elif cmd == "/keys":
@@ -1889,7 +1902,17 @@ class Bot:
         else:
             self.topics.unmute(session)
         self._save_topics()
-        self._reply(topic_id, f"{'muted' if mute else 'unmuted'} {session}")
+        if mute:
+            # Say what it costs. /mute is absolute — it suppresses content upstream
+            # of every router branch, INCLUDING permission prompts. That makes it
+            # the one control that can leave a session blocked with no Telegram
+            # trace at all. Being silent about a session is fine; being silent
+            # about having silenced it is not.
+            self._reply(topic_id, f"muted {session}\n"
+                        "⚠️ nedozvíš se ani to, že na tebe čeká (mute vypíná i dotazy). "
+                        "Pro pouhé ztišení použij /ring off.")
+        else:
+            self._reply(topic_id, f"unmuted {session}")
 
     def _cmd_ring(self, topic_id, args):
         """/ring off forces disable_notification on every routine reply forward for
@@ -1910,6 +1933,54 @@ class Bot:
         self.topics.set_ring_off(session, val == "off")
         self._save_topics()
         self._reply(topic_id, f"ring {val} for {session}")
+
+    def _cmd_quiet(self, topic_id, args):
+        """`/quiet on|off|status` — fleet-scope, and deliberately honest about how
+        little it covers.
+
+        It changes exactly ONE cell of the routing table: a TERMINAL failure (a
+        credit limit — something no amount of waiting fixes) goes to the live box
+        instead of ringing. Everything else is already silent or must stay loud:
+
+          * `question` (permission prompts) is NEVER gated. Principle 5 — the cost
+            of a spurious ping is annoyance, the cost of a missed prompt is a
+            session stuck until Jan happens to look. Use /mute per session, or the
+            grace period (TG_PERM_GRACE_SECS, now 90s), to make prompts quieter.
+          * a rate/usage limit is already silent (it self-resolves — ethos D2).
+          * a routine final reply is already silent (it edits the live box).
+          * the only reply that rings is the answer-latch — the answer to Jan's own
+            Telegram question — and silencing THAT is the exact defect the latch
+            was added to prevent.
+
+        `status` prints the counters, which are the point of the whole exercise:
+        before they existed, "how many messages arrived and how many rang" could
+        not be answered from anything the sidecar kept."""
+        val = args[0].strip().lower() if args else "status"
+        if val in ("on", "off"):
+            self.topics.set_quiet(val == "on")
+            self._save_topics()
+            self._reply(topic_id, f"quiet {val} (fleet)\n\n{self._quiet_status()}")
+            return
+        if val != "status":
+            self._reply(topic_id, "usage: /quiet on|off|status")
+            return
+        self._reply(topic_id, self._quiet_status())
+
+    def _quiet_status(self):
+        muted = sorted(s for s in self.topics.to_dict().get("muted") or [])
+        ringoff = sorted(s for s in self.topics.to_dict().get("ring_off") or [])
+        out = [
+            f"🔕 fleet quiet: {'ON' if self.topics.is_quiet() else 'off'}",
+            "   pokrývá POUZE terminální selhání (credit limit).",
+            f"   dotazy (permission prompty) NIKDY neztlumí — na ty je /mute nebo "
+            f"grace ({int(PERM_GRACE_SECS)}s).",
+            f"🔇 /mute: {', '.join(muted) if muted else '—'}"
+            + ("   ⚠️ u ztlumené session se NEDOZVÍŠ, že na tebe čeká" if muted else ""),
+            f"🔈 /ring off: {', '.join(ringoff) if ringoff else '—'}",
+            "",
+            "📊 " + self.counters.render(),
+        ]
+        return "\n".join(out)
 
     def _cmd_type(self, update, topic_id):
         """Raw-inject text into the session's tmux pane, DELIBERATELY bypassing
@@ -1990,7 +2061,11 @@ class Bot:
                 "/peek [session] [N] — last N lines\n"
                 "/wake <session> — resume a session\n"
                 "/create <session> [dir] — create a session\n"
-                "/mute · /unmute — stop/resume forwarding in this topic\n"
+                "/mute · /unmute — stop/resume ALL forwarding in this topic "
+                "(absolute — you won't be told this session needs you either)\n"
+                "/quiet on|off|status — fleet-wide. Covers only TERMINAL failures; "
+                "permission prompts are never silenced. `status` shows the counters "
+                "and which sessions are muted\n"
                 "/ring on|off — force-silence routine reply forwards for this topic "
                 "(questions + failures still ring; on restores the quiet default: ring the "
                 "latch-armed answer to your Telegram turn, routine finals stay silent)\n"
@@ -2003,6 +2078,19 @@ class Bot:
                 "a live turn, so use them only for dialogs/logins steering can't reach.")
 
     def _reply(self, topic_id, text):
+        """Answer a command Jan just typed. DELIBERATELY EXEMPT from the router.
+
+        This is the widest send site in the file — ~34 call sites fan into it — and
+        it rings by default. That is correct and must not be "fixed": Jan typed a
+        command a second ago and is looking at the screen, so the reply is the
+        thing he is waiting for, not an interruption. Routing it through
+        notify_class would put command acks under a fleet quiet flag and make the
+        bot appear dead when he talks to it.
+
+        The exemption is written down because C1's coverage gate enumerates every
+        send site and asserts each one either consults _decide or is named here.
+        An undocumented exemption is indistinguishable from the bypass that made
+        _send_prompt_notify ring unconditionally for months."""
         try:
             self.tg.send_message(self.chat_id, text, topic_id)
         except TelegramError as e:
@@ -2122,7 +2210,30 @@ class Bot:
                     rule="system-row")
                 silent = (klass != "ring")
             else:
-                silent = ring_off or self.outbound.governing_origin(session) != "telegram"
+                # LEGACY PATH ONLY (status_label is None). Unreachable in
+                # production: session_status_label() returns a string on all four
+                # branches and outbound_loop is forward_session's only caller, so it
+                # always passes a label. It stays reachable from tests, which pin
+                # the pre-finality behaviour as a regression contract.
+                #
+                # This used to hold its own inline rule —
+                #   silent = ring_off or governing_origin(session) != "telegram"
+                # — a FIFTH decision core beside the router, the shim, the prompt
+                # notify and the (now-removed) hardcoded ring. It cost real time
+                # during diagnosis: it reads like live routing logic, so it was
+                # chased as the cause of a bug it could not possibly produce.
+                #
+                # It is not deleted, because the tests that reach it are a real
+                # contract. Instead it now asks the router, which is PROVABLY the
+                # same rule: with latch off and window open the reply branch reduces
+                # to `ring iff (¬ring_off ∧ origin_tg)` — verified equal across all
+                # four (ring_off, origin_tg) combinations. One decision core, one
+                # tg-decision line, same behaviour.
+                origin_tg = self.outbound.governing_origin(session) == "telegram"
+                silent = self._decide(session, "reply", is_final=True,
+                                      ring_off=ring_off, latch_armed=False,
+                                      window_open=True, origin_tg=origin_tg,
+                                      rule="legacy-no-status-label") != "ring"
             try:
                 self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid,
                                      disable_notification=silent)
