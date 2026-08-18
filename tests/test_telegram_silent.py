@@ -14,7 +14,7 @@ Covers:
   * route_reply full truth table incl. the (¬final, *, ring_off) -> suppress rows
     (the finality gate precedes ring_off)
   * should_type predicate (telegram-origin active only)
-  * elapsed_bucket 30s coarsening + header-string stability within a bucket
+  * elapsed_bucket growing thresholds + header-string stability within a bucket
   * FinalityTracker settle/reset/re-arm + the autonomous rapid-fire case
   * LiveStore persist/reload round-trip (0600)
   * live_trim + _live_render hard <=3900 trim (Hazard 3) and header-only N-a case
@@ -67,20 +67,44 @@ assert tg.should_type("limit", True) is False
 print("should_type ok — typing fires ONLY for a telegram-origin active turn")
 
 
-# ── 3. elapsed_bucket: 30s coarsening ───────────────────────────────────────────
-assert tg.elapsed_bucket(0) == "0s"
-assert tg.elapsed_bucket(29) == "0s"
-assert tg.elapsed_bucket(30) == "30s"
-assert tg.elapsed_bucket(45) == "30s", "30 and 45 fall in the same 30s bucket"
-assert tg.elapsed_bucket(59) == "30s"
-assert tg.elapsed_bucket(60) == "1m"
-assert tg.elapsed_bucket(119) == "1m"
-assert tg.elapsed_bucket(120) == "2m"
-assert tg.elapsed_bucket(-5) == "0s", "negative elapsed clamps to 0"
-# stability within a bucket (drives the text_hash no-op-edit skip)
-assert tg.elapsed_bucket(30) == tg.elapsed_bucket(45)
-assert tg.elapsed_bucket(30) != tg.elapsed_bucket(60)
-print("elapsed_bucket ok — coarsened to 30s; stable within a bucket, changes at boundaries")
+# ── 3. elapsed_bucket: GROWING thresholds, silent under 5 minutes ──────────────
+# Changed 2026-08-18 (plan chat-improvement.md C4). This block used to pin 30s
+# coarsening — but (secs//30)*30//60 collapses to whole minutes past 60s, so the
+# header actually changed once a MINUTE forever: 11 in-place rewrites of one
+# Telegram message during a 10-minute hold, which is Jan's "awkward existing
+# message changes". The assertions are rewritten rather than deleted, because the
+# rewrite is the record of the decision: nothing under 5 minutes, then thresholds
+# that GROW, so a typical turn produces zero mid-turn edits.
+assert tg.elapsed_bucket(0) == "", "a fresh turn shows no timer at all"
+assert tg.elapsed_bucket(299) == "", "under 5 minutes stays silent — the whole point"
+assert tg.elapsed_bucket(300) == "5m+"
+assert tg.elapsed_bucket(899) == "5m+", "the bucket is stable across its whole span"
+assert tg.elapsed_bucket(900) == "15m+"
+assert tg.elapsed_bucket(1800) == "30m+"
+assert tg.elapsed_bucket(3600) == "1h+"
+assert tg.elapsed_bucket(86400) == "1h+", "it stops growing — no unbounded churn"
+assert tg.elapsed_bucket(-5) == "", "negative elapsed clamps to 0"
+# The property that actually matters: how many distinct headers a hold produces.
+def _churn(span):
+    seen, out = None, 0
+    for t in range(0, span + 1, 2):          # poll_secs=2.0
+        v = tg.elapsed_bucket(t)
+        if seen is not None and v != seen:
+            out += 1
+        seen = v
+    return out
+assert _churn(299) == 0, "a sub-5-minute turn must rewrite the live box ZERO times"
+assert _churn(600) == 1, f"a 10-minute hold: 1 edit (was 11): {_churn(600)}"
+assert _churn(3600) == 4, f"an hour: 4 edits total: {_churn(3600)}"
+assert _churn(86400) == 4, "a day-long session still only ever edits 4 times"
+# stability within a bucket (drives the text_hash no-op-edit skip). Retargeted to
+# the new boundaries: 30s and 60s are now BOTH silent, so the old pair no longer
+# discriminates anything — a test that cannot tell its two inputs apart is not
+# testing stability, it is just passing.
+assert tg.elapsed_bucket(400) == tg.elapsed_bucket(800), "stable inside the 5m+ bucket"
+assert tg.elapsed_bucket(800) != tg.elapsed_bucket(1000), "changes at the 15m boundary"
+assert tg.elapsed_bucket(30) == tg.elapsed_bucket(60) == "", "both silent now"
+print("elapsed_bucket ok — silent under 5m; growing thresholds; 10-min hold = 1 edit (was 11), 1h = 4")
 
 
 # ── 4. FinalityTracker: settle / reset / re-arm / rapid-fire ────────────────────
@@ -276,23 +300,33 @@ assert tg.LIVE_TRIM_HINT in full, "the trimmed body (with hint) sits under the h
 print("_live_render ok — header-only N-a case renders header alone; body hard-trimmed <=3900 (Hazard 3)")
 
 
-# ── 8. header-string stability within a 30s bucket (no edit churn) ──────────────
+# ── 8. header stability across a whole turn (the anti-churn property) ──────────
+# Retargeted 2026-08-18 (plan C4). This used to walk 0s -> 30s and assert an edit
+# at the 30s boundary. That boundary no longer exists: the header is silent below
+# five minutes, precisely so an ordinary turn rewrites the live box ZERO times.
+# The case now asserts the property Jan actually complained about — a message he
+# may be reading does not change while nothing is happening.
 bot, mt, ma = make_bot(topics={"s": 100})
 bot.outbound.observe_owner("s", "telegram")
 bot.live.set_fields("s", message_id=9001, text_hash="")   # a live box already exists
 t0 = 1000.0
 saved = _patch_time(t0)
-bot._presence_tail("s", "active", t0)               # active_since = 1000, header "(0s)"
+bot._presence_tail("s", "active", t0)               # active_since = 1000, header "▶ pracuje"
 assert len(mt.edits) == 1, f"first active poll edits the header once: {mt.edits}"
-bot._presence_tail("s", "active", t0 + 20)          # elapsed 20 -> still 0s bucket -> no edit
-assert len(mt.edits) == 1, "a within-bucket poll must NOT re-edit (text_hash skip)"
-bot._presence_tail("s", "active", t0 + 35)          # elapsed 35 -> 30s bucket -> a new edit
-assert len(mt.edits) == 2, f"a bucket-boundary poll edits again: {mt.edits}"
-assert "▶ pracuje (30s)" in mt.edits[-1][1], mt.edits[-1]
+assert mt.edits[-1][1] == "▶ pracuje", f"no timer on a fresh turn: {mt.edits[-1]}"
+for dt in (20, 35, 60, 120, 240, 299):              # a full sub-5-minute turn
+    bot._presence_tail("s", "active", t0 + dt)
+assert len(mt.edits) == 1, \
+    f"a sub-5-minute turn must NOT re-edit the live box even once: {mt.edits}"
+bot._presence_tail("s", "active", t0 + 300)         # crosses 5m -> one meaningful edit
+assert len(mt.edits) == 2, f"crossing 5m edits once: {mt.edits}"
+assert "▶ pracuje (5m+)" in mt.edits[-1][1], mt.edits[-1]
+bot._presence_tail("s", "active", t0 + 899)         # still inside 5m+ -> no edit
+assert len(mt.edits) == 2, "a within-bucket poll must NOT re-edit (text_hash skip)"
 # telegram-origin active also drove the typing indicator (>=1, on the ~4s cadence)
 assert mt.actions and mt.actions[0][1] == "typing", "telegram-origin active turn re-sends typing"
 tg.time.time = saved
-print("header-hash ok — elapsed coarsened to 30s: no edit within a bucket, one edit at the boundary")
+print("header-churn ok — a sub-5m turn edits the box ZERO times after creation; 5m+ edits once")
 
 
 # ── 9. Hazard 2: live-box edit wrapper — recreate-once / skip-and-retry ─────────

@@ -1239,17 +1239,37 @@ def should_type(status_label, origin_is_telegram):
     return status_label == "active" and bool(origin_is_telegram)
 
 
+_ELAPSED_THRESHOLDS = ((3600, "1h+"), (1800, "30m+"), (900, "15m+"), (300, "5m+"))
+
+
 def elapsed_bucket(secs):
-    """Coarsen an elapsed-seconds count to 30s buckets so the status header
-    ('▶ pracuje (2m)') changes at most every 30s instead of every ~2s poll —
-    the text_hash guard then skips the intervening no-op edits."""
+    """Coarsen an elapsed-seconds count for the status header. Returns "" for
+    anything under five minutes.
+
+    This used to bucket to 30s, which the docstring described as changing "at most
+    every 30s" — but `(secs // 30) * 30 // 60` collapses to whole minutes past 60s,
+    so it actually changed once a MINUTE, forever. Measured by replaying the old
+    function over a 10-minute active hold at poll_secs=2.0: 11 distinct header
+    strings, hence 11 in-place rewrites of a message Jan might be reading. That is
+    the "awkward telegram existing message changes" complaint, and the churn was a
+    TIMER — nothing happened between "▶ pracuje (2m)" and "▶ pracuje (3m)".
+
+    Thresholds now GROW rather than tick: nothing at all below 5 minutes, then
+    5m+/15m+/30m+/1h+. A typical turn finishes inside the first bucket and produces
+    ZERO mid-turn edits; a 10-minute hold produces one; an hour produces four. The
+    information that survives is the only part that was ever actionable — "this has
+    been running a while" — and it now appears when that becomes true instead of
+    being recomputed every minute.
+
+    Returning "" (not "0s") is deliberate: the caller omits the parenthesis
+    entirely, so the header reads "▶ pracuje" and does not imply a stalled timer."""
     secs = int(secs or 0)
     if secs < 0:
         secs = 0
-    bucket = (secs // 30) * 30
-    if bucket < 60:
-        return f"{bucket}s"
-    return f"{bucket // 60}m"
+    for cutoff, label in _ELAPSED_THRESHOLDS:
+        if secs >= cutoff:
+            return label
+    return ""
 
 
 def _text_hash(text):
@@ -2563,7 +2583,8 @@ class Bot:
         across polls and the text_hash guard skips the intervening edits."""
         live = self.live.get(session) or {}
         if status_label == "active":
-            return f"▶ pracuje ({elapsed_bucket(self._active_elapsed(session, now))})"
+            el = elapsed_bucket(self._active_elapsed(session, now))
+            return f"▶ pracuje ({el})" if el else "▶ pracuje"
         if status_label == "waiting":
             return "⏳ čeká na rozhodnutí"
         if status_label == "limit":
