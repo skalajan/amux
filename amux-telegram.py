@@ -1326,7 +1326,13 @@ def _text_hash(text):
 # Live box: an edit can't be chunked, so hard-trim the body to <=3900 chars
 # (independent of the topic's /mode — Hazard 3) with a /last hint. Typing is
 # re-sent every ~4s (sendChatAction auto-expires in <=5s).
-LIVE_BODY_MAX = 3900
+# The live box is a GLANCEABLE status surface, not a transcript. 3900 chars is
+# roughly 60 lines on a phone — scrolling a status box is the "too verbose" half of
+# Jan's complaint, and the full text is one /last away (the box says so). Kept in
+# env rather than as a constant per ethos D4: a cap on what a human may see is a
+# policy that belongs in config, not hardcoded where it silently becomes the
+# ceiling. The hard Telegram limit is 4096; anything above that would fail the send.
+LIVE_BODY_MAX = min(3900, int(os.environ.get("TG_LIVE_BODY_MAX", "1200") or 1200))
 LIVE_TRIM_HINT = "\n… (/last = celý výpis)"
 TYPING_INTERVAL_SECS = 4.0
 
@@ -2467,6 +2473,16 @@ class Bot:
         if self.topics.is_muted(session):
             return
         try:
+            # tg-observe: one line per session per status TRANSITION (not per poll —
+            # 22 sessions x 2s would be 40k lines/hour of noise). This is the second
+            # corpus C1 needs: tg-decision records what the router DECIDED, which
+            # cannot answer "how many times did the live box get edited for one
+            # turn". Together they replay both the routing table and the edit churn.
+            prev = self._last_observe.get(session)
+            if prev != status_label:
+                self._last_observe[session] = status_label
+                log.info("tg-observe ts=%d session=%s status=%s prev=%s",
+                         int(now), session, status_label, prev or "-")
             self.finality.observe(session, status_label, now)
             self._track_active(session, status_label, now)
             settled = self.finality.settled(session, now, self._settle_secs())

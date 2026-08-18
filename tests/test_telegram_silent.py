@@ -17,7 +17,7 @@ Covers:
   * elapsed_bucket growing thresholds + header-string stability within a bucket
   * FinalityTracker settle/reset/re-arm + the autonomous rapid-fire case
   * LiveStore persist/reload round-trip (0600)
-  * live_trim + _live_render hard <=3900 trim (Hazard 3) and header-only N-a case
+  * live_trim + _live_render hard LIVE_BODY_MAX trim (Hazard 3) and header-only N-a case
   * Hazard 1: a poll with NO new rows still promotes a settled candidate; the
     rung guard blocks a second ring; a newer row before settle replaces the
     candidate (no ring)
@@ -148,14 +148,17 @@ assert ls2.get("nope") is None
 print("LiveStore ok — fields persist and reload; file is 0600")
 
 
-# ── 6. live_trim: hard <=3900 cap with a /last hint (Hazard 3) ──────────────────
+# ── 6. live_trim: hard LIVE_BODY_MAX cap with a /last hint (Hazard 3) ──────────
+# The cap is TG_LIVE_BODY_MAX (default 1200, was a hardcoded 3900). Assertions
+# read tg.LIVE_BODY_MAX rather than a literal, so lowering the default cannot
+# leave a test asserting a bound three times looser than the shipped one.
 short = "x" * 100
 assert tg.live_trim(short) == short, "short body untouched"
 big = "y" * 5000
 trimmed = tg.live_trim(big)
 assert len(trimmed) <= tg.LIVE_BODY_MAX, f"trimmed body must be <= {tg.LIVE_BODY_MAX}: {len(trimmed)}"
 assert trimmed.endswith(tg.LIVE_TRIM_HINT), "a trimmed body must carry the /last hint"
-print("live_trim ok — long body hard-capped to <=3900 with a /last hint; short body untouched")
+print(f"live_trim ok — long body hard-capped to <={tg.LIVE_BODY_MAX} with a /last hint; short body untouched")
 
 
 # ── mock network clients ────────────────────────────────────────────────────────
@@ -283,21 +286,21 @@ hdr = bot._live_render("s", None, "idle", 1000.0)
 assert hdr == "👀 přečteno 14:30", f"header-only render (N-a): {hdr!r}"
 assert hdr, "header-only render must be non-empty (never an empty edit)"
 
-# Hazard 3: a >3900-char full-mode reply -> body hard-trimmed; total still bounded.
+# Hazard 3: an over-cap full-mode reply -> body hard-trimmed; total still bounded.
 bot2, mt2, ma2 = make_bot(topics={"s": 100})
 bot2.topics.set_mode("s", "full")
 big_item = reply_item("B:1", "z" * 6000, 10, 1)
-# presence OFF isolates the body so we can assert the <=3900 body cap exactly.
+# presence OFF isolates the body so we can assert the body cap exactly.
 bot2.cfg["presence"] = False
 body_only = bot2._live_render("s", big_item, "idle", 1000.0)
-assert len(body_only) <= tg.LIVE_BODY_MAX, f"live body must be <=3900: {len(body_only)}"
+assert len(body_only) <= tg.LIVE_BODY_MAX, f"live body must be <={tg.LIVE_BODY_MAX}: {len(body_only)}"
 assert body_only.endswith(tg.LIVE_TRIM_HINT), "trimmed body carries the /last hint"
 # presence ON: header + trimmed body, header first.
 bot2.cfg["presence"] = True
 full = bot2._live_render("s", big_item, "active", 1000.0)
 assert full.startswith("▶ pracuje"), "presence header leads the render"
 assert tg.LIVE_TRIM_HINT in full, "the trimmed body (with hint) sits under the header"
-print("_live_render ok — header-only N-a case renders header alone; body hard-trimmed <=3900 (Hazard 3)")
+print(f"_live_render ok — header-only N-a case renders header alone; body hard-trimmed <={tg.LIVE_BODY_MAX} (Hazard 3)")
 
 
 # ── 8. header stability across a whole turn (the anti-churn property) ──────────
