@@ -159,7 +159,11 @@ class MockTelegram:
             err = self.edit_error
             self.edit_error = None
             raise err
-        self.edits.append((message_id, text))
+        # reply_markup is recorded because Telegram DROPS an inline keyboard on
+        # any edit that omits it. Without capturing it here, no test could tell a
+        # keyboard-preserving edit from a keyboard-destroying one — the instrument
+        # could not express the failure.
+        self.edits.append((message_id, text, reply_markup))
         return {"message_id": message_id}
 
     def send_chat_action(self, chat_id, action, topic_id=None):
@@ -669,12 +673,24 @@ bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))   # quiet 
 assert not (bot.live.get("s") or {}).get("awaiting_tg_reply"), "the latch starts clear"
 ma.peek = lambda session, lines=40: "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
 bot.waiting._since["s"] = 1000.0
-saved = _patch_time(1011.0)   # past the 10s grace window
+_grace = tg.PERM_GRACE_SECS
+tg.PERM_GRACE_SECS = 10.0     # pin: the shipped default is Jan's preference, not a constant
+saved = _patch_time(1011.0)   # past the pinned grace window
 bot._check_permission_prompts([{"name": "s", "status": "waiting"}])
 qrings = [x for x in mt.sent if x[3] is False]
 assert len(qrings) == 1 and "🔐 s" in qrings[0][1], f"a permission question rings while quiet + latch clear: {mt.sent}"
+# ...and it rings with the FLEET /quiet flag on too: `question` is excluded from
+# /quiet by design (Principle 5 — never lose a prompt to be quiet).
+bot.topics.set_quiet(True)
+bot.prompts.clear("s"); bot.waiting._since["s"] = 1000.0
+ma.peek = lambda session, lines=40: "Different question?\n❯ 1. Yes\n  2. No\n"
+bot._check_permission_prompts([{"name": "s", "status": "waiting"}])
+assert len([x for x in mt.sent if x[3] is False]) == 2, \
+    f"/quiet must NOT silence a permission question: {mt.sent}"
+bot.topics.set_quiet(False)
+tg.PERM_GRACE_SECS = _grace
 tg.time.time = saved
-print("question-quiet ok — a Phase B permission prompt rings while quiet with no latch armed (independent path)")
+print("question-quiet ok — a permission prompt rings with the latch clear AND with fleet /quiet on (never gated)")
 
 
 # ── Q6. limit episode: rings once via the shared limit_rung key; the usage-limit

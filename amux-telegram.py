@@ -59,7 +59,16 @@ COUNTERS_PATH = os.path.join(AMUX_DIR, "telegram-counters.json")
 # Only ping once a session has been CONTINUOUSLY "waiting" this long — a debounce
 # longer than the server's yolo auto-responder cooldown, so recognized/auto-
 # answerable prompts self-clear and never reach Jan (plan B.2).
-PERM_GRACE_SECS = float(os.environ.get("TG_PERM_GRACE_SECS", "10") or 10)
+# How long a session must sit continuously `waiting` before its prompt pings the
+# phone. Raised 10 -> 90 on 2026-08-18 (Jan's decision, plan chat-improvement.md
+# C2b'). At 10s a prompt Jan answered himself at the keyboard in 20s still buzzed
+# his phone, and the permission prompt is structurally the loudest class in the
+# fleet — it is the only one that rings per waiting session, and it cannot be
+# silenced by /ring off or /quiet (only /mute) precisely because losing one is
+# worse than hearing one. So the honest lever is WHEN it fires, not whether.
+# Nothing is lost by waiting: the continuous-waiting timer keeps running, so a
+# genuinely blocked session still pings — 90s later instead of 10s later.
+PERM_GRACE_SECS = float(os.environ.get("TG_PERM_GRACE_SECS", "90") or 90)
 # Suppress the "input needed / permission prompt" Telegram ping for a session
 # while a human tmux client is attached to it — Jan is sitting at the CLI and
 # sees the prompt live, so pinging his phone is pure spam. He detaches ⇒ the next
@@ -1764,11 +1773,21 @@ class Bot:
         except TelegramError as e:
             log.info("answerCallbackQuery failed: %s", e)
 
-    def _edit_message(self, message_id, text):
+    def _edit_message(self, message_id, text, reply_markup=None):
+        """Rewrite a sent message. `reply_markup` MUST be passed when the message
+        should keep its inline keyboard: Telegram drops the keyboard on any edit
+        that omits it (see edit_message_text). That is load-bearing in both
+        directions — _resolve_pending/_edit_superseded deliberately omit it so an
+        answered prompt loses its now-dead buttons, while the C2b' drift-edit
+        deliberately passes it so a still-live prompt keeps tap-to-answer. The
+        prompt keyboard is the ENTIRE tap-to-answer affordance and it exists on no
+        other message, so silently dropping it would leave Jan a notification he
+        can only act on by opening the session."""
         if not message_id:
             return
         try:
-            self.tg.edit_message_text(self.chat_id, message_id, text)
+            self.tg.edit_message_text(self.chat_id, message_id, text,
+                                      reply_markup=reply_markup)
         except TelegramError as e:
             log.info("editMessageText failed: %s", e)
 
@@ -2333,6 +2352,8 @@ class Bot:
         tid = self._ensure_topic(session)
         try:
             self.tg.send_message(self.chat_id, self._render_outbound(session, item), tid,
+                                 # literal by design: this function is only ever
+                                 # reached when _decide already returned "ring"
                                  disable_notification=False)
         except TelegramError as e:
             log.warning("final ring for %s failed: %s — retry next poll", session, e)
@@ -2362,6 +2383,9 @@ class Bot:
         persist its id (R1: one no-sound badge per session, ever)."""
         tid = self._ensure_topic(session)
         try:
+            # literal by design: reached only when _decide returned "live". NOTE
+            # this still produces a real (soundless) Telegram notification —
+            # "live" means one badge then free edits, NOT invisible.
             res = self.tg.send_message(self.chat_id, text, tid, disable_notification=True)
         except TelegramError as e:
             log.warning("live-box create for %s failed: %s", session, e)
@@ -2515,9 +2539,21 @@ class Bot:
                 self._resolve_pending(name, "gone")
 
     def _maybe_notify_prompt(self, session, now):
-        """Peek + classify a due waiting session; notify on a new fingerprint,
-        supersede the old message on a changed one, no-op while the fp is
-        unchanged (dedup). Honors /mute (suppresses entirely)."""
+        """Peek + classify a due waiting session; notify ONCE per waiting episode.
+        Honors /mute (suppresses entirely).
+
+        Per-episode, not per-fingerprint (changed 2026-08-18, plan C2b'). The old
+        rule keyed the dedup on `prompt_fingerprint`, so a session whose prompt
+        TEXT shifted while it stayed blocked — a picker redrawing, a diff scrolling,
+        a retry re-rendering the same question — sent a fresh ringing message each
+        time and marked the previous one "superseded". Jan's phone buzzed N times
+        for one block. But a prompt whose text moved is still the SAME block: he is
+        needed exactly once.
+
+        So a changed fingerprint now EDITS the existing message in place, keeping
+        its tap-to-answer keyboard, and does not ring again. A genuinely new episode
+        — the session left `waiting` and came back — clears `prompts` via
+        _resolve_pending and rings normally."""
         if self.topics.is_muted(session):
             return
         try:
@@ -2532,9 +2568,18 @@ class Bot:
         pending = self.prompts.get(session)
         if pending and pending.get("fp") == fp:
             return  # same prompt still standing — already notified
-        if pending and not pending.get("answered"):
-            self._edit_superseded(pending)
         body = self._format_prompt_notify(session, text, shape)
+        if pending and not pending.get("answered"):
+            # Same episode, drifted text: refresh in place, do NOT ring again.
+            kb = build_perm_keyboard(session, fp, shape) if shape["kind"] == "menu" \
+                else build_peek_keyboard(session, fp)
+            self._decide(session, "question", ring_off=self.topics.is_ring_off(session),
+                         rule="prompt-drift-edit")
+            self._edit_message(pending.get("message_id"), body, reply_markup=kb)
+            self.prompts.set(session, fp, pending.get("message_id"), pending.get("ts") or now,
+                             shape["kind"], body=body)
+            self._save_prompts()
+            return
         msg_id = self._send_prompt_notify(session, body, shape, fp)
         if msg_id is not None:
             self.prompts.set(session, fp, msg_id, now, shape["kind"], body=body)
@@ -2550,15 +2595,33 @@ class Bot:
         return f"{header}\n\n{trim_prompt_text(text)}{hint}"
 
     def _send_prompt_notify(self, session, body, shape, fp):
-        """Send the notify to the session topic. RINGS unconditionally (a
-        permission decision is actionable — plan B.3, overrides /ring off; /mute
-        is already honored upstream). Returns the message_id or None."""
+        """Send the notify to the session topic. Returns the message_id or None.
+
+        A permission decision is actionable, so this still RINGS — `question`
+        returns "ring" from every branch of notify_class, ahead of /ring off and
+        ahead of /quiet. What changed 2026-08-18 (plan chat-improvement.md C2a) is
+        that it now ASKS the router instead of asserting the answer.
+
+        The old version held a literal `disable_notification=False` and its own
+        docstring advertised that it "overrides /ring off". That made it a fourth
+        decision core outside the router: invisible to the counters, unaffected by
+        any control, and the reason "/ring off doesn't work" was a true report
+        about the loudest class in the fleet. Behaviour here is deliberately
+        unchanged — the fix is that the decision is now made in one place and
+        leaves a `tg-decision` line, so the next person can SEE that questions
+        ring rather than having to read this function to find out.
+
+        /mute is still honored upstream in _maybe_notify_prompt, and so is the
+        attached-CLI skip in _check_permission_prompts."""
         tid = self._ensure_topic(session)
         kb = build_perm_keyboard(session, fp, shape) if shape["kind"] == "menu" \
             else build_peek_keyboard(session, fp)
+        klass = self._decide(session, "question", ring_off=self.topics.is_ring_off(session),
+                             rule="permission-prompt")
         try:
             res = self.tg.send_message(self.chat_id, body, tid,
-                                       disable_notification=False, reply_markup=kb)
+                                       disable_notification=(klass != "ring"),
+                                       reply_markup=kb)
         except TelegramError as e:
             log.warning("permission notify for %s failed: %s", session, e)
             return None
@@ -2643,6 +2706,7 @@ class Bot:
         leaves the key unset so the ring is retried next poll (one ring guaranteed)."""
         tid = self._ensure_topic(session)
         try:
+            # literal by design: reached only when _decide returned "ring".
             self.tg.send_message(self.chat_id, text, tid, disable_notification=False)
             return True
         except TelegramError as e:

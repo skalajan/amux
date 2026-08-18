@@ -232,7 +232,11 @@ class MockTelegram:
     def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
         if self.fail_edit:
             raise tg.TelegramError("edit boom")
-        self.edits.append((message_id, text))
+        # reply_markup is recorded because Telegram DROPS an inline keyboard on
+        # any edit that omits it. Without capturing it here, no test could tell a
+        # keyboard-preserving edit from a keyboard-destroying one — the instrument
+        # could not express the failure.
+        self.edits.append((message_id, text, reply_markup))
         return {"message_id": message_id}
 
     def answer_callback(self, callback_id, text="", show_alert=False):
@@ -309,6 +313,15 @@ def sess_row(name, status="waiting", **extra):
 bot, mt, ma = make_bot(topics_state={"topics": {"sessA": 100}})[:3]
 ma.peek_text["sessA"] = MENU_3
 ma.sessions = [sess_row("sessA", "waiting")]
+
+# The shipped DEFAULT is a user preference (Jan chose 90s on 2026-08-18 — see
+# PERM_GRACE_SECS). Pin it here so these cases test the MECHANISM at a known
+# threshold instead of silently coupling to whatever the default happens to be;
+# a preference change must not turn this suite red.
+assert tg.PERM_GRACE_SECS == 90.0, (
+    "shipped default changed — that is a user-facing decision (told sooner vs told "
+    "less), so update it deliberately here rather than letting it drift")
+tg.PERM_GRACE_SECS = 10.0
 
 # below grace -> no notify
 bot.waiting.observe("sessA", "waiting", 1000.0)  # seed a known start
@@ -530,24 +543,48 @@ assert mt2.edits and "ended" in mt2.edits[-1][1].lower(), mt2.edits
 print("cleanup ok — leaving waiting / disappearing resolves the pending prompt + annotates the message")
 
 
-# ── 18. supersede: a distinct prompt replaces the old message ───────────────────
+# ── 18. ONE ring per waiting EPISODE — drifted prompt text edits in place ──────
+# Changed 2026-08-18 (plan chat-improvement.md C2b'). This case previously asserted
+# that a distinct prompt "fires a new notify" and marked the old one 'superseded'.
+# That keyed the dedup on prompt_fingerprint, so a session that stayed blocked while
+# its prompt TEXT shifted — a picker redrawing, a diff scrolling, a retry
+# re-rendering — rang Jan's phone once per shift for a SINGLE block. It is the same
+# block; he is needed exactly once.
+#
+# New contract: within one waiting episode a changed fingerprint EDITS the existing
+# message (keeping its tap-to-answer keyboard) and does NOT ring again. A genuinely
+# new episode still rings — proven in 18b, which is the half that makes this
+# falsifiable rather than just quieter.
 bot, mt, ma = make_bot(topics_state={"topics": {"sZ": 700}})[:3]
+tg.PERM_GRACE_SECS = 10.0
 ma.peek_text["sZ"] = MENU_2
 _t = tg.time.time
 tg.time.time = lambda: 7000.0
 bot.waiting._since["sZ"] = 6980.0
 bot._check_permission_prompts([sess_row("sZ", "waiting")])
 first_fp = bot.prompts.get("sZ")["fp"]
-n1 = len(mt.sent)
-# the prompt changes to a distinct one -> supersede old message + notify new
+first_mid = bot.prompts.get("sZ")["message_id"]
+n1, e1 = len(mt.sent), len(mt.edits)
+# the prompt text drifts inside the SAME episode -> edit in place, no new message
 ma.peek_text["sZ"] = MENU_3
 tg.time.time = lambda: 7002.0
 bot._check_permission_prompts([sess_row("sZ", "waiting")])
-assert bot.prompts.get("sZ")["fp"] != first_fp, "a distinct prompt updates the pending fp"
-assert len(mt.sent) == n1 + 1, "a distinct prompt fires a new notify"
-assert mt.edits and "superseded" in mt.edits[-1][1].lower(), mt.edits
+assert bot.prompts.get("sZ")["fp"] != first_fp, "a drifted prompt updates the pending fp"
+assert len(mt.sent) == n1, f"C2b': drifted text must NOT ring again: {len(mt.sent)} vs {n1}"
+assert len(mt.edits) == e1 + 1, "drifted text edits the existing message"
+assert bot.prompts.get("sZ")["message_id"] == first_mid, "still the same message"
+assert mt.edits[-1][2] is not None, \
+    "the drift-edit MUST carry reply_markup — Telegram drops the inline keyboard on " \
+    "any edit that omits it, and that keyboard is the whole tap-to-answer affordance"
+# 18b. a NEW episode (left waiting, came back) rings again — the falsifier.
+bot._check_permission_prompts([sess_row("sZ", "idle")])   # leaves waiting -> resolves
+assert bot.prompts.get("sZ") is None, "leaving waiting clears the episode"
+tg.time.time = lambda: 7100.0
+bot.waiting._since["sZ"] = 7080.0
+bot._check_permission_prompts([sess_row("sZ", "waiting")])
+assert len(mt.sent) == n1 + 1, "a NEW waiting episode rings again"
 tg.time.time = _t
-print("supersede ok — a distinct prompt edits the old message to 'superseded' and notifies anew")
+print("one-ring-per-episode ok — drifted prompt text edits in place (keyboard kept); a new episode rings anew")
 
 
 # ── 19. parse_attached_sessions: tmux list-sessions -> attached name set ────────
