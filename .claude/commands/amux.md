@@ -1,293 +1,54 @@
 ---
-description: Use when you need to interact with the amux system — manage board tasks, check sessions, send emails, automate browsers, or work with CRM contacts
-allowed-tools: Bash, Read, Edit, Write
-argument-hint: [board|memory|sessions|schedule|notes|email|browser|crm|help] [args...]
+description: Interact with amux — the shared board, other sessions, messages, and schedules. Use when the user says "add to the board", "ask another session", "what are my sessions doing", or wants to schedule recurring work.
+allowed-tools: Bash, Read
+argument-hint: [board|sessions|send|schedules|help] [args...]
 ---
 
-# /amux — amux Session Integration
+# /amux — drive the amux system
 
-You are running inside an **amux** managed Claude Code session. amux is a local multiplexer that manages multiple Claude sessions, a shared kanban board, notes, CRM, scheduler, email, browser automation, and per-session memory.
-
-**Base URL:** `$AMUX_URL` (self-signed TLS — always use `curl -sk`)
-
----
-
-## Board (tasks / issues)
+You are running inside an amux-managed session. **Run this setup line first** — every
+example below assumes `$U` and `$A`:
 
 ```bash
-# List all items
-curl -sk $AMUX_URL/api/board | python3 -m json.tool
-
-# Add item
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"title":"...", "desc":"...", "status":"todo", "session":"SESSION_NAME"}' \
-  $AMUX_URL/api/board
-
-# Update item
-curl -sk -X PATCH -H 'Content-Type: application/json' \
-  -d '{"status":"doing"}' $AMUX_URL/api/board/ITEM_ID
-
-# Delete item
-curl -sk -X DELETE $AMUX_URL/api/board/ITEM_ID
-
-# Claim a task atomically (prevents two sessions taking same task)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"session":"SESSION_NAME"}' $AMUX_URL/api/board/ITEM_ID/claim
+U="$(amux url)"; A="Authorization: Bearer $(cat ~/.amux/auth_token)"
 ```
 
-Statuses: `backlog` · `todo` · `doing` · `done` (plus any custom columns)
+`amux url` self-heals past a retired port (it reads `~/.amux/endpoint.json`, which the
+server rewrites every boot) — **never hardcode a port.** The API requires auth: an
+unauthenticated request returns `401`. TLS is self-signed, so always `curl -sk`.
 
----
+**`$AMUX_URL` and `$AMUX_SESSION` are NOT set inside sessions** — verified from a live
+session, both unset. Don't use them; derive instead. For your own session name use
+`amux whoami` (it says when it can't tell). Do **not** derive it from
+`tmux display-message` — with no attached client that returns whatever session tmux
+considers current, which is usually a different one.
 
-## Sessions
+## Board (shared kanban)
 
 ```bash
-# List sessions
-curl -sk $AMUX_URL/api/sessions | python3 -m json.tool
-
-# Send a message to a session
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"text":"your message"}' $AMUX_URL/api/sessions/SESSION_NAME/send
-
-# Peek at a session's terminal output
-curl -sk "$AMUX_URL/api/sessions/SESSION_NAME/peek?lines=100"
+curl -sk -H "$A" "$U/api/board" | python3 -m json.tool                      # list
+curl -sk -H "$A" -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"...","status":"todo","session":"YOUR-SESSION"}' "$U/api/board"   # add
+curl -sk -H "$A" -X DELETE "$U/api/board/ITEM-ID"                           # delete
+amux board doing ITEM-ID   # or: done / todo / backlog (CLI shorthand, handles auth itself)
 ```
+Keep exactly one item in `doing` while you work; mark it `done` with a result note when finished.
 
----
-
-## Memory
+## Sessions (the rest of the fleet)
 
 ```bash
-# Read this session's memory
-curl -sk $AMUX_URL/api/sessions/SESSION_NAME/memory
-
-# Update this session's memory
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"# My Notes\n..."}' $AMUX_URL/api/sessions/SESSION_NAME/memory
-
-# Read/write global memory (shared across all sessions)
-curl -sk $AMUX_URL/api/memory/global
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"..."}' $AMUX_URL/api/memory/global
+curl -sk -H "$A" "$U/api/sessions" | python3 -c "import json,sys; [print(s['name'], s.get('status','')) for s in json.load(sys.stdin)]"
+curl -sk -H "$A" "$U/api/sessions/OTHER/peek?lines=100"          # see what another session is doing
+amux send OTHER "message"                                        # message it (origin-stamped — prefer over raw curl)
 ```
 
----
-
-## Scheduler (recurring / one-time tasks)
-
-Schedule commands to run in sessions at specific times or on a cron schedule.
+## Schedules (recurring prompts)
 
 ```bash
-# List all schedules
-curl -sk $AMUX_URL/api/schedules | python3 -m json.tool
-
-# Create a one-time schedule
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{
-    "title": "Weekly analytics",
-    "session": "gtm-videos",
-    "command": "Run the weekly analytics report",
-    "kind": "tmux",
-    "sched_type": "once",
-    "run_at": "2026-04-10T09:00"
-  }' $AMUX_URL/api/schedules
-
-# Create a recurring schedule (cron expression)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{
-    "title": "Weekly video check",
-    "session": "gtm-videos",
-    "command": "Check video pipeline status and post summary to board",
-    "kind": "tmux",
-    "sched_type": "recurring",
-    "schedule_expr": "0 9 * * 1"
-  }' $AMUX_URL/api/schedules
-
-# Update a schedule
-curl -sk -X PATCH -H 'Content-Type: application/json' \
-  -d '{"enabled": 1}' $AMUX_URL/api/schedules/SCHED_ID
-
-# Delete a schedule
-curl -sk -X DELETE $AMUX_URL/api/schedules/SCHED_ID
-
-# View recent runs
-curl -sk $AMUX_URL/api/schedules/runs | python3 -m json.tool
-
-# Trigger a schedule immediately
-curl -sk -X POST $AMUX_URL/api/schedules/SCHED_ID/run
+curl -sk -H "$A" -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"...","session":"YOUR-SESSION","command":"the prompt","schedule_expr":"daily at 9am"}' \
+  "$U/api/schedules"
 ```
+Expressions: `daily at HH:MM`, `every 15m`, `every weekday at HH:MM`, or 5-field cron.
 
-**Fields:** `title`, `session` (target session name), `command` (text sent to session), `kind` (`tmux`), `sched_type` (`once`|`recurring`), `schedule_expr` (cron: `min hour dom month dow`), `run_at` (ISO datetime for one-time), `watch` (0/1 — watch output after send), `watch_timeout` (seconds), `done_pattern` (regex to detect completion), `done_action` (`disable`|`reschedule`)
-
----
-
-## Notes (documents / reference material)
-
-```bash
-# List all notes
-curl -sk $AMUX_URL/api/notes | python3 -m json.tool
-
-# Read a note
-curl -sk $AMUX_URL/api/notes/my-note
-
-# Create or update a note (use slug as path)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"# Title\n\nBody text here"}' \
-  $AMUX_URL/api/notes/my-note
-
-# Delete a note (moves to trash)
-curl -sk -X DELETE $AMUX_URL/api/notes/my-note
-
-# Pin/unpin a note
-curl -sk -X POST $AMUX_URL/api/notes/my-note/pin
-```
-
----
-
-## Email (via Mail.app)
-
-Accounts: ethan@mixpeek.com · esteininger21@gmail.com
-
-```bash
-# Read inbox (returns recent messages with subject, from, date, body, message_id)
-curl -sk "$AMUX_URL/api/email/inbox?account=ethan@mixpeek.com&count=20&days=7"
-# Params: account (filter to one account), count (max messages, default 20), days (lookback, default 7)
-
-# Send email (validates email format, optional from account)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"to":"x@example.com","subject":"Hi","body":"...","from":"ethan@mixpeek.com"}' \
-  $AMUX_URL/api/email/send
-
-# Reply to an existing email (by message_id from inbox response)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"message_id":"<msg-id-from-inbox>","body":"Thanks!","reply_all":false}' \
-  $AMUX_URL/api/email/reply
-
-# Sync email → calendar events (background AI extraction)
-curl -sk -X POST $AMUX_URL/api/email/sync
-
-# Get extracted calendar events
-curl -sk $AMUX_URL/api/email/events
-```
-
-**Workflow for replying:** call `/api/email/inbox` first to find the message, then use its `message_id` field in `/api/email/reply`.
-
----
-
-## Browser Automation
-
-**Live backend** — same verbs, executed in YOUR real Chrome (real logins, real IP). Opens a NEW tab (never touches existing tabs); first use needs one "Allow debugging?" click. Use when acting-as-you matters (SSO dashboards, bot-walled sites); the default profile backend is for parallel/unattended work.
-
-```bash
-curl -sk -X POST -H 'Content-Type: application/json' -d '{"backend":"live","url":"https://example.com"}' $AMUX_URL/api/browser/start
-# navigate/screenshot/state/action/stop then work identically; live click takes {"selector":"..."} or x,y.
-```
-
-Shared Playwright instance with saved auth profiles.
-
-```bash
-# Start browser
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"profile":"default","url":"https://example.com"}' \
-  $AMUX_URL/api/browser/start
-
-# Navigate
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com"}' $AMUX_URL/api/browser/navigate
-
-# Screenshot (returns JSON with path — use Read tool to view)
-curl -sk $AMUX_URL/api/browser/screenshot
-
-# Actions: click, type, key, scroll, eval
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"click","x":640,"y":400}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"type","text":"hello"}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"key","key":"Enter"}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"eval","script":"document.title"}' $AMUX_URL/api/browser/action
-
-# AI agent — autonomous browser task
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"task":"Find the latest invoice","profile":"default"}' \
-  $AMUX_URL/api/browser/agent
-
-# List auth profiles
-curl -sk $AMUX_URL/api/browser/profiles
-
-# Stop browser
-curl -sk -X POST $AMUX_URL/api/browser/stop
-```
-
----
-
-## CRM / People
-
-```bash
-# Add a contact
-amux crm add "Name" company=X email=Y role=Z phone=P linkedin=L
-# or: curl -sk -X POST -H 'Content-Type: application/json' \
-#   -d '{"name":"Name","company":"X","notes":"context"}' \
-#   $AMUX_URL/api/crm/contacts
-
-# Update / view / log interaction / list / follow-ups
-amux crm update PPL-1 email=Y company=Z
-amux crm get PPL-1
-amux crm log PPL-1 "discussed partnership"
-amux crm list
-amux crm fu
-```
-
-**When to use what:**
-- Person / contact → `amux crm add`
-- Document / reference → `/api/notes`
-- Task / action item → `/api/board`
-- Recurring automation → `/api/schedules`
-
----
-
-## Determining the Current Session Name
-
-```bash
-echo $AMUX_SESSION
-# or: tmux display-message -p '#S' | sed 's/^amux-//'
-```
-
-## Instructions
-
-The user's request is: **$ARGUMENTS**
-
-Parse the arguments to determine what the user wants:
-
-- **`board`** or **`board list`** → list current board items, grouped by status
-- **`board add <title>`** → add an item to the board; infer session from current tmux session
-- **`board done <id>`** → mark an item done
-- **`memory`** or **`memory show`** → show current session's memory content
-- **`memory update`** → read the current MEMORY.md, extract useful facts from recent context, update via API
-- **`sessions`** → list all amux sessions with their status
-- **`schedule list`** → list all schedules
-- **`schedule add <title>`** → create a new schedule interactively
-- **`notes`** → list notes
-- **`email send`** → compose and send an email
-- **`browser`** → browser automation help
-- **`crm`** → CRM operations
-- **`help`** or empty → show a brief summary of available /amux commands and APIs
-- **anything else** → interpret as a natural language amux action and execute it
-
-Always:
-1. Determine the current session name first (use `$AMUX_SESSION` or `tmux display-message` or ask)
-2. Use `curl -sk` (self-signed cert)
-3. Format output clearly — tables for lists, key facts for status
-4. After adding/updating anything, confirm with the ID and brief summary
-
-## Gotchas
-
-- Always use `curl -sk` — the server uses a self-signed TLS cert; without `-k` every request fails silently.
-- "Board" means the amux local board at `$AMUX_URL`, NOT Linear or Notion.
-- Session names are case-sensitive in API paths (`/api/sessions/MySession` ≠ `/api/sessions/mysession`).
-- Email send requires a valid `to` address — the API validates format and rejects malformed addresses.
-- Browser screenshot returns a JSON `{path:...}` — never pipe it with `-o` to a file; read the path from the JSON instead.
+Run whatever the arguments ask for. No arguments → show the board and the session list.
