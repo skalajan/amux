@@ -95,7 +95,9 @@ rest of the server's config):
 
 ## 4. Which surfaces consume it
 
-- **Dashboard chat tab (`chat.js`)** — a session bubble with `summary` (or without
+- **Dashboard chat tab (`chat.js`)** — ⚠ **RETIRED 2026-08-17** (Rust cutover). The Rust
+  dashboard does not load `chat.js`; Telegram is the sole front-end. Described here for
+  the historical record only. It rendered: a session bubble with `summary` (or without
   one but longer than 600 chars) renders collapsed by default: the summary (or a
   truncated preview) plus a "zobrazit vše" expand affordance revealing the full
   text already in the payload. Expand state is per-message and in-memory only

@@ -1,6 +1,14 @@
 # Session chat tab — phone-first dev/research bridge
 
-**Status:** IMPLEMENTED (B1 chat core + B2 dashboard tab), 2026-07-22. Shipped per
+**Status:** ⚠ **B2 (dashboard tab) RETIRED 2026-08-17** at the Rust cutover — the Rust
+dashboard contains no `chat.js` reference and Telegram is the sole front-end. **B1 (chat
+core) LIVES ON** in the standalone sidecar `amux-chat.py`, which serves `GET/POST /api/chat`
+on port 8825 and is what `amux-telegram.py` reads. `chat.js`/`chat.css` remain in the repo
+only as part of the retained rollback path alongside the frozen `amux-server.py`; nothing
+loads them. Everything below describes the tab **as it was built** — read it as history,
+not as a description of a running feature.
+
+**Original status:** IMPLEMENTED (B1 chat core + B2 dashboard tab), 2026-07-22. Shipped per
 the consensus plan [`.omc/plans/chat-layer-auth.md`](../.omc/plans/chat-layer-auth.md)
 (§4 B1, §5 B2-β) on top of Scope A localhost write-auth. Feature code lives in the
 referenced files `chat.js` / `chat.css` (loaded by the dashboard) plus the Python

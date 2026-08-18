@@ -169,9 +169,20 @@ python binary `install.sh` printed at the end of its run (typically
 4. `launchctl kickstart -k gui/$(id -u)/com.amux.serve` (or just wait — it's
    already `RunAtLoad`/`KeepAlive`).
 
-**AC:** `curl -sk $AMUX_URL/api/sessions` returns 200 over
-localhost **and** over the Tailscale IP; the dashboard loads; `chat.js`/
-`chat.css` are served (200).
+**AC:** `curl -sk -H "Authorization: Bearer $(cat ~/.amux/auth_token)"
+$AMUX_URL/api/sessions` returns 200 over localhost **and** over the Tailscale IP, and
+the response **parses as a JSON list**; the dashboard loads.
+
+> **Two corrections, 2026-08-18 (post-Rust-cutover).**
+> 1. The API now requires auth — an unauthenticated request returns **401**, so the
+>    old token-free `curl` in this AC would fail.
+> 2. The old AC also asserted *"`chat.js`/`chat.css` are served (200)"*. **That check
+>    could not fail.** The Rust server has an SPA catch-all: `/chat.js`,
+>    `/this-path-does-not-exist-xyz.js` and `/total/nonsense.css` **all** return 200
+>    with the same 226 KB dashboard HTML — measured. It was never testing the assets,
+>    and the chat tab is retired anyway (Telegram is the sole front-end). **Any deploy
+>    check on this server must assert response CONTENT, not status code**, or the
+>    catch-all makes it theatre.
 
 ---
 
@@ -279,13 +290,12 @@ without touching this host's real checkout or git state:
 `deploy/mac-server/test-pull-update.sh` (self-contained; builds a throwaway
 origin+clone pair under `mktemp -d` and cleans up after itself).
 
-**Footnote — `chat.js`/`chat.css` need a hard refresh after they propagate.**
-These are served fresh per request (no restart needed), but the browser
-heuristically caches them — there's no cache-busting query param or
-cache-control header on that static route. A soft reload can serve the stale
-asset even though the file on disk is current. Hard-refresh (Cmd+Shift+R, or
-clear-cache-and-reload) any already-open dashboard tab after a `chat.*`
-change lands. This is a manual step, not a bug to fix here.
+**Footnote — obsolete since the Rust cutover.** This used to say `chat.js`/`chat.css`
+need a hard refresh after propagating, because the dashboard served them from a static
+route with no cache-busting. The Rust dashboard **does not load them at all** (its
+served HTML contains no `chat.js` reference), and the chat tab is retired — Telegram
+is the sole front-end. The files remain in the repo only as part of the retained
+rollback path. Nothing to hard-refresh.
 
 ---
 
