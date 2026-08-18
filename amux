@@ -667,6 +667,27 @@ cmd_start() {
     # Remote-control so the session is reachable from the phone. Opt out per
     # host with AMUX_NO_REMOTE_CONTROL=1.
     [[ "${AMUX_NO_REMOTE_CONTROL:-}" == "1" ]] || [[ "$cmd" == *"--remote-control"* ]] || cmd="$cmd --remote-control"
+    # Mint an authoritative conversation id at launch. Without it a session has
+    # NO recorded cc_conversation_id (measured: 0 of 25), so chat capture falls
+    # through to a four-step resolution ladder whose last step is "newest jsonl in
+    # the work dir" — which, in a CC_DIR shared with any other Claude, resolves to
+    # whichever conversation was written last. On 2026-08-01 that stole 7 turns
+    # into a dead slot and 10 into a live one, and pushed them to Telegram as if
+    # they were that session's own.
+    #
+    # Passing --session-id puts the id in the process argv, which is the RELIABLE
+    # rung of that ladder, so the racy last step is never reached. MODIFICATIONS.md
+    # already named this as the durable cure; it just was never wired up.
+    #
+    # Only ever minted for a FRESH launch — cmd_start does not resume a claude
+    # conversation (only the codex branch resumes), and an explicit --session-id in
+    # CC_FLAGS or inline args wins. Rewriting an EXISTING session's id would be the
+    # same class of bug with a new cause.
+    if [[ "$cmd" != *"--session-id"* ]]; then
+      local _sid
+      _sid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z') || _sid=""
+      [[ -n "$_sid" ]] && cmd="$cmd --session-id $_sid"
+    fi
     # /AMUX-LOCAL:cli-defaults
   fi
 
