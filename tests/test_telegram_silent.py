@@ -495,10 +495,18 @@ tg.time.time = saved
 print("autonomous-loop ok — sub-settle idle gaps never ring; exactly one ring (latest turn) after settle")
 
 
-# ── 17. out-of-scope: system/alert rows keep the immediate origin-routed path ───
-# Even WITH a status label (the new path), a system row is forwarded immediately
-# and rings per its governing origin — it is NEVER routed through route_reply /
-# suppressed / deferred (plan: this reworks role=='session' only).
+# ── 17. system/alert rows keep the immediate path, but land SILENTLY ───────────
+# Even WITH a status label, a system row is forwarded immediately and is NEVER
+# routed through route_reply / suppressed / deferred (that rework is role=='session'
+# only). What CHANGED 2026-08-18 (plan chat-improvement.md C2c): it no longer RINGS.
+#
+# A system row is the usage-limit episode, and amux answers that menu itself
+# (ethos D2) — so the phone buzzed for something that resolved without Jan. It now
+# routes through notify_class(kind="failure", terminal=False) to the live box,
+# which already renders "⛔ limit". The old assertion here was
+# `sysrows[0][3] is False` ("rings"); it is inverted below rather than deleted,
+# because the inversion IS the record of the decision. A TERMINAL failure still
+# rings — see the notify_class grid in Q1.
 bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))
 saved = _patch_time(1000.0)
 ma.threads["s"] = {"cursor": 0, "thread": [
@@ -508,9 +516,10 @@ ma.threads["s"] = {"cursor": 0, "thread": [
 bot.forward_session("s", status_label="idle")
 sysrows = [s for s in mt.sent if "usage limit" in s[1]]
 assert len(sysrows) == 1, f"a system row is forwarded immediately, even in the new path: {mt.sent}"
-assert sysrows[0][3] is False, "a system row after a telegram-origin owner rings (unchanged path)"
+assert sysrows[0][3] is True, \
+    "C2c: a self-resolving usage-limit system row lands SILENTLY in the live box, never rings"
 tg.time.time = saved
-print("out-of-scope ok — system/alert rows keep the immediate origin-routed forward (not route_reply'd)")
+print("system-row ok — forwarded immediately (not route_reply'd) and SILENT (C2c: non-terminal failure -> live box)")
 
 
 # ── 18. a non-final reply is fully suppressed (no send AND no edit) ─────────────
@@ -672,7 +681,15 @@ print("question-quiet ok — a Phase B permission prompt rings while quiet with 
 #        system row in the same episode is deduped; leave+re-enter rings again;
 #        a MUTED session's limit does NOT ring ──────────────────────────────────
 def limit_row(name):
+    """A RATE limit — self-resolving. amux answers that menu itself (ethos D2),
+    so as of 2026-08-18 (plan chat-improvement.md C2c) it lands SILENTLY."""
     return {"name": name, "rate_limit_banner": "Claude usage limit reached"}
+
+
+def credit_row(name):
+    """A CREDIT limit — terminal. Nothing amux does resolves it; a human must
+    act, so it still RINGS."""
+    return {"name": name, "credit_limited": True}
 
 
 def idle_row(name):
@@ -680,14 +697,31 @@ def idle_row(name):
 
 
 bot, mt, ma = make_bot(topics={"s": 100}, outbound_state=seeded("s"))
-# (1) enter limit -> exactly one ring, sets the shared key.
+# (1) enter a RATE limit -> SILENT (C2c), but still claims the episode key so the
+#     next poll doesn't re-decide it. The old assertion here was "rings once"; it is
+#     changed rather than deleted, because a rate limit resolves itself and buzzing
+#     the phone for it was noise. (3) below proves the system row stays deduped.
 bot._check_limit_rings([limit_row("s")])
-lrings = [x for x in mt.sent if x[3] is False]
-assert len(lrings) == 1 and "usage limit reached" in lrings[0][1], f"entering limit rings once: {mt.sent}"
-assert bot.live.get("s")["limit_rung"] is True
-# (2) still in limit next poll -> no second ring.
+assert [x for x in mt.sent if x[3] is False] == [], \
+    f"C2c: a self-resolving RATE limit must not ring: {mt.sent}"
+assert bot.live.get("s")["limit_rung"] is True, "a silent limit still claims the episode"
+# (1b) a CREDIT limit is TERMINAL — nothing amux does fixes it, so it still rings.
+botc, mtc, _ = make_bot(topics={"c": 100}, outbound_state=seeded("c"))
+botc._check_limit_rings([credit_row("c")])
+crings = [x for x in mtc.sent if x[3] is False]
+assert len(crings) == 1, f"a CREDIT limit is terminal and must still ring: {mtc.sent}"
+assert botc.live.get("c")["limit_rung"] is True
+botc._check_limit_rings([credit_row("c")])
+assert len([x for x in mtc.sent if x[3] is False]) == 1, "staying credit-limited must not re-ring"
+# (1c) /quiet on silences even the terminal credit limit — the ONE cell it changes.
+botq, mtq, _ = make_bot(topics={"q": 100}, outbound_state=seeded("q"))
+botq.topics.set_quiet(True)
+botq._check_limit_rings([credit_row("q")])
+assert [x for x in mtq.sent if x[3] is False] == [], \
+    f"/quiet on routes a terminal failure to the live box: {mtq.sent}"
+# (2) still in limit next poll -> nothing new.
 bot._check_limit_rings([limit_row("s")])
-assert len([x for x in mt.sent if x[3] is False]) == 1, "staying in limit must not re-ring"
+assert [x for x in mt.sent if x[3] is False] == [], "staying in limit must not ring"
 # (3) the usage-limit SYSTEM row in the same episode is deduped -> silent (shared key).
 saved = _patch_time(1000.0)
 ma.threads["s"] = {"cursor": 0, "thread": [
@@ -697,17 +731,19 @@ bot.forward_session("s", status_label="limit")
 sysdup = [x for x in mt.sent if "usage limit" in x[1] and "reached" not in x[1]]
 assert len(sysdup) == 1 and sysdup[0][3] is True, f"the usage-limit system row is deduped to silent: {sysdup}"
 tg.time.time = saved
-# (4) leave limit -> clears the key; re-enter -> rings again.
+# (4) leave limit -> clears the key; re-enter a CREDIT limit -> rings again.
 bot._check_limit_rings([idle_row("s")])
 assert bot.live.get("s")["limit_rung"] is False, "leaving limit clears the shared key"
-bot._check_limit_rings([limit_row("s")])
-assert len([x for x in mt.sent if x[3] is False and "reached" in x[1]]) == 2, "re-entering limit rings again"
-print("limit-dedup ok — one ring per limit episode across the status-check and the system-row path; re-enter re-rings")
+botc._check_limit_rings([idle_row("c")])
+assert botc.live.get("c")["limit_rung"] is False
+botc._check_limit_rings([credit_row("c")])
+assert len([x for x in mtc.sent if x[3] is False]) == 2, "re-entering a credit limit rings again"
+print("limit-dedup ok — rate limits silent (C2c), credit limits ring once per episode, /quiet silences even those")
 
 # a MUTED session's limit must NOT ring (explicit is_muted guard, outside the loop break).
 bot2, mt2, ma2 = make_bot(topics={"m": 100}, outbound_state=seeded("m"))
 bot2.topics.mute("m")
-bot2._check_limit_rings([limit_row("m")])
+bot2._check_limit_rings([credit_row("m")])
 assert mt2.sent == [], "a muted session's limit must NOT ring"
 assert not (bot2.live.get("m") or {}).get("limit_rung"), "a muted limit does not consume the shared key"
 print("limit-mute ok — a muted session's limit transition is silent (mute is absolute, fails included)")

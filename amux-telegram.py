@@ -53,6 +53,7 @@ OFFSET_PATH = os.path.join(AMUX_DIR, "telegram-offset")
 OUTBOUND_PATH = os.path.join(AMUX_DIR, "telegram-outbound.json")
 PROMPTS_PATH = os.path.join(AMUX_DIR, "telegram-prompts.json")
 LIVE_PATH = os.path.join(AMUX_DIR, "telegram-live.json")
+COUNTERS_PATH = os.path.join(AMUX_DIR, "telegram-counters.json")
 
 # Permission-prompt notify (plan .omc/plans/telegram-permissions.md Phase B).
 # Only ping once a session has been CONTINUOUSLY "waiting" this long — a debounce
@@ -302,6 +303,8 @@ class TopicStore:
         # mute-of-sound, distinct from /mute's content suppression. Absent ->
         # "on" (the origin rule in Bot.forward_session governs, the default).
         self._ring_off = set(str(s) for s in (state.get("ring_off") or []))
+        # Fleet-scope quiet flag (chat scope). Top-level, not per-session.
+        self._quiet = bool(state.get("quiet") or False)
 
     @classmethod
     def load(cls, path=TOPICS_PATH):
@@ -313,7 +316,8 @@ class TopicStore:
 
     def to_dict(self):
         return {"topics": dict(self._topics), "muted": sorted(self._muted),
-                "modes": dict(self._modes), "ring_off": sorted(self._ring_off)}
+                "modes": dict(self._modes), "ring_off": sorted(self._ring_off),
+                "quiet": self._quiet}
 
     def save(self):
         _atomic_write_0600(self.path, json.dumps(self.to_dict(), indent=2))
@@ -360,6 +364,74 @@ class TopicStore:
             self._ring_off.add(session)
         else:
             self._ring_off.discard(session)
+
+    # ── fleet-scope quiet (chat scope, NOT session scope) ──────────────────────
+    # Deliberately a TOP-LEVEL key, not a session key like everything else in
+    # this store: /quiet governs the whole chat. to_dict() emits it
+    # unconditionally — the apparent absence of `ring_off` from an older state
+    # file is exactly what produced a false "no command has ever run" finding
+    # during planning, so an always-present key is worth the two bytes.
+    def is_quiet(self):
+        return self._quiet
+
+    def set_quiet(self, on):
+        self._quiet = bool(on)
+
+
+class CounterStore:
+    """Cumulative per-(kind, class) notification counters — the DENOMINATOR.
+
+    Before this existed the sidecar logged no successful send at any level: of
+    573 log lines containing "forward", every one was a failure or a traceback
+    frame and zero were INFO. So "how many messages arrived, and how many rang?"
+    — the single question Jan ranked first — was unanswerable from retained data,
+    and every ranking claim made during planning had to be retracted for exactly
+    that reason.
+
+    Kept deliberately small and monotonic: a flat {"kind:class": n} map plus a
+    `since` stamp. It is persisted so a sidecar restart doesn't reset the
+    denominator mid-measurement, and surfaced by /quiet status."""
+
+    def __init__(self, path=COUNTERS_PATH, state=None):
+        self.path = path
+        state = state or {}
+        self._n = {str(k): int(v) for k, v in (state.get("counts") or {}).items()}
+        self._since = float(state.get("since") or 0) or time.time()
+
+    @classmethod
+    def load(cls, path=COUNTERS_PATH):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return cls(path, json.load(f))
+        except (OSError, ValueError):
+            return cls(path, {})
+
+    def to_dict(self):
+        return {"counts": dict(self._n), "since": self._since}
+
+    def save(self):
+        _atomic_write_0600(self.path, json.dumps(self.to_dict(), indent=2))
+
+    def bump(self, kind, klass):
+        key = f"{kind}:{klass}"
+        self._n[key] = self._n.get(key, 0) + 1
+
+    def total(self, klass=None):
+        if klass is None:
+            return sum(self._n.values())
+        return sum(v for k, v in self._n.items() if k.endswith(":" + klass))
+
+    def render(self):
+        """Human-readable tally for /quiet status."""
+        if not self._n:
+            return "žádná rozhodnutí zatím nezaznamenána"
+        hours = max(1.0, (time.time() - self._since) / 3600.0)
+        lines = [f"za {hours:.1f} h — celkem {self.total()} "
+                 f"(ring {self.total('ring')} · live {self.total('live')} · "
+                 f"suppress {self.total('suppress')})"]
+        for key in sorted(self._n):
+            lines.append(f"  {key} = {self._n[key]}  ({self._n[key] / hours:.1f}/h)")
+        return "\n".join(lines)
 
 
 # ── pure logic: pending permission prompt per session (persisted) ──────────────
@@ -1072,27 +1144,52 @@ def session_status_label(s):
 
 # ── pure logic: quiet-mode routing + presence predicates (plan M1 + quiet mode) ─
 def notify_class(kind, is_final, ring_off, latch_armed, window_open,
-                 origin_is_telegram):
+                 origin_is_telegram, quiet=False, terminal=True):
     """Unified quiet-mode router (plan .omc/plans/telegram-quiet-mode.md, design
-    A). `kind` in {"reply", "question", "failure"}; returns "ring" | "live" |
-    "suppress". /mute is handled upstream (is_muted) — it is absolute and never
-    reaches here.
+    A; amended by .omc/plans/chat-improvement.md C2). `kind` in
+    {"reply", "question", "failure"}; returns "ring" | "live" | "suppress".
+    /mute is handled upstream (is_muted) — it is absolute and never reaches here.
 
       * "suppress" — no Telegram footprint at all (dashboard + /last hold it).
       * "ring"     — a fresh, ringing sendMessage (disable_notification=False).
-      * "live"     — a silent edit into the rolling live box.
+      * "live"     — a silent edit into the rolling live box. NOTE: the box's ONE
+                     creation message is a real Telegram message and produces a
+                     real (soundless) notification — Telegram's
+                     `disable_notification` means "no sound", NOT "no
+                     notification". Every later update is a free edit. Do not
+                     read "live" as "invisible"; that misreading is what made
+                     Jan report silent messages still showing up.
 
-    Questions (Phase B prompts) and failures (limit / system rows) are actionable
-    and ALWAYS ring — they precede the ring_off check, so /ring off cannot silence
-    them (only /mute does, upstream). For a reply: the finality gate comes first
-    (a non-final always suppresses); then /ring off diverts to the live box; then
-    the answer-latch rings the answer to Jan's Telegram turn no matter how slow;
-    then (design B only) an open window rings continuous mid-chat progress; else
-    the quiet default sends the final silently to the live box."""
+    `quiet` and `terminal` were APPENDED LAST, and that is load-bearing:
+    tests/test_telegram_silent.py:564 calls this positionally with six arguments,
+    so a new parameter anywhere earlier raises TypeError. Keep new inputs at the
+    end with defaults that preserve the shipped truth table.
+
+    Questions (Phase B prompts) are actionable and ALWAYS ring — they precede
+    every gate, so neither /ring off nor /quiet can silence them (only /mute
+    does, upstream). This is deliberate: a fleet-wide flag that could swallow a
+    permission prompt is the one thing Principle 5 forbids.
+
+    Failures: a NON-terminal failure (a rate-limit episode amux auto-answers
+    itself, ethos D2) goes silently to the live box, which already shows "⛔
+    limit" — it has no business making a sound. A TERMINAL failure still rings,
+    unless the fleet-scope /quiet flag is on. That single cell is the entire
+    behavioural footprint of /quiet.
+
+    For a reply: the finality gate comes first (a non-final always suppresses);
+    then /ring off diverts to the live box; then the answer-latch rings the
+    answer to Jan's Telegram turn no matter how slow; then (design B only) an
+    open window rings continuous mid-chat progress; else the quiet default sends
+    the final silently to the live box. `quiet` deliberately does NOT gate a
+    reply: under design A `window_open` is always False, so the only reachable
+    ringing reply is `latch_armed` — the answer to Jan's own question — and
+    silencing that is exactly the defect the latch was added to prevent."""
     if kind == "question":          # Phase B — actionable, never gated
         return "ring"
-    if kind == "failure":           # limit / system rows — never silenced (mute aside)
-        return "ring"
+    if kind == "failure":
+        if not terminal:            # self-resolving (rate limit) — box shows it
+            return "live"
+        return "live" if quiet else "ring"
     # kind == "reply"
     if not is_final:                # finality gate precedes everything (unchanged)
         return "suppress"
@@ -1444,6 +1541,42 @@ class Bot:
         self.owner_id = config["owner_id"]
         self._stop = threading.Event()
         self._save_lock = threading.Lock()
+        # Instrumentation (plan chat-improvement.md C1). The counters are the
+        # denominator that did not exist before; _decide is the single funnel
+        # every notification class must pass through.
+        self.counters = CounterStore.load()
+        self._last_observe = {}      # session -> last status_label logged (tg-observe)
+
+    # ── instrumentation: the ONE place a notification class is chosen ──────────
+    def _decide(self, session, kind, *, is_final=True, ring_off=False,
+                latch_armed=False, window_open=False, origin_tg=False,
+                terminal=True, rule=""):
+        """Choose a notification class AND record the decision. Every send site
+        routes through here.
+
+        Why a funnel rather than calling notify_class directly: the reason
+        `_send_prompt_notify` rang unconditionally for months — overriding
+        /ring off, invisible to the router, its own docstring advertising the
+        bypass — is that nothing forced a send to consult the router or to leave
+        a trace. A site that forgets to call this leaves no `tg-decision` line,
+        and C1's gate diffs the counters against those lines, so the omission is
+        detectable instead of silent.
+
+        `quiet` is read here rather than passed in, so no caller can forget it."""
+        quiet = self.topics.is_quiet()
+        klass = notify_class(kind, is_final, ring_off, latch_armed, window_open,
+                             origin_tg, quiet, terminal)
+        log.info("tg-decision ts=%d session=%s kind=%s is_final=%s ring_off=%s "
+                 "latch_armed=%s window_open=%s origin_tg=%s quiet=%s terminal=%s "
+                 "-> class=%s rule=%s",
+                 int(time.time()), session, kind, is_final, ring_off, latch_armed,
+                 window_open, origin_tg, quiet, terminal, klass, rule or kind)
+        self.counters.bump(kind, klass)
+        try:
+            self.counters.save()
+        except OSError as e:
+            log.warning("counter save failed: %s", e)   # never block a send
+        return klass
 
     # ── inbound ────────────────────────────────────────────────────────────────
     def handle_update(self, update):
@@ -1961,8 +2094,13 @@ class Bot:
                 # of origin / ring_off, unless this usage-limit episode already
                 # rang (shared limit_rung dedup with the per-poll limit check).
                 already = bool((self.live.get(session) or {}).get("limit_rung"))
-                klass = "live" if already else notify_class(
-                    "failure", True, ring_off, False, False, False)
+                # A system row IS the self-resolving rate-limit episode (ethos D2:
+                # amux answers that menu itself), so terminal=False routes it to the
+                # live box, which already renders "⛔ limit". It has no business
+                # making a sound. `already` still short-circuits the repeat.
+                klass = "live" if already else self._decide(
+                    session, "failure", ring_off=ring_off, terminal=False,
+                    rule="system-row")
                 silent = (klass != "ring")
             else:
                 silent = ring_off or self.outbound.governing_origin(session) != "telegram"
@@ -2169,7 +2307,9 @@ class Bot:
         else:
             latch_effective = False
             window_open = True
-        route = notify_class("reply", True, ring_off, latch_effective, window_open, origin_tg)
+        route = self._decide(session, "reply", is_final=True, ring_off=ring_off,
+                             latch_armed=latch_effective, window_open=window_open,
+                             origin_tg=origin_tg, rule="promote-final")
         if route == "ring":
             consumed = self._ring_final(session, item, cand, now)
             # Clear the latch only on an EFFECTIVE latched ring that actually sent
@@ -2466,11 +2606,30 @@ class Bot:
                     continue  # explicit mute guard (this loop has no is_muted break)
                 if already:
                     continue  # this episode already rang
-                # notify_class("failure") is unconditionally "ring" — failures
-                # override /ring off (only /mute silences, checked above).
-                if notify_class("failure", True, self.topics.is_ring_off(name),
-                                False, False, False) == "ring" and self._ring_failure(
+                # Rate limit vs CREDIT limit are not the same event, and treating
+                # them alike is the bug this split fixes. A rate/usage limit
+                # self-resolves — amux answers that menu itself (ethos D2) and the
+                # live box already renders "⛔ limit", so buzzing the phone tells
+                # Jan about something that fixes itself. A CREDIT limit does not
+                # self-resolve: it needs a human to act, so it stays terminal and
+                # still rings (unless the fleet /quiet flag is on).
+                terminal = bool(s.get("credit_limited"))
+                klass = self._decide(name, "failure",
+                                     ring_off=self.topics.is_ring_off(name),
+                                     terminal=terminal,
+                                     rule="credit-limit" if terminal else "usage-limit")
+                if klass == "ring" and self._ring_failure(
                         name, f"⛔ {name} @ {self.machine} — usage limit reached"):
+                    self.live.set_fields(name, limit_rung=True)
+                    self._save_live()
+                elif klass != "ring":
+                    # Claim the episode even though nothing rang, so the next poll
+                    # doesn't re-decide (and re-log) the same limit every 2s.
+                    # Safe ordering note: forward_session runs BEFORE this check and
+                    # now only sets limit_rung when its system row actually RANG —
+                    # which, being non-terminal, it no longer does. So this check is
+                    # the sole owner of the episode and a credit limit cannot be
+                    # pre-empted into silence by the system row that precedes it.
                     self.live.set_fields(name, limit_rung=True)
                     self._save_live()
             elif already:
