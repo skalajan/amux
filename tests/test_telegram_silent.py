@@ -249,7 +249,8 @@ def make_bot(topics=None, outbound_state=None, chat_id="-100999", summarizer=Non
            "machine_label": "testbox"}
     cfg.update(cfg_over)
     mt, ma = MockTelegram(), MockAmux()
-    bot = tg.Bot(cfg, mt, ma, tstore, off, outbound, summarizer=summarizer, live=live)
+    bot = tg.Bot(cfg, mt, ma, tstore, off, outbound, summarizer=summarizer, live=live,
+                 counters=tg.CounterStore(os.devnull, {}))
     return bot, mt, ma
 
 

@@ -301,7 +301,8 @@ def make_bot(topics_state=None, prompts_state=None, chat_id="-100999"):
            "write_token": "wt", "poll_secs": 0.01, "long_poll_secs": 1,
            "machine_label": "testbox"}
     mt, ma = MockTelegram(), MockAmux()
-    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=None, prompts=prompts, live=live)
+    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=None, prompts=prompts,
+                 live=live, counters=tg.CounterStore(os.devnull, {}))
     return bot, mt, ma, off
 
 

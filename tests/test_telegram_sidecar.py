@@ -117,7 +117,8 @@ def make_bot(topics_state=None, outbound_state=None, offset=0, chat_id="-100999"
     if default_mode:
         cfg["default_mode"] = default_mode
     mt, ma = MockTelegram(), MockAmux()
-    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=summarizer, live=live)
+    bot = tg.Bot(cfg, mt, ma, topics, off, outbound, summarizer=summarizer, live=live,
+                 counters=tg.CounterStore(os.devnull, {}))
     return bot, mt, ma, off
 
 

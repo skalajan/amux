@@ -254,4 +254,30 @@ assert tg.CHAT_TIMEOUT_SECS <= 10, (
 assert "8822" not in tg.DEFAULT_AMUX_BASE, \
     "8822 was retired at the Rust cutover — a hardcoded dead port fails every request"
 print(f"transport-config ok — chat timeout {tg.CHAT_TIMEOUT_SECS}s, base {tg.DEFAULT_AMUX_BASE}")
+
+
+# ── 5. the instrument must not fabricate its own readings ─────────────────────
+# A Bot constructed without an explicit `counters` loads AND SAVES the real
+# ~/.amux/telegram-counters.json. Every suite in this repo constructs Bots, so for
+# one afternoon the test runs were writing into the live counters — a single run
+# moved reply:ring from 248 to 256. Those counters are the whole point of C1: they
+# are what makes "fewer messages arrive" checkable. An instrument that records
+# traffic which never happened is worse than no instrument, because /quiet status
+# presents it as measurement.
+import inspect
+
+_sig = inspect.signature(tg.Bot.__init__)
+assert "counters" in _sig.parameters, \
+    "Bot must accept an injectable counter store, or tests write into live state"
+assert _sig.parameters["counters"].default is None
+
+_probe = tg.CounterStore(os.devnull, {})
+_bot = tg.Bot.__new__(tg.Bot)
+_bot.topics = _Topics()
+_bot.counters = _probe
+_bot._decide("s", "reply", is_final=True, rule="probe")
+assert _probe.total() == 1, "an injected store still records"
+assert _probe.path == os.devnull, "the injected store must not point at real state"
+print(f"no-fabrication ok — counters injectable (default {_sig.parameters['counters'].default}), "
+      "suites isolated from ~/.amux")
 print("\nALL TELEGRAM-INSTRUMENTATION CHECKS PASSED")

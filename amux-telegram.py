@@ -1595,7 +1595,7 @@ def _short_hostname():
 # ── the bot (orchestration; network via injected clients) ──────────────────────
 class Bot:
     def __init__(self, config, telegram, amux, topics, offset, outbound, summarizer=None,
-                 prompts=None, live=None):
+                 prompts=None, live=None, counters=None):
         self.cfg = config
         self.default_mode = config.get("default_mode", "smart")
         self.summarizer = summarizer  # callable(text) -> str|None; None disables smart mode
@@ -1625,7 +1625,13 @@ class Bot:
         # Instrumentation (plan chat-improvement.md C1). The counters are the
         # denominator that did not exist before; _decide is the single funnel
         # every notification class must pass through.
-        self.counters = CounterStore.load()
+        # Injectable like prompts/live, and for the same reason: the default
+        # loads (and SAVES to) the real ~/.amux path. Tests that construct a Bot
+        # without overriding it write fabricated traffic into the live counters —
+        # measured: one suite run moved reply:ring from 248 to 256 — which would
+        # make /quiet status, the instrument this whole change exists to provide,
+        # report numbers that never happened.
+        self.counters = counters if counters is not None else CounterStore.load()
         self._last_observe = {}      # session -> last status_label logged (tg-observe)
 
     # ── instrumentation: the ONE place a notification class is chosen ──────────
