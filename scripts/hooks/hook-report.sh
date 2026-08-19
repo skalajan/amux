@@ -107,10 +107,30 @@ print(json.dumps(out))
 # X-Amux-Session stamps the write server-side (AMUX-1768). report_post's own
 # comment names its absence as the standing residual: "the shipped hooks send no
 # header, so an UNSTAMPED write is still accepted". This IS the shipped hook.
-if ! curl -sk -m 3 -X POST -H 'Content-Type: application/json' \
-  -H "X-Amux-Session: $AMUX_SESSION" -d "$BODY" \
-  "$U/api/sessions/$AMUX_SESSION/report" >/dev/null 2>&1
-then
+#
+# AUTH (2026-08-19): the Rust cutover made the API require a bearer token — an
+# unauthenticated POST to /report returns 401. This hook sent none, so EVERY
+# report was rejected: measured 0 of 22 sessions carrying a self_report, which is
+# why amux was still inferring state from a pane scrape (ethos D1) months after
+# the report endpoint shipped. Read from the same 0600 file the CLI uses; absent
+# token -> send nothing and let the server decide, rather than failing here.
+AUTH=""
+[ -r "$HOME/.amux/auth_token" ] && AUTH="Authorization: Bearer $(cat "$HOME/.amux/auth_token" 2>/dev/null)"
+
+# CAPTURE THE STATUS, don't trust curl's exit code. `curl -s ... >/dev/null` exits
+# 0 on a 401 — it is a completed HTTP transaction — so the failure branch below
+# could never fire for the one failure that was actually happening. The block is
+# titled "THE ONE FAILURE NOTHING ELSE CAN SEE" and it could not see this one.
+# -o /dev/null -w '%{http_code}' makes an auth/5xx rejection as visible as a
+# connection refusal.
+CODE=$(curl -sk -m 3 -o /dev/null -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  -H "X-Amux-Session: $AMUX_SESSION" \
+  ${AUTH:+-H "$AUTH"} \
+  -d "$BODY" "$U/api/sessions/$AMUX_SESSION/report" 2>/dev/null)
+case "$CODE" in
+  2??) ;;
+  *)
   # THE ONE FAILURE NOTHING ELSE CAN SEE. A successful report is visible twice
   # over — in the structured request log and in the stored report's `source` —
   # but a FAILED curl reaches no server, so "the hook never ran" and "the hook
@@ -120,10 +140,11 @@ then
   # hook and was recorded nowhere.
   D="$HOME/.amux/logs"; [ -d "$D" ] || mkdir -p "$D" 2>/dev/null
   F="$D/hook-report-failures.log"
-  printf '%s %s source=%s url=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    "$AMUX_SESSION" "$SRC" "$U" >> "$F" 2>/dev/null
+  printf '%s %s source=%s url=%s code=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "$AMUX_SESSION" "$SRC" "$U" "${CODE:-000}" >> "$F" 2>/dev/null
   if [ "$(wc -l < "$F" 2>/dev/null || echo 0)" -gt 2000 ]; then
     tail -n 500 "$F" > "$F.tmp" 2>/dev/null && mv "$F.tmp" "$F" 2>/dev/null
   fi
-fi
+  ;;
+esac
 exit 0
