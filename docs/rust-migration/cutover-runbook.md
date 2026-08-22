@@ -50,6 +50,43 @@ Exit criteria for A: 7 consecutive days of (1) shadow-scheduler agreement,
 2. Regenerate both standing evidence rows above. Red = stop.
 3. Swap ports: Python plist gets `AMUX_PORT=8823` (its fallback home), Rust
    plist gets `AMUX_RS_PORT=8822`. `launchctl kickstart -k` both.
+3b. **Close the carried-over-DB schema gaps BEFORE the swap.** `0001_baseline.sql`
+   builds its tables with `CREATE TABLE IF NOT EXISTS`, which is a NO-OP against a
+   DB that already has the Python-era table — so any column the Rust schema adds to
+   a pre-existing table is simply absent on exactly the hosts that upgraded rather
+   than started clean. This is not hypothetical: mac-brain ran post-cutover with two
+   such gaps (2026-08-22, `amux-helper`).
+
+   Do not wait for an error to find them. One of the two announced itself
+   (`amux board needsyou` → `500 table issue_tags has no column named added_at`);
+   the other, `statuses.mode`, was **silent** — `workflow_store::load_workflow` does
+   `.prepare(...).ok()?`, so the missing column collapses to `None`, and that
+   function's own doc comment names the result: *"it would look exactly like a board
+   with nothing to do."* The silent one is the one that matters, and only a diff
+   finds it.
+
+   Let SQLite parse the migrations — a regex over the `.sql` was tried first and
+   produced garbage that spanned table boundaries:
+   ```python
+   import sqlite3, glob, os
+   ref = sqlite3.connect(':memory:')
+   for f in sorted(glob.glob('crates/amux-server/migrations/*.sql')):
+       ref.executescript(open(f).read())
+   live = sqlite3.connect(os.path.expanduser('~/.amux/amux.db'))
+   cols = lambda c, t: [r[1] for r in c.execute('PRAGMA table_info("%s")' % t)]
+   # for every table in both: report ref columns missing from live
+   ```
+   Repair each gap with `ALTER TABLE <t> ADD COLUMN <exact definition from
+   0001_baseline.sql>`. **Additive only — never drop/recreate the table**, that
+   discards live board data (`issue_tags` held 11 real tags). Leave pre-existing
+   rows NULL where the baseline column is nullable; consumers already
+   `COALESCE`. The two found on mac-brain:
+   ```bash
+   sqlite3 ~/.amux/amux.db "ALTER TABLE issue_tags ADD COLUMN added_at INTEGER;"
+   sqlite3 ~/.amux/amux.db "ALTER TABLE statuses ADD COLUMN mode TEXT NOT NULL DEFAULT 'implicit';"
+   ```
+   Re-run the diff until it reports zero gaps (mac-brain: 18 migrations, 71 tables,
+   zero remaining).
 4. Smoke, in order (each can fail; stop on first red):
    ```bash
    curl -sk https://localhost:8822/health | grep '"server":"amux-rust"'
@@ -75,9 +112,12 @@ moving, board writes from real sessions landing (ask one session to run
 ## Rollback (any time in B; < 1 minute)
 
 ```bash
-# Swap the ports back and kick both. The DB needs NOTHING: additive-only
-# migrations mean the Python server reads the same file it always did
-# (proven each rehearsal run, step 5).
+# Swap the ports back and kick both. The DB needs NOTHING *in this direction*:
+# additive-only migrations mean the Python server reads the same file it always
+# did (proven each rehearsal run, step 5) — extra columns are invisible to it.
+# NOTE the asymmetry: that guarantee does NOT hold going FORWARD. Rust needs
+# columns a carried-over Python DB may lack, because the baseline's
+# `CREATE TABLE IF NOT EXISTS` no-ops on an existing table. See step 3b.
 launchctl kickstart -k gui/$(id -u)/com.amux.server      # Python back on 8822
 launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # Rust back on 8823
 ```
