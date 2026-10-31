@@ -1,0 +1,107 @@
+34dbac9cc docs(modifications): F-6 refusal runs before the attribution check, not after
+2f967e9fd fix(bootstrap): filter refused worker env keys on both spawn legs, not just the headless one
+5b6601797 docs(modifications): register F-5 env passthrough and F-6 human-only force
+e5a405be0 feat(board): refuse force from worker or session actors with 403 force_requires_human
+e49e8176a feat(opencode): pass the worker environment map into the headless CLI child
+b6dcde6aa docs: record the 2026-09-10 upstream merge and correct the stale 8822/Python-in-production claims
+5a74e677d merge: sync fork with upstream/main 2026-09-10
+35ff724c0 docs: preserve the 2026-07-22 ralplan prompt for the chat layer and localhost auth
+572442737 docs(cutover): schema-gap check before the swap — CREATE TABLE IF NOT EXISTS no-ops on a carried-over DB
+30746a522 fix(cli): route every API call through _acurl — the merge dropped auth and the whole CLI 401'd
+ed04099ab fix(hooks): report hook sent no auth token and could not see its own 401
+2e60b7196 fix(telegram): tests were writing fabricated traffic into the live counters
+a4989f44a fix(cli): mint --session-id at launch so chat capture stops guessing which transcript is ours
+c97245276 feat(telegram): tg-observe stream; live box capped at 1200 chars via TG_LIVE_BODY_MAX
+74db9ea5d fix(telegram): transport reliability — topic-creation crash, bounded retry, 8s poll timeout, live endpoint
+810984017 fix(telegram): live box no longer rewrites once a minute — growing thresholds, silent under 5m
+6d335ee78 feat(telegram): /quiet fleet switch, command logging, and a coverage gate that can fail
+cb7e3baea feat(telegram): prompt notify goes through the router; grace 10s to 90s; one ring per waiting episode
+643dae483 feat(telegram): decision funnel + per-class counters; rate limits no longer ring, credit limits still do
+3b27dc919 docs(chat): mark the dashboard chat tab retired; drop a deploy AC that could not fail
+b43dd59f8 fix(commands): /amux doc was fully broken post-cutover — dead port, no auth, two unset vars
+bd831f9ad feat(deploy): updater rebuilds rust on source change and resolves the server address from endpoint.json
+428b27a1b feat(telegram): route /api/chat to the sidecar and send Bearer on every request
+b11892eb9 docs(auth): send Bearer on every documented curl — loopback bypass is off on rust
+215961530 chore: merge upstream/main — rust workspace, keeping amux-server.py as rollback and parity oracle
+7e018cfe2 docs: rewrite upstream-sync.md Part B — real git merge with a 10-file known conflict set
+d89d4be33 docs(rules): correct extend-via-sidecar.md — amux-server.py retained, sync is a real merge
+abdfac912 docs(rules): fix single-file.md frontmatter — amux-server.py is retained, not retired
+5d7bf5845 docs: correct CLAUDE.md — amux-server.py retained as rollback + parity oracle
+d566e1318 docs(rules): correct single-file.md — amux-server.py is retained, not deleted
+7cb9e70ee docs: mark commit-stamp toggle and yolo-guardrail obsolete, not TBD, in MODIFICATIONS.md
+e60079c32 feat(chat): extract session-chat read path into a server-agnostic sidecar
+8efa25b04 docs: update CLAUDE.md for the Rust migration (single-file/codebase framing, $AMUX_URL)
+e1e0c0da1 docs: rewrite upstream-sync.md for a Rust re-baseline, not a Python merge
+34be1a260 docs: rebuild MODIFICATIONS.md registry around Rust-cutover delta placements
+60f0e4a96 docs(rules): rewrite extend-via-sidecar.md for a 183-file Rust workspace
+206bcfe59 docs(rules): retire single-file.md's amux-server.py premise for the Rust migration
+e7313a14e test(parity): calibrate harness to this fork's fleet and board size
+449978d12 chore(rust-migration): indirect hardcoded :8822 base URL via $AMUX_URL across docs/skills/deploy scripts
+d09b735b3 fix(deploy): remove stale .claude/settings.json entry from pull-reconcile allowlist
+b2071e1c5 fix(docs): correct broken git fetch invocation in upstream-sync preflight
+6f8730e74 fix(deploy): storm guard so a repeating pull-update condition alerts once
+6aa6282a0 test(parity): recover parity-tasks.mjs deleted with the python oracle at 792ce1f
+d42a82335 fix(telegram): suppress prompt ping while a tmux client is attached (Jan at the CLI)
+6844dce40 feat: telegram quiet mode — answer-latch, questions+fails only (latch-only v1)
+0243d27ec chore: merge upstream/main (0.9.108, 1c7b330)
+6fa1ecace feat: web chat presence — delivery ticks, typing dots, session-state chip (M2)
+c27b99f3e feat: silent routing + presence layer for telegram sidecar (M1)
+4207a95f7 docs: rules — session chat tab is implemented, not Phase 0
+e42e29ff6 fix: strip ANSI escapes before permission-prompt classify/render
+066ac3b2d feat: never auto-approve permission-rule prompts (yolo-guardrail, AMUX perms A)
+dcd37dfb3 fix: stop chat capture adopting a neighbour session's transcript (AMUX-10)
+6cc718372 test: lock A.0 live captures into perms classifier + harden permission chrome
+48b0636c4 feat: telegram permission-prompt notify + inline approve (AMUX perms B)
+8eb2b0db2 fix: capture fresh-session replies via live-conv-id fallback (AMUX-10)
+cce216a22 docs: mac-server deployment log entry
+4992db91a fix: deploy plists PATH covers /opt/homebrew/bin and ~/.local/bin
+9b4d39c66 docs: add mac-server deploy runbook (Phases 3-6, ACs, rollback)
+7b4b41b8a feat: add mac-server deploy kit (install.sh, launchd plist templates, pull-only auto-update runner + sandbox test)
+cd8de0530 feat(telegram): origin-aware notification routing for forwarded replies with /ring on|off override
+9ab2df36e feat: add amux-drain-restart sidecar for lossless fleet restarts
+b50c2bf3d chore: default session model claude-opus-5[1m] (Opus 5 exists)
+c497e4f7e chore: default session model claude-opus-4-8[1m]
+57531dcd4 fix: session-chat reply-capture latency + dashboard poll-flood
+d34bf1510 docs: register the reply-summary marker in the local delta registry
+0a90e62e5 docs: document the reply-summary marker convention
+4be09d935 test(chat): cover reply-summary marker parsing and server-summary preference
+023dcba5c feat(telegram): prefer server-provided reply summary over local call
+23143b99a feat(chat): collapse long session replies behind an expand affordance
+fe6a99327 feat(chat): parse reply-summary marker and add Haiku fallback summarizer
+6bdd5bd90 feat(telegram): smart-mode AI reply summaries, /mode and /last commands
+21afe38eb chore: merge upstream/main (f721e02)
+ed0282dcc feat(telegram): forward // messages as slash commands into the mapped session
+b5aea21c1 fix: start-all via server API (launchd bash lacks FDA for Desktop symlink)
+84c767b0c feat: boot-time start-all LaunchAgent
+07ae20a89 fix: use record_history instead of deliver_now for /type to avoid a live _origin crash in send
+bcd537422 feat: add owner-only /type and /keys commands to Telegram sidecar for raw session injection
+dbb8081d6 fix: chunk Telegram sendMessage at 4096-char limit
+c5951bdd6 chore: merge upstream/main (2026-07-26)
+27f0d6f55 fix: gh-issue board import sends write token (review finding)
+5741b146c feat: telegram session-chat sidecar (B3) — amux-telegram.py + tests + launchd plist + docs
+7b1f188fb feat: session chat dashboard tab (B2) — chat.js/chat.css + minimal peek-tab footprint
+dcdb9ad72 feat: session chat core (B1) — chat_messages/chat_replies, /api/chat, reply capture, chat SSE
+ed14a5f6b fix: balance write-auth sentinel around dashboard fetch wrapper
+ddbc186ff test: write-auth gate matrix (deny-by-default, none-mode, no _UI_TOKEN)
+5ecb32109 feat: enforce localhost write-auth (deny-by-default writes)
+1eb720623 feat: procwarden and skills docs carry X-Amux-Write-Token
+2a2064fe5 feat: amux CLI sends X-Amux-Write-Token on write curls
+85700af45 feat: localhost write-auth token infra + consumers (accept-but-not-require)
+e9447d496 chore: merge upstream/main (4a60aa6)
+88b588e53 docs: fix stale upstream-sync.md step cross-reference after TODO 3 renumbering
+4b7d5f564 chore: retrofit account-routing block with AMUX-LOCAL sentinel (comment-only)
+61519cb0e docs: document deferred author-time advisory check for AMUX-LOCAL sentinels
+861a980cc docs: registry-referencing sync SOP with two-tier pre-merge gate
+d5556389f docs: sentinel convention, in-file post-conditions, session-chat wording fix
+cfda25290 docs: add Local Delta Registry table to MODIFICATIONS.md
+24ab51d0c docs: upstream sync SOP for the weekly scheduler entry
+569cac9ef chore: merge upstream/main (v0.9.108)
+f2176b3db chore: remove local .claude/settings.json
+21ca341fc docs: add tool-lifecycle granularity to session-chat Phase 0 audit
+d3f91d33b chore: gitignore local .omc/ tooling state
+51f2057db feat: AMUX_COMMIT_STAMP toggle to disable the Amux-Session commit trailer
+0fcc4d26a Merge remote-tracking branch 'upstream/main' Amux-Session: amux-helper
+e05725ad4 docs: fold session-chat split decision through rules
+c8bebe651 docs: rework phone bridge as native session chat tab
+ddb86d1b4 docs: Telegram bridge architecture + extend-via-sidecar rule
+1af40e0b4 feat: work/personal Claude account routing (CLAUDE_CONFIG_DIR) in CLI + server

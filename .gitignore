@@ -104,3 +104,10 @@ scripts/amux-menubar
 *.tfvars
 .terraform/
 .terraform.lock.hcl
+
+.omc/
+# Fork-local live sidecars run by launchd from this worktree; source of record is tag fork-pre-upstream-resync-2026-10-31
+/amux-server.py
+/amux-telegram.py
+/amux-chat.py
+/amux-drain-restart.py
