@@ -1341,8 +1341,7 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         // with one must not be told "no key" (amux Cloud e2e, 2026-10-18).
         "has_any_model": has_key_in_env || has_oauth || has_proxy || any_model_auth(&model_auth),
         "model_auth": model_auth,
-        // Kept out of model_auth: a GitHub sign-in runs no worker. It is what
-        // `amux contribute` (Pull from remote on a cloud server) needs.
+        // Kept out of model_auth: a GitHub sign-in runs no worker.
         "github": {"signed_in": github_signed_in(&user_home)},
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
