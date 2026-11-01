@@ -294,7 +294,7 @@ fn dockerignore_keeps_every_external_include_str_input() {
     );
 
     // The matcher must be able to say yes, or the green above means nothing.
-    assert!(dockerignored("skills/\n", "skills/amux-contribute.md"));
-    assert!(!dockerignored("skills/\n!skills/amux-contribute.md\n", "skills/amux-contribute.md"));
+    assert!(dockerignored("skills/\n", "skills/slop.md"));
+    assert!(!dockerignored("skills/\n!skills/slop.md\n", "skills/slop.md"));
     assert!(dockerignored("*.db\n", "a/b.db"));
 }

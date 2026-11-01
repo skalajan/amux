@@ -83,7 +83,7 @@ COPY frustrations-archive.md frustrations-archive.md
 COPY boundaries.toml boundaries.toml
 # The browser methods registry: api/browser_routing.rs embeds it with include_str!.
 COPY browser-methods.toml browser-methods.toml
-# The skills amux ships: api/skills.rs embeds skills/amux-contribute.md with include_str!.
+# The skills amux ships: api/skills.rs embeds the shipped skills/*.md with include_str!.
 COPY skills skills
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the

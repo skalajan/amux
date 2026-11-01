@@ -384,7 +384,6 @@ pub(crate) fn materialize_missing(
 /// Ethan, 2026-10-27: "add these skills to amux core": slop, iterate, codex,
 /// muse, imessage, pr-merge, e2e-test, and the new worker-audit.
 pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] = &[
-    ("amux-contribute", include_str!("../../../../skills/amux-contribute.md")),
     ("slop", include_str!("../../../../skills/slop.md")),
     ("iterate", include_str!("../../../../skills/iterate.md")),
     ("codex", include_str!("../../../../skills/codex.md")),

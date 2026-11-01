@@ -1,7 +1,7 @@
 #!/bin/bash
 # `amux sync-checkout --override` makes a checkout match origin/main exactly
 # and saves everything it replaces under refs/amux/pre-override/ first, so the
-# "pull from remote" step of /amux-contribute can never lose work for good.
+# dashboard's "pull from remote" can never lose work for good.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 AMUX="$HERE/amux"

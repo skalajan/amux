@@ -4128,12 +4128,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_pullContributeNote": {
-      "kind": "command._pullContributeNote",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_pushChipsToServer": {
       "kind": "command._pushChipsToServer",
       "feedback_required": true,

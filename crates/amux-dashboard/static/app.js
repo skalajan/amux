@@ -57017,30 +57017,6 @@ async function _loadServerDeployStatus() {
   } catch (e) { /* the card keeps its last line; the button still works */ }
 }
 
-// Pull from remote on a server with AMUX_PULL_SENDS_LOCAL_AS_PR: local amux work goes
-// upstream as a pull request before the checkout is replaced (amux contribute). Say where
-// the PR is, or offer the GitHub sign-in the PR needs.
-function _pullContributeNote(el, d) {
-  const pr = d.contribute && d.contribute.pr_url;
-  if (pr) {
-    const p = document.createElement('div');
-    p.className = 'pull-contribute';
-    p.append('Your local changes were sent as a pull request: ');
-    const a = document.createElement('a');
-    a.href = pr; a.target = '_blank'; a.rel = 'noopener'; a.textContent = pr;
-    p.append(a);
-    el.prepend(p);
-  }
-  if (d.needs_github) {
-    const b = document.createElement('button');
-    b.className = 'btn pull-connect-github'; b.type = 'button'; b.textContent = 'Connect GitHub';
-    b.onclick = () => usageConnect('github');
-    const p = document.createElement('div');
-    p.append('Your local changes go upstream as a pull request before they are replaced, and that needs your GitHub account. ', b);
-    el.append(p);
-  }
-}
-
 async function pullFromRemote(btn) {
   const el = document.getElementById('pull-status');
   btn.disabled = true; btn.textContent = '⏳ Pulling...';
@@ -57063,7 +57039,6 @@ async function pullFromRemote(btn) {
       el.textContent = (d.output || (d.ok ? 'Fetched' : 'Failed'))
         + (d.builder ? (d.builder.kicked ? '\nBuilder started.' : '\nBuilder not started: ' + (d.builder.why || 'unknown')) : '');
       el.style.color = d.ok ? 'var(--dim)' : 'var(--red)';
-      _pullContributeNote(el, d);
       if (d.ok && !(d.output || '').includes('Already up to date')) {
         setTimeout(() => forceUpdate(), 1500);
       }

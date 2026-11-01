@@ -256,3 +256,50 @@ Config-only deltas live in `~/.amux/server.env`, outside git, and were **not** t
 6. **Deploy kit** (§1e) — only if this stays a macOS box.
 
 Everything in §2 stays dead.
+
+## 7. Deltas carried on top of upstream since the resync
+
+The resync left `main` byte-identical to upstream except `fork-archive/` and `.gitignore`.
+These are the deliberate deltas added after it. Re-check each one on every upstream sync:
+upstream will try to put them back.
+
+### D-1 — `amux contribute` removed (2026-11-01)
+
+Decision: this fork never sends anything to `mixpeek/amux` — removed completely, not
+switched off. Found in a security review of what the synced server can send out.
+
+What upstream had: `amux contribute` snapshotted local commits plus staged, unstaged
+and untracked files (everything not gitignored), pushed them to a branch on the user's
+**public** fork of `mixpeek/amux` (forking it if needed) and opened a PR there. It never
+checked that the checkout was amux, so run from a work repo it would publish that
+repo's tree. Three entry points reached it:
+
+| Entry point | What was removed |
+|---|---|
+| CLI `amux contribute` | `cmd_contribute` deleted; the dispatcher answers with a refusal and logs `verdict=refused_fork_policy` to `~/.amux/logs/contribute.log` (`# AMUX-LOCAL:no-contribute`) |
+| `/amux-contribute` Claude command, written into the Claude config dirs on every server start | `skills/amux-contribute.md` deleted, dropped from `SHIPPED_COMMANDS` in `api/skills.rs`; the installed copy in `~/.claude/commands/` deleted |
+| Dashboard "Pull from remote" (`POST /api/pull`), gated by `AMUX_PULL_SENDS_LOCAL_AS_PR` | `contribute_then_override`, `contribute_result`, the gate and its key removed from `api/self_update.rs`; the PR note removed from `app.js` |
+
+Also removed: `scripts/test-contribute.sh` (and its CI step), `e2e/pull-contribute.spec.ts`,
+the `.dockerignore` exception. Kept on purpose: `amux github login|status` and
+`_contrib_gh` (general `gh` setup), and `amux sync-checkout --override` (the
+replace-local half of Pull, which never sends anything).
+
+**On the next upstream sync:** `git grep -n contribute -- amux crates skills` must show only
+the `AMUX-LOCAL:no-contribute` block. A green build proves nothing here — upstream's
+version compiles too.
+
+### Known risk, recorded not fixed — dashboard CDN scripts without SRI
+
+`crates/amux-dashboard/static/index.html` loads 7 scripts from jsdelivr/cdnjs (plus more
+from unpkg in `app.js`) with no `integrity=` attribute, on a page whose `window` holds
+`_AMUX_AUTH_TOKEN`. A compromised CDN script would get full control of amux, which runs
+shell commands. Fixing it is an in-tree dashboard delta; left for the from-scratch rebuild.
+
+### Outbound surface measured on 2026-11-01
+
+Server built from `d03884859`: zero non-loopback connections over 3 minutes of sampling
+(probe validated against the Telegram sidecar, which showed its connection). Off unless
+configured: PostHog (`POSTHOG_KEY`), the `cloud.amux.io` tunnel (`AMUX_TUNNEL_TOKEN`),
+and every connector (Google, Slack, OpenAI, Brex, Telegram…). Self-update only fetches
+the checkout's own `origin`.

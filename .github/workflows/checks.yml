@@ -445,11 +445,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-amux-cdp-committed.sh
-      - name: amux sync-checkout --override matches origin and saves what it replaces (/amux-contribute pull)
+      - name: amux sync-checkout --override matches origin and saves what it replaces
         run: |
           set -uo pipefail
           ./scripts/test-sync-checkout-override.sh
-          ./scripts/test-contribute.sh
       - name: amux-cloud opens a Cloud instance's workers over SSH as its amux user, messages byte for byte
         run: ./scripts/test-amux-cloud.sh
       - name: The Cloud sign-in door queues a page load's burst instead of dropping it
