@@ -199,6 +199,18 @@ warn_if_worktree_dirty() {
   echo "$dirty" | sed 's/^/  /' >&2
 }
 
+# The owner token for this machine's own server, which refuses a tokenless localhost caller under AMUX_RS_NO_LOOPBACK_BYPASS=1.
+_owner_bearer() { # <url>
+  local hp="${1#*://}" tok="" f="${CC_HOME:-$HOME/.amux}/auth_token"
+  hp="${hp%%/*}"
+  case "$hp" in *@*) return 1 ;; localhost|localhost:*|127.0.0.1|127.0.0.1:*|"[::1]"|"[::1]:"*) ;; *) return 1 ;; esac
+  [[ -s "$f" ]] || return 1
+  IFS= read -r tok < "$f" || true
+  tok="${tok%$'\r'}"
+  [[ -n "$tok" ]] || return 1
+  printf '%s' "$tok"
+}
+
 # ── Every server call goes through _curl ─────────────────────────────────────
 #
 # A CONNECT TIMEOUT, in one place, because a per-call-site flag is a thing every
@@ -245,8 +257,9 @@ _curl() {
   # connection (52, 56) may have been processed, so only a GET retries those.
   # Up to AMUX_CURL_RESTART_WAIT seconds (30; 0 turns this off), said on
   # stderr, and only for this machine's own server (below).
-  local method="GET" a prev="" waited=0 wait_max="${AMUX_CURL_RESTART_WAIT:-30}" step=1 told=0
+  local method="GET" a prev="" waited=0 wait_max="${AMUX_CURL_RESTART_WAIT:-30}" step=1 told=0 own_auth=0
   for a in "$@"; do
+    [[ "$a" == [Aa]uthorization:* || "$a" == -K || "$a" == --config ]] && own_auth=1
     [[ "$prev" == "-X" || "$prev" == "--request" ]] && method="$a"
     [[ "$a" == -X* && ${#a} -gt 2 ]] && method="${a#-X}"
     [[ "$prev" != "-X" && ( "$a" == "-d" || "$a" == "--data"* || "$a" == "--data-binary" ) && "$method" == "GET" ]] && method="POST"
@@ -266,15 +279,20 @@ _curl() {
   if [[ -z "$canon" || "$port" != "$canon" ]] || ! [[ "$host" == localhost || "$host" == 127.0.0.1 || "$host" == "[::1]" ]]; then
     wait_max=0
   fi
+  # Like _id, kept out of "$@" so no breadcrumb writes it.
+  local _auth=() _tok
+  if (( own_auth == 0 )) && _tok=$(_owner_bearer "$url"); then
+    _auth=(-H "Authorization: Bearer $_tok")
+  fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.
   local out; out=$(mktemp "${TMPDIR:-/tmp}/amux-curl.XXXXXX") || out=""
   while :; do
     rc=0
     if [[ -n "$out" ]]; then
-      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" >"$out" || rc=$?
+      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} ${_auth[@]+"${_auth[@]}"} "$@" >"$out" || rc=$?
     else
-      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" || rc=$?
+      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} ${_auth[@]+"${_auth[@]}"} "$@" || rc=$?
       break
     fi
     case "$rc" in
@@ -289,6 +307,19 @@ _curl() {
     fi
     sleep "$step"; waited=$((waited + step)); (( step < 4 )) && step=$((step * 2))
   done
+  if [[ -n "$out" && "$rc" -eq 0 ]] && [[ "$(head -c 23 "$out" 2>/dev/null)" == '{"error":"unauthorized"' ]]; then
+    local why sent=false
+    why=$(sed -n 's/.*"reason":"\([a-z_]*\)".*/\1/p' "$out" | head -1)
+    (( ${#_auth[@]} > 0 || own_auth == 1 )) && sent=true
+    if [[ "$sent" == true ]]; then
+      echo "amux: ${url%%\?*} refused the credential this request carried (${why:-unauthorized}); check that ${CC_HOME:-$HOME/.amux}/auth_token matches the server's token" >&2
+    else
+      echo "amux: ${url%%\?*} wants the owner bearer (${why:-unauthorized}); the CLI sends ${CC_HOME:-$HOME/.amux}/auth_token only to a localhost server and only when the file is non-empty" >&2
+    fi
+    printf '{"ts":%s,"event":"server_unauthorized","reason":"%s","bearer_sent":%s,"method":"%s","url":"%s","session":"%s","cli":"bash"}\n' \
+      "$(date -u +%s)" "$why" "$sent" "$method" "${url%%\?*}" "${AMUX_SESSION:-${AMUX_WORKER:-}}" \
+      >> "${CC_HOME:-$HOME/.amux}/cli-transport.jsonl" 2>/dev/null || true
+  fi
   if [[ -n "$out" ]]; then cat "$out"; rm -f "$out"; fi
   if (( told == 1 )); then
     if [[ "$rc" -eq 0 ]]; then echo "amux: the server is back after ${waited}s" >&2
@@ -353,7 +384,8 @@ _flush_transport_breadcrumbs() {
   [[ -s "$f" ]] || return 0
   local snap="$f.sending.$$"
   mv "$f" "$snap" 2>/dev/null || return 0
-  local body code
+  local body code _auth=() _tok
+  if _tok=$(_owner_bearer "${AMUX_API:-https://localhost:8824}"); then _auth=(-H "Authorization: Bearer $_tok"); fi
   body=$(F="$snap" python3 -c '
 import json, os
 rows = []
@@ -370,7 +402,7 @@ print(json.dumps({"kind": "cli-transport-failure", "n": len(rows), "rows": rows}
 ' 2>/dev/null) || { _restore_transport_snapshot "$snap" "$f"; return 0; }
   # command curl, NOT _curl: a failed flush must not breadcrumb its own failure,
   # which would be an unbounded pile of notes about not being able to send notes.
-  code=$(command curl -sk --connect-timeout 3 -m 5 -o /dev/null -w '%{http_code}' \
+  code=$(command curl -sk --connect-timeout 3 -m 5 -o /dev/null -w '%{http_code}' ${_auth[@]+"${_auth[@]}"} \
     -X POST -H 'Content-Type: application/json' -d "$body" \
     "${AMUX_API:-https://localhost:8824}/api/client-debug" 2>/dev/null || echo 000)
   case "$code" in
@@ -576,7 +608,7 @@ _start_via_api() {
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local resp
   resp=$(_curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-    "$AMUX_API/api/sessions/$name/start" 2>/dev/null) || resp=""
+    "$AMUX_API/api/sessions/$name/start") || resp=""
   if [[ -z "$resp" ]]; then
     # herdr AND codex/ollama start through the server now (AMUX-3164), so this is
     # no longer herdr-specific. A stranded lane whose $AMUX_URL is the retired
@@ -592,7 +624,8 @@ except Exception:
     sys.exit(1)
 tgt = os.environ["TGT"]
 if d.get("error") or d.get("ok") is False:
-    print(f"start {tgt} FAILED: {d.get('error') or d.get('message')}")
+    why = f" ({d['reason']})" if d.get("reason") else ""
+    print(f"start {tgt} FAILED: {d.get('error') or d.get('message')}{why}")
     sys.exit(1)
 print(f"started {tgt}: {d.get('message', 'ok')}")
 PYEOF
@@ -604,7 +637,7 @@ _stop_via_api() {
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local resp
   resp=$(_curl -sk -m 15 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-    "$AMUX_API/api/sessions/$name/stop" 2>/dev/null) || resp=""
+    "$AMUX_API/api/sessions/$name/stop") || resp=""
   if [[ -z "$resp" ]]; then
     return 1
   fi
@@ -618,6 +651,9 @@ try:
 except Exception:
     sys.exit(1)
 if not isinstance(d, dict) or d.get("error") or d.get("ok") is False:
+    if isinstance(d, dict):
+        why = f" ({d['reason']})" if d.get("reason") else ""
+        print(f"the server refused the stop: {d.get('error') or d.get('message')}{why}", file=sys.stderr)
     sys.exit(1)
 PYEOF
   then
@@ -2252,7 +2288,7 @@ cmd_stop() {
       done
     else
       tmux kill-session -t "=$tname"
-      echo "${RED}stopped${RESET} $name (tmux killed: server unreachable, the stop is not recorded and board automation may restart it)" >&2
+      echo "${RED}stopped${RESET} $name (tmux killed: server unreachable or refused, the stop is not recorded and board automation may restart it)" >&2
     fi
   else
     echo "${DIM}$name is not running${RESET}"
