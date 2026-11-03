@@ -330,6 +330,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_boardLiveTick": {
+      "kind": "command._boardLiveTick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_boardOneSet": {
       "kind": "command._boardOneSet",
       "feedback_required": true,
@@ -800,6 +806,12 @@
     },
     "_chipKeySequence": {
       "kind": "command._chipKeySequence",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chipPress": {
+      "kind": "command._chipPress",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1350,12 +1362,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_dictOutboxSet": {
-      "kind": "command._dictOutboxSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_dictPendingBadge": {
       "kind": "command._dictPendingBadge",
       "feedback_required": true,
@@ -1386,6 +1392,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictSendDirect": {
+      "kind": "command._dictSendDirect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictStartRec": {
       "kind": "command._dictStartRec",
       "feedback_required": true,
@@ -1406,6 +1418,12 @@
     },
     "_dictUndo": {
       "kind": "command._dictUndo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictUpdate": {
+      "kind": "command._dictUpdate",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1938,6 +1956,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileOpenInWorker": {
+      "kind": "command._fileOpenInWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filePinOverlay": {
       "kind": "command._filePinOverlay",
       "feedback_required": true,
@@ -2180,6 +2204,12 @@
     },
     "_forceSseReconnect": {
       "kind": "command._forceSseReconnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_frozenWorker": {
+      "kind": "command._frozenWorker",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3084,8 +3114,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxToggleSplit": {
+      "kind": "command._mdxToggleSplit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxToggleTask": {
       "kind": "command._mdxToggleTask",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxView": {
+      "kind": "command._mdxView",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3164,6 +3206,24 @@
     },
     "_nativeRecorderPaint": {
       "kind": "command._nativeRecorderPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderPollSync": {
+      "kind": "command._nativeRecorderPollSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderPost": {
+      "kind": "command._nativeRecorderPost",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderTrack": {
+      "kind": "command._nativeRecorderTrack",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3584,6 +3644,12 @@
     },
     "_peekChatSet": {
       "kind": "command._peekChatSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekChatStateSync": {
+      "kind": "command._peekChatStateSync",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4050,6 +4116,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pmLoadPins": {
+      "kind": "command._pmLoadPins",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmPin": {
+      "kind": "command._pmPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pmResend": {
       "kind": "command._pmResend",
       "feedback_required": true,
@@ -4070,6 +4148,12 @@
     },
     "_pmSelToggle": {
       "kind": "command._pmSelToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmShowPins": {
+      "kind": "command._pmShowPins",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4266,6 +4350,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderBeacon": {
+      "kind": "command._recorderBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderDeleteLocal": {
       "kind": "command._recorderDeleteLocal",
       "feedback_required": true,
@@ -4308,6 +4398,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderPauseToggle": {
+      "kind": "command._recorderPauseToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderRender": {
       "kind": "command._recorderRender",
       "feedback_required": true,
@@ -4338,8 +4434,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderSetInput": {
+      "kind": "command._recorderSetInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetMeeting": {
+      "kind": "command._recorderSetMeeting",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderSetOption": {
       "kind": "command._recorderSetOption",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetSystem": {
+      "kind": "command._recorderSetSystem",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5406,6 +5520,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_upqReadOk": {
+      "kind": "command._upqReadOk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_upqRemove": {
       "kind": "command._upqRemove",
       "feedback_required": true,
@@ -5414,6 +5534,12 @@
     },
     "_upqRenderBadge": {
       "kind": "command._upqRenderBadge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqTimeoutReport": {
+      "kind": "command._upqTimeoutReport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

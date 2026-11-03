@@ -518,7 +518,10 @@ STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # the 480s warning, so a run that kept every budget could still cross it (497s on
 # 2026-10-16 at load 36/28) and escalate itself. The clamp below enforces it.
 TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-450}
-TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-120}
+# 90, not 120 (Mac self RCA 20261101-164758): verdicts took 0-39 s in the last 12
+# runs and 145 s at worst in 30, while 120 stopped the arms at 330 s and skipped
+# worktrees three times in 10 h on ticks that finished by 366 s of a 600 s limit.
+TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-90}
 TICK_SKIPPED=""
 # The budgeted arms in the order they run, each with a weight (Mac self RCA
 # 20261020-005306). Capping an arm at "what the tick has left" let the first
@@ -599,7 +602,10 @@ SENDFAIL_CARD_AFTER=${AMUX_CLEANUP_SENDFAIL_CARD_AFTER:-2}
 # 600s", twice on 2026-09-26 once the disk-writer search switched on under load
 # 48). The budgets are sized to stay under it, and the done line prints elapsed
 # time with a WARN past TICK_WARN_S so the next regression announces itself.
-TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-480}
+# 540, not 480 (Mac self RCA 20261102-094847): the 90 s reserve puts a loaded tick's
+# worst case at 505 s (arms to 360, verdicts 145), so 480 fired on a healthy 492 s
+# run (368 + 124 at load 63), 108 s short of the kill. 540 is 90% of the kill.
+TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-540}
 if [ "$TICK_BUDGET_S" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: tick budget ${TICK_BUDGET_S}s is not under the ${TICK_WARN_S}s warning; using $(( TICK_WARN_S - 30 ))s (verdict=tick_budget_clamped)"
   TICK_BUDGET_S=$(( TICK_WARN_S - 30 ))
@@ -1812,7 +1818,7 @@ self_coll_covered() { # <collision log> -> 0 if a tracked earlier run held the l
 }
 
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 fstart=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1856,7 +1862,13 @@ check_self_runs() {
       if [ "$fage" -lt $(( SELF_SLOW_RECENT_MIN * 60 )) ] && [ "$el" -gt "$slow_recent" ]; then slow_recent=$el; fi ;;
     esac
     case "$line" in *" skipped=none "*) ;; *" skipped="*) n_skip=$((n_skip+1))
-      [ "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
+      # By when the run STARTED, which the log's name holds in ms (Mac self RCA
+      # 20261101-014559). Its mtime is when it finished, so the run that sent
+      # the escalation always read as newer than that escalation, and re-raised
+      # itself once the cooldown ran out.
+      fstart=$(basename "$f" .log); fstart=${fstart%???}
+      case "$fstart" in ''|*[!0-9]*) fstart=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0) ;; esac
+      [ "$fstart" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
   done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
   since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
@@ -1877,8 +1889,13 @@ check_self_runs() {
   # Raised again only when a run NEWER than the last self escalation skipped
   # (Mac self RCA 20261020-005306): the 24h count keeps runs from before a fix
   # for a day, and re-escalated them every 6h with nothing new to look at.
-  if [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
-    self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
+  # And the threshold counts only those new runs (Mac self RCA 20261101-064656):
+  # one skip at 02:42 raised six answered ones again as "7 runs", though a skipped
+  # arm runs next tick and one skip in 13 runs is not a constraint.
+  if [ "$n_skip_new" -ge "$SELF_SKIP_24H" ]; then
+    self_verdict "$n_skip_new runs of $SELF_SCHED_ID since the last self escalation skipped cleanup arms for lack of time ($n_skip in 24h)"
+  elif [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
+    echo "mac-cleanup: self: $n_skip_new run(s) skipped arms since the last self escalation, under the $SELF_SKIP_24H that make a constraint; the other $((n_skip-n_skip_new)) were already answered (verdict=self_skips_below_threshold)"
   elif [ "$n_skip" -ge "$SELF_SKIP_24H" ]; then
     echo "mac-cleanup: self: all $n_skip runs that skipped arms in 24h predate the last self escalation, which already answered them; not raised again until a new one (verdict=self_skips_already_escalated)"
   fi
@@ -2787,9 +2804,27 @@ state_put() { # <file> <key=value>...
 }
 # 0 if <class> may escalate now: never escalated, or the last one is older than the cooldown.
 escalation_due() { # <state_file> <class> <now> <cooldown_h>
-  local last; last=$(state_get "$1" "esc_$2")
+  local last cleared; last=$(state_get "$1" "esc_$2")
   [ -z "$last" ] && return 0
+  # The cooldown is per INCIDENT: a class that measured clear after its last
+  # escalation is a new incident now, and escalates at once. A flat cooldown
+  # suppressed a fresh incident that began inside it (implicit state machines
+  # inventory 2026-10-31, #27).
+  cleared=$(state_get "$1" "esc_$2_cleared")
+  [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && return 0
   [ $(( $3 - last )) -ge $(( $4 * 3600 )) ]
+}
+
+# Record, for every class escalated before, the first tick it measures clear.
+note_cleared_classes() { # <state_file> <verdict lines> <now>
+  local cls last cleared
+  for cls in $(sed -n 's/^esc_\([a-z0-9]*\)=[0-9][0-9]*$/\1/p' "$1" 2>/dev/null); do
+    printf '%s\n' "$2" | awk -v c="$cls" '$1==c{f=1} END{exit !f}' && continue
+    last=$(state_get "$1" "esc_$cls"); cleared=$(state_get "$1" "esc_${cls}_cleared")
+    [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && continue
+    state_put "$1" "esc_${cls}_cleared=$3"
+    echo "mac-cleanup: $cls measures clear since its last escalation; a new $cls incident will escalate at once verdict=escalation_class_cleared"
+  done
 }
 
 # The amux lane a process belongs to: walk its parent chain to a tmux PANE and
@@ -3301,6 +3336,21 @@ EOF
 }
 
 # Stop every idle running VM. Sets VMS_STOPPED. Records each stop.
+# The pressure the idle-VM arm acts on: the worse of the tick's first reading and
+# this one. Purge runs in between and relieves pressure for a moment, so the
+# later reading alone skipped this arm with swap at 98% (Mac cpu RCA
+# 20261102-114812: 2 at the start, 1 here, no "idle VMs" line in the run).
+vm_arm_pressure() { # <start> <now>
+  local start=$1 now=$2
+  case "$start" in ''|*[!0-9]*) start=-1 ;; esac
+  if [ "$start" -gt "$now" ]; then
+    echo "mac-cleanup: idle VMs judged on pressure $start from the tick's start, $now after purge (verdict=vm_arm_start_pressure)" >&2
+    echo "$start"
+  else
+    echo "$now"
+  fi
+}
+
 stop_idle_vms() { # <dry:0|1> <why>
   local dry=$1 why=$2 p rc n_busy=0 n_unk=0 profiles cmd
   VMS_STOPPED=0
@@ -3556,6 +3606,11 @@ echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} k
 
 # ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
 reap_orphan_sqlite_backups "$DRY"
+# Caps BEFORE the health probes (Mac hog RCA 20261101-004551): the hog check
+# reads each container's cap, so a cap applied after it escalated a VM this same
+# tick had just brought within its caps.
+[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
+tick_mark "health"
 system_health "$DRY"
 
 # ── report: the consumers this script must not touch ─────────────────────────
@@ -3593,7 +3648,6 @@ VMS_PRUNED=0
 # superseded 9.84 GB builds a tick removed stayed allocated on the host until
 # the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && tick_arm "vm images" && prune_vm_images "$DRY"
-[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
 if tick_arm "vm trim"; then
   if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 fi
@@ -3615,6 +3669,7 @@ fi
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && tick_arm "lane tmp" LANE_TMP_BUDGET_S && reap_lane_tmp "$DRY"
 VMS_STOPPED=0
 vm_level=$($PRESSURE_CMD 2>/dev/null); case "$vm_level" in ''|*[!0-9]*) vm_level=-1 ;; esac
+vm_level=$(vm_arm_pressure "${level:-}" "$vm_level")
 if [ "$vm_level" -ge 2 ]; then stop_idle_vms "$DRY" "memory pressure $vm_level"; stop_idle_docker_desktop "$DRY" "memory pressure $vm_level"
 elif [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then stop_idle_vms "$DRY" "disk under ${TARGET_TIGHT_FREE_GB}G"; fi
 tick_arm "worktrees" WORKTREE_BUDGET_S && reap_idle_worktrees "$WORKTREE_ROOTS" "$WORKTREE_IDLE_H" "$DRY"
@@ -3905,6 +3960,7 @@ else
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
   grep -a 'verdict=vm_container_writer\|verdict=open_file_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /'
+  [ "$DRY" = "1" ] || note_cleared_classes "$STATE" "$verdicts" "$now"
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

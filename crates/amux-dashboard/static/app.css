@@ -1255,6 +1255,12 @@
      rationale for opening files directly depends on this being findable.
      44px min-height is the mobile touch target; the rest of the row is short
      text, so without it this is an ~11px tap on a phone. */
+  /* The folder, then how fresh the shown copy is (app.js _fileFresh). */
+  .file-meta-row { display: flex; align-items: center; gap: var(--space-1-5); min-width: 0; }
+  .file-meta-row .file-subpath { flex: 0 1 auto; min-width: 0; }
+  .file-fresh { flex-shrink: 0; font-size: var(--fs-2xs); color: var(--dim); white-space: nowrap; }
+  .file-fresh[hidden] { display: none; }
+  .file-fresh.offline { color: var(--orange); }
   .file-subpath.clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
   .file-subpath.clickable:hover { color: var(--accent); }
   @media (max-width: 600px) { .file-subpath.clickable { min-height: 44px; display: flex; align-items: center; } }
@@ -1262,6 +1268,12 @@
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-md);
     padding: var(--space-1-5); z-index: 60; min-width: 170px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
   .file-actions.open { display: flex; }
+  /* Open in worker (app.js _fileOpenInWorker), inside the shared form dialog. */
+  .fow-to { display: flex; gap: var(--space-4); margin-bottom: var(--space-3); }
+  .fow-to label { display: inline-flex; align-items: center; gap: var(--space-1-5); min-height: 44px; cursor: pointer; }
+  .fow-chips { display: flex; gap: var(--space-1-5); flex-wrap: wrap; justify-content: center; margin: var(--space-2) 0; }
+  .fow-chips .btn { flex-shrink: 0; }
+  .fow-file code { word-break: break-all; }
   .file-actions .file-view-tab { width: 100%; justify-content: flex-start; text-align: left; border-radius: var(--radius-lg); font-size: var(--fs-md); padding: var(--space-1-5) var(--space-3-5); flex-shrink: 0; }
   .file-menu-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--fs-3xl); line-height: 1; padding: var(--space-1) var(--space-2); flex-shrink: 0; }
   .file-overlay-body {
@@ -1431,6 +1443,10 @@
     .file-overlay-header .btn { min-width: 40px; min-height: 40px; font-size: var(--fs-2xl); padding: var(--space-1-5) var(--space-2-5); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .file-menu-btn { min-width: 40px; min-height: 40px; font-size: var(--fs-4xl); }
     .file-actions .file-view-tab { min-height: 44px; font-size: var(--fs-xl); padding: var(--space-2) var(--space-3-5); }
+    /* A phone: the menu is a sheet from the bottom edge, in thumb reach (owner, 2026-10-31). */
+    .file-actions { position: fixed; top: auto; left: 0; right: 0; bottom: 0; max-width: none; min-width: 0; max-height: 70vh;
+      border-radius: var(--radius-2xl) var(--radius-2xl) 0 0; padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom));
+      box-shadow: var(--shadow-md); z-index: 400; }
     #md-search-row { padding: var(--space-2) var(--space-1); }
     #md-search-input { font-size: var(--fs-2xl); min-height: 40px; }
     #md-search-row .btn { min-width: 40px; min-height: 40px; }
@@ -1584,7 +1600,8 @@
      Refresh / Set dir) is collapsed into the ⋯ More menu on EVERY width (Ethan
      2026-08-19: "these take up too much space make it an ellipse dropdown"). The
      More menu already carries every one of these actions, so nothing is lost —
-     the toolbar is just Back / Up / breadcrumb / ⋯ now. */
+     the toolbar is just Back / breadcrumb / ⋯ now (Up went 2026-10-30; the
+     ⋯ carries no "More" text since 2026-10-31, only its aria-label). */
   .fe-tb-actions { display: none; }
   /* The More (ellipsis) menu is always available, on desktop and mobile. */
   .fe-tb-overflow { position: relative; flex-shrink: 0; display: flex; }
@@ -1604,11 +1621,25 @@
   .fe-tb-oitem.active { background: color-mix(in srgb, var(--accent) 20%, transparent); }
   .fe-tb-oitem-session { color: var(--accent); font-weight: 600; }
   .fe-tb-odivider { height: 1px; background: var(--border); margin: var(--space-0-5) 0; }
-  @media (max-width: 600px) {
-    /* .fe-tb-actions is already display:none at every width (above); on a phone
-       we also drop the "More" text so only the ⋯ icon remains, to fit 375px. */
-    .fe-more-lbl { display: none; }
+  /* The shortcuts row's filter (All / Pinned / Recent / Modified / Shared):
+     sized to its text and held at the row's left edge while the chips scroll
+     under it. Drawn like the chips beside it (.files-bm-chip: card fill, one
+     border, the same radius, height and text size) rather than as the native
+     grey select (owner, 2026-10-31: "resemble the row"); the arrow is the
+     Messages filters' one. */
+  #files-row-filter {
+    width: auto; flex-shrink: 0; position: sticky; left: 0; z-index: 1;
+    -webkit-appearance: none; appearance: none; box-shadow: none;
+    background-color: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    font-size: var(--fs-xs); line-height: 1.2; height: auto; min-height: 0;
+    padding: var(--space-0-5) var(--space-5) var(--space-0-5) var(--space-2);
+    align-self: stretch; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right var(--space-2) center;
   }
+  #files-row-filter:hover { border-color: var(--dim); }
+  @media (max-width: 600px) { #files-row-filter { min-height: 44px; } }
   .fe-breadcrumb {
     flex: 1 1 180px; font-size: var(--fs-md); font-family: var(--font-mono);
     overflow-x: auto; white-space: nowrap; padding: var(--space-0-5) var(--space-1-5);
@@ -7929,6 +7960,9 @@ select.input { height:var(--control-height); }
 .recorder-elapsed { font-size:var(--fs-6xl); font-weight:600; font-variant-numeric:tabular-nums; color:var(--text); line-height:1.1; }
 .recorder-level { height:8px; border-radius:var(--radius-sm); background:var(--bg); border:1px solid var(--border); overflow:hidden; }
 .recorder-level-fill { height:100%; width:100%; background:var(--green); transform:scaleX(0.02); transform-origin:left center; }
+/* The live waveform (app.js _recWave*): the last few seconds of sound as bars, so a glance says it hears you. */
+.recorder-wave { display:block; width:100%; height:36px; color:var(--green); }
+.recorder-wave.quiet { color:var(--dim); }
 .recorder-status { color:var(--dim); font-size:var(--fs-lg); line-height:1.4; overflow-wrap:anywhere; }
 .recorder-sync-row { display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; justify-content:space-between; }
 .recorder-sync-summary { color:var(--dim); font-size:var(--fs-lg); min-width:0; }
@@ -9010,6 +9044,8 @@ button.cv-sec:hover { color:var(--text); }
 .cv-post-tag { font-size:var(--fs-3xs); padding:1px var(--space-1-5); border-radius:var(--radius-xl); border:1px solid var(--border); color:var(--dim); }
 .msg-sender { font-size:var(--fs-xs); font-weight:600; color:var(--text); margin-right:var(--space-1); overflow-wrap:anywhere; }
 .msg-sender-arrow { font-size:var(--fs-xs); color:var(--dim); margin-right:var(--space-1); }
+.msg-answer-note { color:var(--dim); margin-bottom:var(--space-2); text-align:left; }
+.msg-answer-text { white-space:pre-wrap; text-align:left; }
 .msg-sess-link { background:none; border:none; padding:0; margin-right:var(--space-1-5); font:inherit; font-size:var(--fs-xs); color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 .cv-head { display:flex; align-items:center; gap:var(--space-2-5); padding:var(--space-2-5) var(--space-4);
   border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -10687,6 +10723,9 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 /* Pinned messages: the tag on a pinned post, the header count, the list. */
 .cv-post-pinned { font-size:var(--fs-3xs); color:var(--dim); }
 .cv-pins-btn { flex:none; white-space:nowrap; min-height:44px; }
+.pm-pin-row { display:flex; gap:var(--space-2); align-items:center; }
+.pm-pin-row .cv-pin-item { flex:1; min-width:0; }
+.pm-pin-unpin { flex:none; min-height:44px; }
 .cv-pins-list { display:flex; flex-direction:column; gap:var(--space-1-5); max-height:60vh; overflow-y:auto; }
 .cv-pin-item { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-1); text-align:left; width:100%; white-space:normal; min-height:44px; }
 .cv-pin-who { font-weight:600; }
@@ -10776,6 +10815,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-seg button { border: 0; background: none; color: var(--dim); font: inherit; font-size: var(--fs-md); padding: var(--space-1) var(--space-2-5);
   border-radius: var(--radius-sm); cursor: pointer; min-height: 30px; }
 .mdx-seg button.active { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+/* Split is a way of showing Edit, not a fifth place: an icon toggle at the end of the switch. */
+.mdx-seg .mdx-split { margin-left: var(--space-1); padding: var(--space-1) var(--space-2); }
+.mdx-preview-acts { display: inline-flex; align-items: center; gap: var(--space-1-5); flex-shrink: 0; }
+.mdx-preview-acts[hidden] { display: none; }
 .mdx-tools { display: inline-flex; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
 .mdx-tools button, .mdx-icon { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); min-width: 30px; min-height: 30px;
   border-radius: var(--radius-sm); cursor: pointer; padding: 0 var(--space-1); }
@@ -10799,8 +10842,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-editor .file-edit-ta::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
 .mdx-editor.mdx-plain .file-edit-ta { color: var(--text); }
 .mdx-editor.mdx-plain #mdx-hl { color: transparent; }
-#mdx-hl .ln { display: block; position: relative; }
-#mdx-hl .ln::before { content: attr(data-n); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
+/* Line numbers are a counter: a line inserted renumbers nothing (app.js _mdxHighlight). */
+#mdx-hl { counter-reset: ln; }
+#mdx-hl .ln { display: block; position: relative; counter-increment: ln; }
+#mdx-hl .ln::before { content: counter(ln); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
 #mdx-hl .mdx-h { color: var(--accent); font-weight: 700; }
 #mdx-hl .mdx-li, #mdx-hl .mdx-task { color: var(--accent); }
 #mdx-hl .mdx-tg { color: var(--purple); }
@@ -10830,6 +10875,9 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-out #file-body { flex: 1; border: 0; border-radius: 0; background: var(--bg); color: var(--text); white-space: normal;
   font-family: var(--font-ui); padding: var(--space-4) var(--space-6); }
 body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); color: var(--text); }
+/* A readable line on a wide screen (owner's spec, P2): the text keeps to about 80 characters,
+   centred, while the scroll area stays the full pane so the scrollbar sits at its edge. */
+@media (min-width: 701px) { .mdx-out #file-body.mdx-preview { padding-inline: max(var(--space-6), calc((100% - 80ch) / 2)); } }
 .mdx-preview h2 { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .mdx-preview h2:first-child { border-top: 0; padding-top: 0; }
 .mdx-anchor { margin-left: var(--space-2); font-size: 0.7em; text-decoration: none; opacity: 0.35; vertical-align: middle; }
@@ -10857,9 +10905,13 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .mdx-row-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
 .mdx-gap td { color: var(--dim); text-align: center; }
 .mdx-commit { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
-.mdx-commit-main { flex: 1; min-width: 0; }
-.mdx-commit-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mdx-commit-meta { font-size: var(--fs-sm); color: var(--dim); }
+.mdx-commit-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-2); align-items: baseline;
+  text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: var(--space-1) var(--space-1-5); border-radius: var(--radius-md); cursor: pointer; min-height: 44px; }
+.mdx-commit-main:hover { background: var(--bg-inset); }
+.mdx-commit-when { font-weight: 600; white-space: nowrap; }
+.mdx-commit-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mdx-commit-meta { grid-column: 2; font-size: var(--fs-sm); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdx-commit-restore { flex-shrink: 0; font-size: var(--fs-sm); color: var(--dim); }
 
 /* Full screen: the editor alone, the viewer's header out of the way. */
 #file-overlay.mdx-full .file-overlay-header { display: none; }
@@ -10867,11 +10919,19 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 
 @media (max-width: 700px) {
   .mdx [data-m="split"] { display: none; }
+  /* One row that fits a 375px phone: the four views and Copy. The viewer is already full screen
+     there, and Copy copies markdown. */
+  #mdx-copy-as, #mdx-full { display: none; }
   .mdx-bar { padding: var(--space-0-5) var(--space-1-5); }
   /* A phone: the note runs edge to edge, as the viewer's did. */
   .mdx-pane { border-radius: 0; border-left: 0; border-right: 0; }
   .mdx-out #file-body { padding: var(--space-3); }
   .mdx-editor #mdx-hl, .mdx-editor .file-edit-ta { padding-left: calc(var(--space-10) + var(--space-1)); padding-right: var(--space-2); }
   #mdx-hl .ln::before { left: -40px; width: 30px; }
+  /* A phone edits in the plain textarea (app.js _mdxPhone): one layer, text at 16px, which is
+     also the size below which iOS zooms the page on focus. */
+  .mdx-editor.mdx-phone #mdx-hl { display: none; }
+  .mdx-editor.mdx-phone .file-edit-ta { color: var(--text); font-family: var(--font-ui); font-size: var(--fs-2xl);
+    line-height: 1.55; padding: var(--space-3) var(--space-3) var(--space-12); }
   .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
 }

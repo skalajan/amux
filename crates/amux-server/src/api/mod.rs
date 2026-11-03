@@ -17,9 +17,11 @@ pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
 pub(crate) mod send_profile;
+pub(crate) mod board_groom;
 pub mod prompt_block;
 pub mod land_approvals;
 pub mod land_queue;
+pub mod land_red;
 pub mod worker_identity;
 pub mod contract_fresh;
 pub mod prod_change;
@@ -97,6 +99,7 @@ pub mod map_store;
 pub mod mcp;
 pub mod mdai;
 pub mod measured;
+pub mod decision_digest;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
@@ -229,6 +232,7 @@ pub fn router_with_connector_transport(
         .route("/api/sync", axum::routing::get(sync::delta_sync))
         .route("/api/events", axum::routing::get(sse::events))
         .nest("/api/board", board::routes())
+        .nest("/api/board-groom", board_groom::routes())
         // Dead-letter routes merge into the workers nest (RR-0068): same
         // /api/workers prefix, second nest at one path is an axum conflict.
         .nest(
@@ -410,6 +414,7 @@ pub fn router_with_connector_transport(
         // AMUX-5286: the owner's one-at-a-time triage queue.
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
+        .merge(decision_digest::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
         .merge(bridge::routes())

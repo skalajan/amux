@@ -93,8 +93,11 @@ SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
 MIN_SWITCH_GAP_S = int(os.environ.get("CLAUDE_ROTATE_MIN_GAP_S", "900"))
 CHROME_PROFILE = os.environ.get("CLAUDE_ROTATE_CHROME_PROFILE", "Profile 16")
 CLAUDE = os.environ.get("CLAUDE_ROTATE_CLAUDE", "claude")
-# The probe CLI starts here; it must be a folder the owner already trusts.
-PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, "Dev"))
+# The probe CLI starts here; it must be a folder the owner already trusts. The installer
+# creates this empty folder and trusts it, so the probe never opens in a folder of real files.
+# 2026-10-31: on a new Linux host ~/Dev was untrusted, every probe stopped at the trust
+# prompt, and every switch was rolled back as unproven.
+PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, ".amux", "claude-rotate", "probe"))
 SWITCH_TIMEOUT_S = int(os.environ.get("CLAUDE_ROTATE_SWITCH_TIMEOUT_S", "240"))
 
 
@@ -472,7 +475,17 @@ def window(w, at):
 def rank(at=None):
     at = at or now()
     rows = []
-    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+    accounts = dict(load(ACCOUNTS, {"accounts": {}})["accounts"])
+    # A signed-in config folder is an account too, before any reading of it exists. 2026-10-31:
+    # a new host with eight folders held "no_usable_account" on every tick, because readings
+    # only come from the logged-in account and nothing ever switched to the other seven.
+    folders = account_folders()
+    for email in folders:
+        if email not in accounts:
+            side = folder_login(email, folders)
+            if side and not _expired(side["claudeAiOauth"]):
+                accounts[email] = {}
+    for email, a in accounts.items():
         if a.get("disabled"):
             continue
         u5, r5 = window(a.get("five_hour"), at)
@@ -1229,13 +1242,60 @@ CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", 
 STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
 
 
+# LINUX HAS NO KEYCHAIN (mixpeek-dev.amux.io, 2026-10-31: "make sure it does the
+# claude account rotation thing too like i have here"). Claude Code on Linux
+# keeps its login in <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json, so the
+# CLI's own item maps to that file and every other item (the rotator's
+# snapshots) to a 0600 file under DIR/keyring. macOS keeps the Keychain.
+USE_KEYCHAIN = sys.platform == "darwin" and os.environ.get("CLAUDE_ROTATE_KEYSTORE") != "file"
+KEYRING = os.path.join(DIR, "keyring")
+
+
+def _cli_cred_file(config_dir=None):
+    base = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return os.path.join(base, ".credentials.json")
+
+
+def _file_for(service, account):
+    if service == "Claude Code-credentials" and account == CRED_ACCT:
+        return _cli_cred_file()
+    safe = lambda v: re.sub(r"[^A-Za-z0-9@._+-]", "_", v) or "_"
+    return os.path.join(KEYRING, safe(service), safe(account) + ".json")
+
+
+def _file_read(path):
+    try:
+        with open(path) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
+def _file_write(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".new.")
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _kc_read(service, account):
+    if not USE_KEYCHAIN:
+        return _file_read(_file_for(service, account))
     p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
                        capture_output=True, text=True)
     return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
 
 
 def _kc_write(service, account, value):
+    if not USE_KEYCHAIN:
+        return _file_write(_file_for(service, account), value)
     # -X takes hex, so quotes in the JSON cannot break the command line, and
     # `security -i` reads it from stdin, so the value is never an argv element.
     cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
@@ -1286,7 +1346,8 @@ def folder_login(email, folders=None):
     if not folder:
         return None
     try:
-        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+        raw = _kc_read(_folder_service(folder), CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
     except ValueError:
         oauth = None
     if not oauth or not oauth.get("refreshToken"):
