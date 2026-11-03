@@ -6,6 +6,7 @@
 //! classifier (`turn_end::on_turn_end`, AMUX-5234). It is the same consumer the
 //! legacy Stop hook drives, it runs detached from this write, and it refuses
 //! isolated lanes itself, so an isolated lane's observation stays passive.
+use super::session_verbs::ConvAdopt;
 use super::AppState;
 use crate::db::{PendingEvent, WriteOutcome};
 use axum::{
@@ -504,6 +505,25 @@ pub(crate) fn history(conn: &rusqlite::Connection, name: &str) -> Vec<Value> {
         .collect()
 }
 
+/// An applied Claude edge of the lane itself carries the lane's conversation id; a subagent edge or a Codex thread id never moves it.
+fn adopt_conv(name: &str, event: &Value) -> ConvAdopt {
+    let sid = event["session_id"].as_str().unwrap_or("");
+    if event["provider"] != "claude" || event["subagent"].as_bool() == Some(true) || sid.trim().is_empty() {
+        return ConvAdopt::Unchanged;
+    }
+    let adopt = super::session_verbs::adopt_reported_conv_id(name, sid);
+    match &adopt {
+        ConvAdopt::Adopted { was } => tracing::info!(session = name, conv_id = sid, previous = %was,
+            verdict = "native_status_conv_adopted", measured = true, n_considered = 1,
+            "a native status report named the lane's conversation; restarts resume it"),
+        ConvAdopt::Conflict { owner } => tracing::warn!(session = name, conv_id = sid, owner = %owner,
+            verdict = "native_status_conv_conflict", measured = true, n_considered = 1,
+            "a native status report named a conversation another lane claims; not adopted"),
+        ConvAdopt::Unchanged => {}
+    }
+    adopt
+}
+
 pub(crate) async fn post(state: &AppState, name: &str, body: &Value) -> Response {
     if !valid_name(name) {
         return (
@@ -522,6 +542,7 @@ pub(crate) async fn post(state: &AppState, name: &str, body: &Value) -> Response
         .await;
     match outcome {
         Ok(out) => {
+            let conv = if out.applied { adopt_conv(&worker, &event) } else { ConvAdopt::Unchanged };
             // Only an APPLIED edge: a duplicate or replayed observation of the
             // same submit must not write the prompt twice.
             if out.applied {
@@ -537,7 +558,7 @@ pub(crate) async fn post(state: &AppState, name: &str, body: &Value) -> Response
                     ));
                 }
             }
-            Json(json!({"ok":true,"applied":out.applied})).into_response()
+            Json(json!({"ok":true,"applied":out.applied,"conv_id":conv.as_json()})).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -678,6 +699,7 @@ fn replay_run(state: &AppState, name: &str, dir: &Path) {
         };
         let worker = name.to_owned();
         let prompt = submitted_prompt(&body);
+        let event = body.clone();
         let current = dir.parent().unwrap_or(dir).join("current.json");
         if let Ok(reply) = state.store.write(move |conn| {
             let launch = std::fs::read_to_string(current)
@@ -686,6 +708,9 @@ fn replay_run(state: &AppState, name: &str, dir: &Path) {
                 .unwrap_or(Value::Null);
             apply(conn, &worker, &body, &launch)
         }) {
+            if reply.applied {
+                adopt_conv(name, &event);
+            }
             // A prompt submitted while the server was down still belongs in
             // the ledger once the spool is replayed (F8(c)).
             if let (true, Some(prompt), Ok(rt)) =

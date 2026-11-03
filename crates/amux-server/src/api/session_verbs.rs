@@ -28116,7 +28116,7 @@ impl ConvAdopt {
     /// is the failure this repo paid for twice on 2026-08-07 (a PATCH whose
     /// `ignored_fields` nobody read), and a self-healing mechanism is precisely
     /// the kind nobody watches once it appears to work.
-    fn as_json(&self) -> Value {
+    pub(crate) fn as_json(&self) -> Value {
         match self {
             ConvAdopt::Unchanged => json!({"adopted": false}),
             ConvAdopt::Adopted { was } => json!({
@@ -49071,6 +49071,63 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let conn = state.store.read().unwrap();
         let reports: Option<String> = conn.query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r|r.get(0)).optional().unwrap();
         assert!(reports.is_none_or(|raw| serde_json::from_str::<Value>(&raw).unwrap()["codex-project"].is_null()));
+    }
+
+    /// mac-server, 2026-11-03: native-only lanes never got a `cc_conversation_id`, so no restart resumed.
+    #[tokio::test]
+    async fn native_status_report_adopts_the_lanes_own_conversation_only() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state.clone());
+        const CONV: &str = "4c0ffee0-f9fa-4c1b-9a77-0d1e2f3a4b5c";
+        const SUB: &str = "5ab0a6e0-f9fa-4c1b-9a77-0d1e2f3a4b5c";
+        let now = crate::config::now_f64();
+        for (lane, provider) in [("native-lane", "claude"), ("native-codex", "codex"), ("native-peer", "claude")] {
+            std::fs::write(env_path(lane), format!("CC_PROVIDER={provider}\n")).unwrap();
+            let dir = home.path().join("status-events").join(lane);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("current.json"),
+                json!({"run_id":"0123abcd","provider":provider,"started":now - 60.0}).to_string()).unwrap();
+        }
+        let edge = |provider: &str, seq: u64, event: &str, state: &str, sid: &str| json!({
+            "native_status": true, "provider": provider, "run_id": "0123abcd", "sequence": seq,
+            "event_ts": now - 30.0 + seq as f64, "state": state, "event": event,
+            "source": format!("{provider}-hook"), "session_id": sid, "turn_id": "", "model": ""});
+
+        // A subagent's edge must not hand the lane a conversation.
+        let mut sub = edge("claude", 1, "PreToolUse", "blocked", SUB);
+        sub["subagent"] = json!(true);
+        let (status, v) = call(&app, "POST", "/api/sessions/native-lane/report", Some(sub)).await;
+        assert_eq!((status, v["applied"].clone()), (StatusCode::OK, json!(true)), "{v}");
+        assert_eq!(v["conv_id"]["adopted"], json!(false), "{v}");
+        assert!(meta_str(&load_meta("native-lane"), "cc_conversation_id").is_empty());
+
+        // The lane's own applied Stop names its conversation.
+        let (status, v) = call(&app, "POST", "/api/sessions/native-lane/report",
+            Some(edge("claude", 2, "Stop", "idle", CONV))).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["conv_id"]["healed_blind_lane"], json!(true), "{v}");
+        assert_eq!(meta_str(&load_meta("native-lane"), "cc_conversation_id"), CONV);
+
+        // A replayed edge is refused and adopts nothing.
+        let (_, v) = call(&app, "POST", "/api/sessions/native-lane/report",
+            Some(edge("claude", 2, "Stop", "idle", SUB))).await;
+        assert_eq!((v["applied"].clone(), v["conv_id"]["adopted"].clone()), (json!(false), json!(false)), "{v}");
+        assert_eq!(meta_str(&load_meta("native-lane"), "cc_conversation_id"), CONV);
+
+        // A Codex thread id is not a Claude conversation.
+        let (_, v) = call(&app, "POST", "/api/sessions/native-codex/report",
+            Some(edge("codex", 1, "Stop", "idle", SUB))).await;
+        assert_eq!(v["applied"], json!(true), "{v}");
+        assert!(meta_str(&load_meta("native-codex"), "cc_conversation_id").is_empty());
+
+        // The cross-link guard holds: a peer reporting the lane's conversation is refused.
+        let (_, v) = call(&app, "POST", "/api/sessions/native-peer/report",
+            Some(edge("claude", 1, "Stop", "idle", CONV))).await;
+        assert_eq!(v["conv_id"]["conflict_with"], json!("native-lane"), "{v}");
+        assert!(meta_str(&load_meta("native-peer"), "cc_conversation_id").is_empty());
     }
 
     #[tokio::test]
