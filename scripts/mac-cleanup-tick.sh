@@ -507,6 +507,18 @@ SWAP_FREE_CRITICAL_PCT=${AMUX_CLEANUP_SWAP_FREE_CRITICAL_PCT:-0.10}
 SWAP_GROW_DISK_GB=${AMUX_CLEANUP_SWAP_GROW_DISK_GB:-20}
 CPU_SHARE=${AMUX_CLEANUP_CPU_SHARE:-0.9}
 CPU_IDLE_MAX_PCT=${AMUX_CLEANUP_CPU_IDLE_MAX_PCT:-25}   # high load only counts as CPU when idle is under this
+# CPU at nice >= NICED_MIN yields to every normal-priority process, so it is no
+# contention: the deploy builder runs at nice 10 on every core, and that alone
+# kept load15 near 28 of 28 and escalated "cpu" (RCA 20261106-090048, where
+# workers used 273% of 2800%). The 15-minute load is compared after removing
+# the niced share sampled now.
+NICED_PS_CMD=${AMUX_CLEANUP_NICED_PS_CMD:-ps -axo nice=,%cpu=}
+NICED_MIN=${AMUX_CLEANUP_NICED_MIN:-10}
+# The same holds for one process: a hog at nice >= NICED_MIN yields the CPU to
+# every worker, so it is reported, not escalated (hog RCAs 20261101-184920 and
+# 20261106-135859: a research lane's build_runs.py and backend's clf_screen.py,
+# both already at nice 10, each escalated for using idle cores).
+HOG_NICE_CMD=${AMUX_CLEANUP_HOG_NICE_CMD:-ps -o nice= -p}
 STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # ONE deadline for the whole tick. The scheduler kills a shell schedule at 600s and
 # the per-arm budgets alone add up past that, so under load every arm spent its full
@@ -533,7 +545,13 @@ TICK_SKIPPED=""
 # superseded 56-85s, claude tmp 63-110s, worktrees 3-13s); lane tmp resumes
 # from a cursor, so it gets less than the 90s it will always spend. The declared
 # budgets are ceilings and add up to ~800s, so they cannot be the weights.
-TICK_ARM_PLAN=${AMUX_CLEANUP_TICK_ARM_PLAN:-"cargo_targets:75 superseded_artifacts:75 claude_tmp:100 lane_tmp:30 worktrees:20"}
+# The fseventsd churn census runs after worktrees whenever fseventsd is hot, and
+# it was not in this list, so no arm kept time for it: with health at 106-114s
+# under load it got nothing and was skipped by 3 ticks in 3h on 2026-11-08
+# (Mac self RCA 20261108-050521), once taking worktrees with it. Its weight is
+# what it took on those ticks (3-23s). When fseventsd is quiet the census does
+# not run and its share goes back to whatever runs after.
+TICK_ARM_PLAN=${AMUX_CLEANUP_TICK_ARM_PLAN:-"cargo_targets:75 superseded_artifacts:75 claude_tmp:100 lane_tmp:30 worktrees:20 fseventsd_churn_census:20"}
 TICK_ARM_SHARE=0     # the running arm's cap, for an arm that sizes its own phases
 
 # Claude Code session temp dirs (DESKT-77). Claude Code gives every session
@@ -1273,7 +1291,13 @@ check_cpu_hogs() { # <dry:0|1>
     else
       echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks, reported, not touched ($(owner_label_for_pid "$pid"))"
       if awk -v c="$pcpu" -v t="$CPU_HOG_ESCALATE_PCT" 'BEGIN{exit !(c+0 >= t+0)}'; then
-        local guest=""
+        local guest="" pnice
+        pnice=$($HOG_NICE_CMD "$pid" 2>/dev/null | tr -d ' ' || true)
+        case "$pnice" in ''|*[!0-9-]*) pnice="" ;; esac
+        if [ -n "$pnice" ] && [ "$pnice" -ge "$NICED_MIN" ]; then
+          echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% runs at nice $pnice, so it yields to every worker: reported, not escalated (verdict=hog_niced_yields)"
+          continue
+        fi
         if in_list "$name" "$VM_PROC_NAMES"; then
           [ -n "$VM_BUDGET" ] || VM_BUDGET=$(vm_cpu_budget)
           guest=" (guest: $VM_BUDGET)"
@@ -2645,6 +2669,12 @@ swap_burn_note() { # <burn_gbh> <swap_total_prev_mb> <swap_total_now_mb> <hours_
   }'
 }
 
+niced_cpu_pct() { # -> the CPU percent held at nice >= NICED_MIN right now, or -1 unmeasured
+  $NICED_PS_CMD 2>/dev/null | awk -v m="$NICED_MIN" 'NF>=2 {n++; if ($1+0 >= m) s+=$2} END{ if (n) printf "%.0f", s+0; else print -1 }'
+}
+cpu_over_after_niced() { # <load15> <ncpu> <niced_pct>: true while the load less the niced share is still over CPU_SHARE
+  awk -v l="$1" -v n="$2" -v p="$3" -v cs="$CPU_SHARE" 'BEGIN{ if (p < 0) exit 0; exit !(n > 0 && (l - p/100)/n > cs) }'
+}
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb> [cpu_idle_pct]
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" -v idle="${10:--1}" -v imax="$CPU_IDLE_MAX_PCT" \
       -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" -v famd="${FAMILY_DESC:-}" 'BEGIN{
@@ -3084,8 +3114,15 @@ keep_docker_context() { # <profile>
 #  - A plain file under LANE_TMP_KEEP_FILE_KB is kept. Those are hand-written
 #    scripts and configs; the space this reaper exists for (101 GB on
 #    2026-10-04) was build trees and extracts, never small files.
+#  - A directory holding a .amux-keep file at its top is kept (backend,
+#    2026-11-03): ~/.amux/tmp/backend/evalset2 held the only copy of 340 hand
+#    labels beside multi-MB embeddings, idled past the floor and was removed.
+#    The tick logged only a count, so backend could not tell what removed it.
+#    Every removal is now one line with path, size and idle floor, in the run's
+#    output and appended to $STATE_DIR/lane-tmp-removed.log.
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 ledger=""
+  [ -n "${STATE_DIR:-}" ] && ledger="$STATE_DIR/lane-tmp-removed.log"
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   # A directory of a few small files is kept like a small file (mxp-gs12,
   # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
@@ -3133,6 +3170,7 @@ reap_lane_tmp() { # <dry:0|1>
     if [ "$rc" = 142 ]; then n_unk=$((n_unk+1)); continue; fi
     [ -n "$out" ] && continue
     if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
+    if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.amux-keep" ]; then n_marked=$((n_marked+1)); continue; fi
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
@@ -3146,13 +3184,25 @@ reap_lane_tmp() { # <dry:0|1>
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
-    if [ "$dry" = 1 ]; then n=$((n+1)); kb=$((kb+${k:-0})); continue; fi
-    rm -rf -- "${e:?}" 2>/dev/null && { n=$((n+1)); kb=$((kb+${k:-0})); }
+    if [ "$dry" = 1 ]; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp would remove $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min)"
+      continue
+    fi
+    if rm -rf -- "${e:?}" 2>/dev/null; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp removed $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min) (verdict=lane_tmp_entry_removed)"
+      if [ -n "$ledger" ]; then
+        mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tidle_min=%s\n' "$(date '+%F %T %z')" "${e#"$root"/}" "${k:-0}" "$e" "$LANE_TMP_IDLE_MIN" >> "$ledger"
+      fi
+    else
+      echo "mac-cleanup:   lane tmp WARN could not remove $e (verdict=lane_tmp_entry_remove_failed)"
+    fi
   done
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
@@ -3863,6 +3913,14 @@ fi
 # "load was high but the CPU idle" from "load was fine".
 if awk -v l="$load15" -v n="$ncpu" -v cs="$CPU_SHARE" -v i="$cpu_idle" -v m="$CPU_IDLE_MAX_PCT" 'BEGIN{exit !(l>=0 && n>0 && l/n>cs && i>=m)}'; then
   echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but the CPU is ${cpu_idle}% idle: threads blocked on IO, not CPU (verdict=load_not_cpu)"
+fi
+# A load carried by niced work (the deploy builder) is not contention.
+if printf '%s\n' "$verdicts" | grep -q '^cpu '; then
+  niced_pct=$(niced_cpu_pct)
+  if ! cpu_over_after_niced "$load15" "$ncpu" "$niced_pct"; then
+    verdicts=$(printf '%s\n' "$verdicts" | grep -v '^cpu ' || true)
+    echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but ${niced_pct}% of CPU runs at nice ${NICED_MIN} or lower priority, which yields to every worker: not contention (verdict=load_is_niced_work)"
+  fi
 fi
 # Say so when a low swap reading was let through because swap can still grow,
 # so a sweep can tell "judged growable" from "never measured".

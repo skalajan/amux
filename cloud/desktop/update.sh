@@ -101,16 +101,36 @@ if [[ -f "$SRC/cloud/desktop/door.py" ]] && ! cmp -s "$SRC/cloud/desktop/door.py
   systemctl restart amux-door && say "door.py updated from the checkout"
 fi
 
+# An installed claude-rotate follows the checkout too; it is a copy, so the pull alone leaves it
+# behind (2026-11-05: mixpeek-dev ran a day-old rotator).
+REFRESH="$SRC/scripts/claude-rotate-refresh.sh"
+if [[ -f "$REFRESH" ]]; then
+  say "$(as_user bash "$REFRESH" "$SRC/scripts/claude-rotate.py" "$HOME_DIR/.amux/claude-rotate/claude-rotate.py" 2>&1 | tail -1)"
+fi
+
 # Claude status hooks, as install.sh registers them on a local install. Without them no Claude
 # worker reports its state and its lane reads "unknown" (codex e2e round 3: the first worker never
 # got its start prompt). Idempotent: the installer replaces only amux's own entries. Codex hooks are
 # left out on purpose: Codex holds new hooks behind a "Hooks need review" screen until a person
 # trusts them, which would stop every new Codex worker; its lanes are read from the screen instead.
 HOOKS="$SRC/scripts/hooks/install-native-status-hooks.py"
+# The worker boundaries (boundaries.toml), as install.sh installs them on a local install: the
+# guard and its registry beside it, wired as a PreToolUse hook. Cloud servers never ran install.sh,
+# so until 2026-11-06 no boundary was enforced on them (`amux boundaries`: installed=False
+# wired=False on the sandbox), and workers used Claude's own scheduler instead of `amux wake`.
+GUARD_ARGS=()
+if [[ -f "$SRC/scripts/hooks/boundary-guard.py" && -f "$SRC/boundaries.toml" ]]; then
+  as_user mkdir -p "$HOME_DIR/.amux/hooks"
+  as_user install -m 755 "$SRC/scripts/hooks/boundary-guard.py" "$HOME_DIR/.amux/hooks/boundary-guard.py.new" \
+    && as_user mv "$HOME_DIR/.amux/hooks/boundary-guard.py.new" "$HOME_DIR/.amux/hooks/boundary-guard.py"
+  as_user install -m 644 "$SRC/boundaries.toml" "$HOME_DIR/.amux/hooks/boundaries.toml.new" \
+    && as_user mv "$HOME_DIR/.amux/hooks/boundaries.toml.new" "$HOME_DIR/.amux/hooks/boundaries.toml"
+  GUARD_ARGS=(--boundary-guard "$HOME_DIR/.amux/hooks/boundary-guard.py")
+fi
 if [[ -f "$HOOKS" ]]; then
   if as_user python3 "$HOOKS" --provider claude --settings "$HOME_DIR/.claude/settings.json" \
-      --script "$HOME_DIR/.amux/native-status.py" >/dev/null; then
-    say "verdict=status_hooks_installed provider=claude"
+      --script "$HOME_DIR/.amux/native-status.py" "${GUARD_ARGS[@]}" >/dev/null; then
+    say "verdict=status_hooks_installed provider=claude boundary_guard=${GUARD_ARGS[1]:+wired}"
   else
     say "verdict=status_hooks_install_failed provider=claude workers will not report state"
   fi

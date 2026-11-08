@@ -24,6 +24,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyWorkerRenames": {
+      "kind": "command._applyWorkerRenames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -62,6 +68,24 @@
     },
     "_apprReject": {
       "kind": "command._apprReject",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprSchedule": {
+      "kind": "command._apprSchedule",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprScheduleClose": {
+      "kind": "command._apprScheduleClose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprScheduleConfirm": {
+      "kind": "command._apprScheduleConfirm",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -894,6 +918,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkPlacesAck": {
+      "kind": "command._cmdkPlacesAck",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkQueryServer": {
       "kind": "command._cmdkQueryServer",
       "feedback_required": true,
@@ -944,6 +974,12 @@
     },
     "_composerAcceptLocal": {
       "kind": "command._composerAcceptLocal",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_composerLockTake": {
+      "kind": "command._composerLockTake",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1260,6 +1296,42 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvSqKey": {
+      "kind": "command._cvSqKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqOpen": {
+      "kind": "command._cvSqOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRender": {
+      "kind": "command._cvSqRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRun": {
+      "kind": "command._cvSqRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqSetTok": {
+      "kind": "command._cvSqSetTok",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvThumbFailed": {
+      "kind": "command._cvThumbFailed",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvUploadVoice": {
       "kind": "command._cvUploadVoice",
       "feedback_required": true,
@@ -1332,6 +1404,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictLiveClear": {
+      "kind": "command._dictLiveClear",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictLoad": {
       "kind": "command._dictLoad",
       "feedback_required": true,
@@ -1400,6 +1478,12 @@
     },
     "_dictStartRec": {
       "kind": "command._dictStartRec",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictStoreHung": {
+      "kind": "command._dictStoreHung",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3576,6 +3660,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomeAttach": {
+      "kind": "command._outcomeAttach",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePlan": {
+      "kind": "command._outcomePlan",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
       "feedback_required": true,
@@ -5264,6 +5360,12 @@
     },
     "_syncUrlHash": {
       "kind": "command._syncUrlHash",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_syncWorkerRenames": {
+      "kind": "command._syncWorkerRenames",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

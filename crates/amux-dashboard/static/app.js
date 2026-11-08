@@ -231,6 +231,144 @@ function _amuxClientIdentity() {
   };
 })();
 
+// ── A renamed worker's old name follows to the new one (2026-11-06) ──
+//
+// `workflows` became `wexus`; a phone that still had `workflows` open kept
+// sending to it, and its outbox said "the worker did not accept it" with a
+// Send again that retried the same dead name. The server now serves an old
+// name as the worker it became (and says so in `x-amux-renamed-to`), and
+// GET /api/session-renames lists every retired name. This rewrites the names
+// this app stored (the open worker, queued sends, the split panes, the grid
+// order) so the app stops asking for a worker that is gone. Runs at load and
+// whenever an answer says a name was renamed or not found.
+function _workerRenameRewrite(value, map) {
+  const urlRe = /(\/api\/(?:sessions|workers)\/)([^/?#]+)/g;
+  let changed = false;
+  const walk = v => {
+    if (typeof v === 'string') {
+      if (Object.prototype.hasOwnProperty.call(map, v)) { changed = true; return map[v]; }
+      if (v.indexOf('/api/') < 0 && v.indexOf('#peek=') < 0) return v;
+      const out = v.replace(urlRe, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      }).replace(/(#peek=)([^&]+)/, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      });
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o = {};
+      for (const [k, x] of Object.entries(v)) {
+        const key = Object.prototype.hasOwnProperty.call(map, k) ? (changed = true, map[k]) : k;
+        o[key] = walk(x);
+      }
+      return o;
+    }
+    return v;
+  };
+  const out = walk(value);
+  return {value: out, changed};
+}
+// Stored values that hold worker names. Board, history and pins live on the
+// server, which the rename already carried.
+const _WORKER_NAME_KEYS = ['amux_offline_queue', 'amux_peek_state', 'amux_peek_split_panes', 'amux_card_order'];
+async function _applyWorkerRenames(map) {
+  if (!map || typeof map !== 'object' || !Object.keys(map).length) return 0;
+  let rewritten = 0;
+  for (const [store, keys] of [[localStorage, _WORKER_NAME_KEYS], [sessionStorage, ['peekState']]]) {
+    for (const key of keys) {
+      if (key === 'amux_offline_queue') continue;
+      try {
+        const raw = store.getItem(key);
+        if (raw === null) continue;
+        const r = _workerRenameRewrite(JSON.parse(raw), map);
+        if (r.changed) { store.setItem(key, JSON.stringify(r.value)); rewritten++; }
+      } catch (e) { console.warn('[rename] could not rewrite a stored name', e); }
+    }
+  }
+  // The outbox goes through its own lock, so a delivery in flight is not raced.
+  try {
+    if (typeof _mutateQueue === 'function') {
+      await _mutateQueue(current => {
+        let n = 0;
+        for (let i = 0; i < current.length; i++) {
+          const r = _workerRenameRewrite(current[i], map);
+          if (r.changed) {
+            // A send refused only because its name was gone is sendable again.
+            const q = r.value;
+            if (q.state === 'blocked' || q.needs_decision) Object.assign(q, {state: 'pending', needs_decision: '', error: '', attempts: 0});
+            current[i] = q; n++;
+          }
+        }
+        if (n) rewritten++;
+      });
+    }
+  } catch (e) { console.warn('[rename] could not rewrite the outbox', e); }
+  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the card order', e); }
+  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the split panes', e); }
+  let reopened = '';
+  try {
+    if (typeof peekSession !== 'undefined' && peekSession && map[peekSession] && typeof openPeek === 'function') {
+      reopened = map[peekSession];
+      openPeek(reopened, typeof _peekTab === 'string' && _peekTab ? {tab: _peekTab} : undefined);
+    } else {
+      const h = _workerRenameRewrite(location.hash, map);
+      if (h.changed) history.replaceState(history.state, '', location.pathname + location.search + h.value);
+    }
+  } catch (e) { console.warn('[rename] could not reopen the renamed worker', e); }
+  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (e) { console.warn('[rename] rename beacon failed', e); }
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (e) { console.warn('[rename] could not redraw messages after a rename', e); }
+  return rewritten;
+}
+let _workerRenamesInFlight = null;
+let _workerRenamesAgain = false;
+function _syncWorkerRenames() {
+  // A request during a sync (or its 2s hold) may follow a rename that sync's
+  // answer predates: the load-time sync read the list, a rename landed, and
+  // the next "renamed" answer got the stale result, so a queued send kept the
+  // old name. Ask once more after the hold rather than dropping it.
+  if (_workerRenamesInFlight) { _workerRenamesAgain = true; return _workerRenamesInFlight; }
+  _workerRenamesInFlight = (async () => {
+    try {
+      const r = await fetch('/api/session-renames', {cache: 'no-store'});
+      if (!r.ok) return 0;
+      const d = await r.json();
+      return await _applyWorkerRenames(d && d.renames);
+    } catch (e) { console.warn('[rename] could not read the rename list', e); return 0; } finally {
+      setTimeout(() => {
+        _workerRenamesInFlight = null;
+        if (_workerRenamesAgain) { _workerRenamesAgain = false; _syncWorkerRenames(); }
+      }, 2000);
+    }
+  })();
+  return _workerRenamesInFlight;
+}
+window._workerRenameRewrite = _workerRenameRewrite;
+window._applyWorkerRenames = _applyWorkerRenames;
+window._syncWorkerRenames = _syncWorkerRenames;
+(function installRenamedWorkerWatch() {
+  const _origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const p = _origFetch.call(this, input, init);
+    try {
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input || ''));
+      if (!/\/api\/(sessions|workers)\/[^/?]+/.test(url)) return p;
+      p.then(r => {
+        if (r && (r.headers.get('x-amux-renamed-to') || r.status === 404)) _syncWorkerRenames();
+      }, () => {});
+    } catch (e) { console.warn('[rename] rename watch could not read a fetch URL', e); }
+    return p;
+  };
+  const start = () => setTimeout(() => _syncWorkerRenames(), 1500);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+
 // ── A 200 is not proof the edit was applied (AMUX-2673, after AC-323) ──
 //
 // The API names unapplied request fields in `ignored_fields` (AC-263). Nothing
@@ -992,6 +1130,7 @@ async function _upgradeCheckout(billing) {
 }
 
 let sessions = [];
+let _sessionsReadAt = 0;   // when the worker list was last read from the server (_waitingNow)
 // A stream update and a poll response are two snapshots of the same runtime
 // truth. A request begun before an SSE update must not finish later and put the
 // old task attribution back on screen.
@@ -7133,6 +7272,7 @@ async function _fetchSessionsOnce() {
     const firstLoad = _initialLoad;
     _initialLoad = false;
     _sessionReadRecovered();
+    _sessionsReadAt = Date.now();
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
@@ -7352,8 +7492,12 @@ async function openNeedsInput() {
   ov.querySelector('.ni-close').focus();
   _niFetch();
 }
+// Closing the overlay ends an Approve all in progress: the owner approved the
+// batch they could see, and some of its items send outside (2026-11-06).
+let _niBatchGen = 0;
 function closeNeedsInput() {
   _niOpen = false;
+  _niBatchGen++;
   const ov = document.getElementById('ni-overlay');
   if (ov) ov.remove();
   document.body.classList.remove('ni-open');
@@ -7734,8 +7878,10 @@ async function _niApproveAllRun() {
   if (_niBusy) return;
   _niAllArmed = false;
   const skip = new Set();
-  let ok = 0, refused = 0;
+  const gen = _niBatchGen;
+  let ok = 0, refused = 0, stopped = false;
   for (let guard = 0; guard < 200; guard++) {
+    if (!_niOpen || gen !== _niBatchGen) { stopped = true; break; }
     const list = _niItems(_niShowOlder);
     const next = list.findIndex(i => !skip.has(i.key) && _niApprovable().some(a => a.key === i.key));
     if (next < 0) break;
@@ -7744,8 +7890,10 @@ async function _niApproveAllRun() {
     await _niAct('approve');
     if (_niItems(_niShowOlder).some(i => i.key === key)) { skip.add(key); refused++; } else ok++;
   }
-  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, refused ? (ok ? 'partial' : 'refused') : 'ok', ok + ' approved, ' + refused + ' refused');
-  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : ''));
+  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, stopped ? 'stopped' : refused ? (ok ? 'partial' : 'refused') : 'ok',
+    ok + ' approved, ' + refused + ' refused' + (stopped ? ', stopped when the overlay closed' : ''));
+  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : '') + (stopped ? '; stopped when you closed it' : ''));
+  if (!_niOpen) return;
   _niIdx = 0; _niRender();
 }
 
@@ -11804,23 +11952,27 @@ function closeAddMenu() {
 }
 
 // ── Describe what you want (Ethan, 2026-10-18) ──
-// One box: describe the outcome. Everything else is a default under a closed
-// "Defaults and constraints" section, remembered in prefs (outcome_defaults)
-// so the next one needs only the description. The worker starts on
-// `/goal <outcome + constraints>`: Claude Code's own evaluator decides when it
-// is done, the goal keeper keeps it going until then, and the dashboard (and
-// the goal keeper's push) say when it is met. Nothing here calls a model: the
-// name and description are computed from the text, and the worker does the
-// judging.
+// One box: describe the outcome, and attach a recording or files if the
+// outcome lives in them. Everything else is a default under a closed
+// "Defaults and constraints" section, remembered in prefs (outcome_defaults).
+// The server (POST /api/outcome/plan) names the worker and picks the
+// directory and groups the fleet already uses for this work, reading the
+// text and the attachments (a recording is transcribed and the transcript
+// saved beside it). It starts as a plain first prompt, not a /goal (Ethan,
+// 2026-10-29: "it shouldn't create a goal"; `need-worker-behave-crm` in
+// /home/amux was the computed name and the remembered directory).
 const _OUTCOME_DEFAULT_CONSTRAINTS = 'Do not spend money or contact anyone outside the company. '
   + 'Ask before deleting or overwriting data you did not create. Commit finished work. '
   + 'When only steps that need the owner remain, stop and list them.';
 const _OUTCOME_STOP = new Set(['a','an','the','and','or','to','of','for','in','on','with','my','our','me','i','we',
-  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by']);
+  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by',
+  // the request's scaffolding, not its subject (the server's fallback_name drops the same words)
+  'need','needs','worker','workers','agent','behave','behaves','act','acts','as','wanna','gonna','able','dedicated',
+  'help','helps','create','build','set','up','you','your','something','lets']);
 
 function _outcomeName(text, taken) {
   const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !_OUTCOME_STOP.has(w));
-  let base = words.slice(0, 4).join('-').slice(0, 32).replace(/-+$/, '') || 'outcome';
+  let base = words.slice(0, 3).join('-').slice(0, 24).replace(/-+$/, '') || 'outcome';
   let name = base, n = 2;
   while (taken.has(name)) name = base + '-' + n++;
   return name;
@@ -11846,10 +11998,9 @@ async function _outcomeDefaults() {
   } catch (_) { /* offline: the cached copy stands */ }
   return {
     group: d.group ?? ((typeof activeTag === 'string' && activeTag) ? activeTag : ''),
-    dir: d.dir || ((_filesCwd && _filesCwd !== '/') ? _filesCwd : ''),
+    dir: d.dir || '',
     provider: d.provider || 'claude',
     model: d.model || '',
-    goal: d.goal !== false,
     isolated: d.isolated !== false,
     constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
   };
@@ -11863,21 +12014,26 @@ async function openOutcome() {
     <textarea id="outcome-text" class="input outcome-text" rows="4"
       placeholder="e.g. Add a dark mode toggle to settings and ship it"
       onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
+    <div class="outcome-files">
+      <button type="button" class="btn" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
+      <input type="file" id="outcome-file" multiple hidden onchange="_outcomeAttach(this.files);this.value=''">
+      <div id="outcome-file-list" class="ui-help" aria-live="polite"></div>
+    </div>
     <details class="outcome-settings">
       <summary>Defaults and constraints</summary>
       <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
       <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
-      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="~/Dev/project"></label>
+      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="Chosen from your description"></label>
       <label class="outcome-field">Provider<select id="outcome-provider" class="input">
         ${['claude', 'codex', 'gemini'].map(p => `<option value="${p}"${p === d.provider ? ' selected' : ''}>${p}</option>`).join('')}
       </select></label>
       <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
       <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
-      ${chk('outcome-goal', d.goal, 'Keep going until done (/goal, Claude)')}
       ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
       ${chk('outcome-remember', true, 'Remember these as my defaults')}
     </details>
   </div>`;
+  _outcomeFiles = [];
   const shown = showFormModal('Describe what you want', html, 'Start');
   setTimeout(() => document.getElementById('outcome-text')?.focus(), 30);
   const ok = await shown;
@@ -11887,24 +12043,66 @@ async function openOutcome() {
   if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
   if (!ok || !text) return;
   const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
-    model: v('outcome-model'), goal: on('outcome-goal'), isolated: on('outcome-isolated'),
+    model: v('outcome-model'), isolated: on('outcome-isolated'),
     constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  const files = await _outcomeFilesReady();
+  if (files === null) { showToast('Not started: an attachment did not upload. Your description is kept.'); return; }
   if (on('outcome-remember')) {
     const val = JSON.stringify(cfg);
     localStorage.setItem('amux_outcome_defaults', val);
     fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({ key: 'outcome_defaults', value: val }) }).catch(() => {});
   }
-  await _outcomeStart(text, cfg);
+  await _outcomeStart(text, cfg, files);
 }
-async function _outcomeStart(text, cfg) {
-  const name = _outcomeName(text, new Set((sessions || []).map(s => s.name)));
-  const goal = cfg.goal && cfg.provider === 'claude';
-  const body = { name, dir: cfg.dir || (window._cloudEmail ? '/root' : ''), creator: _getDeviceName(),
-    desc: _outcomeDesc(text), prompt: _outcomePrompt(text, cfg.constraints || '', goal) };
+// Attachments upload as soon as they are picked (the same upload API voice
+// notes use), so Start only waits for the ones still in flight.
+let _outcomeFiles = [];
+function _outcomeAttach(list) {
+  for (const file of list || []) {
+    const it = { name: file.name, path: '', failed: false };
+    it.done = _cvUploadVoice(file).then(p => { it.path = p; it.failed = !p; _outcomeRenderFiles(); return p; });
+    _outcomeFiles.push(it);
+  }
+  _outcomeRenderFiles();
+}
+function _outcomeRenderFiles() {
+  const el = document.getElementById('outcome-file-list');
+  if (!el) return;
+  el.innerHTML = _outcomeFiles.map((f, i) => '<span class="outcome-file">' + esc(f.name)
+    + (f.failed ? ' (did not upload)' : f.path ? '' : ' (uploading)')
+    + ' <button type="button" class="btn" aria-label="Remove ' + esc(f.name) + '" onclick="_outcomeFiles.splice(' + i + ',1);_outcomeRenderFiles()">&times;</button></span>').join(' ');
+}
+async function _outcomeFilesReady() {
+  const paths = await Promise.all(_outcomeFiles.map(f => f.done));
+  return paths.some(p => !p) ? null : paths;
+}
+// The server reads the text and attachments and picks the name, directory
+// and groups. If it cannot answer, the computed name stands and the worker
+// starts where the dialog says.
+async function _outcomePlan(text, files) {
+  try {
+    const r = await fetch(API + '/api/outcome/plan', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({ text, files }) });
+    if (r.ok) return await r.json();
+  } catch (_) {}
+  return null;
+}
+async function _outcomeStart(text, cfg, files) {
+  files = files || [];
+  showToast('Reading your description' + (files.length ? ' and attachments' : '') + '...');
+  const plan = await _outcomePlan(text, files);
+  const name = plan?.name || _outcomeName(text, new Set((sessions || []).map(s => s.name)));
+  const dir = cfg.dir || plan?.dir || (window._cloudEmail ? '/root' : '');
+  const context = (plan?.attachments || []).map(a => a.transcript
+    ? a.path + ' (recording; transcript at ' + a.transcript + ')' : a.path);
+  for (const p of files) if (!context.some(c => c.startsWith(p))) context.push(p);
+  const ask = text + (context.length ? '\n\nRead these first, they are part of the request: ' + context.join('; ') : '');
+  const body = { name, dir, creator: _getDeviceName(),
+    desc: plan?.desc || _outcomeDesc(text), prompt: _outcomePrompt(ask, cfg.constraints || '', false) };
   if (cfg.provider !== 'claude') body.provider = cfg.provider;
   if (cfg.model) body.model = cfg.model;
-  const groups = _createGroupsFrom(cfg.group);
+  const groups = _createGroupsFrom(cfg.group || (plan?.groups || []).join(','));
   if (groups.length) body.tags = groups;
   if (cfg.isolated) body.isolated = true;
   if (_yoloDefault) body.yolo = true;
@@ -11926,8 +12124,7 @@ async function _outcomeStart(text, cfg) {
     return;
   }
   localStorage.removeItem('amux_outcome_draft');
-  showToast(goal ? 'Started ' + name + ': it keeps going until done and tells you when it is'
-                 : 'Started ' + name);
+  showToast('Started ' + name + (dir ? ' in ' + dir : ''));
   await fetchSessions();
   document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   return name;
@@ -12861,7 +13058,10 @@ async function doKeys(name, keys) {
 
 const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
-  if (_fieldSizingSupported) return;
+  // A hand-sized box keeps its height while its draft lasts; its text scrolls
+  // (see _composerSetHeight). An empty box sizes to its content again.
+  if (el.classList.contains('user-sized') && !el.value) _composerSetHeight(el, 0);
+  if (_fieldSizingSupported || el.classList.contains('user-sized')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
@@ -12869,9 +13069,14 @@ function autoGrow(el) {
 // drag this input box by a corner and manually make it bigger"). The box sits
 // on the bottom edge, so the native bottom-right resize handle could only push
 // it off screen; the grip is on its top-left corner and dragging it up raises
-// the box's minimum height. Text still grows the box past that, up to 70% of
-// the screen. The height is kept per device; a double-click on the grip goes
-// back to sizing by content.
+// the box's height. Since 2026-11-06 that height holds in both directions
+// ("i should be able to drag this down even if the text is full"): longer text
+// scrolls inside it instead of holding the box open. Up to 70% of the screen.
+// The hand-set height lasts for the draft (Ethan, 2026-11-07: "the input box
+// should expand vertically as i type but i can also collapse it if i drag").
+// Kept per device, it held every later draft at one size and the box stopped
+// growing. Emptying the box (a send, or deleting the text) or a double-click
+// on the grip goes back to sizing by content.
 const _COMPOSER_H_KEY = 'amux_peek_composer_h';
 function _composerSetHeight(ta, h) {
   if (!ta) return;
@@ -12879,6 +13084,7 @@ function _composerSetHeight(ta, h) {
   const max = Math.round(innerHeight * 0.7);
   h = Math.max(44, Math.min(max, Math.round(h)));
   ta.style.setProperty('--composer-h', h + 'px');
+  ta.style.height = '';   // an inline height from autoGrow would override the hand-set one
   ta.classList.add('user-sized');
   return h;
 }
@@ -12886,20 +13092,18 @@ function _composerGripInit(gripId, taId, key) {
   const grip = document.getElementById(gripId), ta = document.getElementById(taId);
   if (!grip || !ta || grip._wired) return;
   grip._wired = true;
-  const saved = parseInt(localStorage.getItem(key) || '', 10);
-  if (saved > 0) _composerSetHeight(ta, saved);
-  let startY = 0, startH = 0, last = 0;
-  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  try { localStorage.removeItem(key); } catch (e) {}   // a height saved before 2026-11-07
+  let startY = 0, startH = 0;
+  const move = e => { _composerSetHeight(ta, startH + (startY - e.clientY)); e.preventDefault(); };
   const up = () => {
     grip.classList.remove('dragging');
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
-    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
   };
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
-    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    startY = e.clientY; startH = ta.getBoundingClientRect().height;
     grip.classList.add('dragging');
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -12907,7 +13111,6 @@ function _composerGripInit(gripId, taId, key) {
   });
   grip.addEventListener('dblclick', () => {
     _composerSetHeight(ta, 0);
-    try { localStorage.removeItem(key); } catch (e) {}
     autoGrow(ta);
   });
 }
@@ -13188,7 +13391,12 @@ function _draftInputChanged(input) {
   if (id === 'peek-cmd-input' || id === 'peek-input-fs-ta') _draftSave(_peekComposerTarget(), input.value);
   else if (id.startsWith('input-')) _draftSave(id.slice(6), input.value);
 }
-document.addEventListener('input', event => _draftInputChanged(event.target));
+document.addEventListener('input', event => {
+  _draftInputChanged(event.target);
+  // Deleting a hand-sized draft down to nothing sizes the box by content again.
+  const t = event.target;
+  if (t && t.classList && t.classList.contains('user-sized') && !t.value) _composerSetHeight(t, 0);
+});
 window.addEventListener('storage', event => {
   if (event.storageArea !== localStorage || !event.key || !event.key.startsWith(_DRAFT_PREFIX)) return;
   const session = event.key.slice(_DRAFT_PREFIX.length);
@@ -13236,8 +13444,7 @@ async function sendFromInput(name) {
   const queued = _sendMode === 'queue' && !_waitingNow(name);
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _composerLockWatch(name, original);
+  const lock = _composerLockTake(name, original);
   _syncComposerPending();
   try {
     const identity = {};
@@ -13272,7 +13479,7 @@ async function sendFromInput(name) {
     _composerUnconfirmed(name, 'exception', _files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(name);
+    _composerLockRelease(name, lock);
     _syncComposerPending();
   }
 }
@@ -15096,7 +15303,7 @@ function _steeringDelayPrompt(msgId) {
   val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
   box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
-  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); bg.remove(); } };   // one Escape closes only the picker, not the worker view under it
   setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
 }
@@ -19466,7 +19673,23 @@ function _detectTextLinks(plain) {
     // The host after the scheme. `slice(8)` assumed `https://` and cut the
     // first letter off an http host, so http://localhost:3077 was never a
     // link (owner, 2026-10-17: the port proxy links in the peek were dead).
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
+    if (!/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) continue;
+    // A HARD WRAP IS NOT THE END OF A URL (Ethan, 2026-11-07: "this isnt working
+    // this link"). A worker wrapped .../#view=apps&open=<32 hex> after 18 of the
+    // id's characters, the link stopped at the newline, and the Apps tab got an
+    // id it could not match. A URL that runs to the end of a long line takes the
+    // next line's first token when that token reads as URL text (a digit or
+    // / ? = & # % _ in it); a prose word or a "- " bullet ends it as before.
+    let val = v, end = m.index + v.length, open = v === m[0];   // trailing punctuation closed it
+    while (open && plain[end] === '\n' && end - (plain.lastIndexOf('\n', end - 1) + 1) >= 40) {
+      const tail = /^[ \t]*([^\s<>\]\)'"`,;\\$-]+)(?=\s|$)/.exec(plain.slice(end + 1));
+      if (!tail || tail[1].length < 3 || !/[0-9\/?=&#%_]/.test(tail[1])) break;
+      const t2 = trim(tail[1]);
+      val += t2;
+      end += 1 + tail[0].length - tail[1].length + t2.length;
+      open = t2 === tail[1];
+    }
+    add(m.index, end, 'url', val);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
@@ -19505,8 +19728,11 @@ function _detectTextLinks(plain) {
 }
 function _linkWrap(L, htmlText) {
   const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (L.type === 'url')
-    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  if (L.type === 'url') {
+    const fp = typeof _ownFilePath === 'function' ? _ownFilePath(L.value) : '';
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer"' + (fp ? ' class="own-file-link" title="' + ea(L.value) + '"' : '') + '>'
+      + (fp ? ea(fp) : htmlText) + '</a>';
+  }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
   return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
@@ -23684,10 +23910,13 @@ function handleCardPaste(name, e) {
 // reply answers it. Only on a FRESH reading: a snapshot older than 10 s may
 // say waiting for a worker that has moved on, and the message then skipped
 // the queue and landed mid-turn (implicit state machines inventory #36).
+// Fresh means the WORKER LIST was read in the last 10 s. _lastDataTime moves on
+// every SSE message, the 10 s ping included, so it called a minutes-old list
+// fresh and the queued message still landed mid-turn (2026-11-06).
 function _waitingNow(name) {
   const s = (sessions || []).find(x => x.name === name);
   if (!s || s.status !== 'waiting') return false;
-  const fresh = Date.now() - (_lastDataTime || 0) < 10000;
+  const fresh = Date.now() - _sessionsReadAt < 10000;
   if (!fresh) { try { amuxTrack('queue_kept_stale_waiting', { measured: true, n_considered: 1 }); } catch (e) {} }
   return fresh;
 }
@@ -23733,7 +23962,25 @@ function _updateSendSplit() {
 }
 setTimeout(_updateSendSplit, 0);
 
-const _composerPendingSends = new Set();
+// session -> the token of the ONE send holding that composer. A send releases
+// the lock only while it still holds it: after the 20 s watch gives the button
+// back and a second send starts, the first send's late finish must not unlock
+// the composer under the second (inventory #2, 2026-11-06).
+const _composerPendingSends = new Map();
+function _composerLockTake(name, original) {
+  const token = {};
+  _composerPendingSends.set(name, token);
+  _composerLockWatch(name, original, token);
+  return token;
+}
+function _composerLockRelease(name, token) {
+  if (_composerPendingSends.get(name) !== token) {
+    console.info('[amux] composer_stale_release_ignored', name);
+    return;
+  }
+  _composerPendingSends.delete(name);
+  _composerPendingSince.delete(name);
+}
 function _composerUnconfirmed(session, result, attachments) {
   // The local log is available even with analytics disabled. Never send message
   // contents, upload paths or credentials in a failure beacon.
@@ -23748,11 +23995,11 @@ function _composerUnconfirmed(session, result, attachments) {
 // arrived shows in Messages, so the toast says to look there before resending.
 const _COMPOSER_LOCK_MS = 20000;
 const _composerPendingSince = new Map();
-function _composerLockWatch(name, original) {
+function _composerLockWatch(name, original, token) {
   _composerPendingSince.set(name, Date.now());
   setTimeout(() => {
     const t = _composerPendingSince.get(name);
-    if (!t || !_composerPendingSends.has(name) || Date.now() - t < _COMPOSER_LOCK_MS) return;
+    if (!t || _composerPendingSends.get(name) !== token || Date.now() - t < _COMPOSER_LOCK_MS) return;
     _composerPendingSends.delete(name);
     _composerPendingSince.delete(name);
     // The text back where it was typed, as a refused send does.
@@ -23813,8 +24060,7 @@ async function sendPeekCmd() {
   // Persist text and upload references in the local outbox before clearing.
   // A network refusal remains reviewable in Sync and pending Messages.
   const draftRevision = _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _composerLockWatch(session, original);
+  const lock = _composerLockTake(session, original);
   _syncComposerPending();
   let result = 'failed';
   try {
@@ -23854,7 +24100,7 @@ async function sendPeekCmd() {
     _composerUnconfirmed(session, 'exception', files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(session);
+    _composerLockRelease(session, lock);
     _syncComposerPending();
   }
 }
@@ -24617,6 +24863,11 @@ const _ACTION_CHIPS = [
     { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s', desc: 'Ctrl+X, release, then Ctrl+S' },
     { id: 'up', label: '\u2191', action: 'keys', value: 'Up', desc: 'Arrow Up' },
     { id: 'down', label: '\u2193', action: 'keys', value: 'Down', desc: 'Arrow Down' },
+    // Left/Right and Shift+Tab move between the questions of a multi-question
+    // prompt (Tab only goes forward). The server already accepts all three keys.
+    { id: 'left', label: '\u2190', action: 'keys', value: 'Left', desc: 'Arrow Left (previous question)' },
+    { id: 'right', label: '\u2192', action: 'keys', value: 'Right', desc: 'Arrow Right (next question)' },
+    { id: 'btab', label: 'Shift+Tab', action: 'keys', value: 'BTab', desc: 'Shift+Tab (previous question)' },
     { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush', desc: 'Git push' },
     { id: 'ctrlc', label: 'Ctrl+C', action: 'keys', value: 'C-c', desc: 'Interrupt', danger: true },
     { id: 'ctrlo', label: 'Ctrl+O', action: 'keys', value: 'C-o', desc: 'Accept & continue' },
@@ -24799,7 +25050,9 @@ async function _approvalsRefresh() {
       // show how long the draft has waited and how often it was re-requested.
       const _ageM = Math.max(1, Math.round((p.age_s || 0) / 60));
       const _waited = _ageM < 120 ? _ageM + 'm' : (_ageM < 2880 ? Math.round(_ageM / 60) + 'h' : Math.round(_ageM / 1440) + 'd');
-      const apprWhen = (p.expires_in_s == null)
+      const _sched = p.scheduled && p.scheduled.send_at ? p.scheduled : null;
+      const apprWhen = _sched ? 'sends ' + _apprWhenText(_sched.send_at)
+        : (p.expires_in_s == null)
         ? 'waiting ' + _waited + ((p.requests || 1) > 1 ? ', asked ' + p.requests + 'x' : '')
         : 'expires in ' + Math.max(1, Math.round(p.expires_in_s / 60)) + 'm';
       // OPEN BY DEFAULT (Ethan: "i should be able to see the draft email").
@@ -24814,7 +25067,13 @@ async function _approvalsRefresh() {
         + '<span style="opacity:0.7;font-size:var(--fs-sm);">' + esc(apprWhen) + '</span>'
         + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
         + 'style="background:color-mix(in srgb, var(--green) 84%, var(--shade));color:var(--on-solid);border:none;border-radius:var(--radius-md);'
-        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">Approve</button>'
+        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">' + (_sched ? 'Send now' : 'Approve') + '</button>'
+        // SCHEDULE (Ethan, 2026-11-08: "when i approve outbound email there
+        // should be another button to schedule for a date/time"). Opens a date
+        // and time row under the draft; the server holds the draft and sends
+        // it then (runtime_jobs/email_scheduled_send.rs).
+        + '<button class="appr-schedule appr-btn-outline" onclick="event.preventDefault();_apprSchedule(\'' + esc(p.id) + '\')">'
+        + (_sched ? 'Reschedule' : 'Schedule') + '</button>'
         // EDIT (Ethan, 2026-09-23: "just make it Approve, Discard and Edit. and
         // then make edit enter edit mode where i can edit it manually"). The
         // preview becomes a textarea in place; Approve then sends what is in it.
@@ -24846,6 +25105,9 @@ async function _approvalsRefresh() {
         + 'style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
         + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
+        + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
+        + (p.schedule_failed ? '<div class="appr-sched-failed">'
+          + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
         + (_full ? '' : '<div style="font-size:var(--fs-sm);color:color-mix(in srgb, var(--yellow) 47%, var(--on-solid));margin:0 0 var(--space-1-5);">Showing only the first '
           + _bodyText.length + ' characters of this draft. Approve sends the complete stored message.</div>')
         + '</details>';
@@ -24993,6 +25255,69 @@ async function _apprApprove(id, btn) {
     else showToast('Approve failed: ' + (d.error || r.status));
   } catch (e) { showToast('Approve failed: ' + e); }
   _approvalsRefresh();
+}
+// "today 3:00 PM", "tomorrow 9:00 AM", "Tue, Nov 11, 9:00 AM": when a scheduled
+// draft goes out, in this device's time.
+function _apprWhenText(sec) {
+  const d = new Date(sec * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  // Calendar days, not milliseconds: a daylight-saving day is 23 or 25 hours.
+  const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (same(d, now)) return 'today ' + time;
+  if (same(d, next)) return 'tomorrow ' + time;
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + time;
+}
+// A <input type="datetime-local"> value for a Date, in local time.
+function _apprLocalInput(d) {
+  const z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes());
+}
+// Open (or close) the date and time row under a draft. The native picker is
+// the control on a phone. The poll pauses while it is open, like an edit.
+function _apprSchedule(id) {
+  const row = document.getElementById('appr-sched-' + id);
+  if (!row) return;
+  if (!row.hidden) { _apprScheduleClose(id); return; }
+  const at = parseFloat(row.dataset.sendAt);
+  let when = at > 0 ? new Date(at * 1000) : new Date();
+  if (!(at > 0)) { when.setDate(when.getDate() + 1); when.setHours(9, 0, 0, 0); }   // tomorrow 9 AM
+  _apprEditing.add('sched:' + id);
+  row.innerHTML = '<label class="appr-sched-form"><span class="appr-sched-label">Send at</span>'
+    + '<input type="datetime-local" class="input appr-sched-at" id="appr-sched-at-' + esc(id) + '" value="' + _apprLocalInput(when) + '" min="' + _apprLocalInput(new Date()) + '">'
+    + '<button class="appr-sched-confirm" onclick="event.preventDefault();_apprScheduleConfirm(\'' + esc(id) + '\',this)">Schedule send</button>'
+    + '<button class="appr-btn-outline appr-sched-cancel" onclick="event.preventDefault();_apprScheduleClose(\'' + esc(id) + '\')">Cancel</button>'
+    + '</label>';
+  row.hidden = false;
+}
+function _apprScheduleClose(id) {
+  _apprEditing.delete('sched:' + id);
+  const row = document.getElementById('appr-sched-' + id);
+  if (row) { row.hidden = true; row.innerHTML = ''; }
+  _approvalsRefresh();
+}
+async function _apprScheduleConfirm(id, btn) {
+  const inp = document.getElementById('appr-sched-at-' + id);
+  const when = inp && inp.value ? new Date(inp.value) : null;
+  if (!when || isNaN(when) || when.getTime() <= Date.now()) { showToast('Pick a time in the future'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Scheduling…'; }
+  try {
+    // Same approver marker as Approve; a send time makes it a schedule. An
+    // open edit goes with it, so what is on screen is what will send.
+    const body = { send_at: when.getTime() / 1000 };
+    const ta = document.getElementById('appr-edit-' + id);
+    if (ta) body.body = ta.value;
+    const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), {
+      method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.scheduled) {
+      _apprEditing.delete(id);
+      showToast('Scheduled: sends ' + _apprWhenText(d.send_at));
+    } else { showToast('Schedule failed: ' + (d.error || r.status)); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
+  } catch (e) { showToast('Schedule failed: ' + e); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
+  _apprScheduleClose(id);
 }
 function _approvalsBoot() { _approvalsRefresh(); setInterval(_approvalsRefresh, 60_000); }
 if (document.body) _approvalsBoot();
@@ -27165,9 +27490,11 @@ function _linkifyUrls(safeHtml) {
     return String(safeHtml).replace(/(https?:\/\/[^\s<>"'`]+)(?![^<]*>)/g, (m) => {
       const url = m.replace(/[.,;:!?)]+$/, '');   // trailing punctuation is prose, not URL
       const tail = m.slice(url.length);
+      const fp = _ownFilePath(url.replace(/&amp;/g, '&'));   // a file on this amux reads as its path
       return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
-        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();">'
-        + url + '</a>' + tail;
+        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();"'
+        + (fp ? ' title="' + url + '"' : '') + '>'
+        + (fp ? esc(fp) : url) + '</a>' + tail;
     });
   } catch (e) { return safeHtml; }
 }
@@ -28208,7 +28535,11 @@ async function _dictStartRec() {
   try { _dictRecorder = new MediaRecorder(_dictStream, opts); }
   catch(e) { try { _dictRecorder = new MediaRecorder(_dictStream); } catch(e2) { showToast('Recorder unavailable'); return; } }
   _dictChunks = [];
-  await _dictLiveClear();
+  // Not awaited: in the Mac app a storage write can hang for minutes, and the
+  // recorder waited on it with the popup on "Starting mic…" at 0:00 (owner,
+  // 2026-11-03). Storage runs its writes in order, so this clear still lands
+  // before the first second is saved.
+  _dictLiveClear();
   _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { _dictChunks.push(e.data); _dictLiveSave(e.data); } };
   _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictLiveClear(); _dictStatus('Cancelled'); } else _dictUpload(); };
   // 1 s slices: each second reaches IndexedDB as it is spoken (see _dictLiveSave).
@@ -28315,14 +28646,36 @@ async function _dictOutbox() {
 // A take in progress is saved every second (`dict_live`), so a reload or a
 // crash mid-dictation keeps it: the next page load files it in the outbox as
 // a recovered clip, and it is transcribed like any other.
+// Once a storage write has hung, dictation leaves storage alone for two
+// minutes and sends from memory: every take otherwise paid two 5 s waits, under
+// "Could not save on this device — sending now…" (owner, 2026-11-03). The
+// connection is dropped so the next use reopens it; beaconed as dict_storage_hung.
+let _dictStoreDownUntil = 0;
+function _dictStoreHung(why) {
+  _dictStoreDownUntil = Date.now() + 120000;
+  _idb.reset(why);   // catches its own errors
+  _dictBeacon('dict_storage_hung', { why });
+}
+const _dictStoreDown = () => Date.now() < _dictStoreDownUntil;
 async function _dictLiveSave(chunk) {
+  if (_dictStoreDown()) return;
   try {
     const live = (await _idb.get('dict_live')) || {started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
     live.chunks.push(chunk);
     await _idb.set('dict_live', live);
   } catch(e) {}
 }
-async function _dictLiveClear() { try { await _idb.set('dict_live', null); } catch(e) {} }
+// Bounded like the outbox read: a clear that never settles must not hold up
+// whoever awaits it (the upload after Done does). A timeout is beaconed.
+async function _dictLiveClear() {
+  let timer;
+  try {
+    await Promise.race([_idb.set('dict_live', null),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_live_clear_timeout')), _DICT_READ_MS); })]);
+  } catch(e) {
+    if (e && e.message === 'dict_live_clear_timeout') _dictStoreHung('dict_live_clear_timeout');
+  } finally { clearTimeout(timer); }
+}
 async function _dictRecoverLive() {
   let live = null;
   try { live = await _idb.get('dict_live'); } catch(e) { return; }
@@ -28366,6 +28719,7 @@ async function _dictOutboxAdd(blob, mime, ms) {
       state: 'pending', attempts: 0, last: 0, error: '', text: '' }]));
     return id;
   } catch (e) {
+    if (e && e.message === 'dict_write_timeout') _dictStoreHung('dict_write_timeout');
     try { amuxTrack('dictation_outbox_add_failed', {error: String((e && e.message) || e).slice(0, 120), bytes: blob.size, measured: true, n_considered: 1}); } catch (_) {}
     return null;
   }
@@ -28387,13 +28741,15 @@ async function _dictUpload() {
   _dictChunks = [];
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
-  const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  const online_ = typeof online === 'undefined' || online;
+  const id = _dictStoreDown() && online_ ? null : await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
   if (id === null) {
     // This device's storage would not take it: send it now, from memory, rather
     // than lose it. The live take is kept until the send answers.
-    _dictStatus('Could not save on this device — sending now…');
+    _dictStatus('Transcribing… (' + _dictKB(blob.size) + ')');
+    _dictBeacon('dict_sent_unsaved', { bytes: blob.size, storage_down: _dictStoreDown() });
     const txt = await _dictSendDirect(blob, mime, ms);
-    if (txt !== null) { await _dictLiveClear(); _dictClosePopup(false); }
+    if (txt !== null) { _dictLiveClear(); _dictClosePopup(false); }
     return;
   }
   await _dictLiveClear();                              // the take now lives in the outbox
@@ -33108,6 +33464,10 @@ function closeFilePreview() {
   document.getElementById('file-body').style.display = '';
   _fileData = null;
   _fileViewMode = 'preview';
+  // A load still in flight belongs to a viewer that is gone: without this its
+  // cache read or reply passed the generation check and set _fileData on a
+  // closed overlay (2026-11-06).
+  _filePreviewGen++;
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -38424,6 +38784,16 @@ function _ownLinkHash(href) {
   if ((m = u.pathname.match(/^\/w\/([^/]+)\/?$/))) return '#peek=' + m[1];
   if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
   return null;
+}
+// The absolute path behind a link to a file on THIS amux (/f/<path>), or ''.
+// Such a link is shown as its path, the way amux shows every file: a worker
+// asked for "a link to the plan" wrote https://<this amux>/f/Users/... and the
+// owner read a server URL where a clickable path belonged (Ethan, 2026-11-06).
+// The href stays, so a plain click opens the file here (_openOwnLink).
+function _ownFilePath(href) {
+  const h = _ownLinkHash(href);
+  if (!h || h.indexOf('#path=') !== 0) return '';
+  try { return decodeURIComponent(h.slice(6)); } catch (_) { return ''; }
 }
 function _openOwnLink(href, how) {
   const hash = _ownLinkHash(href);
@@ -46369,6 +46739,13 @@ function _renderMarkdownInner(raw, basePath) {
           return '<a href="#" class="md-file-link" data-file="' + esc(target) + '"' +
                  (isDir ? ' data-dir="1"' : '') + ' title="' + esc(target) + '">' + text + '</a>';
         }
+        // A link to a file on THIS amux (/f/<path>) is that file: it opens in
+        // the viewer, and a bare URL reads as its path (Ethan, 2026-11-06).
+        const own = typeof _ownFilePath === 'function' ? _ownFilePath(href || '') : '';
+        if (own) {
+          const bare = text.replace(/<[^>]*>/g, '') === (href || '') || text === esc(href || '');
+          return '<a href="#" class="md-file-link" data-file="' + esc(own) + '" title="' + esc(own) + '">' + (bare ? esc(own) : text) + '</a>';
+        }
         const isAnchor = (href || '').startsWith('#');
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
         const t = title ? ' title="' + esc(title) + '"' : '';
@@ -52806,19 +53183,42 @@ const _idb = (() => {
       if (isHidden()) flushCache(true); else flushCache();
     });
   }
+  const resetDb = (reason) => {
+    const had = !!db;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return had;
+  };
+  // A CACHE READ HAS A DEADLINE (Ethan, 2026-11-07: a worker opened to an empty
+  // terminal, "this keeps happening"). A WebKit storage read can hang for hours.
+  // The terminal's failed-fetch path awaited its saved copy, so its request
+  // never settled, and every later poll for that worker reused the stuck
+  // request: no fetch reached the server again until the app was reloaded. A
+  // rebuildable cache key reads as absent after 3s and the connection is reset
+  // (kind=idb-reopened reason=cache_read_timeout). Pending work (drafts,
+  // offline_queue, dictation) keeps waiting: reading it as empty could let a
+  // caller write the empty value back over it.
+  const _CACHE_READ_MS = 3000;
+  const readKv = key => withDb(d => new Promise((resolve) => {
+    const tx = d.transaction('kv', 'readonly');
+    const req = tx.objectStore('kv').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  })).catch(() => null);
+  const readCache = key => {
+    let timer;
+    return Promise.race([readKv(key), new Promise(resolve => {
+      timer = setTimeout(() => { resetDb('cache_read_timeout'); resolve(null); }, _CACHE_READ_MS);
+    })]).finally(() => clearTimeout(timer));
+  };
   return {
     // Drop the connection so the next call opens a fresh one. A connection
     // whose storage process went away can hang every request without an
     // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
     // in a day, every outbox pass after the first one on the same handle).
-    reset: (reason) => {
-      const had = !!db;
-      try { if (db) db.close(); } catch (_) {}
-      db = null;
-      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
-        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
-      return had;
-    },
+    reset: resetDb,
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
       : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
@@ -52862,12 +53262,8 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
-      const tx = d.transaction('kv', 'readonly');
-      const req = tx.objectStore('kv').get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    })).catch(() => null),
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key))
+      : _CACHE_KEY.test(String(key)) ? readCache(key) : readKv(key),
     del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
@@ -53282,6 +53678,7 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = _applyLifecycleAcks(msg.payload);
+          _sessionsReadAt = Date.now();
           _peekChatStateSync();
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
@@ -53709,6 +54106,16 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  let _swReloadWhenShown = false;
+  const _swReloadNow = () => {
+    // The draft in the open worker's composer survives the reload in the draft
+    // store, which the composer reads on open. (peekState.draft had no reader.)
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
+    } catch (e) { console.warn('[amux] draft not kept across the service worker reload', e); }
+    location.reload();
+  };
   // A first visit has no controller yet: the new worker claiming this page fires
   // controllerchange, and reloading then threw away whatever the visitor had started.
   // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
@@ -53733,17 +54140,22 @@ if ('serviceWorker' in navigator) {
       console.info('[amux] service worker installed on first visit; no reload needed');
       return;
     }
-    // Rescue in-progress peek input from the reload
-    try {
-      const inp = document.getElementById('peek-cmd-input');
-      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) {
-        const st = JSON.parse(sessionStorage.getItem('peekState') || '{}');
-        st.session = st.session || peekSession;
-        st.draft = inp.value;
-        sessionStorage.setItem('peekState', JSON.stringify(st));
+    // One tab's update makes the new worker claim EVERY tab. A hidden tab waits
+    // until it is shown, as the version reload does, so a deploy does not reload
+    // every background tab at once (inventory follow-up to #34, 2026-11-06).
+    if (document.hidden) {
+      if (!_swReloadWhenShown) {
+        _swReloadWhenShown = true;
+        document.addEventListener('visibilitychange', function onShown() {
+          if (document.hidden) return;
+          document.removeEventListener('visibilitychange', onShown);
+          console.info('[amux] sw_reload_deferred_until_shown');
+          _swReloadNow();
+        });
       }
-    } catch (e) {}
-    location.reload();
+      return;
+    }
+    _swReloadNow();
   });
   }).catch(err => {
     // NEVER swallow this. A failed registration is the difference between a
@@ -58536,12 +58948,17 @@ const _ASK_MAX_THREAD = 6;
 let _askThread = [];          // [{q, a}] for the global tab
 let _peekAskThread = [];      // [{q, a}] for the worker tab
 let _peekAskThreadFor = '';   // which worker _peekAskThread belongs to
+// One generation per panel. An answer takes up to 300 s; a new question, a new
+// thread or a switch of worker in that time makes it someone else's answer, so
+// it is dropped rather than pushed into the thread on screen.
+const _askGen = { global: 0, peek: 0 };
 function _askThreadFor(peek) {
   if (!peek) return _askThread;
   if (_peekAskThreadFor !== peekSession) { _peekAskThread = []; _peekAskThreadFor = peekSession; }
   return _peekAskThread;
 }
 function _askNewThread(peek) {
+  _askGen[peek ? 'peek' : 'global']++;
   if (peek) { _peekAskThread = []; _peekAskThreadFor = peekSession; } else { _askThread = []; }
   const ansEl = document.getElementById(peek ? 'peek-ask-answer' : 'ask-answer');
   const metaEl = document.getElementById(peek ? 'peek-ask-meta' : 'ask-meta');
@@ -58608,6 +59025,12 @@ async function _askRun(peek) {
   if (!question) { if (qEl) qEl.focus(); return; }
   const days = +(document.getElementById(peek ? 'peek-ask-days' : 'ask-days')?.value || 14);
   const session = peek ? peekSession : null;
+  const genKey = peek ? 'peek' : 'global';
+  const gen = ++_askGen[genKey];
+  const askedThread = _askThreadFor(peek);
+  // Still the question on screen: same panel generation, same worker, same thread.
+  const current = () => gen === _askGen[genKey] && (!peek || peekSession === session) && askedThread === _askThreadFor(peek);
+  const dropStale = (why) => { console.info('[amux] ask_answer_dropped', { session, why }); };
   if (metaEl) metaEl.textContent = 'Asking' + (session ? ' about ' + session : '') + '\u2026';
   if (ansEl) ansEl.innerHTML = '';
   let r, d;
@@ -58624,14 +59047,16 @@ async function _askRun(peek) {
       // The thread goes with the question so a follow-up ("why?", "which of
       // those...") is interpreted against what was already asked.
       body: JSON.stringify({ question, session, days,
-        history: _askThreadFor(peek).slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
+        history: askedThread.slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
       _skipOutbox: true, signal: AbortSignal.timeout(300000),
     });
     d = await r.json();
   } catch (e) {
+    if (!current()) { dropStale('superseded'); return; }
     if (metaEl) metaEl.textContent = 'Could not reach the server: ' + String(e && e.message || e);
     return;
   }
+  if (!current()) { dropStale('superseded'); return; }
   // A locally queued 202 never left the browser, so it is not an answer.
   if (_isLocallyQueued(r)) {
     if (metaEl) metaEl.textContent = 'Not sent: this client queued the request offline. Reconnect and ask again.';
@@ -58659,19 +59084,36 @@ async function _askRun(peek) {
   if (metaEl) metaEl.textContent = 'answered over ' + considered + ' of ' + available
     + ' message' + (d.n_available === 1 ? '' : 's') + ' from ' + scope
     + ', last ' + d.window_days + ' day' + (d.window_days === 1 ? '' : 's')
-    + (d.truncated ? ' (oldest dropped to fit)' : '')
+    + (d.truncated
+      ? (d.n_relevant ? ' (' + d.n_relevant.toLocaleString() + ' best matches plus the newest)' : ' (no close matches; the newest)')
+      : '')
     + (d.history_turns ? ' \u00b7 follow-up with ' + d.history_turns + ' earlier exchange' + (d.history_turns === 1 ? '' : 's') : '')
     + secs;
-  const thread = _askThreadFor(peek);
-  thread.push({ q: question, a: d.answer || '' });
+  askedThread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
-  const cites = Array.isArray(d.cited) && d.cited.length
+  // One row of message buttons: what the answer cited, and the closest
+  // matches by shared words, so a message the prose missed is still one tap away.
+  const idRow = (label, ids) => Array.isArray(ids) && ids.length
     ? '<div style="margin-top:var(--space-2-5);display:flex;gap:var(--space-1-5);flex-wrap:wrap;align-items:center;">'
-      + '<span style="font-size:var(--fs-xs);color:var(--dim);">cited:</span>'
-      + d.cited.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
+      + '<span style="font-size:var(--fs-xs);color:var(--dim);">' + label + ':</span>'
+      + ids.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
         + JSON.stringify(id) + ')">MSG-' + esc(id) + '</button>').join('') + '</div>'
     : '';
-  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + cites);
+  const cited = Array.isArray(d.cited) ? d.cited : [];
+  // What the search found, shown whatever the prose concludes: the top
+  // matches with who, when and how each opens. One tap opens the message.
+  const best = Array.isArray(d.best_matches) ? d.best_matches : [];
+  const bestHtml = best.length
+    ? '<div class="ask-best">'
+      + '<div class="ask-best-label">closest matches:</div>'
+      + best.map(m => '<button class="btn ask-best-row" onclick="_askOpenCitation('
+        + JSON.stringify(m.id) + ')"><b>MSG-' + esc(m.id) + '</b> · ' + esc(m.session || '') + ' · ' + esc(m.at || '')
+        + '<br><span class="ask-best-snippet">' + esc(String(m.snippet || '').replace(/\s+/g, ' ').slice(0, 220)) + '</span></button>').join('')
+      + '</div>'
+    : '';
+  const shown = cited.concat(best.map(m => m.id));
+  const closest = (Array.isArray(d.matches) ? d.matches : []).filter(id => !shown.includes(id));
+  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + idRow('cited', cited) + bestHtml + idRow('more', closest));
 }
 /// Open the message an answer cited, so a claim can be checked against the row.
 async function _askOpenCitation(id) {
@@ -68788,6 +69230,8 @@ function _cvFindName(conv) {
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  // A worker's direct message with you (`d:<worker>|<you>`): the worker.
+  if (conv && conv.indexOf('d:') === 0) return conv.slice(2).split('|')[0];
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
@@ -68833,7 +69277,8 @@ function _cvNewCandidates() {
   const L = _cv.list || {};
   return [
     ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
-    ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.people || []).filter(p => p.conv).map(p => ({ conv: p.conv, label: p.me ? p.name + ' (you)' : p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.direct || []).map(d => ({ conv: d.conv, label: d.worker, kind: 'direct message', ico: _cvAvatar(d.worker, true) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
 }
@@ -68880,11 +69325,15 @@ function _cvRenderSide() {
     // Owners and admins manage channels from here (AA-52). The server refuses
     // everyone else, so this only hides a button nobody else could use.
     + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
-  const ppl = (L.people || []);
-  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
-  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+  const ppl = (L.people || []), dms = (L.direct || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length ? '' : 'none';
+  // Your own entry opens your notes to yourself, as in Slack (Ethan,
+  // 2026-11-06: "i should also be able to open my own"). A worker that wrote
+  // to you directly is listed here too, as its 1:1 with you.
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me && !p.conv
     ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
-    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.me ? p.name + ' (you)' : p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.me || p.online ? ' on' : '') + '" title="' + (p.me || p.online ? 'online' : 'away') + '"></span>')).join('')
+    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -69067,7 +69516,7 @@ function _cvEnter() {
     _cvSelect(sel, true);
   });
 }
-function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; clearInterval(_cv.pollT); _cv.pollT = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
@@ -69086,9 +69535,10 @@ function _cvSelect(sel, auto) {
   { const pb = document.getElementById('cv-pins-btn'); if (pb) pb.hidden = true; }
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
-  if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
+  if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
   _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
@@ -69101,7 +69551,16 @@ function _cvSelect(sel, auto) {
   // fallback for a stream that is down (and for invited members, who get the
   // wake-up but not the event).
   _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel && (!_liveSSE || Date.now() - (_cv.liveAt || 0) > 15000)) _cvPoll(false); }, 2500);
-  if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(inp);
+}
+// The message box takes focus when a conversation opens, unless you already
+// went somewhere to type (the search box): it used to take the focus back
+// 50 ms later, and what you typed went into the message box.
+function _cvFocusSoon(el) {
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (el && (!a || a === document.body || a === el || !a.matches('input, textarea, select, [contenteditable="true"]'))) el.focus();
+  }, 50);
 }
 function _cvFit() {
   const view = document.getElementById('messages-view'); if (!view) return;
@@ -69112,7 +69571,223 @@ function _cvFit() {
   });
 }
 window.addEventListener('resize', () => { if (_cvViewOn()) _cvFit(); });
-function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+function _cvSearch(q) { q = (q || '').trim(); if (!q) return; _cvSqRemember(q); _cvSqClose(); _cvSelect('@search:' + q); }
+
+// ── SEARCH AND DISCOVERY (owner, 2026-11-05: "improve the chat ux, we need
+// better search/discovery") ──
+// The sidebar box searches as you type. Its panel offers filters as chips
+// (From, In, Time, Has), which write the same operators the server reads
+// (conversations.rs SearchFilters: from:, in:, after:, has:), so a typed
+// query and a clicked one are the same thing. Results come grouped:
+// conversations whose name matches, then messages with the words marked.
+// Empty, it shows your recent searches. ↑ ↓ Enter Esc work; "/" focuses it.
+const _cvSq = { seq: 0, t: 0, sel: -1, items: [], menu: null, res: null, q: '' };
+const _CV_SQ_TIME = [['24h', 'Past 24 hours'], ['7d', 'Past week'], ['30d', 'Past 30 days'], ['365d', 'Past year']];
+const _CV_SQ_HAS = [['file', 'A file'], ['link', 'A link'], ['thread', 'A thread']];
+function _cvSqInput() { return document.getElementById('cv-search'); }
+function _cvSqPanel() { return document.getElementById('cv-sq'); }
+// The words of a query that are not operators.
+function _cvSqText(q) { return String(q || '').split(/\s+/).filter(w => w && !/^[a-z]+:/.test(w)).join(' '); }
+function _cvSqTok(q, op) { const m = String(q || '').match(new RegExp('(?:^|\\s)' + op + ':(\\S+)')); return m ? m[1] : ''; }
+function _cvSqSetTok(op, v) {
+  const inp = _cvSqInput();
+  let q = inp.value.replace(new RegExp('(^|\\s)' + op + ':\\S+', 'g'), ' ').replace(/\s+/g, ' ').trim();
+  if (v) q = (q ? q + ' ' : '') + op + ':' + v;
+  inp.value = q + (q ? ' ' : '');
+  _cvSq.menu = null;
+  inp.focus();
+  _cvSqRun();
+}
+function _cvSqRecent() { try { return JSON.parse(localStorage.getItem('amux_cv_recent_search') || '[]'); } catch (e) { return []; } }
+function _cvSqRemember(q) {
+  const list = [q].concat(_cvSqRecent().filter(x => x !== q)).slice(0, 8);
+  try { localStorage.setItem('amux_cv_recent_search', JSON.stringify(list)); } catch (e) { console.warn('recent searches not saved', e); }
+}
+function _cvSqOpen() {
+  const pan = _cvSqPanel(), inp = _cvSqInput(); if (!pan || !inp) return;
+  const r = inp.getBoundingClientRect();
+  const w = Math.min(560, window.innerWidth - Math.max(8, r.left) - 8);
+  pan.style.left = Math.max(8, r.left) + 'px';
+  pan.style.top = (r.bottom + 4) + 'px';
+  pan.style.width = Math.max(r.width, w) + 'px';
+  pan.style.maxHeight = Math.max(200, window.innerHeight - r.bottom - 16) + 'px';
+  pan.hidden = false;
+  inp.setAttribute('aria-expanded', 'true');
+  _cvSqRun(true);
+}
+function _cvSqClose() {
+  const pan = _cvSqPanel(); if (pan) pan.hidden = true;
+  const inp = _cvSqInput(); if (inp) inp.setAttribute('aria-expanded', 'false');
+  _cvSq.menu = null; _cvSq.sel = -1;
+}
+// Debounced: each keystroke restarts the wait, and an answer to an older
+// query is dropped (seq), so the list never shows results for text you deleted.
+function _cvSqRun(now) {
+  clearTimeout(_cvSq.t);
+  const q = _cvSqInput().value.trim();
+  _cvSq.q = q;
+  if (!q) { _cvSq.res = null; _cvSqRender(); return; }
+  _cvSqRender();
+  const seq = ++_cvSq.seq;
+  _cvSq.t = setTimeout(async () => {
+    try {
+      const r = await fetch(API + '/api/conversations/search?limit=8&q=' + encodeURIComponent(q));
+      const d = await r.json();
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = r.ok ? d : { error: d.error || ('HTTP ' + r.status) };
+    } catch (e) {
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = { error: String((e && e.message) || e) };
+    }
+    _cvSqRender();
+  }, now ? 0 : 180);
+}
+function _cvSqConvs() {
+  const L = _cv.list || {};
+  return [].concat(
+    (L.channels || []).map(c => ({ conv: c.conv, name: '#' + (c.title || c.name), kind: 'Channel', key: c.name, ico: '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>' })),
+    (L.people || []).filter(p => !p.me).map(p => ({ conv: p.conv, name: p.name, kind: 'Person', key: String(p.email || p.name).split('@')[0], ico: _cvAvatar(p.name, false, p.email) })),
+    (L.direct || []).map(d => ({ conv: d.conv, name: d.worker, kind: 'Direct message', key: d.worker, ico: _cvAvatar(d.worker, true) })),
+    (L.workers || []).map(w => ({ conv: w.conv, name: w.name, kind: 'Worker', key: w.name, ico: _cvAvatar(w.name, true) })));
+}
+function _cvSqWhen(ts) {
+  const d = new Date(ts);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+function _cvSqChip(op, label, shown) {
+  const v = _cvSqTok(_cvSq.q, op);
+  const on = !!v;
+  return '<button type="button" class="cv-sq-chip' + (on ? ' on' : '') + (_cvSq.menu === op ? ' open' : '') + '" data-op="' + op + '" onmousedown="event.preventDefault()" onclick="'
+    + (on ? '_cvSqSetTok(this.dataset.op, \'\')' : '_cvSq.menu = _cvSq.menu === this.dataset.op ? null : this.dataset.op; _cvSqRender()')
+    + '" aria-pressed="' + on + '">' + esc(on ? label + ': ' + (shown ? shown(v) : v) + ' ×' : label + ' ▾') + '</button>';
+}
+function _cvSqRender() {
+  const pan = _cvSqPanel(); if (!pan || pan.hidden) return;
+  const q = _cvSq.q, text = _cvSqText(q).toLowerCase();
+  const items = [];   // what ↑ ↓ Enter move through: {run, html}
+  const add = (html, run) => { items.push(run); return html.replace('<button ', '<button data-i="' + (items.length - 1) + '" '); };
+  const convs = _cvSqConvs();
+  const convName = v => { const c = convs.find(x => x.conv === v || x.conv === 'g:' + v.replace(/^#/, '')); return c ? c.name : v; };
+  const timeName = v => (_CV_SQ_TIME.find(t => t[0] === v) || [v, v])[1];
+  let h = '<div class="cv-sq-chips" role="toolbar" aria-label="Filters">' + _cvSqChip('from', 'From') + _cvSqChip('in', 'In', convName)
+    + _cvSqChip('after', 'Time', timeName) + _cvSqChip('has', 'Has') + '</div>';
+  const opt = (label, ico, run) => add('<button type="button" class="cv-sq-row" role="option" onmousedown="event.preventDefault()">' + (ico || '') + '<span class="cv-sq-main">' + label + '</span></button>', run);
+  if (_cvSq.menu) {
+    const m = _cvSq.menu;
+    const list = m === 'from' ? convs.filter(c => c.kind !== 'Channel').map(c => [c.key, c.name, c.ico, c.kind])
+      : m === 'in' ? convs.map(c => [c.conv.indexOf('g:') === 0 ? '#' + c.conv.slice(2) : c.conv, c.name, c.ico, c.kind])
+      : (m === 'after' ? _CV_SQ_TIME : _CV_SQ_HAS).map(t => [t[0], t[1], '', '']);
+    h += '<div class="cv-sq-sec">' + esc({ from: 'Messages from', in: 'Messages in', after: 'Messages sent in the', has: 'Messages that have' }[m]) + '</div>'
+      + list.map(([v, name, ico, kind]) => opt(esc(name) + (kind ? '<small>' + esc(kind) + '</small>' : ''), ico, () => _cvSqSetTok(m, v))).join('');
+  } else if (!q) {
+    const recent = _cvSqRecent();
+    if (recent.length) h += '<div class="cv-sq-sec">Recent searches</div>' + recent.map(r => opt(esc(r), '<span class="cv-ico">&#x1F552;</span>', () => { _cvSqInput().value = r; _cvSearch(r); })).join('');
+    h += '<div class="cv-sq-tip">Type to search every conversation you can read. Filters: <code>from:doron</code> <code>in:#amux</code> <code>after:7d</code> <code>has:file</code></div>';
+  } else {
+    const hitConvs = text ? convs.filter(c => c.name.toLowerCase().replace(/^#/, '').includes(text.replace(/^#/, ''))).slice(0, 5) : [];
+    if (hitConvs.length) h += '<div class="cv-sq-sec">Conversations</div>' + hitConvs.map(c => opt(esc(c.name) + '<small>' + esc(c.kind) + '</small>', c.ico, () => { _cvSqClose(); _cvSqInput().blur(); _cvSelect(c.conv); })).join('');
+    const d = _cvSq.res;
+    h += '<div class="cv-sq-sec">Messages' + (d && d.total ? ' <span class="cv-sq-n">' + d.total + '</span>' : '') + '</div>';
+    if (!d) h += '<div class="cv-sq-tip">Searching…</div>';
+    else if (d.error) h += '<div class="cv-sq-tip">Search failed: ' + esc(d.error) + '</div>';
+    else {
+      const bad = ((d.filters || {}).unknown || []);
+      if (bad.length) h += '<div class="cv-sq-tip cv-sq-warn">Not a filter, ignored: ' + bad.map(esc).join(', ') + '</div>';
+      if (!(d.posts || []).length) h += '<div class="cv-sq-tip">No messages match.</div>';
+      h += (d.posts || []).map(p => {
+        const snip = p.snippet ? esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') : esc(String(p.body || '').slice(0, 160));
+        return add('<button type="button" class="cv-sq-row cv-sq-hit" role="option" onmousedown="event.preventDefault()">' + _cvAvatar(p.author_name, p.author_key.indexOf('worker:') === 0, p.author_key)
+          + '<span class="cv-sq-main"><span class="cv-sq-head"><b>' + esc(p.author_name) + '</b><span>' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' · thread' : '') + '</span><span class="cv-sq-ts">' + esc(_cvSqWhen(p.ts)) + '</span></span>'
+          + '<span class="cv-sq-snip">' + snip + '</span></span></button>',
+          () => { _cvSqRemember(q); _cvSqClose(); _cvSqInput().blur(); _cvOpenThreadOrScroll(p.conv, p.parent_id || p.id); });
+      }).join('');
+      if ((d.posts || []).length) h += add('<button type="button" class="cv-sq-row cv-sq-all" role="option" onmousedown="event.preventDefault()"><span class="cv-sq-main">See all ' + (d.total || '') + ' results for “' + esc(q) + '” <small>Enter</small></span></button>', () => _cvSearch(q));
+    }
+  }
+  pan.innerHTML = h;
+  _cvSq.items = items;
+  if (_cvSq.sel >= items.length) _cvSq.sel = -1;
+  pan.querySelectorAll('[data-i]').forEach(b => {
+    b.classList.toggle('sel', +b.dataset.i === _cvSq.sel);
+    b.onclick = () => (_cvSq.items[+b.dataset.i] || (() => {}))();
+  });
+}
+function _cvSqKey(e) {
+  const pan = _cvSqPanel();
+  if (e.key === 'Escape') { if (_cvSq.menu) { _cvSq.menu = null; _cvSqRender(); } else { _cvSqClose(); e.target.blur(); } e.preventDefault(); return; }
+  if (pan && pan.hidden && e.key !== 'Enter') _cvSqOpen();
+  const n = _cvSq.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!n) return;
+    _cvSq.sel = e.key === 'ArrowDown' ? (_cvSq.sel + 1) % n : (_cvSq.sel <= 0 ? n - 1 : _cvSq.sel - 1);
+    pan.querySelectorAll('[data-i]').forEach(b => b.classList.toggle('sel', +b.dataset.i === _cvSq.sel));
+    pan.querySelector('[data-i="' + _cvSq.sel + '"]')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_cvSq.sel >= 0 && _cvSq.items[_cvSq.sel]) _cvSq.items[_cvSq.sel]();
+    else _cvSearch(e.target.value);
+  }
+}
+document.addEventListener('mousedown', e => {
+  const pan = _cvSqPanel();
+  if (pan && !pan.hidden && !pan.contains(e.target) && e.target !== _cvSqInput()) _cvSqClose();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || !_cvViewOn()) return;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+  const inp = _cvSqInput(); if (!inp || !inp.offsetParent) return;
+  e.preventDefault(); inp.focus(); _cvSqOpen();
+});
+// THE RESULTS PAGE: every match, how many in each conversation (click one to
+// narrow to it), and which filters the server understood.
+async function _cvSearchPage(q) {
+  const inp = _cvSqInput(); if (inp && inp.value.trim() !== q) inp.value = q;
+  document.getElementById('cv-title').textContent = 'Search: ' + q;
+  document.getElementById('cv-meta').textContent = 'Searching…';
+  const box = document.getElementById('cv-posts'); box.innerHTML = '<div class="cv-empty">Loading…</div>';
+  let d;
+  try {
+    const r = await fetch(API + '/api/conversations/search?limit=200&q=' + encodeURIComponent(q));
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) { box.innerHTML = '<div class="cv-empty">Could not search: ' + esc(e.message) + '</div>'; document.getElementById('cv-meta').textContent = ''; return; }
+  if (_cv.sel !== '@search:' + q) return;
+  const posts = d.posts || [], by = Object.entries(d.by_conv || {}).sort((a, b) => b[1] - a[1]);
+  document.getElementById('cv-meta').textContent = (d.total || 0) + (d.total === 1 ? ' result' : ' results') + ' in ' + by.length + (by.length === 1 ? ' conversation' : ' conversations')
+    + (posts.length < (d.total || 0) ? ' (newest ' + posts.length + ' shown by best match)' : '');
+  const scoped = _cvSqTok(q, 'in');
+  const bar = '<div class="cv-sr-bar" role="toolbar" aria-label="Narrow to a conversation">'
+    + (scoped ? '<button type="button" class="cv-sq-chip on" onclick="_cvSearch(' + esc(JSON.stringify(q.replace(/(^|\s)in:\S+/, ' ').trim())) + ')">In: ' + esc(_cvFindName(scoped.indexOf(':') > 0 ? scoped : 'g:' + scoped.replace(/^#/, ''))) + ' ×</button>'
+      : by.slice(0, 10).map(([c, n]) => '<button type="button" class="cv-sq-chip" data-cv="' + esc(c) + '" onclick="_cvSearch(' + esc(JSON.stringify(q)) + ' + \' in:\' + (this.dataset.cv.indexOf(\'g:\') === 0 ? \'#\' + this.dataset.cv.slice(2) : this.dataset.cv))">' + esc(_cvFindName(c)) + ' <span class="cv-sq-n">' + n + '</span></button>').join(''))
+    + (((d.filters || {}).unknown || []).length ? '<span class="cv-sq-warn">Not a filter, ignored: ' + d.filters.unknown.map(esc).join(', ') + '</span>' : '')
+    + '</div>';
+  // The words are marked in the message itself, not in a snippet repeated under it.
+  box.innerHTML = bar + (posts.length ? posts.map(p => _cvPostHtml(Object.assign({}, p, { snippet: '' }), true)).join('') : '<div class="cv-empty">No messages match. Try fewer words, or remove a filter.</div>');
+  _cvMarkTerms(box, d.terms);
+}
+// Wraps each word that starts with a searched term (the server matches
+// prefixes: "clio" finds "Clio's") in <mark>, in text only, never in a tag.
+function _cvMarkTerms(box, fts) {
+  const words = String(fts || '').match(/"([^"]+)"/g);
+  if (!words) return;
+  const re = new RegExp('(^|[^\\p{L}\\p{N}])((?:' + words.map(w => w.slice(1, -1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')[\\p{L}\\p{N}_-]*)', 'giu');
+  box.querySelectorAll('.cv-post-body').forEach(body => {
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes = []; while (walk.nextNode()) nodes.push(walk.currentNode);
+    for (const n of nodes) {
+      if (!re.test(n.nodeValue)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      const span = document.createElement('span');
+      span.innerHTML = esc(n.nodeValue).replace(re, '$1<mark class="cv-hl">$2</mark>');
+      n.replaceWith(...span.childNodes);
+    }
+  });
+}
 // One poll at a time. Posts arriving together each asked for an incremental
 // poll; overlapping ones answered out of order, a stale page moved lastId
 // backwards, and a post was fetched but never drawn (CI, 2026-10-27). A poll
@@ -69150,7 +69825,12 @@ async function _cvPollOnce(full) {
   // Typing "@" before the member list arrived left the picker empty; offer
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
-  if (full) _cv.posts = d.posts || [];
+  // A full refresh of a conversation already on screen MERGES (below): it used
+  // to replace the list, dropping the older pages scrolled in and the posts
+  // still waiting on the server (2026-11-06).
+  const hadPosts = _cv.posts.length > 0;
+  if (full && !hadPosts) _cv.posts = d.posts || [];
+  if (full && hadMore && _cv.posts.length && _cv.posts[0].id < ((d.posts || [])[0] || {}).id) _cv.info.has_more = hadMore;
   // The first post someone else wrote after your read mark, captured before
   // this load marks the conversation read (_cvMarkRead below).
   if (full && _cv.restoreScroll) {
@@ -69158,7 +69838,7 @@ async function _cvPollOnce(full) {
     const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
     _cv.unreadFrom = first ? first.id : null;
   }
-  else if ((d.posts || []).length) {
+  if ((hadPosts || !full) && (d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
     for (const np of d.posts) byId.set(np.id, np);
@@ -69208,8 +69888,12 @@ function _cvRenderHead(sel, d) {
         + 'data-key="' + esc(wkey) + '" onchange="_cvSetAvatar(this.dataset.key, this.files[0]); this.value=\'\'"></label>';
       return;
     }
+  } else if (sel.indexOf('d:') === 0) {
+    const w = sel.slice(2).split('|')[0];
+    meta.textContent = 'Direct message with ' + w + '. Only you and ' + w + ' can read this; messages here go to it.';
   } else {
-    meta.textContent = 'Direct message';
+    const ends = sel.slice(2).split('|');
+    meta.textContent = ends.length === 2 && ends[0] === ends[1] ? 'Your notes to yourself. Only you can read this.' : 'Direct message';
   }
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('');
@@ -69234,17 +69918,55 @@ function _cvBodyHtml(p) {
     const k = names[tok.replace(/\.$/, '').toLowerCase()];
     return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
   });
-  const imgs = [];
-  body.replace(/(?:^|[\s(\[>"'`,;=@])((?:~\/|\/)[^\s'"`<>()]+\.(?:png|jpe?g|gif|webp))(?=$|[\s,;:)\].])/gim, (m, path) => {
-    if (!imgs.includes(path) && imgs.length < 4) imgs.push(path);
-    return m;
-  });
+  const imgs = _cvImageRefs(body);
   if (imgs.length) {
-    h += '<div class="cv-thumbs">' + imgs.map(path => '<img class="cv-thumb" loading="lazy" alt="' + esc(path.split('/').pop())
-      + '" title="Open ' + esc(path) + '" data-path="' + esc(path) + '" src="'
-      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
+    h += '<div class="cv-thumbs">' + imgs.map(r => r.path
+      ? '<img class="cv-thumb" loading="lazy" alt="' + esc(r.name) + '" title="Open ' + esc(r.path) + '" data-path="' + esc(r.path) + '" src="'
+        + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(r.path))) + '" onclick="openFilePreview(this.dataset.path)" onerror="_cvThumbFailed(this)">'
+      : '<img class="cv-thumb" loading="lazy" referrerpolicy="no-referrer" alt="' + esc(r.name) + '" title="Open ' + esc(r.url) + '" data-url="' + esc(r.url)
+        + '" src="' + esc(r.url) + '" onclick="window.open(this.dataset.url,\'_blank\',\'noopener\')" onerror="_cvThumbFailed(this)">').join('') + '</div>';
   }
   return h;
+}
+// INLINE IMAGE PREVIEWS, like Slack (Ethan, 2026-11-06: "make sure any image
+// links have an inline preview", screenshot of an `@.../IMG_5708.tiff` post
+// shown as a bare link). A local image path (absolute or ~/, with or without
+// the @ an attachment rides on) previews through /api/file/raw; a web link to
+// an image previews from its URL, this server's /f/ links included. The list
+// used to stop at png/jpg/gif/webp, so a phone's .tiff or .heic never showed.
+const _CV_IMG_EXT = 'png|jpe?g|gif|webp|svg|bmp|avif|heic|heif|tiff?';
+function _cvImageRefs(body) {
+  const out = [], seen = new Set();
+  const add = r => { const k = r.path || r.url; if (!seen.has(k) && out.length < 4) { seen.add(k); out.push(r); } };
+  String(body || '').replace(new RegExp('(?:^|[\\s(\\[>"\'`,;=@])((?:~\\/|\\/)[^\\s\'"`<>()]+\\.(?:' + _CV_IMG_EXT + '))(?=$|[\\s,;:)\\].])', 'gim'), (m, path) => {
+    // A copied file link (`/f/<path>`, api/deep_links.rs) names the file on
+    // disk; the link itself redirects to the dashboard, so preview the file.
+    if (path.indexOf('/f/') === 0) path = path.slice(2);
+    add({ path, name: path.split('/').pop() }); return m;
+  });
+  String(body || '').replace(new RegExp('https?:\\/\\/[^\\s<>()"\']+\\.(?:' + _CV_IMG_EXT + ')(?:\\?[^\\s<>()"\']*[^\\s<>()"\'.,;:!?])?(?=$|[\\s,;:!?)\\].])', 'gim'), url => {
+    const name = url.split('?')[0].split('/').pop();
+    try {
+      const u = new URL(url);
+      if (typeof location !== 'undefined' && u.host === location.host && u.pathname.indexOf('/f/') === 0) {
+        add({ path: decodeURIComponent(u.pathname.slice(2)), name }); return url;
+      }
+    } catch (e) {}
+    add({ url, name }); return url;
+  });
+  return out;
+}
+// A browser that cannot draw the format (Chrome and Firefox have no TIFF or
+// HEIC; Safari and the amux apps do) gets a file chip that opens it instead of
+// a broken image.
+function _cvThumbFailed(img) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'cv-thumb-chip';
+  chip.textContent = '\u{1F5BC} ' + (img.alt || 'image') + ' (no preview in this browser; open)';
+  const path = img.dataset.path, url = img.dataset.url;
+  chip.onclick = () => path ? openFilePreview(path) : window.open(url, '_blank', 'noopener');
+  img.replaceWith(chip);
 }
 // PATHS IN A POST ARE LINKS (AA-51, Ethan 2026-10-28). _linkifyPaths needs a
 // file extension, so a folder such as /home/amux/wexus/runs/x/for-elliot was
@@ -69533,7 +70255,7 @@ function _cvOpenThread(root) {
   document.getElementById('messages-view').classList.add('cv-thread-open');
   document.getElementById('cv-thread-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
   _cvLoadThread();
-  if (!_cvMobile()) setTimeout(() => document.getElementById('cv-thread-input').focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(document.getElementById('cv-thread-input'));
 }
 function _cvCloseThread() {
   _cv.thread = null;
@@ -69599,10 +70321,11 @@ async function _cvOnScroll(box) {
   if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
-  const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
+  const sel = _cv.sel, gen = _cv.gen, first = _cv.posts[0].id, h0 = box.scrollHeight;
   try {
     const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?before=' + first + '&limit=100')).json();
-    if (sel !== _cv.sel) return;
+    // The same conversation reopened (A, B, A) is a fresh list: same sel, new gen.
+    if (sel !== _cv.sel || gen !== _cv.gen) return;
     _cv.posts = (d.posts || []).concat(_cv.posts);
     _cv.info.has_more = d.has_more;
     Object.assign(_cvProfiles, d.profiles || {});
@@ -69731,7 +70454,7 @@ function _cvRenderPosts(scroll) {
     _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
-      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+      : sel.indexOf('p:') === 0 || sel.indexOf('d:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
@@ -69796,7 +70519,7 @@ function _cvRenderUnread() {
   document.getElementById('cv-title').textContent = 'Unread';
   document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
   const L = _cv.list || {};
-  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.direct || []).map(d => [d, d.worker]), ...(L.workers || []).map(w => [w, w.name])]
     .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
   document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
     : '<div class="cv-empty">You are all caught up.</div>';
@@ -69951,7 +70674,7 @@ async function _cvMaybeNotify(ev) {
   } catch (e) { return; }
   if (!p || p.author_key === _cvMeKey()) return;
   const me = _cvMeKey();
-  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || !!ev.parent_id;
+  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || ev.conv.indexOf('d:') === 0 || !!ev.parent_id;
   if (!addressed) return;
   _cvNotified.add(ev.id);
   const title = (p.author_name || 'Someone') + (ev.parent_id ? ' replied in ' : ' in ') + _cvFindName(ev.conv);
@@ -73620,7 +74343,7 @@ function _drawRtAfterDiskReload(text, etag) {
 // the kind of thing, active work, where you are, and what you open often.
 // Archived and discarded things stay out until "Show archived" is on.
 const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
-  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0, open: {}, openToken: '' };
 const _CMDK_SHOW = 8;
 const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
@@ -73874,6 +74597,31 @@ function _cmdkCompute() {
   if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
 }
 
+// Which workers and tabs are already open, by place ("peek=<worker>",
+// "view=<tab>"): 'here' for the one on this page, 'elsewhere' for another tab
+// or pane of the Mac app, which says so when asked (owner, 2026-11-07: "for
+// each worker in the list if its already open it says it"). Choosing one goes
+// to it rather than opening it again (_cmdkRun).
+function _cmdkPlace(r) {
+  return r.kind === 'worker' ? 'peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? 'view=' + _viewHashName(r.id) : '';
+}
+function _cmdkAskOpen() {
+  const open = {};
+  if (peekSession && document.getElementById('peek-overlay')?.classList.contains('active')) open['peek=' + peekSession] = 'here';
+  else if (typeof activeView !== 'undefined' && activeView && activeView !== 'sessions') open['view=' + _viewHashName(activeView)] = 'here';
+  _cmdk.open = open;
+  const h = _nativePaneBridge();
+  if (!h) return;
+  _cmdk.openToken = Math.random().toString(36).slice(2, 10);
+  try { h.postMessage({ op: 'places', token: _cmdk.openToken }); } catch (e) { console.warn('[amux] palette could not ask which places are open', e); }
+}
+function _cmdkPlacesAck(token, places) {
+  if (token !== _cmdk.openToken || !Array.isArray(places)) return;
+  places.forEach(p => { if (typeof p === 'string' && !_cmdk.open[p]) _cmdk.open[p] = 'elsewhere'; });
+  if (typeof amuxTrack === 'function') amuxTrack('palette_open_places', { n: places.length, measured: true, n_considered: places.length });
+  if (document.getElementById('cmdk-overlay')?.classList.contains('active')) _cmdkRender();
+}
+
 function _cmdkRowHtml(r, i, toks, q) {
   const meta = r.kind === 'more' || r.kind === 'hidden';
   const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
@@ -73882,8 +74630,11 @@ function _cmdkRowHtml(r, i, toks, q) {
   const fz = r.match === 'fuzzy' ? q : '';
   const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
     : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  const open = _cmdk.open[_cmdkPlace(r)];
+  const badge = open ? '<span class="status-badge background cmdk-open" title="' + (open === 'here' ? 'Showing on this page' : 'Open in another tab or pane: choosing it goes there') + '">'
+    + (open === 'here' ? 'Open here' : 'Open') + '</span>' : '';
   return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
-    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span>' + badge + '</div>';
 }
 
 function _cmdkRender() {
@@ -73982,6 +74733,7 @@ function openCmdk() {
   const inp = document.getElementById('cmdk-input');
   inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
   _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
+  _cmdkAskOpen();
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
@@ -74023,7 +74775,7 @@ function _cmdkRun(i) {
   // and select something for which a tab is already open it goes to that
   // tab"). The app answers within a moment; with no answer (an older app) or
   // no such tab, it opens here as before.
-  const place = r.kind === 'worker' ? '#peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? '#view=' + _viewHashName(r.id) : '';
+  const place = _cmdkPlace(r) ? '#' + _cmdkPlace(r) : '';
   if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
   _cmdkOpen(r);
 }
@@ -74121,6 +74873,7 @@ const _HK_BUILTIN = [
 const _HK_DEFAULTS = [
   { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
   { id: 'hk-dictate-keys', action: 'dictate', type: 'keys', trigger: 'Alt+Shift+M', enabled: true, remove: true, indicator: false },
+  { id: 'hk-dictate-globe', action: 'dictate', type: 'keys', trigger: 'Globe Globe', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
@@ -74188,7 +74941,7 @@ function _hkComboFromEvent(e) {
 }
 function _hkKeyChips(combo) {
   const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐' };
-  return '<span class="hk-keys">' + String(combo || '').split('+').filter(Boolean)
+  return '<span class="hk-keys">' + String(combo || '').split(/[+ ]/).filter(Boolean)
     .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
 }
 function _hkTriggerHtml(h) {
@@ -74204,7 +74957,7 @@ function _hkConflict(h, list) {
   } else {
     const parts = t.split('+');
     // 🌐 works alone or with a key (the Mac app hands it over: _hkNativeKey).
-    if (t !== 'Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
+    if (t !== 'Globe' && t !== 'Globe Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
       return 'A shortcut needs ⌘, ⌥, ⌃ or 🌐 (⇧ alone is how capitals are typed)';
     const b = _HK_BUILTIN.find(x => x.combo === t);
     if (b) return 'amux already uses this for ' + b.label;
@@ -74224,7 +74977,9 @@ function _hkTextField(el) {
 function _hkRun(h, el) {
   const a = _HK_ACTIONS[h.action];
   try {
-    if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
+    // The same hotkey finishes a take it started, like the popup's Done.
+    if (h.action === 'dictate' && _dictRecording) _dictStopRec();
+    else if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
     else if (h.action === 'new_task') {
       const text = el && el.value ? el.value.trim() : '';
       openBoardAdd();
@@ -74297,14 +75052,22 @@ document.addEventListener('keydown', e => {
 // THE GLOBE KEY (owner, 2026-10-29: "i want to use the globe button on my
 // keyboard as a hotkey too"). A page never sees 🌐: macOS keeps it from the
 // browser. The Mac app watches it and calls this with "Globe" (pressed and
-// released alone) or "Globe+R" (held with a key). A recording takes it like
-// any combination; otherwise the hotkey bound to it runs.
-window._hkNativeKey = function (combo) {
+// released alone), "Globe Globe" (tapped twice) or "Globe+R" (held with a
+// key). A recording takes it like any combination; otherwise the hotkey bound
+// to it runs. `info.mac_dictation` is true when macOS also starts its own
+// dictation on 🌐🌐, which the owner is told once.
+let _hkMacDictWarned = false;
+window._hkNativeKey = function (combo, info) {
   combo = String(combo || '');
-  if (!/^Globe(\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  if (!/^Globe( Globe|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
   if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
   const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
   if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }
+  if (combo === 'Globe Globe' && info && info.mac_dictation && !_hkMacDictWarned) {
+    _hkMacDictWarned = true;
+    showToast('macOS also starts its own dictation on 🌐🌐. To leave it to amux: System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.');
+    _hkBeacon('hotkey_globe_double_mac_dictation_on', { trigger: combo });
+  }
   _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
   return 'ran';
 };

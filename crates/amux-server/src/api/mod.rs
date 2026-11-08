@@ -81,6 +81,7 @@ pub mod harness;
 pub mod health;
 pub mod history;
 pub mod history_ask;
+pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
 pub mod invariants_api;
@@ -176,6 +177,7 @@ pub mod usage_accounts;
 pub mod verify;
 pub mod why;
 pub mod worker_create;
+pub mod outcome_plan;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;
@@ -245,6 +247,7 @@ pub fn router_with_connector_transport(
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
         .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
+        .route("/api/session-renames", axum::routing::get(session_verbs::session_renames))
         .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
         .route("/api/sessions/{name}/quota", axum::routing::get(agent_limit_resume::worker_quota))
         .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))
@@ -402,6 +405,7 @@ pub fn router_with_connector_transport(
         .nest("/api/pinned", pinned::routes())
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())
+        .merge(outcome_plan::routes())
         .merge(worker_exec::routes())
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())

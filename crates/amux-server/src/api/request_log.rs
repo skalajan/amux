@@ -2995,6 +2995,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/outcome/plan",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/tmux-sessions",
         methods: &["GET"],
     },
@@ -3032,6 +3036,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // -- a worker's task-name changes, newest first (sessions_legacy::task_history)
     RouteEntry {
         path: "/api/sessions/{name}/task-history",
+        methods: &["GET"],
+    },
+    // -- retired worker names and the worker each became (session_verbs::session_renames)
+    RouteEntry {
+        path: "/api/session-renames",
         methods: &["GET"],
     },
     // -- a worker's plan window and limit-killed agents (agent_limit_resume::worker_quota)

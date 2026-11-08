@@ -125,6 +125,7 @@ pub mod ids {
     pub const TELEGRAM_RELAY: &str = "telegram-relay";
     pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
     pub const BRIDGE_DISCORD: &str = "bridge-discord";
+    pub const BRIDGE_WHATSAPP_APP: &str = "bridge-whatsapp-app";
     pub const MESSAGE_CAPTURE: &str = "message-capture";
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
@@ -145,6 +146,7 @@ pub mod ids {
     pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
+    pub const EMAIL_SCHEDULED_SEND: &str = "email-scheduled-send";
     pub const DECISION_DIGEST: &str = "decision-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
@@ -188,6 +190,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TELEGRAM_RELAY,
     ids::BRIDGE_OUTBOUND,
     ids::BRIDGE_DISCORD,
+    ids::BRIDGE_WHATSAPP_APP,
     ids::MESSAGE_CAPTURE,
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
@@ -212,6 +215,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::MODEL_CATALOG_REFRESH,
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
+    ids::EMAIL_SCHEDULED_SEND,
     ids::DECISION_DIGEST,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
@@ -673,6 +677,18 @@ pub const CATALOG: &[Doc] = &[
         detail: Some("/api/bridge"),
     },
     Doc {
+        id: ids::BRIDGE_WHATSAPP_APP,
+        name: "WhatsApp self chat",
+        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker messages through the chat bridge; answers go back through the app.",
+        env: &[EnvControl {
+            var: "AMUX_WHATSAPP_APP",
+            effect: "unset = on when AMUX_OWNER_PHONE is set and WhatsApp's database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
         id: ids::MAC_HEALTH,
         name: "Mac process health",
         purpose: "Safely reaps aged orphaned Ray, Playwright Chrome and debug rustc; reports zombies without stealing child exit statuses, and warns on excessive claude processes. Runs every 30 minutes.",
@@ -1077,6 +1093,27 @@ pub const CATALOG: &[Doc] = &[
             },
             EnvControl {
                 var: "AMUX_EMAIL_APPROVAL_DIGEST_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/email/approvals"),
+    },
+    Doc {
+        id: ids::EMAIL_SCHEDULED_SEND,
+        name: "Scheduled email send",
+        purpose: "Every 30 seconds, sends each held outbound email whose approver scheduled it \
+                  for a time that has come, through the same release as the Approve button \
+                  (one-shot, audited). A failed release goes back to pending for a human.",
+        env: &[
+            EnvControl {
+                var: "AMUX_EMAIL_SCHEDULED_SEND_TICK_S",
+                effect: "seconds between checks (default 30)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_EMAIL_SCHEDULED_SEND_SECS",
                 effect: "0 disables the job",
                 off: Some("0"),
             },
