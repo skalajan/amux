@@ -1592,9 +1592,44 @@ EOF
   cmd_start "$name" "${CC_EXTRA_ARGS[@]+"${CC_EXTRA_ARGS[@]}"}"
 }
 
+# The worker whose CC_DIR is the deepest one containing $PWD (exact dir wins over a parent).
+_worker_for_cwd() {
+  local here f n d best="" best_len=0 cands=() running=()
+  here=$(pwd -P)
+  for f in "$CC_SESSIONS"/*.env; do
+    [[ -f "$f" ]] || continue
+    n=$(basename "$f" .env)
+    d=$(sed -n 's/^CC_DIR="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)
+    [[ -n "$d" ]] || continue
+    d="${d/#\~/$HOME}"
+    d=$(cd "$d" 2>/dev/null && pwd -P) || continue
+    [[ "$here" == "$d" || "$here" == "$d"/* ]] || continue
+    if (( ${#d} > best_len )); then
+      best="$d"; best_len=${#d}; cands=("$n")
+    elif [[ "$d" == "$best" ]]; then
+      cands+=("$n")
+    fi
+  done
+  (( ${#cands[@]} )) || return 1
+  if (( ${#cands[@]} > 1 )); then
+    for n in "${cands[@]}"; do is_running "$n" && running+=("$n"); done
+    (( ${#running[@]} == 1 )) && { echo "${running[0]}"; return 0; }
+    echo "${cands[*]}"
+    return 2
+  fi
+  echo "${cands[0]}"
+}
+
 cmd_attach() {
   local name
-  name=$(resolve_session "${1:-}")
+  if [[ -z "${1:-}" ]]; then
+    local rc=0
+    name=$(_worker_for_cwd) || rc=$?
+    (( rc == 2 )) && die "several workers work in $(pwd -P): $name — use: amux attach <name>"
+    (( rc == 0 )) || die "no worker works in $(pwd -P) — use: amux attach <name>"
+  else
+    name=$(resolve_session "$1")
+  fi
   if [[ "$(session_backend "$name")" == "herdr" ]]; then
     need_herdr
     is_running "$name" || die "worker '$name' is not running. Start with: amux start $name"
@@ -6763,7 +6798,7 @@ ${BOLD}Worker management:${RESET}
   amux resume-all                Resume every worker
 
 ${BOLD}Interaction:${RESET}
-  amux attach <name>             Attach to a running worker (detach: Ctrl-b d)
+  amux attach [name]             Attach to a running worker; no name = the one working in this folder (detach: Ctrl-b d)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
