@@ -803,8 +803,8 @@
   .chip.chip-edit-toggle.active { color: var(--accent); }
   .chips.editing { flex-wrap: wrap; overflow-x: visible; touch-action: none; gap: var(--space-2); }
   .chips.editing .chip { cursor: grab; padding: var(--space-2) var(--space-3); min-height: 40px; }
-  .chips.editing .chip.dragging { opacity: 0.3; }
-  .chips.editing .chip.drag-over { box-shadow: -3px 0 0 var(--accent); }
+  .chips.editing .chip { user-select: none; -webkit-user-select: none; }
+  .chips.editing .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .chips.editing .chip-drag-handle { margin-right: var(--space-1); opacity: 0.4; font-size: var(--fs-xs); }
   .chips.editing .chip-remove-btn { display: inline-flex; margin-left: var(--space-1-5); font-size: var(--fs-md); opacity: 0.6; cursor: pointer; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: var(--radius-round); background: color-mix(in srgb, var(--red) 10%, transparent); }
   .chips.editing .chip-remove-btn:hover { opacity: 1; color: var(--red); background: color-mix(in srgb, var(--red) 20%, transparent); }
@@ -1268,6 +1268,8 @@
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-md);
     padding: var(--space-1-5); z-index: 60; min-width: 170px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
   .file-actions.open { display: flex; }
+  .file-actions-sep { height: 1px; background: var(--border); margin: var(--space-1) 0; flex-shrink: 0; }
+  .file-actions .file-action-danger { color: var(--red); }
   /* Open in worker (app.js _fileOpenInWorker), inside the shared form dialog. */
   .fow-to { display: flex; gap: var(--space-4); margin-bottom: var(--space-3); }
   .fow-to label { display: inline-flex; align-items: center; gap: var(--space-1-5); min-height: 44px; cursor: pointer; }
@@ -1310,8 +1312,14 @@
     line-height: 1.6; white-space: pre; }
   .file-overlay-body.file-code .hljs-pre { margin: 0; padding: var(--space-3) var(--space-3-5); overflow: visible;
     flex: 1 1 auto; min-width: 0; }
+  /* The code body is ALWAYS dark (term-bg, in light mode too: see the
+     #file-overlay rules near the top), so plain tokens take the TERMINAL text
+     colour. They took --text, which light mode makes #1f2328: identifiers,
+     numbers and operators were dark grey on #1c2128 while keywords and strings,
+     coloured by the theme, stood out (Ethan, 2026-11-08: "Fix how code is
+     rendered"). */
   .file-overlay-body.file-code code.hljs { display: block; background: transparent; padding: 0;
-    color: color-mix(in srgb, var(--text) 69%, var(--dim));
+    color: color-mix(in srgb, var(--term-text) 92%, var(--term-dim));
     font-family: var(--font-mono); font-size: var(--fs-md);
     line-height: 1.6; tab-size: 2; white-space: pre; }
   /* github-dark ships NO .hljs-punctuation rule, and hljs 11.9 emits exactly three
@@ -1323,7 +1331,7 @@
      classes against the theme's selectors.
      Dimmed deliberately rather than brightened: punctuation is scaffolding, so it
      should recede while staying legible. */
-  .file-overlay-body.file-code .hljs-punctuation { color: var(--dim); }
+  .file-overlay-body.file-code .hljs-punctuation { color: var(--term-dim); }
   /* github-dark's own `.hljs-section` is #1f6feb, which MEASURES 3.49:1 against
      this viewer's light-mode body (#1c2128) and 4.0:1 against its dark one
      (#010409) — both under WCAG AA's 4.5:1 floor for body text. It is the
@@ -9044,7 +9052,10 @@ button.cv-sec:hover { color:var(--text); }
   #messages-view.cv-side-folded #cv-side { width:44px; flex-basis:44px; padding-left:var(--space-1); padding-right:var(--space-1); overflow:hidden; }
   #messages-view.cv-side-folded #cv-side > :not(.cv-side-head) { display:none; }
   #messages-view.cv-side-folded .cv-side-title { display:none; }
-  #messages-view.cv-side-folded .cv-side-head { padding:var(--space-0-5) 0 var(--space-2); justify-content:center; }
+  /* The rail is 36px inside, too narrow for the picture and the button side by
+     side (both were clipped), so they stack. */
+  #messages-view.cv-side-folded .cv-side-head { padding:var(--space-0-5) 0 var(--space-2); flex-direction:column; gap:var(--space-1-5); }
+  #messages-view.cv-side-folded .cv-me { margin-right:0; }
   #messages-view.cv-side-folded .cv-side-toggle { margin:0; }
 }
 .cv-item { display:flex; align-items:center; gap:var(--space-2); width:100%; min-height:36px; padding:var(--space-1-5) var(--space-2-5);
@@ -11004,3 +11015,31 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 #email-approvals-banner .appr-sched-failed {
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
+
+/* Binary previews (app.js _renderBinaryPreview): one header row, then the preview. */
+.file-overlay-body.file-binprev { display: flex; flex-direction: column; white-space: normal; padding: 0; background: var(--bg); font-family: inherit; }
+.binprev-head { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.binprev-meta { color: var(--dim); font-size: var(--fs-md); margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binprev-head .btn { min-height: 44px; }
+@media (min-width: 601px) { .binprev-head .btn { min-height: 0; } }
+.binprev-main { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.binprev-main > .img-zoom-wrap { flex: 1 1 auto; min-height: 0; }
+.binprev-note { color: var(--dim); font-size: var(--fs-sm); }
+.binprev-hex, .binprev-text { font-family: var(--font-mono); font-size: var(--fs-sm); margin: 0; white-space: pre; overflow-x: auto; }
+.binprev-text { white-space: pre-wrap; }
+.binprev-num { text-align: right; white-space: nowrap; }
+.binprev-null { color: var(--dim); font-style: italic; }
+.binprev-table summary { cursor: pointer; padding: var(--space-1) 0; }
+.binprev-font > div { margin-bottom: var(--space-3); overflow-wrap: anywhere; }
+.binprev-font-s1 { font-size: var(--fs-7xl); }
+.binprev-font-s2 { font-size: var(--fs-4xl); }
+.binprev-font-s3 { font-size: var(--fs-xl); }
+.binprev-font-s4 { font-size: var(--fs-md); }
+.binprev-font-chars { font-size: var(--fs-2xl); }
+
+/* File viewer: the frame a file prints from (_filePrint). Kept in the page,
+   zero-sized, so it prints; display:none frames do not print everywhere. */
+.file-print-frame { position: fixed; right: 0; bottom: 0; width: 0; height: 0; border: 0; }
+.file-info-table { border-collapse: collapse; font-size: var(--fs-md); }
+.file-info-table th { text-align: left; color: var(--dim); font-weight: 500; padding: var(--space-1) var(--space-3) var(--space-1) 0; vertical-align: top; }
+.file-info-table td { padding: var(--space-1) 0; word-break: break-all; }

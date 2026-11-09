@@ -19866,7 +19866,7 @@ function ansiToHtml(text) {
 // Split out from ansiToHtml so the href policy is one readable place. Two
 // refusals are deliberate:
 //
-//  * ONLY http/https/file are linked. A terminal can emit any scheme it likes
+//  * ONLY http/https (and a local file://, as a file-viewer link) are linked. A terminal can emit any scheme it likes
 //    and this href lands in the DOM, so `javascript:`, `data:` and friends are
 //    an injection surface. An unknown scheme keeps the LABEL as plain text —
 //    exactly what the terminal itself shows — rather than guessing.
@@ -19883,7 +19883,8 @@ function _osc8Resolve(html, urls) {
     // Localhost URLs go through the same rewrite as every other link in the
     // peek: to the app's Apps entry, so an OSC-8 link works from a phone or the cloud.
     const s = rewriteLocalhostUrls(String(u == null ? '' : u).trim());
-    if (!/^(?:https?|file):\/\//i.test(s)) return null;
+    // file:// is handled by filePath below; one naming another host stays text.
+    if (!/^https?:\/\//i.test(s)) return null;
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
             .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   };
@@ -19902,10 +19903,32 @@ function _osc8Resolve(html, urls) {
     .map(seg => (!seg || /^<\/?span/i.test(seg)) ? seg
       : '<a href="' + h + '" target="_blank" rel="noopener noreferrer">' + seg + '</a>')
     .join('');
+  // A file:// link names a path on the machine amux runs on, which is often not
+  // the one showing this page. Handed to the browser it did nothing, and the Mac
+  // app passed it to Finder, which failed on a path it does not have ("The
+  // application can't be opened. -50", owner 2026-11-08). It opens like any
+  // path in worker output instead: in amux's file viewer, resolved on the server.
+  const filePath = u => {
+    try {
+      const url = new URL(String(u == null ? '' : u).trim());
+      if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost')) return null;
+      return decodeURIComponent(url.pathname);
+    } catch (e) { return null; }
+  };
+  const ea = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const wrapFile = (label, p) => label
+    .split(/(<\/?span[^>]*>)/)
+    .map(seg => (!seg || /^<\/?span/i.test(seg)) ? seg
+      : '<span class="' + (/\.md$/i.test(p) ? 'md-link' : 'file-link') + '" data-path="' + ea(p) + '" title="Open: ' + ea(p)
+        + '" onclick="_openLinkedPath(this,event)">' + seg + '</span>')
+    .join('');
   return html
     .replace(/\uE000(\d+)\uE001([\s\S]*?)\uE002/g, (_m, idx, label) => {
+      if (/<a\s/i.test(label)) return label;
+      const fp = filePath(urls[+idx]);
+      if (fp) return wrapFile(label, fp);
       const h = href(urls[+idx]);
-      if (!h || /<a\s/i.test(label)) return label;
+      if (!h) return label;
       return wrap(label, h);
     })
     // Unpaired sentinels: peek captures a rolling window, so a link routinely
@@ -24897,7 +24920,10 @@ function _getAllChips() {
 }
 
 let _chipEditing = false;
-let _chipDragIdx = -1;
+// The boot read of the shared chip set finished (ok or not). A later default
+// is only offered after it: offered before, a device that never saw the
+// removal re-added the chip and its pending save overwrote the server's set.
+let _chipsSynced = false;
 
 function _loadChips() {
   try {
@@ -24913,25 +24939,79 @@ function _loadChips() {
 // at boot; saves push up debounced (a drag-reorder is one POST, not ten);
 // an empty server pref is seeded from the first device that has local
 // customizations, so nobody's existing layout is lost by the migration.
-let _chipsPushTimer = null;
-function _pushChipsToServer(chips) {
-  clearTimeout(_chipsPushTimer);
-  _chipsPushTimer = setTimeout(() => {
-    fetch(API + '/api/prefs', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
-      body: JSON.stringify({ key: 'ui_chips', value: JSON.stringify(chips) }),
-    }).catch(() => {});  // offline: localStorage still holds it; the next save retries
-  }, 800);
+//
+// SAVED MEANS THE SERVER HAS IT (Ethan, 2026-11-08: "today it doesnt save").
+// The push used to be fire-and-forget: a refused or dropped POST left the
+// server on the old set, and the next boot, where the server wins, put the old
+// order back. A change is now PENDING (amux_chips_pending) until a POST
+// answers ok; a pending change wins at boot and is pushed again, a failed push
+// retries, and leaving the page flushes a push still waiting on its debounce.
+// Each outcome is beaconed as kind=chips-sync.
+let _chipsPushTimer = null, _chipsRetryTimer = null;
+const _CHIPS_PENDING = 'amux_chips_pending';
+const _CHIPS_OFFERED = 'amux_chips_offered';
+function _chipsBeacon(verdict, extra) {
+  try { fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ kind: 'chips-sync', verdict, measured: true, n_considered: 1, ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }, extra || {})) }).catch(() => {}); } catch (_) { /* a beacon must never break the save it reports */ }
 }
+function _chipsPrefPost(key, value) {
+  return fetch(API + '/api/prefs', {
+    method: 'POST', keepalive: true, _skipOutbox: true,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+    body: JSON.stringify({ key, value }),
+  }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r; });
+}
+function _pushChipsNow() {
+  clearTimeout(_chipsPushTimer); _chipsPushTimer = null;
+  clearTimeout(_chipsRetryTimer); _chipsRetryTimer = null;
+  const value = localStorage.getItem('amux_chips');
+  if (!value || !localStorage.getItem(_CHIPS_PENDING)) return Promise.resolve();
+  const offered = localStorage.getItem(_CHIPS_OFFERED) || '[]';
+  return Promise.all([_chipsPrefPost('ui_chips', value), _chipsPrefPost('ui_chips_offered', offered)]).then(() => {
+    // Only clear the mark for the set that was sent: a change made while the
+    // POST was in flight stays pending.
+    if (localStorage.getItem('amux_chips') === value) localStorage.removeItem(_CHIPS_PENDING);
+    _chipsBeacon('chips_saved', { count: (JSON.parse(value) || []).length });
+  }).catch(e => {
+    _chipsBeacon('chips_save_failed', { error: String(e && e.message || e).slice(0, 120) });
+    _chipsRetryTimer = setTimeout(_pushChipsNow, 15000);
+  });
+}
+function _pushChipsToServer() {
+  clearTimeout(_chipsPushTimer);
+  _chipsPushTimer = setTimeout(_pushChipsNow, 400);   // a drag is one POST, not ten
+}
+// Leaving the page must not drop a change still waiting on its debounce.
+document.addEventListener('visibilitychange', () => { if (document.hidden && localStorage.getItem(_CHIPS_PENDING)) _pushChipsNow(); });
+window.addEventListener('pagehide', () => { if (localStorage.getItem(_CHIPS_PENDING)) _pushChipsNow(); });
 async function _syncChipsFromServer() {
+  try { await _syncChipsOnce(); } finally { _chipsSynced = true; }
+  if (_NEW_DEFAULT_CHIPS.length) refreshAllChipBars();
+}
+async function _syncChipsOnce() {
   try {
-    const r = await fetch(API + '/api/prefs?key=ui_chips', { headers: _authHeaders() });
+    // A change this device has not had confirmed wins: the server copy is the
+    // one that is behind.
+    if (localStorage.getItem(_CHIPS_PENDING) && _loadChips()) { _chipsBeacon('chips_local_pending_pushed'); _pushChipsNow(); return; }
+    const [r, ro] = await Promise.all([
+      fetch(API + '/api/prefs?key=ui_chips', { headers: _authHeaders() }),
+      fetch(API + '/api/prefs?key=ui_chips_offered', { headers: _authHeaders() }),
+    ]);
     if (!r.ok) return;
     const d = await r.json();
+    // Which later defaults were already offered, on any device: one removed
+    // on a phone stays removed on the desktop.
+    try {
+      const od = ro.ok ? await ro.json() : null;
+      const theirs = od && typeof od.value === 'string' && od.value ? JSON.parse(od.value) : [];
+      const mine = JSON.parse(localStorage.getItem(_CHIPS_OFFERED) || '[]');
+      if (Array.isArray(theirs)) localStorage.setItem(_CHIPS_OFFERED, JSON.stringify([...new Set(mine.concat(theirs))]));
+    } catch (e) { _chipsBeacon('chips_offered_unreadable', { error: String(e && e.message || e).slice(0, 120) }); }
+    if (localStorage.getItem(_CHIPS_PENDING)) return;   // changed while this read was in flight
     if (d && typeof d.value === 'string' && d.value) {
       const chips = JSON.parse(d.value);
       if (Array.isArray(chips) && chips.length) {
+        if (_chipEditing) return;   // never swap the set under a drag
         localStorage.setItem('amux_chips', JSON.stringify(chips));
         refreshAllChipBars();
         return;
@@ -24939,9 +25019,8 @@ async function _syncChipsFromServer() {
     }
     // Server has no chip pref yet: seed it from this device's customizations
     // (null when the user never customized — nothing to seed, defaults rule).
-    const local = _loadChips();
-    if (local) _pushChipsToServer(local);
-  } catch (e) {}
+    if (_loadChips()) { localStorage.setItem(_CHIPS_PENDING, String(Date.now())); _pushChipsNow(); }
+  } catch (e) { _chipsBeacon('chips_read_failed', { error: String(e && e.message || e).slice(0, 120) }); }
 }
 if (document.body) _syncChipsFromServer();
 else document.addEventListener('DOMContentLoaded', _syncChipsFromServer);
@@ -25324,7 +25403,8 @@ if (document.body) _approvalsBoot();
 else document.addEventListener('DOMContentLoaded', _approvalsBoot);
 function _saveChips(chips) {
   localStorage.setItem('amux_chips', JSON.stringify(chips));
-  _pushChipsToServer(chips);
+  localStorage.setItem(_CHIPS_PENDING, String(Date.now()));
+  _pushChipsToServer();
 }
 function _getChips() {
   const saved = _loadChips();
@@ -25339,16 +25419,16 @@ function _getChips() {
     // A chip added to the defaults later joins a customized set once, after
     // Enter (or at the front). Removing it afterwards sticks: it is offered once.
     let offered = [];
-    try { offered = JSON.parse(localStorage.getItem('amux_chips_offered') || '[]'); } catch (e) {}
+    try { offered = JSON.parse(localStorage.getItem(_CHIPS_OFFERED) || '[]'); } catch (e) {}
     const fresh = _NEW_DEFAULT_CHIPS.filter(id => !offered.includes(id) && !saved.some(c => c.id === id));
-    if (fresh.length) {
+    if (fresh.length && _chipsSynced) {
       const next = saved.slice();
       for (const id of fresh) {
         const chip = DEFAULT_CHIPS.find(c => c.id === id);
         const at = next.findIndex(c => c.id === 'enter');
         next.splice(at >= 0 ? at + 1 : 0, 0, { ...chip });
       }
-      try { localStorage.setItem('amux_chips_offered', JSON.stringify(offered.concat(_NEW_DEFAULT_CHIPS))); } catch (e) {}
+      try { localStorage.setItem(_CHIPS_OFFERED, JSON.stringify([...new Set(offered.concat(_NEW_DEFAULT_CHIPS))])); } catch (e) {}
       _saveChips(next);
       return next;
     }
@@ -25429,6 +25509,8 @@ function _chipAction(chip, sessionName, isPeek) {
 // device, or a migration) ran whatever chip now sat at that position: Yes and
 // Status? sent "continue", and a slash chip there filled the input instead.
 function _chipPress(el, sessionName, isPeek) {
+  // Editing the bar: a press picks a button up, it never sends (2026-11-08).
+  if (_chipEditing) return;
   const bar = el.parentElement;
   const i = parseInt(el.dataset.chipIdx, 10);
   const chip = bar && bar._chips && bar._chips[i];
@@ -25443,6 +25525,18 @@ function _chipPress(el, sessionName, isPeek) {
 }
 
 function renderChips(container, sessionName, isPeek) {
+  // While a button is held for a drag (Sortable marks it chosen on the press)
+  // no chip bar is rebuilt: replacing the held one cancels the drag, and
+  // re-creating another bar's Sortable resets the drag Sortable shares across
+  // instances. CI caught it as drag_not_started after a refresh landed
+  // mid-press. Render again once the button is let go.
+  if (document.querySelector('.chips .tab-drag-chosen')) {
+    if (container._chipRenderDeferred) return;
+    container._chipRenderDeferred = true;
+    _chipsBeacon('chips_render_deferred', {});
+    setTimeout(() => { container._chipRenderDeferred = false; renderChips(container, sessionName, isPeek); }, 200);
+    return;
+  }
   const chips = _getChips();
   // Keystroke chips drive a terminal; a worker whose renderer is not a
   // terminal (chat) has nothing for them to press. Indexes stay the originals.
@@ -25453,8 +25547,7 @@ function renderChips(container, sessionName, isPeek) {
   chips.forEach((chip, i) => {
     if (chatTab ? (chip.action === 'keys' && !_CHAT_CHIP_KEYS[chip.value]) : (noKeys && chip.action === 'keys')) return;
     const cls = chip.danger ? 'chip danger' : 'chip';
-    const drag = _chipEditing ? 'draggable="true"' : '';
-    html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
+    html += '<div class="' + cls + '" data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
       + ' onclick="_chipPress(this,\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
       + (_chipEditing ? '<span class="chip-drag-handle">\u2630</span>' : '')
       + esc(chip.label)
@@ -25473,79 +25566,64 @@ function renderChips(container, sessionName, isPeek) {
     _setupChipDrag(container, sessionName, isPeek);
   } else {
     container.classList.remove('editing');
+    _chipSortableDrop(container);
   }
 }
 
+// REORDERING BUTTONS (Ethan, 2026-11-08: "the drag is not intuitive/ordering
+// isnt saved"). The bar drags with the shared Sortable setup the tab menus use
+// (_tabMenuSortableCreate): pointer driven, so it works in the Mac app where
+// native drag and drop does not, the neighbours make room as a button moves so
+// where it lands shows before letting go, touch waits a short press, and the
+// click a drop would send is swallowed. It replaced native HTML5 drag on
+// desktop beside a separate touch path, which showed no drop mark with a mouse
+// and always landed a right-moving button one place short. With a button
+// focused, ArrowLeft and ArrowRight move it one place. Buttons this bar hides
+// (keystroke buttons on a chat worker) keep their slots in the saved list.
+// Drags are beaconed as kind=tabcust-drag which=chips, saves as kind=chips-sync.
+function _chipBarOrder(container) {
+  // The full saved list with this bar's visible buttons in their on-screen order.
+  const chips = _getChips();
+  const shown = [...container.querySelectorAll('.chip[data-chip-idx]')].map(c => parseInt(c.dataset.chipIdx, 10));
+  const slots = shown.slice().sort((a, b) => a - b);
+  const next = chips.slice();
+  slots.forEach((slot, k) => { next[slot] = chips[shown[k]]; });
+  return next;
+}
+function _chipCommitOrder(container, how) {
+  const before = _getChips().map(c => c.id).join(',');
+  const next = _chipBarOrder(container);
+  if (next.map(c => c.id).join(',') === before) return false;
+  _saveChips(next);
+  _chipsBeacon('chips_reordered', { how });
+  refreshAllChipBars();
+  return true;
+}
+function _chipSortableDrop(container) {
+  const s = container._chipSortable;
+  container._chipSortable = null;
+  // Sortable throws when its element was already replaced; the instance is gone either way.
+  if (s) { try { s.destroy(); } catch (e) { console.warn('chips: sortable destroy', e); } }
+}
 function _setupChipDrag(container) {
-  const draggables = container.querySelectorAll('.chip[draggable]');
-  draggables.forEach(el => {
-    el.addEventListener('dragstart', e => {
-      _chipDragIdx = parseInt(el.dataset.chipIdx);
-      el.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    el.addEventListener('dragend', () => {
-      el.classList.remove('dragging');
-      _chipDragIdx = -1;
-    });
-    el.addEventListener('dragover', e => {
+  _chipSortableDrop(container);
+  container._chipSortable = _tabMenuSortableCreate(container, 'chips', '.chip[data-chip-idx]',
+    () => _chipCommitOrder(container, 'drag'));
+  container.querySelectorAll('.chip[data-chip-idx]').forEach(el => {
+    el.tabIndex = 0;
+    el.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    });
-    el.addEventListener('drop', e => {
-      e.preventDefault();
-      const toIdx = parseInt(el.dataset.chipIdx);
-      if (_chipDragIdx < 0 || _chipDragIdx === toIdx) return;
-      const chips = _getChips();
-      const [moved] = chips.splice(_chipDragIdx, 1);
-      chips.splice(toIdx, 0, moved);
-      _saveChips(chips);
-      refreshAllChipBars();
-    });
-    let _touchClone = null;
-    el.addEventListener('touchstart', e => {
-      _chipDragIdx = parseInt(el.dataset.chipIdx);
-      el.classList.add('dragging');
-      _touchClone = el.cloneNode(true);
-      _touchClone.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;opacity:0.85;transform:scale(1.05);';
-      _touchClone.style.width = el.offsetWidth + 'px';
-      _touchClone.style.left = e.touches[0].clientX - el.offsetWidth / 2 + 'px';
-      _touchClone.style.top = e.touches[0].clientY - el.offsetHeight / 2 + 'px';
-      document.body.appendChild(_touchClone);
-      e.preventDefault();
-    }, {passive: false});
-    el.addEventListener('touchmove', e => {
-      if (_chipDragIdx < 0) return;
-      const t = e.touches[0];
-      if (_touchClone) {
-        _touchClone.style.left = t.clientX - el.offsetWidth / 2 + 'px';
-        _touchClone.style.top = t.clientY - el.offsetHeight / 2 + 'px';
+      const sib = e.key === 'ArrowLeft' ? el.previousElementSibling : el.nextElementSibling;
+      if (!sib || !sib.matches('.chip[data-chip-idx]')) return;
+      const id = ((container._chips || [])[parseInt(el.dataset.chipIdx, 10)] || {}).id;
+      if (e.key === 'ArrowLeft') container.insertBefore(el, sib); else container.insertBefore(sib, el);
+      // The commit re-renders the bar; keep focus on the same button in its new place.
+      if (_chipCommitOrder(container, 'keyboard')) {
+        const at = _getChips().findIndex(c => c.id === id);
+        const again = container.querySelector('.chip[data-chip-idx="' + at + '"]');
+        if (again) again.focus();
       }
-      container.querySelectorAll('.chip[data-chip-idx]').forEach(c => c.classList.remove('drag-over'));
-      const target = document.elementFromPoint(t.clientX, t.clientY);
-      const chipTarget = target && target.closest('.chip[data-chip-idx]');
-      if (chipTarget && chipTarget !== el) chipTarget.classList.add('drag-over');
-      e.preventDefault();
-    }, {passive: false});
-    el.addEventListener('touchend', e => {
-      if (_touchClone) { _touchClone.remove(); _touchClone = null; }
-      el.classList.remove('dragging');
-      container.querySelectorAll('.chip[data-chip-idx]').forEach(c => c.classList.remove('drag-over'));
-      if (_chipDragIdx < 0) return;
-      const ct = e.changedTouches[0];
-      const target = document.elementFromPoint(ct.clientX, ct.clientY);
-      const chipTarget = target && target.closest('.chip[data-chip-idx]');
-      if (chipTarget) {
-        const toIdx = parseInt(chipTarget.dataset.chipIdx);
-        if (toIdx !== _chipDragIdx) {
-          const chips = _getChips();
-          const [moved] = chips.splice(_chipDragIdx, 1);
-          chips.splice(toIdx, 0, moved);
-          _saveChips(chips);
-          refreshAllChipBars();
-        }
-      }
-      _chipDragIdx = -1;
     });
   });
 }
@@ -29806,6 +29884,7 @@ function _toggleFileMenu(e) {
   const m = document.getElementById('file-actions');
   if (!m) return;
   const open = m.classList.toggle('open');
+  if (open) _fileMenuSync();
   document.removeEventListener('click', _fileMenuOutside);
   if (open) setTimeout(() => document.addEventListener('click', _fileMenuOutside), 0);
 }
@@ -29817,6 +29896,229 @@ function _fileMenuOutside(e) {
     m.classList.remove('open');
     document.removeEventListener('click', _fileMenuOutside);
   }
+}
+
+// ── File actions in the viewer (Ethan, 2026-11-08: "make it so i can print
+// files have all the file options like i have for any os for files"). The ⋯
+// menu carries what a Finder or Explorer file menu does: open in a new window,
+// show in folder, print, download, share, duplicate, rename, move, get info and
+// delete. Rename, move and delete use the same /api/fs routes as the Files row
+// menu; duplicate re-uploads the bytes through the durable upload, which never
+// overwrites (a taken name gets _1). Every action is beaconed as
+// kind=file-action with its verdict.
+function _fvPath() { return (_fileData && !_fileData._isNew && _fileData.path) || ''; }
+function _fvBeacon(action, verdict, extra) {
+  try { window._clientDebug && window._clientDebug('file-action', Object.assign({}, extra || {}, { action, verdict, measured: true, n_considered: 1, kind: 'file-action' })); } catch (e) { console.warn('file-action beacon', e); }
+}
+function _fvNeedPath() {
+  const p = _fvPath();
+  if (!p) showToast('Save the file first');
+  return p;
+}
+const _FV_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+// PRINT. A PDF prints its own pages and an image prints alone; any other file
+// prints as it is shown (rendered markdown, highlighted code, a table). In a
+// browser that is a hidden frame's print(). The Mac app's WebKit ignores
+// print(), so there the page hands the bytes or the HTML to the app
+// (amuxPrint), which opens the native print panel.
+function _fvPrintHtml(name) {
+  const body = document.getElementById('file-body');
+  const shown = body && body.style.display !== 'none' && body.innerHTML.trim() ? body.innerHTML
+    : '<pre>' + esc((_fileData && _fileData.content) || '') + '</pre>';
+  return '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(name) + '</title><style>'
+    + '@page{margin:14mm}body{font:11pt/1.5 -apple-system,system-ui,sans-serif;color:#000;background:#fff;margin:0}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'pre,code{white-space:pre-wrap;word-break:break-word;font:9.5pt/1.45 ui-monospace,Menlo,monospace}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'img,video{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #999;padding:3px 6px}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'a{color:#000}button,.md-copy-btn{display:none}</style></head><body>' + shown + '</body></html>';   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+}
+async function _fvBlobBase64(blob) {
+  return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+}
+let _fvPrintPoll = 0;
+async function _filePrint() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  const kind = /\.pdf$/i.test(name) ? 'pdf' : _FV_IMAGE.test(name) && !/\.svg$/i.test(name) ? 'image' : 'document';
+  let blob = null;
+  if (kind !== 'document') {
+    try {
+      const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      blob = await r.blob();
+    } catch (e) { showToast('Could not load ' + name + ' to print'); _fvBeacon('print', 'load_failed', { file_kind: kind, error: String(e.message || e) }); return; }
+  }
+  const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxPrint;
+  if (native) {
+    const msg = { name, kind };
+    if (blob) msg.data = await _fvBlobBase64(blob); else msg.html = _fvPrintHtml(name);
+    native.postMessage(msg);
+    _fvBeacon('print', 'sent_to_app', { file_kind: kind });
+    return;
+  }
+  // A new print replaces the last one, and the last one's wait stops with it.
+  clearInterval(_fvPrintPoll);
+  document.getElementById('file-print-frame')?.remove();
+  const fr = document.createElement('iframe');
+  fr.id = 'file-print-frame'; fr.className = 'file-print-frame'; fr.title = 'Print ' + name;
+  fr.setAttribute('aria-hidden', 'true');
+  if (kind === 'pdf') {
+    fr.src = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+  } else if (kind === 'image') {
+    fr.srcdoc = '<!doctype html><title>' + esc(name) + '</title><style>@page{margin:10mm}body{margin:0}img{max-width:100%;max-height:100vh;display:block;margin:auto}</style><img src="' + URL.createObjectURL(blob) + '">';
+  } else {
+    fr.srcdoc = _fvPrintHtml(name);
+  }
+  fr.dataset.kind = kind;
+  // Print once the frame is ready: its load event, or its document reporting
+  // complete (Chromium does not always fire load for a frame hosting a PDF).
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true; clearInterval(poll);
+    fr.dataset.loaded = '1';
+    _fvBeacon('print', 'print_opened', { file_kind: kind });
+    try { fr.contentWindow.focus(); fr.contentWindow.print(); fr.dataset.printed = '1'; }
+    catch (e) {
+      // A PDF viewer that refuses a scripted print still prints from its own toolbar.
+      _fvBeacon('print', 'print_blocked', { file_kind: kind, error: String(e.message || e) });
+      if (kind === 'pdf') window.open(fr.src, '_blank'); else showToast('Printing was blocked by the browser');
+    }
+  };
+  fr.addEventListener('load', go);
+  let waited = 0;
+  const poll = _fvPrintPoll = setInterval(() => {
+    if (!fr.isConnected) { clearInterval(poll); return; }
+    waited += 250;
+    let ready = false;
+    try { ready = !!fr.contentDocument && fr.contentDocument.readyState === 'complete' && waited >= 750; } catch (e) { ready = false; }
+    if (ready) { go(); return; }
+    if (waited >= 10000 && !done) {
+      done = true; clearInterval(poll);
+      _fvBeacon('print', 'print_timeout', { file_kind: kind });
+      if (kind === 'pdf') window.open(fr.src, '_blank'); else showToast('Could not print ' + name);
+    }
+  }, 250);
+  document.body.appendChild(fr);
+}
+function _fileOpenNewWindow() {
+  const path = _fvNeedPath(); if (!path) return;
+  _fvBeacon('window', 'opened');
+  window.open(location.origin + location.pathname + '#path=' + _encodeHashPath(path), '_blank');
+}
+function _fileShowInFolder() {
+  const path = _fvNeedPath(); if (!path) return;
+  const dir = path.replace(/\/[^/]*$/, '') || '/';
+  // The folder opens underneath either way; a file with unsaved edits stays
+  // on top until its own save-or-discard prompt is answered.
+  closeFilePreview();
+  _filesPath = dir;
+  switchView('files');
+  loadFiles(dir);
+  _fvBeacon('reveal', 'shown');
+}
+async function _fileShare() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); _fvBeacon('share', 'shared'); return; }
+    _copyFileDeeplink(path);
+    _fvBeacon('share', 'link_copied');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    showToast('Could not share ' + name);
+    _fvBeacon('share', 'failed', { error: String(e.message || e) });
+  }
+}
+// Download is offered for every saved file. A file the viewer already set a
+// download for (a binary, a capped PDF or large text) keeps its own URL.
+function _fileMenuSync() {
+  const dl = document.getElementById('file-download-btn'), path = _fvPath();
+  if (dl && path && dl.style.display === 'none') {
+    dl.dataset.url = API + '/api/file/raw?path=' + encodeURIComponent(path);
+    dl.dataset.filename = path.split('/').pop();
+    dl.style.display = '';
+  }
+  const share = document.getElementById('file-tab-share');
+  if (share) share.style.display = navigator.share ? '' : 'none';
+}
+async function _fileRenameOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const old = path.split('/').pop();
+  const name = ((await showPrompt('Rename "' + old + '" to:', old, old)) || '').trim();
+  if (!name || name === old) return;
+  if (/[\/\0]/.test(name) || name === '.' || name === '..') { showToast('Invalid name'); return; }
+  const r = await apiCall(API + '/api/fs/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, new_name: name }) });
+  if (!r) { _fvBeacon('rename', 'failed'); return; }   // apiCall said why
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast(d.error || 'Rename failed'); _fvBeacon('rename', 'failed'); return; }
+  showToast('Renamed to ' + name);
+  _fvBeacon('rename', 'renamed');
+  closeFilePreview();
+  await openFilePreview(d.path || path.replace(/[^/]*$/, name));
+  _fileViewRefresh();
+}
+async function _fileMoveOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  const to = ((await showPrompt('Move "' + name + '" to folder:', dir, dir)) || '').trim().replace(/\/+$/, '');
+  if (!to || to === dir) return;
+  const r = await apiCall(API + '/api/fs/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, dest: to + '/' + name }) });
+  if (!r) { _fvBeacon('move', 'failed'); return; }   // apiCall said why
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast(d.error === 'target already exists' ? to + ' already has a ' + name : (d.error || 'Move failed')); _fvBeacon('move', 'failed'); return; }
+  showToast('Moved to ' + to);
+  _fvBeacon('move', 'moved');
+  closeFilePreview();
+  await openFilePreview(d.path || to + '/' + name);
+  _fileViewRefresh();
+}
+async function _fileDuplicate() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  const dot = name.lastIndexOf('.');
+  const copy = dot > 0 ? name.slice(0, dot) + ' copy' + name.slice(dot) : name + ' copy';
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const { queued, failed } = await _uploadOrQueue([new File([blob], copy, { type: blob.type })], dir, 'file');
+    if (failed || !queued) throw new Error('not saved');
+    showToast('Duplicating as ' + copy);
+    _fvBeacon('duplicate', 'queued');
+  } catch (e) { showToast('Could not duplicate ' + name); _fvBeacon('duplicate', 'failed', { error: String(e.message || e) }); }
+}
+async function _fileInfo() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  let e = null;
+  try {
+    const d = await (await fetch(API + '/api/ls?path=' + encodeURIComponent(dir) + '&hidden=1')).json();
+    e = (d.entries || []).find(x => x.name === name) || null;
+  } catch (err) { console.warn('file info', err); }
+  const when = t => t ? new Date(t * 1000).toLocaleString() : 'unknown';
+  const ext = name.includes('.') ? name.split('.').pop().toUpperCase() + ' file' : 'File';
+  const rows = [['Name', name], ['Kind', ext], ['Size', e && e.size != null ? _fmtSize(e.size) + ' (' + e.size.toLocaleString() + ' bytes)' : 'unknown'],
+    ['Where', dir], ['Modified', when(e && e.modified)]];
+  if (e && e.created) rows.push(['Created', when(e.created)]);
+  if (e && e.opened) rows.push(['Opened', when(e.opened)]);
+  _fvBeacon('info', e ? 'shown' : 'shown_without_listing');
+  await showAlertHtml(name, '<table class="file-info-table">' + rows.map(([k, v]) => '<tr><th>' + esc(k) + '</th><td>' + esc(String(v)) + '</td></tr>').join('') + '</table>');
+}
+async function _fileDeleteOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  if (!(await showConfirm('Delete "' + name + '"? This cannot be undone.', 'Delete', true))) return;
+  const r = await apiCall(API + '/api/fs/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+  if (!r) { _fvBeacon('delete', 'failed'); return; }   // apiCall said why
+  showToast('Deleted ' + name);
+  _fvBeacon('delete', 'deleted');
+  _fileData = null;
+  closeFilePreview();
+  _fileViewRefresh();
 }
 
 // ── Open in worker (owner, 2026-10-31 mockup) ──
@@ -30528,6 +30830,118 @@ function _officeFlash(el) {
   el.classList.remove('office-flash'); void el.offsetWidth; el.classList.add('office-flash');
 }
 
+// A preview for every binary the browser cannot show by itself (owner,
+// 2026-11-08: "native previews of every file type", over a TIFF that opened as
+// a box and a Download button). The server names the previewer
+// (file_viewer/preview.rs): an image it converts, an archive's entries, a
+// font's specimen, a database's tables, or the first bytes in hex. Download
+// stays in the header of each one.
+let _binPrevGen = 0;
+function _binPrevUrl(route, data) {
+  return API + '/api/file/' + route + '?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+}
+function _binPrevBeacon(fields) {
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify(Object.assign({ kind: 'file-preview', measured: true, n_considered: 1, ver: APP_VER }, fields)) })
+    .catch(e => console.warn('file-preview beacon not sent', e));
+}
+async function _renderBinaryPreview(data, body) {
+  const gen = ++_binPrevGen;
+  const fname = data.path.split('/').pop();
+  const rawUrl = _binPrevUrl('raw', data);
+  body.className = 'file-overlay-body file-binprev';
+  body.innerHTML = '<div class="binprev-head"><span class="binprev-meta">' + esc(data.kind || (data.ext || '').replace(/^\./, '').toUpperCase() + ' file')
+    + (data.size ? ' &middot; ' + esc(_fmtBytes(data.size)) : '') + '</span>'
+    + '<a class="btn" href="' + esc(_authUrl(rawUrl)) + '" download="' + esc(fname) + '">Download</a></div><div class="binprev-main"><div class="pdf-note">Loading preview&hellip;</div></div>';
+  const main = body.querySelector('.binprev-main');
+  const live = () => gen === _binPrevGen && main.isConnected;
+  const getJson = async (route) => {
+    const r = await fetch(_authUrl(_binPrevUrl(route, data)), { cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  };
+  const kind = data.preview;
+  try {
+    if (kind === 'image' || kind === 'quicklook') {
+      await new Promise((ok, fail) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'img-zoom-wrap';
+        const img = document.createElement('img');
+        img.className = 'img-zoomable';
+        img.alt = fname;
+        img.onload = () => { if (!live()) return ok(); main.replaceChildren(wrap); _attachImageZoom(wrap, img); ok(); };
+        img.onerror = () => fail(new Error(kind === 'quicklook' ? 'Quick Look could not draw it' : 'no tool here could convert it'));
+        wrap.appendChild(img);
+        img.src = _authUrl(_binPrevUrl('preview-image', data));
+      });
+    } else if (kind === 'archive') {
+      const d = await getJson('archive');
+      if (!live()) return;
+      if (typeof d.text === 'string') {
+        main.innerHTML = '<div class="binprev-note">Unpacked from gzip:</div><pre class="binprev-text">' + esc(d.text) + '</pre>';
+      } else {
+        const rows = (d.entries || []).map(e => '<tr><td>' + (e.dir ? '&#x1F4C1; ' : '') + esc(e.name) + '</td><td class="binprev-num">' + (e.dir ? '' : esc(_fmtBytes(e.size || 0))) + '</td></tr>').join('');
+        main.innerHTML = '<div class="binprev-note">' + (d.total || 0) + ' entr' + (d.total === 1 ? 'y' : 'ies') + (d.truncated ? ', first ' + (d.entries || []).length + ' shown' : '') + '</div>'
+          + '<div class="xlsx-scroll"><table class="xlsx-table"><thead><tr><th>Name</th><th>Size</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      }
+    } else if (kind === 'sqlite') {
+      const d = await getJson('sqlite');
+      if (!live()) return;
+      const cellHtml = v => v === null ? '<span class="binprev-null">NULL</span>' : esc(String(v));
+      main.innerHTML = '<div class="binprev-note">' + (d.total_tables || 0) + ' table' + (d.total_tables === 1 ? '' : 's') + ' and views, opened read-only</div>'
+        + (d.tables || []).map(t => '<details class="binprev-table"' + ((d.tables || []).length <= 3 ? ' open' : '') + '><summary><b>' + esc(t.name) + '</b> <span class="binprev-note">'
+          + esc(t.type || 'table') + (t.count != null ? ' &middot; ' + t.count + ' row' + (t.count === 1 ? '' : 's') : '') + '</span></summary>'
+          + (t.error ? '<div class="binprev-note">' + esc(t.error) + '</div>'
+            : '<div class="xlsx-scroll"><table class="xlsx-table"><thead><tr>' + (t.columns || []).map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
+              + (t.rows || []).map(r => '<tr>' + r.map(v => '<td>' + cellHtml(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>')
+          + '</details>').join('');
+    } else if (kind === 'font') {
+      const fam = 'amux-prev-' + gen;
+      const face = new FontFace(fam, 'url(' + JSON.stringify(_authUrl(rawUrl)) + ')');
+      await face.load();
+      if (!live()) return;
+      document.fonts.add(face);
+      const sample = 'The quick brown fox jumps over the lazy dog';
+      main.innerHTML = '<div class="binprev-font">'
+        + ['s1', 's2', 's3', 's4'].map(c => '<div class="binprev-font-' + c + '">' + sample + '</div>').join('')
+        + '<div class="binprev-font-chars">ABCDEFGHIJKLMNOPQRSTUVWXYZ<br>abcdefghijklmnopqrstuvwxyz<br>0123456789 !?&amp;@#%()[]{}</div></div>';
+      // The loaded face, by its generated name.
+      main.querySelector('.binprev-font').style.fontFamily = "'" + fam + "'";
+    } else {
+      await _binPrevHex(data, main, rawUrl, live);
+    }
+    _binPrevBeacon({ verdict: 'file_preview_shown', preview: kind, ext: data.ext || '' });
+  } catch (e) {
+    if (!live()) return;
+    // Whatever the previewer, the bytes themselves still show.
+    _binPrevBeacon({ verdict: 'file_preview_fell_back_to_hex', preview: kind, ext: data.ext || '', error: String(e && e.message || e) });
+    main.innerHTML = '';
+    const note = document.createElement('div');
+    note.className = 'binprev-note';
+    note.textContent = 'No ' + (kind === 'quicklook' ? 'Quick Look' : kind) + ' preview: ' + (e && e.message || e) + '. Its first bytes:';
+    main.appendChild(note);
+    const box = document.createElement('div');
+    main.appendChild(box);
+    try { await _binPrevHex(data, box, rawUrl, live); } catch (e2) { box.textContent = 'Could not read the file: ' + (e2.message || e2); }
+  }
+}
+// The first 4 KB as offset, hex and printable text.
+async function _binPrevHex(data, el, rawUrl, live) {
+  const r = await fetch(_authUrl(rawUrl), { headers: { Range: 'bytes=0-4095' }, cache: 'no-store' });
+  if (!r.ok && r.status !== 206) throw new Error('HTTP ' + r.status);
+  const b = new Uint8Array(await r.arrayBuffer()).slice(0, 4096);
+  if (!live()) return;
+  const lines = [];
+  for (let o = 0; o < b.length; o += 16) {
+    const row = b.slice(o, o + 16);
+    const hex = Array.from(row, x => x.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ');
+    const txt = Array.from(row, x => x >= 32 && x < 127 ? String.fromCharCode(x) : '.').join('');
+    lines.push(o.toString(16).padStart(8, '0') + '  ' + hex + '  ' + txt);
+  }
+  el.innerHTML = '<pre class="binprev-hex">' + esc(lines.join('\n')) + '</pre>'
+    + (data.size > 4096 ? '<div class="binprev-note">First 4 KB of ' + esc(_fmtBytes(data.size)) + '.</div>' : '');
+}
 async function _renderOffice(data, body) {
   const gen = ++_officeGen;
   const isDoc = /\.(docx|docm|dotx)$/i.test(data.path);
@@ -30852,6 +31266,10 @@ function _renderFileBody(data, mode) {
   }
   if (data.is_binary && !data.is_ebook && _OFFICE_RE.test(data.path || '')) {
     _renderOffice(data, body);
+    return;
+  }
+  if (data.is_binary && !data.is_ebook && data.preview) {
+    _renderBinaryPreview(data, body);
     return;
   }
   if (data.is_binary) {
@@ -35476,12 +35894,50 @@ function _spHandlePaste(e, box) {
   const items = [...(e.clipboardData?.items || [])];
   const images = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
   const text = e.clipboardData?.getData('text/plain') || '';
-  if (box && box.value.trim()) return;
+  if (box && box.value.trim()) {
+    // Typing: an image goes into the note, saved beside it (Ethan, 2026-11-08).
+    if (images.length) _pasteImagesIntoNote(e, box, _spPath.replace(/\/$/, ''));
+    return;
+  }
   if (!images.length && !text.trim()) return;
   e.preventDefault();
   images.forEach(_spSaveImage);
   if (text.trim()) _spCaptureSave(text);
 }
+// PASTING AN IMAGE INTO A NOTE (Ethan, 2026-11-08: "I should be able to paste
+// images in scratchpad"). The image is saved as a file in the note's folder,
+// through the durable chunked upload, and the note gets ![](name) at the
+// cursor; the preview shows it (renderer.image resolves relative paths). The
+// name carries a random tail so the server never has to rename it on a
+// collision, which would break the link. Beaconed as kind=note-paste-image.
+function _pasteImageName(file) {
+  const ext = ((file.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'png';
+  return 'pasted-' + _spStamp() + '-' + Math.random().toString(36).slice(2, 6) + '.' + ext;
+}
+function _pasteImagesIntoNote(e, ta, dir) {
+  const files = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file' && /^image\//.test(i.type))
+    .map(i => i.getAsFile()).filter(Boolean);
+  if (!files.length || !dir) return false;
+  e.preventDefault();
+  const named = files.map(f => new File([f], _pasteImageName(f), { type: f.type }));
+  const ins = named.map(f => '![](' + f.name + ')').join('\n');
+  const s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, s), lead = before && !before.endsWith('\n') ? '\n' : '';
+  ta.value = before + lead + ins + '\n' + ta.value.slice(en);
+  ta.selectionStart = ta.selectionEnd = s + lead.length + ins.length + 1;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  _uploadOrQueue(named, dir, 'file').then(({ queued, failed }) => {
+    if (window._clientDebug) window._clientDebug('note-paste-image', { verdict: failed ? 'upload_failed' : 'queued', measured: true, n_considered: named.length, queued, failed });
+    if (failed) showToast('Could not save the pasted image');
+  });
+  return true;
+}
+document.addEventListener('paste', e => {
+  const ta = e.target;
+  if (!ta || ta.id !== 'file-edit-ta' || !_fileData || !_fileData.path) return;
+  if (!(_fileData.is_markdown || /\.(md|markdown|txt)$/i.test(_fileData.path))) return;
+  _pasteImagesIntoNote(e, ta, _fileData.path.replace(/\/[^/]*$/, ''));
+});
 async function _spCaptureSaveTyped() {
   const box = document.getElementById('sp-capture');
   if (!box || !box.value.trim()) return;
@@ -36619,7 +37075,10 @@ async function _connReconnect(family, account) {
       return;
     }
     if (d && d.authorize_url) {
-      window.open(d.authorize_url, '_blank');
+      // A popup opened after an await is often blocked (a phone, the Mac
+      // app); then go there in this tab, since the grant returns to amux.
+      const w = window.open(d.authorize_url, '_blank');
+      if (!w) { location.assign(d.authorize_url); return; }
       showToast('Approve in the opened tab — one approval repairs every worker using ' + account);
     } else if (!r.ok || (d && d.queued)) {
       showToast('Could not reach the server (HTTP ' + r.status + '). Try again in a moment.');
@@ -41788,7 +42247,7 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
-    ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'],
+    ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -41832,6 +42291,7 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
+  if (view === 'photos') _photosEnter(); else if (typeof _photosLeave === 'function') _photosLeave();
   if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
   else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
   if (view !== 'files') {
@@ -46754,7 +47214,11 @@ function _renderMarkdownInner(raw, basePath) {
       // Media inline, scaled to the container: an image link to a video file
       // plays in place instead of showing a broken image.
       renderer.image = function({ href, title, text }) {
-        const h = esc(href || ''), t = title ? ' title="' + esc(title) + '"' : '';
+        // A relative image (![](shot.png), as a pasted image is written) is the
+        // file beside this note, served by this amux.
+        const local = _resolveFileLink(basePath, href);
+        const src = local ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(local)) : href;
+        const h = esc(src || ''), t = title ? ' title="' + esc(title) + '"' : '';
         if (/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(href || ''))
           return '<video controls preload="metadata" src="' + h + '"' + t + '></video>';
         if (/\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(href || ''))
@@ -57758,6 +58222,33 @@ async function _handleDeeplink(hash) {
     const m = location.search.match(/[?&]view=([^&]+)/);
     if (m) hash = '#view=' + m[1];
   }
+  // #reconnect=<family>:<account>: the link in a connector alert (Ethan,
+  // 2026-11-08: a grant that cannot refresh reaches the owner with one tap to
+  // re-consent; runtime_jobs/connector_maintenance.rs builds it). It opens
+  // Connectors and asks once, so a stray link never starts a grant unasked.
+  if (hash && hash.startsWith('#reconnect=')) {
+    const raw = hash.slice(11);
+    const at = raw.indexOf(':');
+    let family = '', account = '';
+    try { family = decodeURIComponent(raw.slice(0, at)); account = decodeURIComponent(raw.slice(at + 1)); } catch (_) { family = ''; }
+    if (at <= 0 || !/^[a-z0-9_-]+$/.test(family) || !account) {
+      amuxTrack('deeplink_reconnect', {verdict: 'malformed', measured: true, n_considered: 1});
+      return;
+    }
+    const tryReconnect = async (attempt) => {
+      if (!(document.getElementById('grid-view') && document.getElementById('tab-connectors'))) {
+        if (attempt < 25) setTimeout(() => tryReconnect(attempt + 1), 200);
+        return;
+      }
+      try { switchView('connectors'); } catch (e) { console.warn('reconnect deeplink: switchView', e); }
+      amuxTrack('deeplink_reconnect', {verdict: 'offered', family, measured: true, n_considered: 1});
+      if (await showConfirm('Reconnect ' + account + '? It can no longer be refreshed, so workers using it are failing. Google asks you to approve once.', 'Reconnect')) {
+        _connReconnect(family, account);
+      }
+    };
+    tryReconnect(0);
+    return;
+  }
   if (hash && hash.startsWith('#view=')) {
     // The view is up to the first '&': the rest are that view's own parameters
     // (#view=apps&open=<id>, &add-internal=<port>), read by the view itself.
@@ -58043,6 +58534,11 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
+// The hashes that name where to land. Restoring the last screen must not run
+// over any of them (both checks below read this one list). reconnect joined it
+// on 2026-11-08: a connector alert's link opened Connectors and its prompt,
+// then the restore reopened the last worker over them.
+const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
 function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
@@ -58059,7 +58555,7 @@ function _restoreScreen(bootHash) {
   // peek over the view the link named. In the Mac app, where every window
   // shares localStorage, that peek was another window's worker (2026-10-21).
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(_bootHash)
+  const _hasDeeplink = _DEEPLINK_HASH_RE.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -58106,7 +58602,7 @@ function _restoreScreen(bootHash) {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(location.hash)) {
+          || _DEEPLINK_HASH_RE.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
@@ -63097,6 +63593,39 @@ function _pagesHostReady() {
     document.head.appendChild(s);
   });
 }
+// The Photos tab (Ethan, 2026-11-08) lives in photos.js and photos.css,
+// loaded the first time the tab opens so the rest of the dashboard does not
+// carry it. window.AmuxPhotos.mount(el) renders it into #photos-view.
+let _photosLoading = null;
+function _photosAssets() {
+  if (window.AmuxPhotos) return Promise.resolve();
+  if (_photosLoading) return _photosLoading;
+  // Both files before the first paint: the grid sizes itself from its
+  // scroll box, and without the stylesheet that box has no height, so every
+  // one of 10,000 rows read as on screen and was drawn.
+  const load = (el, what) => new Promise((resolve, reject) => {
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(what + ' did not load'));
+    document.head.appendChild(el);
+  });
+  const css = document.createElement('link');
+  css.rel = 'stylesheet'; css.href = '/photos.css?v=' + APP_VER;
+  const js = document.createElement('script');
+  js.src = '/photos.js?v=' + APP_VER;
+  _photosLoading = Promise.all([load(css, 'photos.css'), load(js, 'photos.js')])
+    .catch((e) => { _photosLoading = null; throw e; });
+  return _photosLoading;
+}
+async function _photosEnter() {
+  const el = document.getElementById('photos-view');
+  if (!el) return;
+  try { await _photosAssets(); window.AmuxPhotos.mount(el); }
+  catch (e) {
+    el.innerHTML = '<div class="ph-fatal">Photos could not load. <button class="btn" onclick="_photosEnter()">Try again</button></div>';
+    console.warn('photos:', e);
+  }
+}
+function _photosLeave() { if (window.AmuxPhotos) window.AmuxPhotos.leave(); }
 async function _pagesEnter() {
   const h = window._viewParams || location.hash;
   window._viewParams = null;
@@ -63107,7 +63636,7 @@ async function _pagesEnter() {
   // Deep links: #view=apps&open=<id> (or the older #view=pages&open=<id>) opens
   // an app inside amux; a worker's link to localhost:<port> arrives as
   // &add-internal=<port>, which opens that app when it is already in Apps and offers to add it otherwise.
-  const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
+  const open = /[#&]open=([a-z0-9-]{3,64})(?:&|$)/.exec(h);
   const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
   await _pubList();
   // &at=<path> opens it at that page: an app page opened in a tab of its own
@@ -63220,6 +63749,7 @@ function _pubMenu(e, id) {
   m.className = 'card-menu open'; m.id = 'pub-menu'; m.setAttribute('role', 'menu');
   m.innerHTML = item('open', '&#x2197;', internal ? 'Open' : 'Open link')
     + (internal ? '' : item('copy', '&#x2398;', 'Copy link'))
+    + item('rename', '&#x270E;', 'Rename address')
     + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Apps' : 'Turn off');
   m.addEventListener('click', ev => {
     const it = ev.target.closest('[data-act]');
@@ -63227,6 +63757,7 @@ function _pubMenu(e, id) {
     ev.stopPropagation(); _pubMenuClose();
     if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
     else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
+    else if (it.dataset.act === 'rename') _pubRename(id);
     else if (it.dataset.act === 'remove') _pubRevoke(id);
   });
   document.body.appendChild(m);
@@ -63267,6 +63798,40 @@ function _pagesFilter(q) {
     el.classList.toggle('pages-hidden', !!t && !el.dataset.search.includes(t));
   });
 }
+// A change only a person may make (approve, rename). It takes the owner's
+// session cookie, which only a sign-in sets: a worker can hold the bearer,
+// never the cookie. A browser on this Mac gets the bearer in the page and no
+// cookie, so the owner's own click was refused. Sign in once with the page's
+// owner token (same origin), then try again.
+async function _pubAsPerson(what, call) {
+  try { return await call(); }
+  catch (e) {
+    if (!(_authToken && /signed in/i.test(e.message || ''))) throw e;
+    const s = await fetch(location.origin + '/api/connection/session', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: _authToken }) });
+    window._clientDebug && window._clientDebug('pages-' + what, { verdict: s.ok ? 'owner_session_established_for_' + what : 'owner_session_sign_in_refused', status: s.status, measured: true, n_considered: 1 });
+    if (!s.ok) throw e;
+    return await call();
+  }
+}
+// Give a link the name its address shows (public_links.rs rename). The old
+// name keeps working: it redirects to the new one.
+async function _pubRename(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  const internal = l.kind === 'internal';
+  const name = await showPrompt((internal ? 'Name for this app\'s address' : 'Name for this link')
+    + ' (lowercase letters, digits and hyphens). The old address keeps working.'
+    + (internal ? '' : ' Anyone who can guess a public link\'s name can open it.'), 'my-app', id);
+  if (name == null) return;
+  const want = String(name).trim().toLowerCase();
+  if (!want || want === id) return;
+  try {
+    const d = await _pubAsPerson('rename', () => _pubFetch('/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ id: want }) }));
+    showToast('Renamed: ' + (internal ? (d.app_path || d.id) : (d.url || d.path)));
+  } catch (e) { showToast('Not renamed: ' + e.message); }
+  _pubList();
+}
 async function _pubApprove(id) {
   const l = _pubLinks.find(x => x.id === id);
   const what = l && l.file ? 'the file or folder ' + l.file : 'the app on port ' + (l ? l.port : '');
@@ -63275,25 +63840,8 @@ async function _pubApprove(id) {
       : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
     : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
   if (!(await showConfirm(ask, 'Approve', true))) return;
-  const approve = () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
-  try { await approve(); showToast('Public link approved'); }
-  catch (e) {
-    // Approval takes the owner's session cookie, which only a sign-in sets: a
-    // worker can hold the bearer, never the cookie. A browser on this Mac gets
-    // the bearer in the page and no cookie, so the owner's own click was
-    // refused. Sign in once with the page's owner token (same origin), then
-    // try again.
-    let retried = false;
-    if (_authToken && /signed in/i.test(e.message || '')) {
-      try {
-        const s = await fetch(location.origin + '/api/connection/session', { method: 'POST', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: _authToken }) });
-        if (s.ok) { await approve(); retried = true; showToast('Public link approved'); }
-        window._clientDebug && window._clientDebug('pages-approve', { verdict: s.ok ? 'owner_session_established_for_approve' : 'owner_session_sign_in_refused', status: s.status, measured: true, n_considered: 1 });
-      } catch (e2) { e = e2; }
-    }
-    if (!retried) showToast('Not approved: ' + e.message);
-  }
+  try { await _pubAsPerson('approve', () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' })); showToast('Public link approved'); }
+  catch (e) { showToast('Not approved: ' + e.message); }
   _pubList();
 }
 async function _pubList() {
@@ -63495,12 +64043,13 @@ window.addEventListener('message', (e) => {
 function _appUrlAt(url, at) {
   if (!_appPathOk(at) || at === '/') return url;
   const u = new URL(url);
-  const m = /^\/app\/[0-9a-f]{32}/.exec(u.pathname);
-  if (!m) return url;
+  // An app on a port of its own (app_ports.rs) is at `/`; otherwise under /app/<name>.
+  const m = /^\/app\/[a-z0-9-]{3,64}(?=\/|$)/.exec(u.pathname);
+  if (!m && u.pathname !== '/') return url;
   const t = new URL(at, 'https://x.invalid');
   const q = new URLSearchParams(t.search);
   for (const [k, v] of u.searchParams) q.set(k, v);
-  u.pathname = m[0] + t.pathname;
+  u.pathname = (m ? m[0] : '') + t.pathname;
   u.search = q.toString();
   u.hash = t.hash;
   return u.toString();
@@ -70487,8 +71036,16 @@ function _cvRestoreScroll(box) {
 let _cvPosT = 0;
 function _cvSavePosition(box) {
   clearTimeout(_cvPosT);
+  // The conversation this scroll happened in. A switch inside the debounce
+  // used to save the old list's place under the new conversation's name, so it
+  // reopened at the bottom (CI, ios-safari, 2026-11-08).
+  const sel = _cv.sel, gen = _cv.gen;
   _cvPosT = setTimeout(() => {
-    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+    if (_cv.sel !== sel || _cv.gen !== gen) {
+      if (window._clientDebug) window._clientDebug('cv-position', { verdict: 'stale_save_dropped', measured: true, n_considered: 1 });
+      return;
+    }
+    if (!sel || sel[0] === '@') return;
     const top = box.getBoundingClientRect().top;
     const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
     const all = _cvPositions();

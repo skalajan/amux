@@ -101,3 +101,30 @@ go live in about `gate` plus one builder tick plus a re-exec.
 - Commits that change only the dashboard: it is compiled into the binary.
   Serving it from a deployed snapshot (`AMUX_DASHBOARD_DIR`, already supported)
   would put those 44 commits a week on the re-stamp path. That is the next step.
+
+**Measured after fa39bb928 (2026-11-08).** The first two non-Rust commits both
+re-stamped (`verdict=activation_restamped`, 31 includes outside crates/
+checked). Times run from the `gate` run's `created_at` until the server served
+the new commit (`served_commit_measured source="receipt"`):
+
+| commit | gate | builder pickup | adoption | push to live |
+|---|---|---|---|---|
+| d36f6d0b1 (scripts) | 78 s | 10 s | 121 s, held by a running shell schedule (`adoption_deferred_shell_run`, SCHED-465) | 209 s |
+| 69abc30b6 (e2e spec) | 13 s | 5 s | 2 s | 20 s |
+
+A re-stamp with nothing holding adoption is live in about 20 s. The 900 s
+shell-run hold still applies, so a long shell schedule can delay one.
+
+**Dashboard commits, 2026-11-08.** rust-embed compiles `static/` into the
+binary, so a dashboard commit compiled: 89c3d6149 reported
+`push_to_live_s=430`. When the dashboard is the only compile input that
+changed, the builder now copies that commit's `static/` to
+`~/.amux/dashboard-snapshots/<git tree id>` (`AMUX_RS_DASHBOARD_SNAPSHOTS`)
+and names it in the receipt as `dashboard_dir`. The server serves that
+directory in place of its embedded copy (`amux_dashboard::use_snapshot`,
+log `dashboard_snapshot_served`). `/health` reports `dashboard_source` and
+`dashboard_version`. A server that cannot serve the snapshot logs
+`dashboard_snapshot_refused` and reports its compiled commit, so the builder
+restores the receipt and compiles in the same run. The builder keeps the
+served snapshot and three others. `scripts/test-build-restamp.sh` covers the
+dashboard-only, dashboard-plus-Rust, unsupported-server and refused cases.

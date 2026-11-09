@@ -2408,7 +2408,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/page-links/{id}",
-        methods: &["DELETE"],
+        methods: &["DELETE", "PATCH"],
     },
     RouteEntry {
         path: "/api/page-links/{id}/approve",
@@ -2745,6 +2745,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/file/history",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/file/preview-image",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/file/archive",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/file/sqlite",
         methods: ANY,
     },
     RouteEntry {
@@ -3337,6 +3349,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/connectors/maintenance",
         methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/photos/mixpeek",
+        methods: &["GET", "POST", "DELETE"],
     },
     RouteEntry {
         path: "/api/connectors/{id}/credentials",

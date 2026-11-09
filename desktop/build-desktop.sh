@@ -30,7 +30,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 MIN_MACOS=12.0
 # ScreenCaptureKit (system audio for the recorder) exists from macOS 13, so it
 # is weak-linked: on 12 the app runs and records the microphone only.
-FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
+FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -framework PDFKit -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
 compile() {  # $1 = output, $2 = optional -target
     # shellcheck disable=SC2086  # SRC and FRAMEWORKS are word lists
     xcrun swiftc -O -parse-as-library -D AMUX_APP ${2:+-target "$2"} -o "$1" $SRC $FRAMEWORKS
@@ -145,6 +145,13 @@ codesign --force --deep --sign - -r='designated => identifier "com.amux.desktop"
 
 # Install to /Applications if requested or by default on build
 # AMUX_DESKTOP_NO_INSTALL=1 leaves the bundle in the repo root (CI zips it).
+# An agent's build (Claude Code, an amux worker) leaves it there too unless
+# AMUX_DESKTOP_INSTALL=1: a worker's test build of a dirty worktree replaced
+# the owner's installed app, Intel-only, until it was restored (2026-11-08).
+if [ "${AMUX_DESKTOP_INSTALL:-0}" != 1 ] && { [ -n "${CLAUDECODE:-}" ] || [ -n "${AMUX_SESSION:-}" ]; }; then
+    echo "  Not installed: an agent's build stays in $APP (AMUX_DESKTOP_INSTALL=1 installs it)"
+    AMUX_DESKTOP_NO_INSTALL=1
+fi
 if [ "${AMUX_DESKTOP_NO_INSTALL:-0}" != 1 ] && [ -d /Applications ]; then
     rm -rf "/Applications/$APP"
     cp -R "$APP" "/Applications/$APP"

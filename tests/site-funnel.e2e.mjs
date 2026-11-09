@@ -165,6 +165,30 @@ await p.goto(B + '/pricing/');
 await p.click('.site-header .nav-drop > summary');
 ok(await p.locator('.nav-drop-menu').isVisible(), 'Solutions menu opens with no site.js');
 
+// /concierge/ starts light for a visitor who has not chosen, even on a dark OS; the theme menu still rules.
+{
+  const ctx = await b.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+  const tp = await ctx.newPage();
+  await tp.route(/posthog\.com|cloud\.amux\.io/, r => r.abort());
+  const theme = () => tp.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  const pick = async v => { await tp.click('.theme-btn'); await tp.click(`[data-theme-set="${v}"]`); };
+  await tp.goto(B + '/concierge/');
+  ok(await theme() === 'light', 'dark OS, no saved choice: /concierge/ is light');
+  await pick('dark');
+  ok(await theme() === 'dark', 'theme menu switches /concierge/ to dark');
+  ok(await tp.evaluate(() => [...document.querySelectorAll('#future, #how, .final')].every(e => { const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number); return m[3] === 0 || m[0] < 60; })), 'dark mode reaches every band');
+  await tp.reload();
+  ok(await theme() === 'dark', 'the saved choice survives a reload');
+  await pick('system');
+  ok(await theme() === 'dark', 'choosing System follows the dark OS, on /concierge/ too');
+  await pick('light');
+  ok(await tp.evaluate(() => [...document.querySelectorAll('#future, #how, .final')].every(e => { const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number); return m[3] === 0 || m[0] > 200; })), 'light mode has no dark bands');
+  await tp.evaluate(() => localStorage.clear());
+  await tp.goto(B + '/pricing/');
+  ok(await theme() === 'dark', 'other pages still follow the OS when nothing is saved');
+  await ctx.close();
+}
+
 // Welcome page: paid once per order
 p = await page();
 await p.goto(B + '/start/welcome/?session_id=cs_test_funnel');
@@ -216,6 +240,65 @@ ok((await evs(p, 'ab_exposure')).length === 0, 'a page outside the test sends no
 const stale = await p.evaluate(() => { localStorage.setItem('amux-ab', JSON.stringify({ exptest: 'b', oldtest: 'x' })); return 1; });
 await p.reload();
 ok(await p.evaluate(() => !('oldtest' in JSON.parse(localStorage.getItem('amux-ab')))), 'ended tests are dropped from storage');
+
+// The featured video is one shared poster: no YouTube request until the visitor presses play.
+const videoSpots = [['/demos/', 'demos-featured-video'], ['/walkthrough/', 'walkthrough-featured-video']];
+for (const mobile of [false, true]) for (const [path, spot] of videoSpots) {
+  const where = `${path} ${mobile ? 'phone' : 'desktop'}`;
+  p = await page({ mobile });
+  const yt = []; p.on('request', r => { if (/youtube|ytimg/.test(r.url())) yt.push(r.url()); });
+  await p.route(/youtube/, r => r.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' }));
+  await p.goto(B + path);
+  await p.waitForLoadState('load');
+  ok(yt.length === 0, `no YouTube request before play (${where})`);
+  ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no sideways overflow (${where})`);
+  await p.focus('a.yt-frame');
+  await p.keyboard.press('Enter');
+  await p.waitForSelector('.yt-frame iframe');
+  ok(/youtube-nocookie\.com\/embed\/kn7Cw1bMBRQ\?autoplay=1/.test(await p.getAttribute('.yt-frame iframe', 'src')), `Enter on the poster loads the nocookie player (${where})`);
+  cta = await evs(p, 'cta_click');
+  ok(cta.filter(e => e.goal === 'video' && e.spot === spot).length === 1, `play records one cta_click, goal video, spot ${spot}`);
+  ok(p.errs.length === 0, `no JS errors (${where})`);
+  await p.context().close();
+}
+p = await page();
+await p.goto(B + '/');
+await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
+await p.click('.hero-walk a[href="/walkthrough/"]');
+cta = await evs(p, 'cta_click');
+ok(cta.some(e => e.goal === 'walkthrough' && e.spot === 'home-walkthrough'), 'homepage walkthrough link -> goal walkthrough, spot home-walkthrough');
+await p.context().close();
+
+// /demos/ search: filters from the markup, says when nothing matches, loads no clip it does not show.
+for (const mobile of [false, true]) {
+  const where = mobile ? 'phone' : 'desktop';
+  p = await page({ mobile });
+  await p.goto(B + '/demos/');
+  await p.waitForLoadState('load');
+  const visible = () => p.evaluate(() => [...document.querySelectorAll('.demo-card')].filter(c => !c.classList.contains('hidden')).length);
+  const total = await p.evaluate(() => document.querySelectorAll('.demo-card').length);
+  ok(total > 20 && await visible() === total, `every demo shows before searching (${where})`);
+  ok(await p.evaluate(() => [...document.querySelectorAll('.demo-thumb video')].every(v => v.preload === 'none' && !v.autoplay)), `clips wait until they are on screen (${where})`);
+  ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no sideways overflow on /demos/ (${where})`);
+  await p.focus('#demo-search');
+  await p.keyboard.type('subscribe');
+  ok(await visible() === 1, `searching a tag finds the calendar demo (${where})`);
+  await p.keyboard.press('Escape');
+  ok(await visible() === total, `Escape clears the search (${where})`);
+  await p.keyboard.type('zzzz');
+  ok(await p.isVisible('#demo-empty') && await visible() === 0, `no match says so (${where})`);
+  await p.click('#demo-clear');
+  ok(await visible() === total && !await p.isVisible('#demo-empty'), `Clear search brings them back (${where})`);
+  await p.click('.filter-btn:text-is("Board")');
+  const board = await visible();
+  await p.fill('#demo-search', 'subscribe');
+  ok(board > 0 && board < total && await visible() >= 1 && await visible() <= board, `search and category filter combine (${where})`);
+  await p.waitForFunction(() => Array.from(window.posthog).some(c => Array.isArray(c) && c[1] === 'cta_click' && c[2] && c[2].goal === 'demo_search'), null, { timeout: 4000 });
+  cta = await evs(p, 'cta_click');
+  ok(cta.filter(e => e.goal === 'demo_search' && e.spot === 'demos-search' && e.label === 'subscribe').length === 1, `search records one cta_click, goal demo_search (${where})`);
+  ok(p.errs.length === 0, `no JS errors on /demos/ (${where})`);
+  await p.context().close();
+}
 
 await b.close();
 console.log(`\n${pass} passed, ${fail} failed`);
