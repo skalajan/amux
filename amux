@@ -1612,12 +1612,21 @@ _worker_for_cwd() {
   done
   (( ${#cands[@]} )) || return 1
   if (( ${#cands[@]} > 1 )); then
-    for n in "${cands[@]}"; do is_running "$n" && running+=("$n"); done
+    for n in "${cands[@]}"; do tmux has-session -t "=$(_worker_tmux_session "$n")" 2>/dev/null && running+=("$n"); done
     (( ${#running[@]} == 1 )) && { echo "${running[0]}"; return 0; }
     echo "${cands[*]}"
     return 2
   fi
   echo "${cands[0]}"
+}
+
+# A server-managed (rust) worker's tmux session is named after its id, not its name.
+_worker_tmux_session() {
+  local id
+  id=$(_curl -skf -m 10 "$AMUX_API/api/workers" 2>/dev/null | NAME="$1" python3 -c 'import json, os, sys
+for w in json.load(sys.stdin).get("items", []):
+    if w.get("name") == os.environ["NAME"]: print(w.get("id", "")); break' 2>/dev/null) || id=""
+  tmux_name "${id:-$1}"
 }
 
 cmd_attach() {
@@ -1642,9 +1651,117 @@ cmd_attach() {
   fi
   need_tmux
   local tname
-  tname=$(tmux_name "$name")
-  is_running "$name" || die "worker '$name' is not running. Start with: amux start $name"
+  tname=$(_worker_tmux_session "$name")
+  tmux has-session -t "=$tname" 2>/dev/null || die "worker '$name' is not running. Start with: amux here (in its folder)"
   tmux attach-session -t "=$tname"
+}
+
+# amux here: attach to this folder's worker, starting it when stopped, or create one.
+cmd_here() {
+  local yes=false new_name="" cfg="" usage="usage: amux here [-y] [--name NAME] [--config-dir DIR]"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -y|--yes) yes=true; shift ;;
+      --name) [[ -n "${2:-}" ]] || die "$usage"; new_name="$2"; shift 2 ;;
+      --config-dir) [[ -n "${2:-}" ]] || die "$usage"; cfg=$(cd "${2/#\~/$HOME}" 2>/dev/null && pwd -P) || die "no such folder: $2"; shift 2 ;;
+      -h|--help) echo "$usage"; return 0 ;;
+      *) die "amux here: unknown option '$1' ($usage)" ;;
+    esac
+  done
+  need_tmux
+  local here name rc=0
+  here=$(pwd -P)
+  name=$(_worker_for_cwd) || rc=$?
+  if (( rc == 2 )); then
+    local opts pick i
+    read -r -a opts <<< "$name"
+    [[ -t 0 ]] || die "several workers work in $here: $name — use: amux attach <name>"
+    echo "Several workers work in $here:"
+    for i in "${!opts[@]}"; do echo "  $((i + 1))) ${opts[$i]}"; done
+    read -r -p "Attach to [1-${#opts[@]}]: " pick </dev/tty || pick=""
+    [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#opts[@]} )) || die "nothing picked"
+    name="${opts[$((pick - 1))]}"
+  elif (( rc != 0 )); then
+    _here_create "$here" "$yes" "$new_name" "$cfg"
+    name="$_HERE_CREATED"
+  fi
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    cmd_start "$name"
+    return
+  fi
+  local tname resp i
+  tname=$(_worker_tmux_session "$name")
+  if ! tmux has-session -t "=$tname" 2>/dev/null; then
+    if [[ "$tname" == "$(tmux_name "$name")" ]]; then
+      _start_via_api "$name" || exit 1
+    else
+      resp=$(_curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/workers/$name/start") || resp=""
+      RESP="$resp" python3 -c 'import json, os, sys
+d = json.loads(os.environ["RESP"] or "{}")
+sys.exit(1 if not d or d.get("error") or d.get("ok") is False else 0)' 2>/dev/null \
+        || die "start $name FAILED: ${resp:-server unreachable at $AMUX_API}"
+      echo "started $name"
+    fi
+    for i in {1..60}; do tmux has-session -t "=$tname" 2>/dev/null && break; sleep 0.5; done
+    tmux has-session -t "=$tname" 2>/dev/null || die "worker '$name' did not come up within 30s — see: amux peek $name"
+  fi
+  [[ -n "${TMUX:-}" ]] && exec tmux switch-client -t "=$tname"
+  exec tmux attach-session -t "=$tname"
+}
+
+# Registers a worker for $1; its account and group come from the workers under the nearest parent folder that has any.
+_here_create() {
+  local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2
+  dir=$(dirname "$here")
+  while [[ -z "$src" && "$dir" != "/" && "$dir" != "$HOME" ]]; do
+    for f in "$CC_SESSIONS"/*.env; do
+      [[ -f "$f" ]] || continue
+      d=$(sed -n 's/^CC_DIR="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)
+      [[ -n "$d" ]] || continue
+      d=$(cd "${d/#\~/$HOME}" 2>/dev/null && pwd -P) || continue
+      [[ "$d" == "$dir"/* ]] || continue
+      src="$dir"
+      cfgs+="$(sed -n 's/^CC_CONFIG_DIR="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)"$'\n'
+      all_tags+="$(sed -n 's/^CC_TAGS="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)"$'\n'
+    done
+    dir=$(dirname "$dir")
+  done
+  if [[ -z "$cfg" && -n "$src" ]]; then
+    cfgs=$(printf '%s' "$cfgs" | sort -u)
+    [[ "$(printf '%s\n' "$cfgs" | wc -l)" -le 1 ]] \
+      || die "the workers under $src use different accounts ($(printf '%s' "$cfgs" | sed 's/^$/default/' | paste -sd, -)) — pick one: amux here --config-dir DIR"
+    cfg="$cfgs"
+  else
+    src=""
+  fi
+  all_tags=$(printf '%s' "$all_tags" | grep -v '^$' | sort -u || true)
+  [[ -n "$all_tags" && "$(printf '%s\n' "$all_tags" | wc -l)" -eq 1 ]] && tags="$all_tags"
+  if [[ -z "$name" ]]; then
+    name=$(basename "$here" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')
+    [[ -n "$name" ]] || name="worker"
+    local base="$name"
+    while [[ -f "$CC_SESSIONS/$name.env" ]] || _curl -skf -m 10 "$AMUX_API/api/workers/$name" >/dev/null 2>&1; do
+      name="$base-$n"; n=$((n + 1))
+    done
+  fi
+  [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "'$name' is not a worker name (a-z, 0-9, - and _)"
+  [[ -f "$CC_SESSIONS/$name.env" ]] && die "worker '$name' already exists (in another folder) — pick another: amux here --name NAME"
+  echo "No worker works in $here."
+  echo "  name:    $name"
+  echo "  account: ${cfg:-default}${src:+  (from the workers under $src)}"
+  echo "  group:   ${tags:-none}"
+  if ! $yes; then
+    read -r -p "Create and start it? [y/N] " ans </dev/tty || ans=""
+    [[ "$ans" == [yYaA]* ]] || die "nothing created"
+  fi
+  cmd_register "$name" --dir "$here" >/dev/null || [[ -f "$CC_SESSIONS/$name.env" ]] || die "registering $name failed"
+  {
+    [[ -n "$cfg" ]] && printf 'CC_CONFIG_DIR="%s"\nCLAUDE_CONFIG_DIR="%s"\n' "$cfg" "$cfg"
+    [[ -n "$tags" ]] && printf 'CC_TAGS="%s"\n' "$tags"
+    true
+  } >> "$CC_SESSIONS/$name.env"
+  echo "${GREEN}registered${RESET} ${BOLD}$name${RESET} → $here"
+  _HERE_CREATED="$name"
 }
 
 cmd_peek() {
@@ -6799,6 +6916,7 @@ ${BOLD}Worker management:${RESET}
 
 ${BOLD}Interaction:${RESET}
   amux attach [name]             Attach to a running worker; no name = the one working in this folder (detach: Ctrl-b d)
+  amux here [-y] [--name N]      Attach to this folder's worker; start it if stopped, or create one (account and group from the parent folders)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
@@ -12418,6 +12536,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     start)            shift; cmd_start "$@" ;;
     exec|run)         shift; cmd_exec "$@" ;;
     attach|a)         shift; cmd_attach "$@" ;;
+    here)             shift; cmd_here "$@" ;;
     grid)             shift; cmd_grid "$@" ;;
     peek|p)           shift; cmd_peek "$@" ;;
     send)             shift; cmd_send "$@" ;;
