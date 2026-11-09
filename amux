@@ -1713,7 +1713,7 @@ sys.exit(1 if not d or d.get("error") or d.get("ok") is False else 0)' 2>/dev/nu
 _here_create() {
   local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2
   dir=$(dirname "$here")
-  while [[ -z "$src" && "$dir" != "/" && "$dir" != "$HOME" ]]; do
+  while [[ -z "$src" && "$dir" == "$HOME"/* ]]; do
     for f in "$CC_SESSIONS"/*.env; do
       [[ -f "$f" ]] || continue
       d=$(sed -n 's/^CC_DIR="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)
