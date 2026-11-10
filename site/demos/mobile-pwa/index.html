@@ -4,24 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Mobile PWA | amux</title>
+  <title>Phone App | amux demo</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.">
   <meta name="keywords" content="amux mobile app, claude code on iPhone, AI agent mobile management, PWA developer tools, background sync claude">
   <link rel="canonical" href="https://amux.io/demos/mobile-pwa/">
-  <meta property="og:title" content="Mobile PWA | amux">
+  <meta property="og:title" content="Phone App | amux demo">
   <meta property="og:description" content="Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.">
   <meta property="og:url" content="https://amux.io/demos/mobile-pwa/">
-  <meta property="og:image" content="https://amux.io/demos/mobile-pwa/poster.jpg">
+  <meta property="og:image" content="https://amux.io/demos/mobile-pwa/poster.jpg?v=4fbb2af5">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/mobile-pwa/poster.jpg">
+  <meta name="twitter:image" content="https://amux.io/demos/mobile-pwa/poster.jpg?v=4fbb2af5">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=bb52e13d">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
+  <script type="application/ld+json" id="demo-ld">{"@context": "https://schema.org", "@type": "VideoObject", "name": "Phone App | amux demo", "description": "Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.", "thumbnailUrl": "https://amux.io/demos/mobile-pwa/poster.jpg?v=4fbb2af5", "contentUrl": "https://amux.io/demos/mobile-pwa/demo.mp4?v=4fbb2af5", "uploadDate": "2026-11-09", "url": "https://amux.io/demos/mobile-pwa/", "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
 </head>
 <body>
   <header class="site-header">
@@ -59,12 +62,12 @@
     <div class="breadcrumb">
       <a href="/">amux</a> <span class="sep">›</span>
       <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Mobile PWA</span>
+      <span>Phone App</span>
     </div>
-    <h1>Mobile PWA</h1>
+    <h1>Phone App</h1>
     <p class="subtitle">Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.</p>
 
-    <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="Mobile PWA demo"></video>
+    <video data-lightbox src="demo.mp4?v=4fbb2af5" poster="poster.jpg?v=4fbb2af5" autoplay loop muted playsinline title="Mobile PWA demo"></video>
 <p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 
     <h2>How it works</h2>
@@ -83,9 +86,9 @@
     
     <h2>Related demos</h2>
 <div class="related">
-  <a href="/demos/session-cards-overview/">Session cards overview</a>
-  <a href="/demos/send-command-dashboard/">Send commands from dashboard</a>
-  <a href="/guides/mobile-management-pwa/">Mobile management guide</a>
+  <a href="/demos/session-cards-overview/">Worker Cards</a>
+  <a href="/demos/send-command-dashboard/">Send to Any Worker</a>
+  <a href="/demos/self-healing-watchdog/">Live Status and Restarts</a>
 </div>
     <div class="cta-box">
   <h3>Try amux</h3>

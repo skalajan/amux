@@ -7761,14 +7761,26 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       else if (action === 'dismiss') text = '';
       else if (action === 'decline') text = 'Declined' + ref + ': ' + q + '. Do not proceed' + (typed ? '; ' + typed : '') + '.';
       else text = 'Re' + ref + ': ' + typed;
-      if (it.worker && text) {
+      // A LAND APPROVAL IS RECORDED BY PATCH-ID, NOT BY THE CARD (2026-11-09:
+      // Approve moved AMUX-6809 to todo while the land gate, which reads only
+      // /api/land/approvals, kept refusing the diff). Approve records it there;
+      // that endpoint also closes the card, so the card is not moved again.
+      let landed = false;
+      if ((action === 'approve' || action === 'approve_always') && it.land_patch_id) {
+        const r = await fetch(API + '/api/land/approvals', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ patch_id: it.land_patch_id, note: 'approved in ' + surface }) });
+        const d = await _niJson(r);
+        if (r.ok && d.approved_at) { landed = true; done.push('change ' + it.land_patch_id.slice(0, 12) + ' approved to land' + (d.card_closed ? ', ' + (d.card || it.card) + ' closed' : '')); }
+        else errs.push('land approval ' + it.land_patch_id.slice(0, 12) + ': ' + _niErr(d, r));
+      }
+      if (it.worker && text && !landed) {
         const s = await _niSend(it.worker, text, it.key, action);
         // A plain send returns on durable local acceptance (the outbox owns
         // delivery and its failures), so say "queued", never "delivered".
         if (s.ok) done.push(s.deduped ? 'already sent to ' + it.worker : (s.queued ? 'message queued for ' + it.worker : 'sent to ' + it.worker));
         else errs.push('send to ' + it.worker + ': ' + s.error);
       }
-      if (it.card) {
+      if (it.card && !landed && !(it.land_patch_id && errs.length)) {
         const verb = action === 'approve' && _niOwnerMustAct(it) ? 'Provided'
           : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply', dismiss: 'Dismissed without an answer' }[action];
         const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed
@@ -9279,6 +9291,256 @@ function _setCardsHtml(el, html) {
   el._cardsHtml = html;
   _cardsRenderStats.written++;
 }
+// HOVER PREVIEW OF AN @WORKER (owner, 2026-11-09: "when I hover a tagged
+// worker it shows a preview of the card of that worker like in the worker
+// list page. I want to see the task, status, etc."). Any .md-worker-link, in a
+// file preview, a note or a message. The card is the worker list's own
+// (_renderSessionCard), read-only: its ids are stripped so nothing in the page
+// finds the copy, and it is inert, so it never takes a click or focus. A click
+// on the mention still opens the worker. Pointers that hover only: a phone taps.
+let _wkHoverTimer = null;
+let _wkHoverLink = null;
+function _wkHoverCard() {
+  let pop = document.getElementById('worker-hovercard');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'worker-hovercard';
+    pop.className = 'worker-hovercard';
+    pop.setAttribute('role', 'tooltip');
+    pop.inert = true;
+    pop.hidden = true;
+    document.body.appendChild(pop);
+  }
+  return pop;
+}
+function _wkHoverShow(a) {
+  const name = a.dataset.worker || '';
+  const s = sessions.find(x => x.name === name);
+  const pop = _wkHoverCard();
+  if (s) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = _renderSessionCard(s);
+    tmp.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+    pop.replaceChildren(...tmp.childNodes);
+  } else {
+    pop.innerHTML = '<div class="worker-hovercard-none">No worker named <b>' + esc(name) + '</b> is running here.</div>';
+  }
+  pop.dataset.worker = name;
+  pop.hidden = false;
+  // Below the mention, or above it when there is no room; inside the window.
+  const r = a.getBoundingClientRect(), pr = pop.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight, gap = 6;
+  let top = r.bottom + gap;
+  if (top + pr.height > vh - 8 && r.top - gap - pr.height >= 8) top = r.top - gap - pr.height;
+  pop.style.top = Math.max(8, Math.min(top, vh - pr.height - 8)) + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, vw - pr.width - 8)) + 'px';
+}
+function _wkHoverHide() {
+  clearTimeout(_wkHoverTimer);
+  _wkHoverTimer = null;
+  _wkHoverLink = null;
+  const pop = document.getElementById('worker-hovercard');
+  if (pop) pop.hidden = true;
+}
+document.addEventListener('mouseover', (e) => {
+  if (!window.matchMedia('(hover: hover)').matches) return;
+  const a = e.target.closest && e.target.closest('.md-worker-link');
+  if (!a || a === _wkHoverLink) return;
+  _wkHoverHide();
+  _wkHoverLink = a;
+  _wkHoverTimer = setTimeout(() => { if (_wkHoverLink === a && a.isConnected) _wkHoverShow(a); }, 300);
+});
+document.addEventListener('mouseout', (e) => {
+  if (!_wkHoverLink) return;
+  const to = e.relatedTarget;
+  if (to && _wkHoverLink.contains(to)) return;
+  if (e.target.closest && e.target.closest('.md-worker-link') === _wkHoverLink) _wkHoverHide();
+});
+['scroll', 'mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_wkHoverLink) _wkHoverHide(); }, true));
+
+// One worker's card, as the worker list draws it. Top level so a hover
+// preview of an @worker mention draws the same card (owner, 2026-11-09).
+function _renderSessionCard(s) {
+  const isExp = expanded.has(s.name);
+  const flags = s.flags || '';
+  // Server verdict, not a re-derivation: see session_verbs::yolo_enabled.
+  // The old local form ORed in `s.auto_continue`, which is default-ON, so it
+  // badged lanes YOLO that would still stop and ask for approval.
+  const isYolo = !!s.yolo;
+  const provider = sessionProvider(s);
+  const model = sessionConfiguredModel(s);
+  const effort = provider === 'claude' ? flagValue(flags, '--effort') : '';
+  const pLabel = providerLabel(provider);
+  const runtimeBoard = _runtimeBoardPresentation(s);
+  // The measured object and the task text were serialized together by the
+  // server. Do not let a faster/slower board poll replace either side with a
+  // different snapshot; it is presentation-only evidence for the board view.
+  const displayTaskName = s.task_name || runtimeBoard.cardId || '';
+  const displayTaskSource = runtimeBoard.cardId ? 'board' : s.task_source;
+  const displayTaskBoardId = runtimeBoard.cardId;
+  const taskStale = runtimeBoard.cardId ? 0 : _taskStaleAge(s);
+  const offCached = !!(_peekIndex && _peekIndex[s.name]);
+  const taskDim = taskStale && displayTaskSource === 'board';   // stale board title shown as last resort
+  // AF-148: a lane with no active card falls back to its static DESCRIPTION,
+  // and the payload says so (`task_source: 'desc'`) — but the client only ever
+  // read task_source to dim a STALE BOARD title, so the fallback rendered
+  // identically to a live task: same weight, same colour, no badge.
+  //
+  // Found by the frustration sweep on its first run. Ethan asked tubescience
+  // "what's the status?" three times in 34 hours; that lane has 652 cards, 0
+  // in doing/review, 50 blocked — so the task slot was showing its job
+  // description ("The TubeScience customer account: product requirements…"),
+  // which reads exactly like a current task. He had no way to tell "working on
+  // this" from "no task, here is what this lane is for", so he asked.
+  //
+  // Same discriminator the stale case already uses, applied to the case it
+  // skipped. Not a mood, not a guess: the field was in the payload the whole
+  // time and one consumer read it for one branch.
+  const taskIsDesc = !runtimeBoard.cardless && displayTaskSource === 'desc' && !!displayTaskName;
+  return `
+  <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" data-worker-status="${_sessStatusKey(s)}" data-pinned="${s.pinned ? '1' : '0'}" onclick="event.stopPropagation();toggle('${s.name}')">
+    <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
+      <div class="card-header-top">
+        <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
+        <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config or behavioral hooks. Passive lifecycle hooks report status only. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
+        <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
+        <div class="card-menu" id="menu-${s.name}">
+        ${_renderWorkerActionMenu(s, 'card')}
+      </div>
+      </div>
+      ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || s.sched_on || s.sched_off || !online) ? `<div class="card-header-meta">
+        ${!s.running || !s.rate_limited_until ? _workerExecutionBadge(s, runtimeBoard) : ''}
+        ${s.running && s.status === 'waiting' ? _stalledFor(s) : ''}
+        ${s.running && s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
+        ${s.running && s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
+        ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
+        ${_lastSeen(s) ? `<span class="last-active">${timeAgo(_lastSeen(s))}</span>` : ''}
+        ${(() => {
+          /* Bare numbers, no chips (Ethan: "just numbers no outline ...
+             conservative with real estate"). Keep runtime status and board
+             state separate: "idle · 11 active" called parked/human-blocked
+             and even done cards active, making Primis's correctly parked
+             queue look like a stalled worker. Spell out the nonzero board
+             columns from the SSE-synced boardItems instead. */
+          if (s.isolated) return '';
+          _ownerReqWant(s.name);
+          const byStatus = _cardBoardStatusCounts(s.name);
+          const d = byStatus.doing || 0;
+          const todo = byStatus.todo || 0;
+          const backlog = byStatus.backlog || 0;
+          const needsYou = (byStatus.needsyou || 0) + (byStatus.blocked || 0);
+          const review = byStatus.review || 0;
+          const done = byStatus.done || 0;
+          const parts = [];
+          if (s.sched_on || s.sched_off) {
+            parts.push(_schedCountHTML(s.sched_on, s.sched_off) + ' sched');
+          }
+          if (d) parts.push(`<span class="mc-doing">${d}</span> doing`);
+          if (todo) parts.push(`<span class="mc-active mc-todo">${todo}</span> todo`);
+          const drive = s.board_drive || null;
+          const driveFresh = drive && drive.checked_at && (Date.now()/1000 - drive.checked_at) < 180;
+          // A non-empty queue plus an idle badge is never left unexplained.
+          // This applies to backlog-only and doing/review lanes too, not only
+          // todo: Primis was parked on a live trigger and looked abandoned;
+          // rtsp-connection had a dependency chain and looked identical.
+          if (s.status === 'idle' && (todo || backlog || d || review) && driveFresh) {
+            const ready = Number(drive.eligible_todos || 0);
+            const why = _boardDriveCardReason(drive);
+            parts.push(`<span class="mc-total" title="${esc(drive.detail || 'Latest board-drive decision')}">${ready} ready · ${esc(why)}</span>`);
+          }
+          if (backlog) parts.push(`<span class="mc-total mc-backlog">${backlog}</span> backlog`);
+          if (needsYou) parts.push(`<span class="mc-total">${needsYou}</span> needs you`);
+          if (review) parts.push(`<span class="mc-total">${review}</span> review`);
+          if (done) parts.push(`<span class="mc-total">${done}</span> done`);
+          // Inside the one meta line, never a second row (css-mobile.md).
+          return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${_ownerReqHTML(s.name, parts.length > 0)}${parts.join(' · ')}</span>`;
+        })()}
+        ${!online ? '<span class="cached-badge">cached</span>' : ''}
+      </div>` : ''}
+    </div>
+    ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}">${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}</span></div>` : ''}
+    ${s.creator ? `<div class="card-dir" style="font-size:var(--fs-xs);">${esc(s.creator)}</div>` : ''}
+    ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
+    ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
+
+    ${!isExp && (displayTaskName || s.task_override) ? (() => {
+      const llmTask = s.task_override || '';
+      const hasBoard = !!displayTaskBoardId;
+      const showLlm = llmTask && llmTask !== displayTaskName;
+      return (showLlm
+        ? `<div class="card-preview card-task-full" style="font-weight:600;color:var(--text);">${esc(llmTask)}</div>`
+        : '')
+      + (displayTaskName
+        ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:var(--fs-base);font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+        : '');
+    })() : ''}
+    ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
+    ${logSearchMode && _logMatches[s.name] ? (() => {
+      const hits = _logMatches[s.name];
+      const sq = searchQuery.replace(/'/g,"\\'");
+      return hits.slice(0, 2).map((h, hi) =>
+        `<div class="card-log-hit" onclick="event.stopPropagation();_peekOpenLogAt('${s.name}',${parseInt(h.line, 10) || 0},'${sq}')"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
+      ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
+    })() : ''}
+    ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || _goalTileShown(s.goal)) ? `<div class="badges">
+      ${_goalTile(s.goal)}
+      ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
+      ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
+      ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
+      ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
+      ${s.worktree_active ? '<span class="badge worktree" title="Running in an isolated git worktree">worktree</span>' : ''}
+      ${s.ephemeral ? `<span class="badge ephemeral" title="Ephemeral fan-out worker${s.ephemeral_parent ? ' of ' + esc(s.ephemeral_parent) : ''}">eph${s.ephemeral_parent ? ' of ' + esc(s.ephemeral_parent) : ''}</span>` : ''}
+      ${effort ? `<span class="badge effort" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Reasoning effort — click to change">${esc(effort)}</span>` : ''}
+      ${(s.tags||[]).map(g => `<span class="grp-chip" title="Filter by group ${esc(g)}" onclick="event.stopPropagation();toggleTagFilter('${escJs(g)}')">${esc(g)}</span>`).join('')}
+      ${model ? `<span class="badge model card-model-inline" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
+    </div>` : ''}
+    ${!s.running ? `<div style="padding:var(--space-1-5) 0 var(--space-0-5);" onclick="event.stopPropagation()">
+      <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
+    </div>` : ''}
+    <div class="panel" onclick="event.stopPropagation()">
+      ${isExp && (displayTaskName || s.task_override) ? (() => {
+        const llmTask = s.task_override || '';
+        const hasBoard = !!displayTaskBoardId;
+        const showLlm = llmTask && llmTask !== displayTaskName;
+        // The card this line already names (displayTaskBoardId, from the
+        // server's runtime link), found by id. Board rows arrive slimmed, so
+        // `desc` is absent and `desc_head` is the field that carries the line;
+        // reading `.desc` rendered nothing for every worker.
+        const shownCard = hasBoard ? (boardItems || []).find(c => c.id === displayTaskBoardId) : null;
+        const cardDesc = shownCard ? _descPreviewLine(shownCard.desc || shownCard.desc_head).slice(0, 120) : '';
+        return (showLlm
+          ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
+          : '')
+        + (displayTaskName
+          ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" title="Open the active board card" style="${showLlm ? 'font-size:var(--fs-md);font-weight:400;' : 'font-weight:600;'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+          : '')
+        + (cardDesc && !showLlm ? `<div class="card-task-desc" style="font-size:var(--fs-sm);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:var(--space-0-5) 0 0;">${esc(cardDesc)}</div>` : '');
+      })() : ''}
+      ${isExp && s.running ? `<div class="card-timing">
+        ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
+        ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
+        ${s.last_activity ? `<div class="timing-item"><span class="timing-label">Last interaction</span><span class="timing-value">${timeAgo(s.last_activity)}</span></div>` : ''}
+      </div>` : ''}
+      ${s.preview_lines && s.preview_lines.length ? `<div class="card-preview-lines" onclick="event.stopPropagation();openPeek('${s.name}')" style="cursor:pointer;">${rewriteLocalhostUrls(s.preview_lines.map(l => esc(l)).join('\n'))}</div>` : ''}
+      <div class="card-stats" id="stats-${s.name}"></div>
+      ${s.running ? `
+      <div class="chips" id="card-chips-${s.name}"></div>
+      <div class="peek-attach-bar card-attach-bar${(_cardFiles[s.name]||[]).length ? ' has-files' : ''}" id="card-attach-${s.name}">${_renderCardFileChips(s.name)}</div>
+      <div class="send-row" style="position:relative;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop('${s.name}',event)" title="Drag files here to attach">
+        <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
+        <textarea class="send-input" id="input-${s.name}" rows="1"
+          placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
+          autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
+          oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset();_draftSaveDebounced('${s.name}',this.value)"
+          onkeydown="cardSlashAcKeydown('${s.name}',event)"
+          onpaste="handleCardPaste('${s.name}',event)"
+          onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
+        <div class="send-split${_sendLabelFor(s.name) === 'Queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))" title="${esc(_sendTitleFor(s.name))}">${_sendLabelFor(s.name)}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -9467,186 +9729,6 @@ function render() {
     if (inp.value) savedInputs[inp.id] = { value: inp.value, start: inp.selectionStart, end: inp.selectionEnd };
   });
 
-  function _renderSessionCard(s) {
-    const isExp = expanded.has(s.name);
-    const flags = s.flags || '';
-    // Server verdict, not a re-derivation: see session_verbs::yolo_enabled.
-    // The old local form ORed in `s.auto_continue`, which is default-ON, so it
-    // badged lanes YOLO that would still stop and ask for approval.
-    const isYolo = !!s.yolo;
-    const provider = sessionProvider(s);
-    const model = sessionConfiguredModel(s);
-    const effort = provider === 'claude' ? flagValue(flags, '--effort') : '';
-    const pLabel = providerLabel(provider);
-    const runtimeBoard = _runtimeBoardPresentation(s);
-    // The measured object and the task text were serialized together by the
-    // server. Do not let a faster/slower board poll replace either side with a
-    // different snapshot; it is presentation-only evidence for the board view.
-    const displayTaskName = s.task_name || runtimeBoard.cardId || '';
-    const displayTaskSource = runtimeBoard.cardId ? 'board' : s.task_source;
-    const displayTaskBoardId = runtimeBoard.cardId;
-    const taskStale = runtimeBoard.cardId ? 0 : _taskStaleAge(s);
-    const offCached = !!(_peekIndex && _peekIndex[s.name]);
-    const taskDim = taskStale && displayTaskSource === 'board';   // stale board title shown as last resort
-    // AF-148: a lane with no active card falls back to its static DESCRIPTION,
-    // and the payload says so (`task_source: 'desc'`) — but the client only ever
-    // read task_source to dim a STALE BOARD title, so the fallback rendered
-    // identically to a live task: same weight, same colour, no badge.
-    //
-    // Found by the frustration sweep on its first run. Ethan asked tubescience
-    // "what's the status?" three times in 34 hours; that lane has 652 cards, 0
-    // in doing/review, 50 blocked — so the task slot was showing its job
-    // description ("The TubeScience customer account: product requirements…"),
-    // which reads exactly like a current task. He had no way to tell "working on
-    // this" from "no task, here is what this lane is for", so he asked.
-    //
-    // Same discriminator the stale case already uses, applied to the case it
-    // skipped. Not a mood, not a guess: the field was in the payload the whole
-    // time and one consumer read it for one branch.
-    const taskIsDesc = !runtimeBoard.cardless && displayTaskSource === 'desc' && !!displayTaskName;
-    return `
-    <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" data-worker-status="${_sessStatusKey(s)}" data-pinned="${s.pinned ? '1' : '0'}" onclick="event.stopPropagation();toggle('${s.name}')">
-      <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
-        <div class="card-header-top">
-          <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
-          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config or behavioral hooks. Passive lifecycle hooks report status only. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
-          <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
-          <div class="card-menu" id="menu-${s.name}">
-          ${_renderWorkerActionMenu(s, 'card')}
-        </div>
-        </div>
-        ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || s.sched_on || s.sched_off || !online) ? `<div class="card-header-meta">
-          ${!s.running || !s.rate_limited_until ? _workerExecutionBadge(s, runtimeBoard) : ''}
-          ${s.running && s.status === 'waiting' ? _stalledFor(s) : ''}
-          ${s.running && s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
-          ${s.running && s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
-          ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
-          ${_lastSeen(s) ? `<span class="last-active">${timeAgo(_lastSeen(s))}</span>` : ''}
-          ${(() => {
-            /* Bare numbers, no chips (Ethan: "just numbers no outline ...
-               conservative with real estate"). Keep runtime status and board
-               state separate: "idle · 11 active" called parked/human-blocked
-               and even done cards active, making Primis's correctly parked
-               queue look like a stalled worker. Spell out the nonzero board
-               columns from the SSE-synced boardItems instead. */
-            if (s.isolated) return '';
-            _ownerReqWant(s.name);
-            const byStatus = _cardBoardStatusCounts(s.name);
-            const d = byStatus.doing || 0;
-            const todo = byStatus.todo || 0;
-            const backlog = byStatus.backlog || 0;
-            const needsYou = (byStatus.needsyou || 0) + (byStatus.blocked || 0);
-            const review = byStatus.review || 0;
-            const done = byStatus.done || 0;
-            const parts = [];
-            if (s.sched_on || s.sched_off) {
-              parts.push(_schedCountHTML(s.sched_on, s.sched_off) + ' sched');
-            }
-            if (d) parts.push(`<span class="mc-doing">${d}</span> doing`);
-            if (todo) parts.push(`<span class="mc-active mc-todo">${todo}</span> todo`);
-            const drive = s.board_drive || null;
-            const driveFresh = drive && drive.checked_at && (Date.now()/1000 - drive.checked_at) < 180;
-            // A non-empty queue plus an idle badge is never left unexplained.
-            // This applies to backlog-only and doing/review lanes too, not only
-            // todo: Primis was parked on a live trigger and looked abandoned;
-            // rtsp-connection had a dependency chain and looked identical.
-            if (s.status === 'idle' && (todo || backlog || d || review) && driveFresh) {
-              const ready = Number(drive.eligible_todos || 0);
-              const why = _boardDriveCardReason(drive);
-              parts.push(`<span class="mc-total" title="${esc(drive.detail || 'Latest board-drive decision')}">${ready} ready · ${esc(why)}</span>`);
-            }
-            if (backlog) parts.push(`<span class="mc-total mc-backlog">${backlog}</span> backlog`);
-            if (needsYou) parts.push(`<span class="mc-total">${needsYou}</span> needs you`);
-            if (review) parts.push(`<span class="mc-total">${review}</span> review`);
-            if (done) parts.push(`<span class="mc-total">${done}</span> done`);
-            // Inside the one meta line, never a second row (css-mobile.md).
-            return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${_ownerReqHTML(s.name, parts.length > 0)}${parts.join(' · ')}</span>`;
-          })()}
-          ${!online ? '<span class="cached-badge">cached</span>' : ''}
-        </div>` : ''}
-      </div>
-      ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}">${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}</span></div>` : ''}
-      ${s.creator ? `<div class="card-dir" style="font-size:var(--fs-xs);">${esc(s.creator)}</div>` : ''}
-      ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
-      ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
-
-      ${!isExp && (displayTaskName || s.task_override) ? (() => {
-        const llmTask = s.task_override || '';
-        const hasBoard = !!displayTaskBoardId;
-        const showLlm = llmTask && llmTask !== displayTaskName;
-        return (showLlm
-          ? `<div class="card-preview card-task-full" style="font-weight:600;color:var(--text);">${esc(llmTask)}</div>`
-          : '')
-        + (displayTaskName
-          ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:var(--fs-base);font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
-          : '');
-      })() : ''}
-      ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
-      ${logSearchMode && _logMatches[s.name] ? (() => {
-        const hits = _logMatches[s.name];
-        const sq = searchQuery.replace(/'/g,"\\'");
-        return hits.slice(0, 2).map((h, hi) =>
-          `<div class="card-log-hit" onclick="event.stopPropagation();_peekOpenLogAt('${s.name}',${parseInt(h.line, 10) || 0},'${sq}')"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
-        ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
-      })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || _goalTileShown(s.goal)) ? `<div class="badges">
-        ${_goalTile(s.goal)}
-        ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
-        ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
-        ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
-        ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
-        ${s.worktree_active ? '<span class="badge worktree" title="Running in an isolated git worktree">worktree</span>' : ''}
-        ${s.ephemeral ? `<span class="badge ephemeral" title="Ephemeral fan-out worker${s.ephemeral_parent ? ' of ' + esc(s.ephemeral_parent) : ''}">eph${s.ephemeral_parent ? ' of ' + esc(s.ephemeral_parent) : ''}</span>` : ''}
-        ${effort ? `<span class="badge effort" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Reasoning effort — click to change">${esc(effort)}</span>` : ''}
-        ${(s.tags||[]).map(g => `<span class="grp-chip" title="Filter by group ${esc(g)}" onclick="event.stopPropagation();toggleTagFilter('${escJs(g)}')">${esc(g)}</span>`).join('')}
-        ${model ? `<span class="badge model card-model-inline" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
-      </div>` : ''}
-      ${!s.running ? `<div style="padding:var(--space-1-5) 0 var(--space-0-5);" onclick="event.stopPropagation()">
-        <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
-      </div>` : ''}
-      <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && (displayTaskName || s.task_override) ? (() => {
-          const llmTask = s.task_override || '';
-          const hasBoard = !!displayTaskBoardId;
-          const showLlm = llmTask && llmTask !== displayTaskName;
-          // The card this line already names (displayTaskBoardId, from the
-          // server's runtime link), found by id. Board rows arrive slimmed, so
-          // `desc` is absent and `desc_head` is the field that carries the line;
-          // reading `.desc` rendered nothing for every worker.
-          const shownCard = hasBoard ? (boardItems || []).find(c => c.id === displayTaskBoardId) : null;
-          const cardDesc = shownCard ? _descPreviewLine(shownCard.desc || shownCard.desc_head).slice(0, 120) : '';
-          return (showLlm
-            ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
-            : '')
-          + (displayTaskName
-            ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" title="Open the active board card" style="${showLlm ? 'font-size:var(--fs-md);font-weight:400;' : 'font-weight:600;'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
-            : '')
-          + (cardDesc && !showLlm ? `<div class="card-task-desc" style="font-size:var(--fs-sm);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:var(--space-0-5) 0 0;">${esc(cardDesc)}</div>` : '');
-        })() : ''}
-        ${isExp && s.running ? `<div class="card-timing">
-          ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
-          ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
-          ${s.last_activity ? `<div class="timing-item"><span class="timing-label">Last interaction</span><span class="timing-value">${timeAgo(s.last_activity)}</span></div>` : ''}
-        </div>` : ''}
-        ${s.preview_lines && s.preview_lines.length ? `<div class="card-preview-lines" onclick="event.stopPropagation();openPeek('${s.name}')" style="cursor:pointer;">${rewriteLocalhostUrls(s.preview_lines.map(l => esc(l)).join('\n'))}</div>` : ''}
-        <div class="card-stats" id="stats-${s.name}"></div>
-        ${s.running ? `
-        <div class="chips" id="card-chips-${s.name}"></div>
-        <div class="peek-attach-bar card-attach-bar${(_cardFiles[s.name]||[]).length ? ' has-files' : ''}" id="card-attach-${s.name}">${_renderCardFileChips(s.name)}</div>
-        <div class="send-row" style="position:relative;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop('${s.name}',event)" title="Drag files here to attach">
-          <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
-          <textarea class="send-input" id="input-${s.name}" rows="1"
-            placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
-            autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
-            oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset();_draftSaveDebounced('${s.name}',this.value)"
-            onkeydown="cardSlashAcKeydown('${s.name}',event)"
-            onpaste="handleCardPaste('${s.name}',event)"
-            onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <div class="send-split${_sendLabelFor(s.name) === 'Queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))" title="${esc(_sendTitleFor(s.name))}">${_sendLabelFor(s.name)}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
-        </div>` : ''}
-      </div>
-    </div>`;
-  }
 
   // Freeze mode: flat list locked to captured order — bypasses status grouping and activity re-sort
   if (_frozen && cardOrder.length) {
@@ -23071,6 +23153,7 @@ function _attachPreviewOpen(f, opener) {
   if (f.file instanceof Blob) { src = URL.createObjectURL(f.file); revoke = src; from = 'device'; }
   else if (kind === 'image' && f.previewUrl) { src = f.previewUrl; from = 'device'; }
   else if (f.path) { src = _htmlPreviewUrl(f.path) || ''; from = 'server'; }
+  else if (f.url) { src = f.url; from = f.from || 'server'; }
   let body;
   if (!src) body = '<p class="ui-help">This file has no copy to show yet. It can be previewed once it finishes uploading.</p>';
   else if (kind === 'image') body = `<img class="attach-preview-img" src="${esc(src)}" alt="${esc(f.name)}">`;
@@ -23081,7 +23164,7 @@ function _attachPreviewOpen(f, opener) {
   else body = `<p class="attach-preview-icon">${_fileIcon(f.name)}</p><p class="ui-help">No preview for this kind of file here.</p>`;
   if (f.path) body += `<p><button type="button" class="btn" data-open-file>Open in the file viewer</button></p>`;
   const size = f.sizeMB ? f.sizeMB + ' MB' : (f.file && f.file.size ? (f.file.size / 1048576).toFixed(1) + ' MB' : '');
-  const state = f.path ? 'uploaded' : (f.error ? 'upload failed' : 'uploading');
+  const state = f.state || (f.path ? 'uploaded' : (f.error ? 'upload failed' : 'uploading'));
   const ov = _chipDetailModal('attach-preview', f.name, [size, state].filter(Boolean).join(' · '), body,
     { returnFocus: opener, onClose: () => { if (revoke) URL.revokeObjectURL(revoke); } });
   ov.querySelector('.modal').classList.add('attach-preview');
@@ -25042,6 +25125,10 @@ async function _approvalsRefresh() {
     if (!r.ok) return;
     const d = await r.json();
     const pending = Array.isArray(d.pending) ? d.pending : [];
+    // Approved for a later time: no longer a decision, so not in this banner.
+    // The Email tab's Scheduled folder lists them (Ethan, 2026-11-09).
+    _emailScheduled = Array.isArray(d.scheduled) ? d.scheduled : [];
+    _emailSchedPaint();
     // PERMISSION GRANTS SHARE THIS BANNER (AMUX-3997). Ethan asked for the email
     // approval flow to be leveraged for other ad-hoc permissions, and "leverage"
     // has to include the SURFACE: a second banner elsewhere would mean a human
@@ -25184,6 +25271,7 @@ async function _approvalsRefresh() {
         + 'style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
         + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
+        + _apprAttachHtml(p)
         + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
         + (p.schedule_failed ? '<div class="appr-sched-failed">'
           + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
@@ -25197,6 +25285,36 @@ async function _approvalsRefresh() {
     el.innerHTML = html;
     el.style.display = 'block';
   } catch (e) {}
+}
+// THE FILES GO OUT TOO (Ethan, 2026-11-09: "make sure amux supports
+// attachments too in the approval flow"). Each held attachment is a chip with
+// its name and size; a click previews the bytes that will be sent, in the same
+// dialog the composer's chips use, read from the held draft by
+// /api/email/approvals/<id>/attachments/<i>. The list itself never carries them.
+const _apprFiles = {};
+function _apprAttachHtml(p) {
+  const list = ((p.review || {}).attachments || []);
+  _apprFiles[p.id] = list;
+  if (!list.length) return '';
+  return '<div class="appr-attach" aria-label="Attachments">' + list.map(a => {
+    const size = a.ok ? _apprSize(a.size) : 'cannot be read, so it will not send';
+    return '<button type="button" class="appr-attach-chip' + (a.ok ? '' : ' appr-attach-bad') + '" '
+      + 'onclick="event.preventDefault();event.stopPropagation();_apprAttachOpen(\'' + esc(p.id) + '\',' + a.index + ',this)" '
+      + 'title="Preview ' + esc(a.filename) + '">' + _fileIcon(a.filename) + ' <span class="appr-attach-name">'
+      + esc(a.filename) + '</span> <span class="appr-attach-size">' + esc(size) + '</span></button>';
+  }).join('') + '</div>';
+}
+function _apprSize(n) {
+  if (typeof n !== 'number') return '';
+  return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+}
+function _apprAttachOpen(id, i, btn) {
+  const a = (_apprFiles[id] || []).find(x => x.index === i);
+  if (!a) return;
+  _attachPreviewOpen({ name: a.filename, mime: a.content_type || '', from: 'held-draft',
+    state: a.ok ? 'attached, sends with this email' : 'cannot be read, so it will not send',
+    sizeMB: a.ok ? (a.size / 1048576).toFixed(1) : '',
+    url: a.ok ? _authUrl(API + '/api/email/approvals/' + encodeURIComponent(id) + '/attachments/' + i) : '' }, btn);
 }
 function _apprHeaders(pv) {
   const row = (k, v) => v ? '<div style="display:flex;gap:var(--space-2);"><span style="opacity:0.7;min-width:56px;">' + k
@@ -25393,7 +25511,7 @@ async function _apprScheduleConfirm(id, btn) {
     const d = await r.json().catch(() => ({}));
     if (r.ok && d.scheduled) {
       _apprEditing.delete(id);
-      showToast('Scheduled: sends ' + _apprWhenText(d.send_at));
+      showToast('Scheduled: sends ' + _apprWhenText(d.send_at) + '. It is listed in Email, Scheduled.');
     } else { showToast('Schedule failed: ' + (d.error || r.status)); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
   } catch (e) { showToast('Schedule failed: ' + e); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
   _apprScheduleClose(id);
@@ -36406,6 +36524,15 @@ async function _emailLoad() {
   }
   if (!_emailAccount || accounts.indexOf(_emailAccount) < 0) _emailAccount = accounts[0];
   _emailRenderSubtabs(accounts, {});
+  if (_emailFolder === 'scheduled') {
+    _emailRenderFolders();
+    host.innerHTML = '<div class="conn-empty">Loading scheduled sends…</div>';
+    await _approvalsRefresh();
+    // A repaint was skipped while a draft is being edited; say so rather than spin.
+    if (_emailScheduled === null) host.innerHTML = '<div class="conn-empty">Could not load the scheduled sends.</div>';
+    else _emailSchedPaint();
+    return;
+  }
   host.innerHTML = '<div class="conn-empty">Loading ' + esc(_emailAccount) + '…</div>';
   try {
     const r = await fetch(API + '/api/email/ranked?count=60&folder=' + encodeURIComponent(_emailFolder)
@@ -36448,7 +36575,9 @@ function _emailRenderFolders() {
   if (!el) return;
   // Inbox is the UNFILED set, not "everything" — a list that keeps showing mail
   // you already filed is one you stop reading.
-  el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected']].map(([k,label]) => {
+  const nSched = _emailScheduled ? _emailScheduled.length : 0;
+  el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected'],
+    ['scheduled', 'Scheduled' + (nSched ? ' (' + nSched + ')' : '')]].map(([k,label]) => {
     const on = k === _emailFolder;
     return '<button class="conn-scope-btn" onclick="_emailFolderPick(\'' + k + '\')" '
       + 'style="min-height:34px;' + (on ? 'background:var(--accent);color:var(--on-solid);' : '') + '">'
@@ -36578,6 +36707,55 @@ function _emailRenderList(msgs) {
       + '<div class="mail-body" id="' + id + '" hidden>' + esc(String(m.body || '').slice(0, 4000)) + '</div>';
   }
   host.innerHTML = html;
+}
+
+// SCHEDULED SENDS (Ethan, 2026-11-09: "we should be able to see the scheduled
+// list of emails being sent somewhere (maybe the email tab)"). Outbound drafts a
+// human approved for a later time, soonest first, across every account. The
+// actions are the approval banner's own: Send now, Reschedule, Discard.
+let _emailScheduled = null;
+function _emailSchedPaint() {
+  // Only the folder count changes off this folder, and only once the tab has drawn its folders.
+  if (_emailFolder !== 'scheduled') { if (document.getElementById('email-folders')?.innerHTML) _emailRenderFolders(); return; }
+  const view = document.getElementById('email-view');
+  const host = document.getElementById('email-list');
+  if (!host || !view || view.style.display === 'none' || _emailScheduled === null) return;
+  _emailRenderFolders();
+  const themes = document.getElementById('email-themes');
+  if (themes) themes.innerHTML = '';
+  if (!_emailScheduled.length) {
+    host.innerHTML = '<div class="conn-empty">No scheduled sends. Schedule a held draft from the approval banner and it waits here until its time.</div>';
+    return;
+  }
+  let html = '<div class="mail-sched">';
+  for (const p of _emailScheduled) {
+    const pv = p.preview || {};
+    const rv = p.review || {};
+    const body = typeof rv.body === 'string' ? rv.body : (pv.body || '');
+    const at = p.scheduled && p.scheduled.send_at;
+    const id = esc(p.id);
+    html += '<div class="mail-row mail-sched-row" data-approval="' + id + '" onclick="_emailToggleBody(\'sched-' + id + '\')">'
+      + '<div class="mail-from" title="' + esc(pv.to || '') + '">To ' + esc(pv.to || '?') + '</div>'
+      + '<div class="mail-mid"><span class="mail-subj">' + esc(pv.subject || (pv.endpoint === 'reply' ? '(reply)' : '(no subject)')) + '</span>'
+      + '<span class="mail-snip"> — ' + esc(_emailSnippet(body)) + '</span></div>'
+      + '<div class="mail-sched-when">' + (at ? 'sends ' + esc(_apprWhenText(at)) : '') + '</div>'
+      + '</div>'
+      + '<div class="mail-body" id="sched-' + id + '" hidden>'
+      + _apprHeaders(pv)
+      + '<div class="mail-sched-meta">Drafted by ' + esc(p.session || '?')
+      + (p.scheduled && p.scheduled.approver ? ', scheduled by ' + esc(p.scheduled.approver) : '')
+      + (p.scheduled && p.scheduled.edited ? ', with your edit' : '') + '</div>'
+      + '<div class="mail-sched-text">' + esc(body) + '</div>'
+      + _apprAttachHtml(p)
+      + '<div class="mail-sched-actions">'
+      + '<button class="btn" onclick="event.stopPropagation();_apprApprove(\'' + id + '\',this)">Send now</button>'
+      + '<button class="btn" onclick="event.stopPropagation();_apprSchedule(\'' + id + '\')">Reschedule</button>'
+      + '<button class="btn" onclick="event.stopPropagation();_apprReject(\'' + id + '\',this)">Discard</button>'
+      + '</div>'
+      + '<div id="appr-sched-' + id + '" class="appr-sched-row mail-sched-at-row" data-send-at="' + (at || '') + '" onclick="event.stopPropagation()" hidden></div>'
+      + '</div>';
+  }
+  host.innerHTML = html + '</div>';
 }
 
 function _emailToggleBody(id) {

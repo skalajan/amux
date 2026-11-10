@@ -48,6 +48,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_apprAttachOpen": {
+      "kind": "command._apprAttachOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_apprBeacon": {
       "kind": "command._apprBeacon",
       "feedback_required": true,
@@ -1970,6 +1976,24 @@
     },
     "_emailAnnotate": {
       "kind": "command._emailAnnotate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_emailFolderPick": {
+      "kind": "command._emailFolderPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_emailLoad": {
+      "kind": "command._emailLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_emailPick": {
+      "kind": "command._emailPick",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

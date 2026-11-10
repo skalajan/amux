@@ -4,24 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Status Detection and Recovery Demo | amux</title>
+  <title>Live Status and Restarts | amux demo</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
   <meta name="keywords" content="AI agent status detection, Claude Code usage limit resume, Claude Code reboot recovery, amux dashboard, unattended AI coding">
   <link rel="canonical" href="https://amux.io/demos/self-healing-watchdog/">
-  <meta property="og:title" content="Status Detection and Recovery Demo | amux">
+  <meta property="og:title" content="Live Status and Restarts | amux demo">
   <meta property="og:description" content="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
   <meta property="og:url" content="https://amux.io/demos/self-healing-watchdog/">
-  <meta property="og:image" content="https://amux.io/demos/self-healing-watchdog/poster.jpg">
+  <meta property="og:image" content="https://amux.io/demos/self-healing-watchdog/poster.jpg?v=cb5efff4">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/self-healing-watchdog/poster.jpg">
+  <meta name="twitter:image" content="https://amux.io/demos/self-healing-watchdog/poster.jpg?v=cb5efff4">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=bb52e13d">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
+  <script type="application/ld+json" id="demo-ld">{"@context": "https://schema.org", "@type": "VideoObject", "name": "Live Status and Restarts | amux demo", "description": "amux reads every session's terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.", "thumbnailUrl": "https://amux.io/demos/self-healing-watchdog/poster.jpg?v=cb5efff4", "contentUrl": "https://amux.io/demos/self-healing-watchdog/demo.mp4?v=cb5efff4", "uploadDate": "2026-11-09", "url": "https://amux.io/demos/self-healing-watchdog/", "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
 </head>
 <body>
   <header class="site-header">
@@ -59,12 +62,12 @@
     <div class="breadcrumb">
       <a href="/">amux</a> <span class="sep">›</span>
       <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Status Detection and Recovery</span>
+      <span>Live Status and Restarts</span>
     </div>
-    <h1>Status Detection and Recovery</h1>
+    <h1>Live Status and Restarts</h1>
     <p class="subtitle">amux reads every session's terminal to show Working, Needs Input or Idle, and keeps agents going through usage limits and restarts.</p>
 
-    <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="amux dashboard session status demo"></video>
+    <video data-lightbox src="demo.mp4?v=cb5efff4" poster="poster.jpg?v=cb5efff4" autoplay loop muted playsinline title="amux dashboard session status demo"></video>
 <p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 
     <h2>How it works</h2>
@@ -86,9 +89,9 @@
 
     <h2>Related demos</h2>
 <div class="related">
-  <a href="/demos/session-cards-overview/">Session cards overview</a>
-  <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a>
-  <a href="/guides/self-healing-configuration/">Recovery configuration guide</a>
+  <a href="/demos/session-cards-overview/">Worker Cards</a>
+  <a href="/demos/send-command-dashboard/">Send to Any Worker</a>
+  <a href="/demos/messages/">Messages</a>
 </div>
     <div class="cta-box">
   <h3>Try amux</h3>
