@@ -1,0 +1,3 @@
+# Owner-approved exceptions for fork/egress-check.sh. Only the owner adds lines here; a sync never does.
+# listen <port>   <why>   — a non-loopback listener of an amux process
+# peer   <cidr>   <why>   — a remote address an amux process may talk to
