@@ -25,10 +25,13 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
    - Fork deltas that must survive:
      - `amux contribute` is gone: `grep -c 'cmd_contribute' amux` = 0;
      - `amux here` and `amux attach` with no name are present;
-     - this `fork/` folder is unchanged.
+     - this `fork/` folder is unchanged;
+     - the exposure controls are wired: `crates/amux-server/src/api/fork_lockdown.rs` (listen address `AMUX_RS_BIND`, owner token on the diagnostics upstream serves publicly) and `crates/amux-server/src/api/fork_cdn.rs` (CDN libraries served from the binary). Check `grep -c 'fork_lockdown\|fork_cdn' crates/amux-server/src/api/mod.rs` = 6 and `grep -c fork_lockdown crates/amux-server/src/lib.rs` = 1.
    - Conflict in `crates/amux-dashboard/static/state/control-registry.json` only: run `git checkout --theirs` on it, then `npm run -s build:state`.
    - Any other conflict: `git merge --abort` and report.
 6. **Verify:**
+   - `fork/cdn-vendor.py --check` — every CDN file the dashboard names is vendored. If not, run `fork/cdn-vendor.py` (it downloads only the new URLs and pins them in `crates/amux-server/fork-cdn/lock.tsv`) and commit the files with the merge. A URL it cannot vendor (a new host or prefix) is a blocker for the owner.
+   - `cargo test -p amux-server --lib fork_`
    - `node scripts/build-state.mjs --check`
    - `python3 tests/cli_help.py`
    - `bash scripts/test-cli-sourceable.sh`
@@ -50,10 +53,10 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
 - `crates/amux-server/src/api/auth.rs`, `crates/amux-server/src/api/mod.rs` — public paths, and routes outside `require_bearer`.
 - `crates/amux-server/src/runtime_jobs/tunnel.rs` — relay to cloud.amux.io.
 - `crates/amux-server/src/runtime_jobs/registry.rs` — jobs runnable through `/api/system-jobs/{id}/run`.
-- `crates/amux-server/src/static_files/` — apps origin, per-app ports, public links, the PostHog snippet.
+- `crates/amux-server/src/api/static_files/` — apps origin, per-app ports, public links, the PostHog snippet.
 - `crates/amux-server/src/push/`, `crates/amux-server/src/telegram_poll.rs`, `crates/amux-server/src/bridge/` — outbound messaging.
 - `crates/amux-server/src/provider/live_catalog.rs`, `crates/amux-server/src/api/location.rs` — background fetches.
-- `crates/amux-dashboard/static/index.html`, `crates/amux-dashboard/static/sw.js` — third-party scripts loaded by the browser.
+- `crates/amux-dashboard/static/` — any new third-party host the browser would load from. Only cdn.jsdelivr.net, unpkg.com, cdnjs.cloudflare.com and esm.sh are rewritten to the vendored copies; the page CSP refuses scripts from anywhere else.
 - `scripts/rust-auto-build-authority.sh` — CI gate against api.github.com (`AMUX_DEPLOY_CI_GATE=0` must stay honoured).
 - `desktop/amux-update.swift` — updater pointing at mixpeek/amux.
 - `amux` — any `curl`, `gh` or `https://` added to the CLI.
@@ -65,6 +68,7 @@ These settings must stay in place. A sync that renames or ignores any of them is
 - `AMUX_DEPLOY_CI_GATE=0`
 - `AMUX_MODEL_CATALOG_REFRESH_SECS=0`
 - `AMUX_RS_NO_LOOPBACK_BYPASS=1`
+- `AMUX_RS_BIND=127.0.0.1` (the dashboard is reached through Tailscale Serve on each host) and `AMUX_APPS_PORT=0`
 - no `POSTHOG_KEY`, no `AMUX_TUNNEL_TOKEN`, no `AMUX_MIXPEEK_OPS_URL`
 
 The legacy Python server (`com.amux.serve`) and `com.amux.start-all` were disabled on 2026-11-10 because the Python server forwarded unauthenticated LAN requests to any local port. They must not come back.

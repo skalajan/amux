@@ -1,3 +1,34 @@
 # Owner-approved exceptions for fork/egress-check.sh. Only the owner adds lines here; a sync never does.
 # listen <port>   <why>   — a non-loopback listener of an amux process
 # peer   <cidr>   <why>   — a remote address an amux process may talk to
+
+# Telegram bridge (owner, 2026-11-10): Telegram's published ranges.
+peer 91.108.4.0/22
+peer 91.108.8.0/22
+peer 91.108.12.0/22
+peer 91.108.16.0/22
+peer 91.108.20.0/22
+peer 91.108.56.0/22
+peer 95.161.64.0/20
+peer 149.154.160.0/20
+peer 185.76.151.0/24
+peer 2001:67c:4e8::/48
+peer 2001:b28:f23c::/47
+peer 2001:b28:f23f::/48
+peer 2a0a:f280::/32
+
+# Browser notifications through Web Push (owner, 2026-11-10): fcm.googleapis.com is Google anycast, so these are
+# Google's front-end ranges. Any other traffic from amux to Google passes this check too; the static audit is what catches a new Google call.
+peer 64.233.160.0/19
+peer 74.125.0.0/16
+peer 108.177.0.0/17
+peer 142.250.0.0/15
+peer 172.217.0.0/16
+peer 172.253.0.0/16
+peer 173.194.0.0/16
+peer 209.85.128.0/17
+peer 216.239.32.0/19
+peer 2001:4860::/32
+peer 2404:6800::/32
+peer 2607:f8b0::/32
+peer 2a00:1450::/32

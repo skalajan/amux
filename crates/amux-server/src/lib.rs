@@ -1277,7 +1277,7 @@ async fn async_main() {
     boot_watch::step("publish_endpoint");
     legacy_port::publish_endpoint(&cfg.amux_home, cfg.port, None);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
+    let addr = std::net::SocketAddr::new(api::fork_lockdown::bind_ip(), cfg.port);
     // HOW LONG AFTER `record_boot` DID WE ACTUALLY START SERVING (AMUX-3647).
     //
     // The card proposed a `ready_at` COLUMN on `_amux_request_log` so the

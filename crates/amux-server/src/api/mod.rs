@@ -8,6 +8,8 @@ pub mod agent_limit_resume;
 pub mod alerts;
 pub mod aliases;
 pub mod auth;
+pub mod fork_cdn;
+pub mod fork_lockdown;
 pub mod avatars;
 pub mod whereabouts;
 pub mod board;
@@ -760,8 +762,10 @@ pub fn router_with_connector_transport(
         )
         // Standalone pages (/pages/<name>) check owner access in the handler,
         // the same check the dashboard shell's bootstrap uses.
-        .merge(pages::view_routes())
-        .merge(static_files::routes())
+        .merge(pages::view_routes().layer(axum::middleware::from_fn(fork_cdn::layer)))
+        .merge(fork_cdn::routes())
+        .merge(static_files::routes().layer(axum::middleware::from_fn(fork_cdn::layer)))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), fork_lockdown::guard))
         .merge(protected)
         .with_state(state);
 

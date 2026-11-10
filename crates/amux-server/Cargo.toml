@@ -8,6 +8,7 @@ description = "amux server binary: HTTP API, SQLite store, orchestrator runtime,
 [dependencies]
 amux-core = { path = "../amux-core" }
 amux-dashboard = { path = "../amux-dashboard" }
+rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
