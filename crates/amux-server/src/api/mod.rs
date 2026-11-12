@@ -1736,8 +1736,12 @@ mod public_write_tests {
             let st = app.clone().oneshot(send(method, uri, body)).await.unwrap().status();
             assert_eq!(st, StatusCode::UNAUTHORIZED, "{method} {uri} must need the bearer");
         }
-        // The reads beside them stay public, as their comments promise.
+        // Fork: fork_lockdown puts the read beside them behind the owner token instead of leaving it public.
         let st = app.clone().oneshot(send("GET", "/api/system-jobs", "")).await.unwrap().status();
-        assert_ne!(st, StatusCode::UNAUTHORIZED, "GET /api/system-jobs stays public");
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "GET /api/system-jobs needs the owner token on the fork");
+        let mut owner = send("GET", "/api/system-jobs", "");
+        owner.headers_mut().insert("authorization", "Bearer test-bearer".parse().unwrap());
+        let st = app.clone().oneshot(owner).await.unwrap().status();
+        assert_ne!(st, StatusCode::UNAUTHORIZED, "GET /api/system-jobs still answers the owner");
     }
 }
