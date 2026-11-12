@@ -15933,6 +15933,27 @@ fn shell_start_failed(name: &str, error: &str) -> (bool, String) {
     (false, error.into())
 }
 
+/// Only a session this start created is removed, and only before setup finished: a reuse would skip the fresh-shell setup.
+async fn startup_step_failed<F, Fut>(
+    name: &str,
+    error: &str,
+    created_session: bool,
+    launch: bool,
+    discard: F,
+) -> (bool, String)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    if created_session && !launch {
+        let removed = discard().await;
+        let verdict = if removed { "start_created_session_discarded" } else { "start_created_session_discard_failed" };
+        tracing::warn!(session = name, measured = true, n_considered = 1, removed, verdict, %error,
+            "shell setup failed in the tmux session this start created; removed so the worker reads stopped and the next start sets up a fresh shell");
+    }
+    shell_start_failed(name, error)
+}
+
 fn provider_start_confirmed(ui_visible: bool, live_child: Option<bool>) -> bool {
     // A healthy slow provider need not have painted a recognizable UI yet.
     // Conversely a stale UI frame cannot make a positively stopped pane live.
@@ -16582,10 +16603,11 @@ pub(crate) async fn start_session(
     // leg takes the lock in turn (no re-entrancy).
     let op_lock = session_op_lock(name);
     let _op = op_lock.lock().await;
-    update_meta(name, &[("boot_start_scheduled", json!(false))]);
     // A start interrupted by a server restart must come back by itself; the
     // marker is what the next boot reads (see `resume_interrupted_starts`).
     let _in_progress = StartInProgress::begin(name);
+    // Marker first: a client waiting for both flags to clear must never see a gap between them.
+    update_meta(name, &[("boot_start_scheduled", json!(false)), ("start_error", Value::Null)]);
     if is_session_blocked(name) {
         return (
             false,
@@ -17800,10 +17822,11 @@ pub(crate) async fn start_session(
     // Setup completion and launch admission share one receipt-based transport.
     // Never submit the next line after a timeout or a failed tmux operation.
     let shell_deadline = tokio::time::Instant::now() + SHELL_STARTUP_TIMEOUT;
+    let mut created_session = false;
     macro_rules! shell_step {
         ($line:expr, $launch:expr) => {
             if let Err(error) = startup_shell_command(name, $line, $launch, shell_deadline).await {
-                return shell_start_failed(name, &error);
+                return startup_step_failed(name, &error, created_session, $launch, || kill_tmux_session(name)).await;
             }
         };
     }
@@ -17940,7 +17963,7 @@ pub(crate) async fn start_session(
         args.push(user_shell());
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_cmd("tmux", &args_ref, Duration::from_secs(10)).await {
-            Some(o) if o.status.success() => {}
+            Some(o) if o.status.success() => created_session = true,
             Some(o) => return (false, String::from_utf8_lossy(&o.stderr).into_owned()),
             None => return (false, "tmux not found or timed out".into()),
         }
@@ -19357,9 +19380,9 @@ async fn stop_session_process(name: &str) -> (bool, String) {
     (true, "stopped (hard-kill)".into())
 }
 
-async fn kill_tmux_session(name: &str) {
+async fn kill_tmux_session(name: &str) -> bool {
     let stq = st(name);
-    let _ = tmux(&["kill-session", "-t", &stq]).await;
+    matches!(tmux(&["kill-session", "-t", &stq]).await, Some(o) if o.status.success())
 }
 
 /// Completion-only stop. Caller holds session_op_lock across validation and
@@ -29260,6 +29283,9 @@ async fn post_dispatch(
                     // the class is greppable (`session_start_failed`) without
                     // opening the event store.
                     tracing::warn!(session = %n, reason = %chars_truncate(&msg, 200), "session_start_failed: /start spawned nothing");
+                    if meta_str(&load_meta(&n), "start_error").is_empty() {
+                        update_meta(&n, &[("start_error", json!(chars_truncate(&msg, 200)))]);
+                    }
                     emit_event(
                         &st2,
                         &n,
@@ -38375,6 +38401,35 @@ mod tests {
             !super::provider_start_confirmed(false, None),
             "unknown is not confirmed startup"
         );
+    }
+
+    /// 2026-11-12: a send-keys tmux never accepted left a fresh session holding a bare shell, and `amux here` attached to it.
+    #[tokio::test]
+    async fn unaccepted_setup_removes_only_the_session_this_start_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let error = super::shell_command_with(
+            "startup-proof",
+            "true",
+            false,
+            std::time::Duration::from_secs(5),
+            |_| async { false },
+        )
+        .await
+        .unwrap_err();
+        for (created, launch, removes) in [(true, false, true), (false, false, false), (true, true, false)] {
+            let discarded = std::sync::atomic::AtomicBool::new(false);
+            let (ok, why) = super::startup_step_failed("startup-proof", &error, created, launch, || async {
+                discarded.store(true, std::sync::atomic::Ordering::SeqCst);
+                true
+            })
+            .await;
+            assert!(!ok);
+            assert_eq!(why, error);
+            assert_eq!(discarded.into_inner(), removes, "created={created} launch={launch}");
+            let meta = super::load_meta("startup-proof");
+            assert_eq!(meta.get("start_error"), Some(&serde_json::json!(error)));
+        }
     }
 
     /// ATE-75: the suggestion probe ran successfully but found nothing to
@@ -48601,6 +48656,23 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         emit_event(&state, "probe", "session.started", None, None, "start_session").await;
         let (_, detail) = start_session_as("board-dispatch", &state, "probe", "", false).await;
         assert!(detail.contains("paused"), "a start since the stop clears the hold: {detail}");
+    }
+
+    /// `amux here` waits for both start flags to clear and then reports `start_error`; an older start's error must not be it.
+    #[tokio::test]
+    async fn a_settled_start_never_reports_an_earlier_start_error() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"), "CC_PAUSED=1\nCC_DIR=/tmp\n").unwrap();
+        update_meta("probe", &[("boot_start_scheduled", json!(true)), ("start_error", json!("an earlier start"))]);
+        let (state, _dir) = state();
+        let (ok, _) = start_session_as("api-start", &state, "probe", "", false).await;
+        assert!(!ok);
+        let meta = load_meta("probe");
+        assert_eq!(meta.get("boot_start_scheduled"), Some(&json!(false)));
+        assert_eq!(meta.get("start_in_progress_since"), Some(&Value::Null));
+        assert_eq!(meta.get("start_error"), Some(&Value::Null));
     }
 
     #[tokio::test]

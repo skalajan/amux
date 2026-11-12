@@ -1700,7 +1700,40 @@ cmd_attach() {
   local tname
   tname=$(_worker_tmux_session "$name")
   tmux has-session -t "=$tname" 2>/dev/null || die "worker '$name' is not running. Start with: amux here (in its folder)"
+  [[ "$tname" == "$(tmux_name "$name")" ]] && agent_dead "$name" \
+    && die "worker '$name' is stopped (its pane holds only a shell). Start with: amux here (in its folder)"
   tmux attach-session -t "=$tname"
+}
+
+# Dead only on a confirmed answer: a tmux probe that timed out (rc 124) or could not tell is not a stopped worker.
+agent_dead() {
+  local rc=0
+  is_running "$1" || rc=$?
+  (( rc == 1 )) && return 0
+  (( rc == 0 )) || return 1
+  rc=0
+  pane_agent_state "$1" || rc=$?
+  (( rc == 1 ))
+}
+
+# /start answers 202 before the launch; a start that then fails must be reported, not attached to as a bare shell.
+_await_start() {
+  local name="$1" api="${AMUX_API:-https://localhost:8824}" end=$((SECONDS + 120)) state="" why
+  while (( SECONDS < end )); do
+    state=$(_curl -sk -m 10 "$api/api/sessions/$name/meta" | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+print("starting" if d.get("boot_start_scheduled") is True or d.get("start_in_progress_since") else "settled:" + (d.get("start_error") or ""))' 2>/dev/null) || state=""
+    [[ "$state" == settled:* ]] && break
+    sleep 0.5
+  done
+  if [[ "$state" != settled:* ]]; then
+    echo "${YELLOW}note:${RESET} $name is still starting after 120s; attaching anyway" >&2
+    return 0
+  fi
+  agent_dead "$name" || return 0
+  why="${state#settled:}"
+  echo "${RED}error:${RESET} start $name FAILED: ${why:-the worker is not running after its start}" >&2
+  return 1
 }
 
 # amux here: attach to this folder's worker, starting it when stopped, or create one.
@@ -1741,6 +1774,7 @@ cmd_here() {
   if ! tmux has-session -t "=$tname" 2>/dev/null; then
     if [[ "$tname" == "$(tmux_name "$name")" ]]; then
       _start_via_api "$name" || exit 1
+      _await_start "$name" || exit 1
     else
       resp=$(_curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/workers/$name/start") || resp=""
       RESP="$resp" python3 -c 'import json, os, sys
@@ -1751,6 +1785,9 @@ sys.exit(1 if not d or d.get("error") or d.get("ok") is False else 0)' 2>/dev/nu
     fi
     for i in {1..60}; do tmux has-session -t "=$tname" 2>/dev/null && break; sleep 0.5; done
     tmux has-session -t "=$tname" 2>/dev/null || die "worker '$name' did not come up within 30s — see: amux peek $name"
+  elif [[ "$tname" == "$(tmux_name "$name")" ]] && agent_dead "$name"; then
+    _start_via_api "$name" || exit 1
+    _await_start "$name" || exit 1
   fi
   [[ -n "${TMUX:-}" ]] && exec tmux switch-client -t "=$tname"
   exec tmux attach-session -t "=$tname"

@@ -117,6 +117,36 @@ else
   bad "D: agent_alive gave empty=$D_EMPTY live=$D_LIVE (want rc=1 and rc=0)"
 fi
 
+# ── E: `amux attach` / `amux here` never attach to a shell-only pane ──────────
+E_BIN=$(realpath "$AMUX_BIN")
+run_verb() {
+  (cd "$WORK/workdir" && env -u AMUX_URL AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
+    HOME="$FAKE_HOME" CC_HOME="$CC" bash "$E_BIN" "$@" </dev/null >"$WORK/out" 2>&1) || true
+  cat "$WORK/out"
+}
+fresh_session bash --noprofile --norc
+E_ATTACH=$(run_verb attach sas); E_HERE=$(run_verb here)
+fresh_session bash --noprofile --norc -c 'sleep 300; true'
+E_LIVE=$(run_verb attach sas)
+if grep -q "is stopped" <<<"$E_ATTACH" && grep -q "NOTHING was started" <<<"$E_HERE" && ! grep -q "is stopped" <<<"$E_LIVE"; then
+  ok "E: attach refuses and here starts (not attaches to) a shell-only pane; a live pane is not refused"
+else
+  bad "E: attach/here on a shell-only pane" "attach: $E_ATTACH | here: $E_HERE | live: $E_LIVE"
+fi
+
+# ── F: a tmux probe that times out is unknown, never a stopped worker ─────────
+mkdir -p "$WORK/slow"
+printf '#!/usr/bin/env bash\n[ "$1" = has-session ] && sleep 2\nexec %q "$@"\n' "$(command -v tmux)" > "$WORK/slow/tmux"
+chmod +x "$WORK/slow/tmux"
+fresh_session bash --noprofile --norc
+F_ATTACH=$(PATH="$WORK/slow:$PATH" AMUX_TMUX_PROBE_TIMEOUT_S=1 run_verb attach sas)
+F_HERE=$(PATH="$WORK/slow:$PATH" AMUX_TMUX_PROBE_TIMEOUT_S=1 run_verb here)
+if ! grep -q "is stopped" <<<"$F_ATTACH" && ! grep -q "NOTHING was started" <<<"$F_HERE"; then
+  ok "F: with a timed-out tmux probe, attach does not call the worker stopped and here sends no start"
+else
+  bad "F: a timed-out probe was read as a stopped worker" "attach: $F_ATTACH | here: $F_HERE"
+fi
+
 # ── negative control: without the replacement, case A must fail ───────────────
 BROKEN="$WORK/amux-broken"
 sed 's/if \[\[ "\$_pane_rc" == 1 \]\]; then/if false; then/' "$AMUX_BIN" > "$BROKEN"
