@@ -682,6 +682,7 @@ async fn async_main() {
     drop(runtime_jobs::email_scheduled_send::spawn(state.clone()));
     // Z15: daily digest of needsyou cards, dry run until the owner opts in.
     drop(runtime_jobs::decision_digest::spawn(state.clone()));
+    drop(runtime_jobs::directive::spawn(state.clone()));
     // AMUX-5301: approve new needs-input items the owner's policy covers.
     drop(runtime_jobs::needs_input_auto::spawn(state.clone()));
     // AMUX-5239: a lane that pushed and said "live in ~40 min" was never told
@@ -853,6 +854,10 @@ async fn async_main() {
     let proxies_store = state.store.clone();
     api::board_intake::initialize();
     api::history_ask::initialize();
+    // After the helper model is installed: its first tick runs at once, and
+    // spawned earlier it found no model and logged desc_refresh_no_model.
+    drop(runtime_jobs::desc_refresh::spawn(state.clone()));
+    drop(runtime_jobs::event_dispatch::spawn(state.clone()));
     boot_watch::step("router");
     let app = api::router(state);
 

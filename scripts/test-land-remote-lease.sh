@@ -25,6 +25,11 @@
 #  11. back-to-back lands on one machine yield to the other machine's waiter,
 #      so the two alternate (item 4)
 #  12. a timeout on the remote lease alerts (item 5)
+#  14. a renewal pushed between the pre-push check's two reads is our own lease,
+#      not someone else's: the land pushes and releases it (mxp-gs12,
+#      2026-11-10 12:53:32Z lost a green merge-queue run to this)
+#  15. a refusal for someone else's lease leaves that lease alone and says it
+#      was not released
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -160,6 +165,10 @@ wait "$p10"; rc=$?
 [ "$rc" != 0 ] && [ "$(main_has f)" != ten2 ] && grep -q 'verdict=land_remote_lease_not_ours' "$H/ten.out" \
   && ok "a lease taken over on the remote while the heartbeat stalls refuses the push" || bad "10: rc=$rc f=$(main_has f): $(grep -m1 'lease_' "$H/ten.out")"
 
+# 15 (case 10's land was refused on someone else's lease)
+[ "$(lease_now)" != "" ] && grep -q 'verdict=land_remote_lease_not_released' "$H/ten.out" && ! grep -q 'verdict=land_remote_lease_released' "$H/ten.out" \
+  && ok "a refusal on someone else's lease leaves it and says it was not released" || bad "15: lease '$(lease_now)': $(grep 'lease_' "$H/ten.out" | tail -2)"
+
 # 11
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
 commit a f m1-first; commit b g m2; echo 3 > "$H/gate-s"
@@ -208,6 +217,23 @@ open(sys.argv[2], "w").write(str(p.pid))' "$AM" "$H/int.pgid" &)
     && ok "a land stopped by $sig releases the remote lease" || bad "13 $sig: lease $(lease_now): $(grep "sig-$sig" "$L" | tail -2)"
 done
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+
+# 14 runs after 11 and 13 on purpose: it lands from machine a, and case 11's
+# first land from a then counted as a's back-to-back land and yielded to m2
+# (CI: "order on main (newest first): h=m1-second f=m1-first g=m2", 2026-11-10
+# and 11-11; it passed on a fast Mac). Case 11 needs a quiet machine a.
+# 14: re-push our own lease with a later expiry while rl-sha still names the old one
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f fourteen
+land a fourteen AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 AMUX_LAND_TEST_PRE_PUSH_PAUSE_S=5 & p14=$!
+for _ in $(seq 1 60); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+sleep 1; ours="$(lease_now)"
+renewed="$(git -C "$H/a" log -1 --format=%B "$ours" | sed "s/^expires_at=.*/expires_at=$(( $(date +%s) + 1200 ))/" | git -C "$H/a" commit-tree "$(git -C "$H/a" mktree </dev/null)")"
+git -C "$H/a" push -q --no-verify "--force-with-lease=$REF:$ours" origin "$renewed:$REF"
+wait "$p14"; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = fourteen ] && grep -q 'verdict=land_remote_lease_renewed_under_check' "$H/fourteen.out" \
+  && ok "a renewal between the check's reads is our own lease: the land pushes" || bad "14: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/fourteen.out" | tail -3)"
+[ -z "$(lease_now)" ] && ok "and the renewed lease is released after the push" || bad "14: lease left: $(lease_now)"
 
 # 7
 commit a f off

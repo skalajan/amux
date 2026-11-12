@@ -1510,6 +1510,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/debug/scoreboard",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/system-jobs",
         methods: &["GET"],
     },
@@ -1879,6 +1883,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/subscriptions/fires",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/catalog",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/events",
         methods: &["GET"],
     },
     RouteEntry {
@@ -3323,6 +3335,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/needs-input/auto/sweep",
+        methods: &["POST"],
+    },
+    // A named sender's interrupting instruction, which the worker has to answer.
+    RouteEntry {
+        path: "/api/sessions/{name}/directive",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/directives",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/directives/{id}/ack",
         methods: &["POST"],
     },
     // Z15 daily decision digest.

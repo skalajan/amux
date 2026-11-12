@@ -1214,6 +1214,14 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
+    // 0155: runtime_jobs/goal_check.rs writes the check's epoch seconds.
+    ("goal_samples", "at", false),
+    // 0156: api/directive.rs writes now_f64() epoch seconds.
+    ("directives", "issued_at", false),
+    ("directives", "delivered_at", false),
+    ("directives", "resent_at", false),
+    ("directives", "told_at", false),
+    ("directives", "acked_at", false),
     // 0152: api/decision_digest.rs writes now_f64() epoch seconds.
     ("decision_digest_recommendations", "set_at", false),
     ("decision_digest_ledger", "updated_at", false),
@@ -1336,6 +1344,8 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("signal_fires", "fired_at", false),
     ("signal_subscriptions", "created_at", false),
     ("signal_subscriptions", "last_fired_at", false),
+    // 0157: runtime_jobs/event_dispatch.rs writes epoch seconds.
+    ("event_dispatch_cursor", "updated_at", false),
     // SECONDS: DEFAULT (unixepoch('subsec')) in migration 0061.
     ("board_change_log", "changed_at", false),
     ("chatgpt_oauth_requests", "decided_at", false), // chatgpt_app.rs, REAL epoch seconds
