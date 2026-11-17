@@ -26,7 +26,7 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
      - `amux contribute` is gone: `grep -c 'cmd_contribute' amux` = 0;
      - `amux here` and `amux attach` with no name are present;
      - this `fork/` folder is unchanged;
-     - the exposure controls are wired: `crates/amux-server/src/api/fork_lockdown.rs` (listen address `AMUX_RS_BIND`, owner token on the diagnostics upstream serves publicly) and `crates/amux-server/src/api/fork_cdn.rs` (CDN libraries served from the binary). Check `grep -c 'fork_lockdown\|fork_cdn' crates/amux-server/src/api/mod.rs` = 6 and `grep -c fork_lockdown crates/amux-server/src/lib.rs` = 1.
+     - the exposure controls are wired: `crates/amux-server/src/api/fork_lockdown.rs` (listen address `AMUX_RS_BIND`, owner token on the diagnostics and the SSO, SCIM and MFA routes upstream serves publicly) and `crates/amux-server/src/api/fork_cdn.rs` (CDN libraries served from the binary). Check `grep -c 'fork_lockdown\|fork_cdn' crates/amux-server/src/api/mod.rs` = 7 and `grep -c fork_lockdown crates/amux-server/src/lib.rs` = 1.
    - Conflict in `crates/amux-dashboard/static/state/control-registry.json` only: run `git checkout --theirs` on it, then `npm run -s build:state`.
    - Any other conflict: `git merge --abort` and report.
 6. **Verify:**
@@ -37,6 +37,8 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
    - `bash scripts/test-cli-sourceable.sh`
 7. **Commit** with the one-line message `chore: merge upstream/main` and no body or trailers.
    - If the hook refuses mass deletions, check that each deleted file is gone in `upstream/main` too. Only then repeat the commit with `AMUX_ALLOW_MASS_DELETE=1`.
+   - If the hook stops with `cargo_budget_stopped` and `"reason": "memory"`, repeat the commit (and later the push) with `AMUX_CARGO_MAX_RSS_MB=24576`.
+     - Why: clippy on a large merge peaked at 13 GB on 2026-11-17, over the 12 GB default; both hosts have 64 GB.
    - Push: `git push origin main`. The hooks run cargo check and the tests, which takes minutes.
 8. **Deploy.** Run `ssh mac-server 'cd ~/Projects/personal/amux && git pull --ff-only'`.
    - Wait until `~/.amux/logs/rust-auto-build.log` shows `ACTIVATION HEALTHY sha=<merge sha>` on both brain and mac-server, followed by "signed as 'amux-dev'".
@@ -70,5 +72,13 @@ These settings must stay in place. A sync that renames or ignores any of them is
 - `AMUX_RS_NO_LOOPBACK_BYPASS=1`
 - `AMUX_RS_BIND=127.0.0.1` (the dashboard is reached through Tailscale Serve on each host) and `AMUX_APPS_PORT=0`
 - no `POSTHOG_KEY`, no `AMUX_TUNNEL_TOKEN`, no `AMUX_MIXPEEK_OPS_URL`
+
+Upstream features that are on by default and stay off here (added 2026-11-17):
+
+- `AMUX_LINKEDIN_EVENTS_SECS=0` — otherwise a browser opens linkedin.com every 45 minutes.
+- `AMUX_EMAIL_EVENTS_SECS=0` — otherwise every connected Gmail inbox is read every minute.
+- `AMUX_CLI_TELEMETRY=0` — otherwise workers' Claude CLIs export OpenTelemetry (to this server).
+- `AMUX_MEMORY_DREAM=0` — otherwise workers are prompted to rewrite their memory.
+- `AMUX_AGENT_COMMIT_IDENTITY=human` — otherwise worker commits are authored as `<worker> (amux) <…@agents.noreply.amux.io>`.
 
 The legacy Python server (`com.amux.serve`) and `com.amux.start-all` were disabled on 2026-11-10 because the Python server forwarded unauthenticated LAN requests to any local port. They must not come back.
