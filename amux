@@ -1793,9 +1793,21 @@ sys.exit(1 if not d or d.get("error") or d.get("ok") is False else 0)' 2>/dev/nu
   exec tmux attach-session -t "=$tname"
 }
 
-# Registers a worker for $1; its account and group come from the workers under the nearest parent folder that has any.
+# Registers a worker for $1; its account comes from the nearest .amux-account file, else (like its group) from the workers under the nearest parent folder that has any.
 _here_create() {
-  local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2
+  local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2 mark=""
+  if [[ -z "$cfg" ]]; then
+    d="$here"
+    while [[ "$d" == "$HOME"/* ]]; do
+      if [[ -f "$d/.amux-account" ]]; then
+        mark="$d/.amux-account"
+        f=$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' "$mark")
+        cfg=$(cd "${f/#\~/$HOME}" 2>/dev/null && pwd -P) || die "$mark names no folder: '$f'"
+        break
+      fi
+      d=$(dirname "$d")
+    done
+  fi
   dir=$(dirname "$here")
   while [[ -z "$src" && "$dir" == "$HOME"/* ]]; do
     for f in "$CC_SESSIONS"/*.env; do
@@ -1832,7 +1844,7 @@ _here_create() {
   [[ -f "$CC_SESSIONS/$name.env" ]] && die "worker '$name' already exists (in another folder) — pick another: amux here --name NAME"
   echo "No worker works in $here."
   echo "  name:    $name"
-  echo "  account: ${cfg:-default}${src:+  (from the workers under $src)}"
+  echo "  account: ${cfg:-default}${src:+  (from the workers under $src)}${mark:+  (from $mark)}"
   echo "  group:   ${tags:-none}"
   if ! $yes; then
     read -r -p "Create and start it? [y/N] " ans </dev/tty || ans=""
@@ -7021,7 +7033,7 @@ ${BOLD}Worker management:${RESET}
 
 ${BOLD}Interaction:${RESET}
   amux attach [name]             Attach to a running worker; no name = the one working in this folder (detach: Ctrl-b d)
-  amux here [-y] [--name N]      Attach to this folder's worker; start it if stopped, or create one (account and group from the parent folders)
+  amux here [-y] [--name N]      Attach to this folder's worker; start it if stopped, or create one (account from the nearest .amux-account, else it and group from the parent folders)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
