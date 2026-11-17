@@ -474,6 +474,11 @@ pub(crate) enum Conv {
     Worker(String),
     /// (worker, person email): a worker's 1:1 with one person.
     Direct(String, String),
+    /// (outcome id, the worker it is routed to now): one request's thread
+    /// (docs/design/intent-first.md). The worker is read from
+    /// `intent_store`'s registry when the key is parsed, so "Change" moving an
+    /// outcome to another worker keeps one thread.
+    Outcome(String, String),
 }
 
 impl Conv {
@@ -486,6 +491,7 @@ impl Conv {
         match kind {
             "g" => Some(Conv::Group(rest.to_lowercase())),
             "w" => Some(Conv::Worker(rest.to_string())),
+            "o" => Some(Conv::Outcome(rest.to_string(), super::intent_store::outcome_worker(rest).unwrap_or_default())),
             "p" => {
                 let (a, b) = rest.split_once('|')?;
                 let (a, b) = (a.trim().to_ascii_lowercase(), b.trim().to_ascii_lowercase());
@@ -511,6 +517,7 @@ impl Conv {
             Conv::People(a, b) => format!("p:{a}|{b}"),
             Conv::Worker(w) => format!("w:{w}"),
             Conv::Direct(w, p) => format!("d:{w}|{p}"),
+            Conv::Outcome(id, _) => format!("o:{id}"),
         }
     }
 }
@@ -542,7 +549,7 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
 /// its groups, may read and answer that one thread, and nothing else of the
 /// conversation. `root` is any post id; it is resolved to its thread's root.
 fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &str) -> bool {
-    if matches!(conv, Conv::Worker(_) | Conv::Direct(..)) {
+    if matches!(conv, Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..)) {
         return false;
     }
     conn.query_row(
@@ -586,6 +593,10 @@ fn may_read(who: &Who, conv: &Conv, lanes: &Fleet) -> bool {
         (Who::Worker { groups, .. }, Conv::Group(g)) => groups.contains(g),
         (Who::Worker { name, .. }, Conv::Worker(w)) => name == w,
         (Who::Worker { .. }, Conv::People(..)) => false,
+        // An outcome belongs to the owner (and anyone with workspace-wide
+        // access); its worker reads it while it is routed there.
+        (Who::Person { email, scope }, Conv::Outcome(..)) => email == "owner" || scope.is_global(),
+        (Who::Worker { name, .. }, Conv::Outcome(_, w)) => !w.is_empty() && name == w,
     }
 }
 
@@ -617,6 +628,7 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
             Who::Worker { .. } => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
         },
         Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
+        Conv::Outcome(_, w) => if w.is_empty() { Vec::new() } else { vec![w.clone()] },
         // A direct message is two people: either may hand a worker a task
         // from it, the same workers they could reach from #general.
         Conv::People(..) => match who {
@@ -639,7 +651,7 @@ fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
             // Any channel, as for other workers: a person brings in a worker
             // they can reach. An isolated one answers in its terminal.
             Conv::Group(_) | Conv::People(..) => person_allows(scope, &l.name, iso),
-            Conv::Worker(_) | Conv::Direct(..) => false,
+            Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..) => false,
         })
         .map(|l| l.name.clone())
         .collect()
@@ -660,6 +672,7 @@ fn workers_in(conv: &Conv, lanes: &[Lane]) -> Vec<String> {
         Conv::Group(g) if g == GENERAL => Vec::new(),
         Conv::Group(g) => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
         Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
+        Conv::Outcome(_, w) => if w.is_empty() { Vec::new() } else { vec![w.clone()] },
         Conv::People(..) => Vec::new(),
     }
 }
@@ -1268,6 +1281,16 @@ fn worker_chain_capped(recent: &[String]) -> bool {
     recent.len() >= WORKER_CHAIN && recent.iter().all(|a| a.starts_with("worker:"))
 }
 
+/// Seconds to wait before each retry of a failed delivery.
+const DELIVERY_BACKOFF_S: [u64; 3] = [2, 5, 10];
+
+/// Retry a failed delivery when the server failed (5xx: the worker is
+/// starting, its pane is not ready), never when it refused (4xx), and only
+/// within the backoff schedule.
+fn delivery_retryable(status: u16, attempt: usize) -> bool {
+    status >= 500 && attempt < DELIVERY_BACKOFF_S.len()
+}
+
 /// The text a worker receives. It names where it came from and how to answer
 /// there, since the worker cannot see the Messages tab.
 fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
@@ -1284,6 +1307,26 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
         // get them to do work ... and it does the thread shit inline").
         Conv::People(..) => (format!("{author} mentioned you in a direct message (amux Messages):"), "that message's thread".to_string()),
         Conv::Direct(..) => (format!("{author} wrote to you in your direct message with them (amux Messages):"), "that direct message".to_string()),
+        // An outcome: one request, followed by someone who never sees a
+        // worker, a terminal or a card. The answer is the result itself.
+        Conv::Outcome(id, _) => (
+            format!("{author} asked for this in amux (amux Messages, an outcome they follow by itself). They read only \
+                     this thread, in plain words, on a phone. Do the work without asking first: when the request touches \
+                     people, school, camp, money, dates or plans, look in their email and calendar yourself \
+                     (amux get 'api/email/search?q=<a few words>&days=180', amux get 'api/email/message/<message_id>', \
+                     amux get 'api/email/inbox?count=20&days=14', amux get api/cal-events). Keep what you set up in amux, \
+                     never in another app or a file of your own: a reminder is amux wake <YYYY-MM-DDTHH:MM> --title \
+                     \"<what to remember, in their words>\" --stdin, telling yourself to post the reminder here with amux post 'o:{id}' \
+                     (a repeating one is amux wake --every '<daily at 09:00, or cron>' the same way); an event for their calendar \
+                     is amux cal add \"<title>\" --start YYYY-MM-DDTHH:MM --end YYYY-MM-DDTHH:MM; something to remember about them is \
+                     amux memory add --stdin. Make the first line of your answer say what you set and when. Answer with the result first, in one to three short lines, then only the \
+                     details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. An email to anyone \
+                     is amux email send --to <address> --subject \"<subject>\" --conv 'o:{id}' --stdin (the body on stdin): amux \
+                     holds every email to someone outside as a draft for their OK and shows it to them here, so say in one line that \
+                     it is waiting for their OK below, without repeating its text; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
+                     track of is amux todo add \"<what, in their words>\" --due YYYY-MM-DD (the due date only if there is one). What they asked:"),
+            "this outcome's thread".to_string(),
+        ),
     };
     // WHO SENT THIS, said outright. Twice on 2026-10-28 a worker read a
     // delivery as "text you pasted with nothing from you asking me to act" and
@@ -1507,8 +1550,8 @@ pub(crate) async fn post_inner(
         .iter()
         .filter_map(|k| k.strip_prefix("worker:").map(str::to_string))
         .collect();
-    if let Conv::Worker(w) | Conv::Direct(w, _) = &conv {
-        if !targets.contains(w) {
+    if let Conv::Worker(w) | Conv::Direct(w, _) | Conv::Outcome(_, w) = &conv {
+        if !w.is_empty() && !targets.contains(w) {
             targets.push(w.clone());
             mentions.push(format!("worker:{w}"));
         }
@@ -1608,7 +1651,7 @@ pub(crate) async fn post_inner(
     // each outcome is written back onto it.
     if !targets.is_empty() {
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
-        tokio::spawn(async move {
+        tokio::spawn(super::instruction_provenance::carry(async move {
             let mut outcomes = Vec::new();
             for w in targets {
                 let isolated = iso.contains(&w);
@@ -1630,10 +1673,26 @@ pub(crate) async fn post_inner(
                 if let Some(n) = &note {
                     text = format!("{n}\n\n{text}");
                 }
-                let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
-                let status = resp.status();
-                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
-                let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+                // A worker that is still starting (an outcome's helper created
+                // a moment ago) answers 5xx not_submitted. That used to lose the
+                // post for good; a server-side failure is retried with backoff
+                // (a refusal, 4xx, is not). Bounded: four tries over ~17s.
+                let mut attempt = 0usize;
+                let (status, v) = loop {
+                    let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
+                    let status = resp.status();
+                    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
+                    let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+                    let accepted = status.is_success() && v.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                    if accepted || !delivery_retryable(status.as_u16(), attempt) {
+                        break (status, v);
+                    }
+                    attempt += 1;
+                    tracing::warn!(conv = %conv2.key(), post = id, worker = %w, status = status.as_u16(), attempt,
+                        measured = true, n_considered = 1, verdict = "conversation_delivery_retried",
+                        "a Messages post did not reach a starting worker; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(DELIVERY_BACKOFF_S[attempt - 1])).await;
+                };
                 let accepted = status.is_success() && v.get("ok").and_then(Value::as_bool).unwrap_or(false);
                 let submission = v.get("submission").and_then(Value::as_str).unwrap_or("");
                 // "confirmed" is the only state that means the worker has it now;
@@ -1659,7 +1718,7 @@ pub(crate) async fn post_inner(
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                 })
                 .await;
-        });
+        }));
     }
     crate::bridge::notify_outbound();
     notify_owner(state, &conv, &author_key, &author_name, &body, id, parent, &mentions).await;
@@ -1799,9 +1858,30 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
         return;
     }
     let lanes = fleet(state);
-    let Some(lane) = lanes.iter().find(|l| l.name == worker) else { return };
-    let me = Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() };
+    // A worker created a moment ago (an outcome's new helper) can finish its
+    // first turn before the fleet list has it. Its answer is still its own:
+    // post it under its name, and say so, rather than drop it (it used to
+    // return here in silence, losing the first answer of every new helper).
+    let me = match lanes.iter().find(|l| l.name == worker) {
+        Some(lane) => Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() },
+        None => {
+            tracing::warn!(conv = %key, worker, measured = true, n_considered = lanes.len(),
+                verdict = "conversation_relay_lane_unlisted",
+                "turn-end: the worker is not in the fleet list yet; its answer is posted under its own name");
+            Who::Worker { name: worker.to_string(), groups: Default::default() }
+        }
+    };
     let Some(conv) = Conv::parse(&key) else { return };
+    // An outcome thread that is not routed to this worker here (a prompt read
+    // back from an older transcript names one from another run) gets nothing.
+    if let Conv::Outcome(_, w) = &conv {
+        if w != worker {
+            tracing::warn!(conv = %key, worker, routed_to = %w, measured = true, n_considered = 1,
+                verdict = "conversation_relay_outcome_not_routed",
+                "turn-end: the answer names an outcome this worker is not routed to; not posted");
+            return;
+        }
+    }
     let mut hdrs = HeaderMap::new();
     if let Ok(v) = HeaderValue::from_str(worker) {
         hdrs.insert("x-amux-session", v);
@@ -1870,6 +1950,42 @@ pub(crate) async fn owner_post_to_worker(state: &AppState, worker: &str, body: &
         None, None, json!([]), None, None).await
         .map(|v| format!("posted in w:{worker} (post {})", v["id"]))
         .map_err(|_| format!("the post into {worker}'s thread was refused"))
+}
+
+/// The owner's post into an outcome thread (`o:<id>`): delivered to the
+/// outcome's worker, which answers in the same thread. Returns the post.
+pub(crate) async fn owner_post_to_outcome(state: &AppState, id: &str, body: &str) -> Result<Value, String> {
+    let conv = Conv::parse(&format!("o:{id}")).ok_or_else(|| format!("not an outcome: {id}"))?;
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let name = display_for("owner", "");
+    let body: String = body.chars().take(MAX_BODY).collect();
+    post_inner(state, conv, &me, me.key(), name, body, HeaderMap::new(), None, None, json!([]), None, None).await
+        .map_err(|_| format!("the post into outcome {id} was refused"))
+}
+
+/// amux's own post into an outcome thread (a router answer, a receipt). Its
+/// author is `amux:intent` and it mentions nobody, so it reaches no worker.
+pub(crate) async fn amux_post_to_outcome(state: &AppState, id: &str, body: &str) -> Result<Value, String> {
+    let conv = Conv::parse(&format!("o:{id}")).ok_or_else(|| format!("not an outcome: {id}"))?;
+    let conv = match conv { Conv::Outcome(i, _) => Conv::Outcome(i, String::new()), c => c };
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let body: String = body.replace('@', "").chars().take(MAX_BODY).collect();
+    post_inner(state, conv, &me, "amux:intent".into(), "amux".into(), body, HeaderMap::new(), None, None, json!([]), None, None).await
+        .map_err(|_| format!("the post into outcome {id} was refused"))
+}
+
+/// A record post (`intent_record.rs`): an outcome's routing, an idea or a
+/// goal, or a change to one. Author `amux:record`; it reaches no worker and
+/// notifies nobody (`notifies_owner`), and Home leaves it out of the thread.
+pub(crate) async fn record_post(state: &AppState, conv: &str, body: &str, attachments: Value)
+    -> Result<Value, String> {
+    let c = Conv::parse(conv).ok_or_else(|| format!("not a conversation: {conv}"))?;
+    let c = match c { Conv::Outcome(i, _) => Conv::Outcome(i, String::new()), other => other };
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let body: String = body.replace('@', "").chars().take(MAX_BODY).collect();
+    post_inner(state, c, &me, super::intent_record::AUTHOR.into(), "amux".into(), body, HeaderMap::new(), None, None,
+        attachments, None, None).await
+        .map_err(|_| format!("the record post into {conv} was refused"))
 }
 
 /// The owner's direct send to a worker Messages has no route to (isolated).
@@ -1974,14 +2090,14 @@ fn post_event(conv: &str, id: i64, parent: Option<i64>, op: &str) -> crate::db::
 /// worker answering), a direct message, an @mention of the owner, or a reply
 /// in a thread the owner posted in. Channel chatter is not.
 fn notifies_owner(conn: &rusqlite::Connection, conv: &Conv, author_key: &str, mentions: &[String], parent: Option<i64>) -> bool {
-    if author_key == "person:owner" {
+    if author_key == "person:owner" || author_key == super::intent_record::AUTHOR {
         return false;
     }
     if mentions.iter().any(|m| m == "person:owner") {
         return true;
     }
     match conv {
-        Conv::Worker(_) => return true,
+        Conv::Worker(_) | Conv::Outcome(..) => return true,
         Conv::People(a, b) if a == "owner" || b == "owner" => return true,
         Conv::Direct(_, p) if p == "owner" => return true,
         _ => {}
@@ -2005,6 +2121,7 @@ async fn notify_owner(state: &AppState, conv: &Conv, author_key: &str, author_na
         Conv::Worker(w) => w.clone(),
         Conv::People(..) => "a direct message".into(),
         Conv::Direct(w, _) => format!("a direct message from {w}"),
+        Conv::Outcome(..) => "a request you made".into(),
     };
     let title = if parent.is_some() { format!("{author_name} replied in {place}") } else { format!("{author_name} in {place}") };
     let snippet: String = body.chars().take(180).collect();
@@ -2778,6 +2895,57 @@ mod tests {
         assert_eq!(Conv::parse("x:nope"), None);
         assert_eq!(Conv::parse("g:"), None);
         assert_eq!(dm_key("B@x.com", "a@x.com"), "p:a@x.com|b@x.com");
+    }
+
+    #[test]
+    fn a_starting_worker_gets_the_post_again_and_a_refusal_does_not() {
+        assert!(delivery_retryable(500, 0));
+        assert!(delivery_retryable(503, 2));
+        assert!(!delivery_retryable(500, 3), "bounded");
+        assert!(!delivery_retryable(403, 0), "a refusal is final");
+        assert!(!delivery_retryable(409, 0));
+    }
+
+    #[test]
+    fn an_outcome_thread_is_the_owners_and_its_current_workers() {
+        crate::api::intent_store::test_route("oconvtest1", "family");
+        let conv = Conv::parse("o:oconvtest1").unwrap();
+        assert_eq!(conv, Conv::Outcome("oconvtest1".into(), "family".into()));
+        assert_eq!(conv.key(), "o:oconvtest1");
+        let lanes = Fleet::of(vec![lane("family", &[]), lane("meals", &[])]);
+        let fam = Who::Worker { name: "family".into(), groups: Default::default() };
+        let meals = Who::Worker { name: "meals".into(), groups: Default::default() };
+        assert!(may_read(&person("owner", MemberScope::Global), &conv, &lanes));
+        assert!(may_read(&fam, &conv, &lanes), "its worker answers there");
+        assert!(!may_read(&meals, &conv, &lanes), "another worker does not");
+        assert!(!may_read(&person("kid@x.io", MemberScope::Worker("family".into())), &conv, &lanes), "a scoped member does not");
+        assert_eq!(workers_in(&conv, &lanes), vec!["family".to_string()]);
+        // Change moves it; the same key now names the new worker.
+        crate::api::intent_store::test_route("oconvtest1", "meals");
+        let moved = Conv::parse("o:oconvtest1").unwrap();
+        assert!(may_read(&meals, &moved, &lanes) && !may_read(&fam, &moved, &lanes));
+        let (text, place) = delivery_for(&moved, "Dana", "Plan dinners", false);
+        assert_eq!(place, "here");
+        assert!(text.contains("amux post 'o:oconvtest1'") && text.contains("draft"), "{text}");
+        assert!(text.contains("never approve it yourself") && text.contains("never spend money"), "outside sends wait for the owner: {text}");
+        // What it sets up lives in amux's own primitives: the scheduler, the calendar, memories.
+        // Every step is an `amux` verb: a chat worker may run nothing else (--allowedTools Bash(amux:*)),
+        // and a curl in the brief was refused, so no draft was ever held (walkthrough, 2026-11-13).
+        assert!(!text.contains("curl "), "no step a helper is not allowed to run: {text}");
+        for (verb, what) in [("amux wake <YYYY", "a reminder is the scheduler"), ("amux wake --every", "a repeating one too"),
+            ("amux cal add", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory"),
+            ("amux email send", "an email is the email API, held for the owner"), ("--conv 'o:oconvtest1'", "and names its conversation"), ("amux todo add", "a to-do is a card on her board")] {
+            assert!(text.contains(verb), "{what}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_record_post_notifies_nobody_and_an_answer_does() {
+        let c = crate::db::migrate::test_memdb();
+        let conv = Conv::Outcome("orec1".into(), "family".into());
+        assert!(notifies_owner(&c, &conv, "worker:family", &[], None), "her helper's answer reaches her");
+        assert!(!notifies_owner(&c, &conv, super::super::intent_record::AUTHOR, &[], None),
+            "where a request went is a record, not news");
     }
 
     #[test]

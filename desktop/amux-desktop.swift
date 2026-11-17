@@ -403,6 +403,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// that have been out of sight a while).
     var lastShown = Date()
     var lastMemoryReload = Date.distantPast
+    /// The footprint the guard reloaded this page at; 0 once the result is logged.
+    var memoryReloadFromMB = 0
+    /// The limit the last memory reload was measured against (hidden or shown).
+    var memoryReloadLimitMB = 0
+    /// When the guard last logged that it left an over-limit shown page alone for typing.
+    var memoryInUseLogged = Date.distantPast
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
 
@@ -507,6 +513,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // when the window is hidden and click through to the conversation.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotify")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotify")
+        // The page's device switch (app.js _notifToggleNative): reads and sets
+        // the app's own, so the dashboard, the menu and Settings agree.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxFind")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxFind")
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotifyPrefs")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotifyPrefs")
         // A zoom from the page (app.js _zoomShare): every other page follows it.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxZoom")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxZoom")
@@ -514,6 +526,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // window.print(), so the page sends the file's bytes or its HTML.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxPrint")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxPrint")
+        // Dictation on device (amux-dictation.swift, app.js _dictNativeStart).
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxDictation")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxDictation")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -533,8 +548,29 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             }
             return
         }
+        if message.name == "amuxDictation" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any] {
+                NativeDictation.shared.message(d, from: self)
+            }
+            return
+        }
         if message.name == "amuxZoom" {
             if let n = message.body as? NSNumber { app?.zoomOthers(from: self, level: n.intValue) }
+            return
+        }
+        // ⌃F outside a text box (app.js _hkFindKey): this page's find bar.
+        if message.name == "amuxFind" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false { showFind() }
+            return
+        }
+        if message.name == "amuxNotifyPrefs" {
+            guard webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let app = app,
+                  let d = message.body as? [String: Any] else { return }
+            if (d["op"] as? String) == "set", let on = d["on"] as? Bool {
+                app.setNotifications(on, source: "page")
+            } else {
+                app.tellNotifications(self)
+            }
             return
         }
         if message.name == "amuxNotify" {
@@ -741,6 +777,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func windowDidExitFullScreen(_ notification: Notification) { normalFrame = nil; app?.windowPlaced(self) }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        memoryKillPending = false
         // Any amux server this tab shows, not only the default connection: a tab on
         // sandbox.amux.io must remember sandbox, or its new tabs and its saved place
         // fall back to the default server (Ethan, 2026-10-26).
@@ -756,6 +793,23 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 if reached { a?.adoptServerWindows() }
             }
         }
+    }
+
+    /// The memory guard ended this page's process and loads the page again
+    /// itself, so that one termination must not reload too. One-shot: the
+    /// callback for it, or the new page finishing its load, clears it, so a
+    /// later crash of the replacement process still recovers.
+    var memoryKillPending = false
+
+    // A page's web process ended: macOS did (memory pressure) or it crashed.
+    // A blank tab is left behind, so load the page again in a new process, on
+    // its saved view, and report it.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if memoryKillPending { memoryKillPending = false; return }
+        dlog("verdict=webcontent_terminated view=\(viewHash) url=\(webView.url?.absoluteString ?? "-")")
+        app?.beaconFrom(self, ["kind": "desktop-web-process-ended", "verdict": "webcontent_terminated", "measured": true,
+                               "n_considered": 1, "view": viewHash])
+        if let t = savedURL().flatMap({ URL(string: $0) }) { webView.load(URLRequest(url: t)) } else { webView.reload() }
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -852,12 +906,6 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         app?.loadFailed(in: self, error: error)
-    }
-
-    // A crashed web content process leaves a blank window; reload it.
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        NSLog("amux-desktop: verdict=webcontent_terminated url=%@", webView.url?.absoluteString ?? "-")
-        webView.reload()
     }
 
     // ── WKDownloadDelegate: into ~/Downloads, never overwriting ──
@@ -1033,6 +1081,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tabDragMonitor: Any?
     var globeMonitor: Any?
     var globeDown = false, globeUsed = false
+    /// 🌐 held alone past globeHoldDelay: dictation runs until it is let go.
+    var globeHeld = false
+    var globeHoldTimer: DispatchWorkItem?
     var lastGlobeTap: TimeInterval = 0
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
@@ -1376,31 +1427,95 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // show single tabs at 1.8, 3.2 and 6.3 GB. A page that has been out of
     // sight for a while and is over the limit is reloaded on the same URL: its
     // view, worker and tab come back from the URL, drafts from local storage,
-    // and the shown page is never touched. Each reload is logged and reported.
+    // and the shown page is never touched. Each reload is logged and reported,
+    // and so is the footprint a minute later (verdict=tab_reload_freed, or
+    // tab_reload_did_not_free when the page is still over the limit).
     func guardTabMemory() {
         let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
+        // A page on screen had no bound at all: the memory RCA of 2026-11-15
+        // found two worker terminals shown side by side in a pane grid at 13.4
+        // and 6.9 GB (one growing 0.9 GB in 10 minutes), never touched because
+        // only hidden pages were reloaded. Over this much a shown page gets the
+        // same fresh process, unless the person is typing in it. 0 turns it off.
+        let shownLimit = Int(envSeconds("AMUX_DESKTOP_SHOWN_TAB_MB_LIMIT", 6144))
+        let cooldown = envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600)
         let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
         let now = Date()
         for c in controllers {
-            if isShown(c) { c.lastShown = now; continue }
+            // Until 2026-11-12 every reload here was a jump within the open page
+            // (see below), logged as a reload while the page kept 3 GB: one tab
+            // was "reloaded" 24 times at 3.1-3.5 GB. Measuring the result is what
+            // would have said so.
+            if c.memoryReloadFromMB > 0, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60),
+               let pid = webPID(c), let after = footprintMB(pid) {
+                let was = c.memoryReloadLimitMB > 0 ? c.memoryReloadLimitMB : limit
+                let verdict = after > was ? "tab_reload_did_not_free" : "tab_reload_freed"
+                dlog("verdict=\(verdict) before_mb=\(c.memoryReloadFromMB) after_mb=\(after) limit=\(was) view=\(c.viewHash)")
+                beaconFrom(c, ["kind": "desktop-tab-reload-result", "verdict": verdict, "measured": true, "n_considered": 1,
+                               "before_mb": c.memoryReloadFromMB, "after_mb": after, "limit_mb": was, "view": c.viewHash])
+                c.memoryReloadFromMB = 0
+            }
+            let shown = isShown(c)
+            if shown { c.lastShown = now }
             let hidden = now.timeIntervalSince(c.lastShown)
+            let over = shown ? shownLimit : limit
             // At most one reload per page per cooldown: a page that grows straight
             // back is a leak to find (its view is in the log), not one to churn.
-            guard hidden >= grace, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600),
-                  let pid = webPID(c), let mb = footprintMB(pid), mb > limit,
+            guard (shown ? shownLimit > 0 : hidden >= grace), now.timeIntervalSince(c.lastMemoryReload) >= cooldown,
+                  let pid = webPID(c), let mb = footprintMB(pid), mb > over,
                   let url = c.webView.url, isServerURL(url) else { continue }
-            c.lastMemoryReload = now
-            dlog("verdict=tab_reloaded_for_memory mb=\(mb) limit=\(limit) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
-            let payload: [String: Any] = ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
-                                          "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash]
-            if let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
-               let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) {
-                r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
+            // Typing defers the reload to the next tick the person is not typing,
+            // without starting a cooldown; the log line has its own once-per-cooldown clock.
+            if shown, isTyping(c) {
+                if now.timeIntervalSince(c.memoryInUseLogged) >= cooldown {
+                    c.memoryInUseLogged = now
+                    dlog("verdict=shown_tab_over_limit_in_use mb=\(mb) limit=\(over) view=\(c.viewHash)")
+                }
+                continue
             }
+            c.lastMemoryReload = now
+            c.memoryReloadFromMB = mb
+            c.memoryReloadLimitMB = over
+            let verdict = shown ? "shown_tab_reloaded_for_memory" : "tab_reloaded_for_memory"
+            dlog("verdict=\(verdict) mb=\(mb) limit=\(over) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
+            beaconFrom(c, ["kind": "desktop-tab-reloaded", "verdict": verdict, "measured": true, "shown": shown,
+                           "n_considered": 1, "mb": mb, "limit_mb": over, "hidden_s": Int(hidden), "view": c.viewHash])
             // The saved URL carries what the page had open (a file, a drawing, a
             // worker's tab); the web view's own URL may have dropped that hash.
-            c.webView.load(URLRequest(url: c.savedURL().flatMap { URL(string: $0) } ?? url))
+            let target = c.savedURL().flatMap { URL(string: $0) } ?? url
+            // A reload frees nothing: until 2026-11-12 this loaded the saved URL,
+            // which differs from the page only in its #fragment, so WebKit jumped
+            // within the open page; and a real reload keeps the same web process,
+            // which keeps its memory (measured: a 1.7 GB page still 1.6 GB two
+            // minutes after reloading). Ending the process frees it, and the
+            // load starts the page's saved view in a new one. Only when the
+            // process is this page's alone.
+            let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+            if c.webView.responds(to: kill), !controllers.contains(where: { $0 !== c && webPID($0) == pid }) {
+                c.memoryKillPending = true
+                c.webView.perform(kill)
+                dlog("verdict=web_process_replaced_for_memory old_pid=\(pid) view=\(c.viewHash)")
+            } else {
+                dlog("verdict=tab_reload_same_process why=\(c.webView.responds(to: kill) ? "shared_process" : "no_kill_api") view=\(c.viewHash)")
+            }
+            c.webView.load(URLRequest(url: target))
         }
+    }
+
+    /// Whether the person is working in this page now: its window is the key
+    /// window and the keyboard focus is inside its web view.
+    func isTyping(_ c: DashboardWindowController) -> Bool {
+        guard let w = c.webView.window, w.isKeyWindow, let r = w.firstResponder as? NSView else { return false }
+        return r === c.webView || r.isDescendant(of: c.webView)
+    }
+
+    /// Post a client-debug beacon through any amux page but `c` (a page about to
+    /// reload would drop it).
+    func beaconFrom(_ c: DashboardWindowController, _ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
+              let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) ?? (c.webView.url.map(isServerURL) == true ? c : nil)
+        else { return }
+        r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
     }
 
     func footprintMB(_ pid: pid_t) -> Int? {
@@ -1716,6 +1831,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// A Messages post addressed to the owner (the page decided; it only asks
     /// for one when the owner is not already looking at that conversation).
     func notifyMessage(_ d: [String: Any]) {
+        guard config.notifications ?? true else {
+            NSLog("amux-desktop: verdict=notification_suppressed what=message reason=notifications_off")
+            return
+        }
         guard canNotify else { return }
         let content = UNMutableNotificationContent()
         content.title = (d["title"] as? String) ?? "amux"
@@ -1870,9 +1989,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func toggleNotifications(_ sender: NSMenuItem) {
+        setNotifications(!(loadConfig().notifications ?? true), source: "menu")
+    }
+
+    /// The one switch for this Mac's notifications (needs-you and Messages).
+    /// The menu, the app's Settings and any dashboard page set it; every page
+    /// is told, so each one's Settings and bell panel show the same value.
+    func setNotifications(_ on: Bool, source: String) {
         config = loadConfig()
-        config.notifications = !(config.notifications ?? true)
+        config.notifications = on
         saveConfig(config)
+        dlog("verdict=notifications_set on=\(on ? 1 : 0) source=\(source) pages=\(controllers.count)")
+        for c in controllers { tellNotifications(c) }
+    }
+
+    func tellNotifications(_ c: DashboardWindowController) {
+        let on = (config.notifications ?? true) ? "true" : "false"
+        c.webView.evaluateJavaScript("typeof _notifDesktopState === 'function' && _notifDesktopState(\(on))", completionHandler: nil)
     }
 
     // ── Menu actions ──
@@ -2121,10 +2254,17 @@ func buildMenuBar(_ d: AppDelegate) {
     add(edit, "Redo", Selector(("redo:")), "z", [.command, .shift])
     edit.addItem(.separator())
     add(edit, "Cut", #selector(NSText.cut(_:)), "x")
-    add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+    add(edit, "Copy", #selector(AppDelegate.copyFromPage(_:)), "c", target: d)
     add(edit, "Paste", #selector(NSText.paste(_:)), "v")
     add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
     edit.addItem(.separator())
+    // Find in the page you are in (amux-find.swift).
+    let find = NSMenu(title: "Find")
+    add(find, "Find…", #selector(AppDelegate.findInPage(_:)), "f", target: d)
+    add(find, "Find Next", #selector(AppDelegate.findNextInPage(_:)), "g", target: d)
+    add(find, "Find Previous", #selector(AppDelegate.findPreviousInPage(_:)), "g", [.command, .shift], target: d)
+    add(find, "Use Selection for Find", #selector(AppDelegate.useSelectionForFind(_:)), "e", target: d)
+    edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
     // The standard spelling menus. The focused WKWebView answers each action
     // and shows its checkmark.
     let spelling = NSMenu(title: "Spelling and Grammar")

@@ -108,6 +108,15 @@
 <!-- AMUX-BOOTSTRAP-END -->
 </head>
 <body>
+<script>
+// The intent Home decides a new person's first screen; until it answers, the
+// fleet is hidden so it never flashes first (docs/design/intent-first.md).
+(function(){try{var v=JSON.parse(localStorage.getItem('amux_ui_view')||'null');
+var fresh=v&&v.v&&(Date.now()-(v.ts||0)<86400000);
+var dl=/^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/.test(location.hash)||/[?&]view=/.test(location.search);
+if(!fresh&&!dl&&localStorage.getItem('amux_home_choice')!=='fleet'){document.documentElement.classList.add('boot-home-pending');
+setTimeout(function(){document.documentElement.classList.remove('boot-home-pending');},12000);}}catch(e){}})();
+</script>
 <div id="js-fallback" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:var(--space-4);z-index:99999;background:var(--bg);color:var(--dim);font-family:var(--font-ui);">
   <div style="font-size:var(--fs-3xl);">Loading amux...</div>
   <div id="js-fallback-retry" style="display:none;text-align:center;">
@@ -484,6 +493,19 @@
         </div>
         </div>
         <div class="settings-tab-panel" id="stab-notifications" data-stab="notifications">
+        <div class="settings-section" id="settings-device-notifs-section">
+          <div class="settings-section-label">This device</div>
+          <div class="ui-help" style="margin-bottom:var(--space-2);">Each phone, browser and Mac app keeps its own switches. Off here means nothing reaches this device: no lock-screen or background push, no Messages notifications, and in the Mac app no needs-you notifications either.</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <span style="font-size:var(--fs-lg);">Notifications on this device</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-native-cb" aria-label="Notifications on this device" onchange="_notifToggleNative()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:var(--space-1);">
+            <span style="font-size:var(--fs-lg);">In-app pop-ups</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-banner-cb" aria-label="In-app pop-ups" onchange="_notifToggleBanners()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+        </div>
+        <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label">Alerts</div>
           <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-2);line-height:1.4;">Routine notifications use in-app amux Alerts. <b>Urgent alerts</b> are reserved for things that need your attention immediately — workers are told to use them sparingly.</div>
@@ -730,6 +752,8 @@
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
+  <button id="tab-home" title="Intent: ask for anything, and see what is coming up" onclick="switchView('home')"><span class="tab-ico">&#x1F4AC;</span><span class="tab-lbl">Intent</span></button>
+  <button id="tab-everything" title="Everything else: the full workspace" onclick="_homeShowEverything()"><span class="tab-ico">&#x22EF;</span><span class="tab-lbl">Everything else</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
@@ -744,6 +768,7 @@
   <button id="tab-pages" title="Apps: apps with a backend, and files shared outside amux" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Apps</span></button>
   <button id="tab-photos" onclick="switchView('photos')"><span class="tab-ico">&#x1F5BC;</span><span class="tab-lbl">Photos</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
+  <button id="tab-calls" title="Calls: phone calls workers placed, held calls to approve, transcripts" onclick="switchView('calls')"><span class="tab-ico">&#x260E;</span><span class="tab-lbl">Calls</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
   <button id="tab-hotkeys" onclick="switchView('hotkeys')"><span class="tab-ico">&#x2318;</span><span class="tab-lbl">Hotkeys</span></button>
@@ -756,7 +781,6 @@
   <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
   <button id="tab-disk" onclick="switchView('disk')"><span class="tab-ico">🖴</span><span class="tab-lbl">Disk</span></button>
   <button id="tab-cost" onclick="switchView('cost')"><span class="tab-ico">$</span><span class="tab-lbl">Cost</span></button>
-  <button id="tab-scoreboard" title="Scoreboard: goals, rates, CI, spend, host and what needs you" onclick="switchView('scoreboard')"><span class="tab-ico">&#x25C9;</span><span class="tab-lbl">Scoreboard</span></button>
   <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
   <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
   <button id="tab-browser" onclick="switchView('browser')"><span class="tab-ico">◳</span><span class="tab-lbl">Browser</span></button>
@@ -765,6 +789,24 @@
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
   <div class="tab-customizer-menu" id="tab-customizer-menu" style="display:none;"></div>
 </div>
+</div>
+<div id="home-view" class="home-view" style="display:none" aria-label="Intent">
+  <header id="home-hello" class="home-hello"><h1 id="home-greet" class="home-greet"></h1><div id="home-counts" class="home-counts"></div></header>
+  <div class="home-main">
+    <section id="home-ideas" class="home-pane home-extra" aria-label="Ideas for you"><div id="home-ideas-body" class="home-pane-body"></div></section>
+    <section id="home-goals" class="home-pane home-extra" aria-label="Goals"><div id="home-goals-body" class="home-pane-body"></div></section>
+    <section id="home-chat" class="home-pane"><div id="home-chat-body" class="home-pane-body"></div></section>
+    <section id="home-upcoming" class="home-pane home-extra" aria-label="Coming up"><div id="home-upcoming-body" class="home-pane-body"></div></section>
+  </div>
+  <form id="home-composer" class="home-composer" onsubmit="event.preventDefault();_homeSend()">
+    <div class="home-composer-box">
+      <span class="home-spark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7z"/></svg></span>
+      <textarea id="home-input" class="home-input" rows="1" placeholder="What do you want to do?" aria-label="What do you want to do?"
+        oninput="_homeGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_homeSend()}"></textarea>
+      <button id="home-send" type="submit" class="btn primary home-send" aria-label="Send" title="Send"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M3.4 20.4l17.5-7.5a1 1 0 000-1.8L3.4 3.6a1 1 0 00-1.4 1.1L4 11l9 1-9 1-2 6.3a1 1 0 001.4 1.1z"/></svg></button>
+    </div>
+    <div class="home-trust">Nothing is sent to anyone or paid for without your OK.</div>
+  </form>
 </div>
 <div id="session-view">
 <div style="padding:0 var(--space-3);margin-top:var(--space-1);display:flex;align-items:center;gap:var(--space-2);">
@@ -1446,6 +1488,14 @@
 </div>
 <!-- Photos: a media library on the owner's own Mixpeek (photos.js, loaded on first open). -->
 <div id="photos-view" class="ph-host" style="display:none;"></div>
+<div id="calls-view" class="calls-view">
+  <div id="calls-bar" class="calls-bar" role="toolbar" aria-label="Filter calls">
+    <div id="calls-filters" class="calls-filters"></div>
+    <button class="btn calls-refresh" onclick="_callsLoad()" aria-label="Refresh calls">&#x21BB;</button>
+  </div>
+  <div id="calls-note" class="calls-note"></div>
+  <div id="calls-list" class="calls-list"></div>
+</div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div class="cx-page">
     <div class="cx-top">
@@ -1795,15 +1845,6 @@
 </div>
 
 <!-- Cost / observability view -->
-<div id="scoreboard-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:var(--space-3-5) var(--space-4) var(--space-16);">
-  <div id="sb-controls" class="sb-controls">
-    <span class="sb-title">Scoreboard</span>
-    <button id="sb-refresh" class="btn" onclick="_sbLoad()">Refresh</button>
-    <span id="sb-updated" class="sb-updated" aria-live="polite"></span>
-  </div>
-  <div id="sb-body"></div>
-</div>
-
 <div id="cost-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:var(--space-3-5) var(--space-4) var(--space-16);">
   <div style="display:flex;align-items:center;gap:var(--space-2-5);flex-wrap:wrap;margin-bottom:var(--space-3);">
     <span style="font-size:var(--fs-3xl);font-weight:700;">Cost &amp; tokens</span>
@@ -3088,6 +3129,7 @@
 <div id="create-overlay" class="edit-overlay" onclick="if(event.target===this)closeCreate()">
   <div class="edit-box">
     <h3>New worker</h3>
+    <div class="field-optional" style="margin-bottom:var(--space-2);">Not sure what to write? <button type="button" class="btn" id="create-open-wizard" onclick="openWorkflowWizard()">Use the workflow wizard</button></div>
     <div class="field-group">
       <label class="field-label">Name</label>
       <input id="create-name" type="text" placeholder="my-project" autocomplete="off" autocorrect="off"
@@ -3201,6 +3243,11 @@
       <button class="btn" onclick="closeCreate()">Cancel</button>
       <button class="btn primary" onclick="submitCreate()">Create</button>
     </div>
+  </div>
+</div>
+<div id="wfw-overlay" class="edit-overlay" onclick="if(event.target===this)closeWorkflowWizard()">
+  <div class="edit-box" id="wfw-box" role="dialog" aria-labelledby="wfw-q">
+    <div id="wfw-body"></div>
   </div>
 </div>
 
@@ -3434,7 +3481,7 @@
                  "Attach file" at the top. -->
             <button type="button" class="peek-more-danger" onclick="_peekMoreClose();_peekClearInput()" title="Clear the composer: text, saved draft, and any staged attachments">&#x1F5D1; Clear input</button>
           </div>
-          <!-- Compact recording popup: live volume bars + timer, right above the
+          <!-- The listening pill: live volume bars + timer, right above the
                composer. Stop → transcribe → text lands in the input. -->
           <div class="dict-popup" id="dict-popup">
             <div class="dict-popup-wave" id="dict-wave">
@@ -3449,8 +3496,8 @@
               <span id="dict-popup-status" class="dict-popup-status">Listening…</span>
             </div>
             <div class="dict-popup-btns">
-              <button class="btn" onclick="_dictClosePopup(true)" title="Discard">Cancel</button>
-              <button class="btn primary" onclick="_dictStopRec()" title="Stop and transcribe">Done</button>
+              <button class="btn" onclick="_dictClosePopup(true)" title="Discard (Esc)" aria-label="Discard">&#x2715;</button>
+              <button class="btn primary" onclick="_dictStopRec()" title="Done: put the text in" aria-label="Done">&#x2713;</button>
             </div>
           </div>
         </div>
@@ -3660,6 +3707,7 @@
       <div id="peek-ask-answer" style="font-size:var(--fs-lg);line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-top:var(--space-1-5);"></div>
     </div>
     <div id="pm-selbar" style="display:none;"></div>
+    <div id="peek-msg-convs" class="peek-msg-convs"></div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-2-5);"></div>
   </div>
   <!-- Dictation: speak → clean text. Audio goes to the amux server, which calls
@@ -4240,19 +4288,8 @@
           <button type="button" role="tab" data-m="history" onclick="_mdxView('history')" title="Earlier versions from git">History</button>
           <button type="button" class="mdx-split" data-m="split" onclick="_mdxToggleSplit()" aria-pressed="false" title="Show the preview beside the source" aria-label="Side by side">&#x25EB;</button>
         </div>
-        <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting">
-          <button type="button" data-t="heading" title="Heading (cycles # to ###)" aria-label="Heading"><b>H</b></button>
-          <button type="button" data-t="bold" title="Bold (⌘B)" aria-label="Bold"><b>B</b></button>
-          <button type="button" data-t="italic" title="Italic (⌘I)" aria-label="Italic"><i>I</i></button>
-          <button type="button" data-t="ul" title="Bulleted list" aria-label="Bulleted list">&#x2022;&#x2261;</button>
-          <button type="button" data-t="ol" title="Numbered list" aria-label="Numbered list">1&#x2261;</button>
-          <button type="button" data-t="task" title="Task" aria-label="Task">&#x2611;</button>
-          <button type="button" data-t="code" title="Code" aria-label="Code">&lt;/&gt;</button>
-          <button type="button" data-t="link" title="Link (⌘K)" aria-label="Link">&#x1F517;</button>
-          <button type="button" data-t="image" title="Image" aria-label="Image">&#x1F5BC;</button>
-          <button type="button" data-t="table" title="Table" aria-label="Table">&#x229E;</button>
-          <button type="button" data-t="worker" title="Tag a worker (@)" aria-label="Tag a worker">@</button>
-        </div>
+        <!-- Filled by _mdxToolbar (app.js) from _MDX_BAR, so the bar, the + menu and the / menu share one icon set. -->
+        <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting"></div>
       </div>
       <div class="mdx-edit" id="mdx-edit-host"></div>
       <div class="mdx-status" id="mdx-status" aria-live="polite">

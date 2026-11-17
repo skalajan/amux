@@ -332,6 +332,12 @@ USER_TMP_MAX=${AMUX_CLEANUP_USER_TMP_MAX:-3000}
 # idle over 12 h on 2026-10-04 with the disk at 57 GB free.
 LANE_TMP_ROOT=${AMUX_CLEANUP_LANE_TMP_ROOT:-$HOME/.amux/tmp}
 LANE_TMP_IDLE_MIN=${AMUX_CLEANUP_LANE_TMP_IDLE_MIN:-1440}
+# An idle entry at least this big is not removed the first time: its lane is
+# told, and it goes only if it is still idle LANE_TMP_NOTICE_MIN later.
+LANE_TMP_NOTICE_KB=${AMUX_CLEANUP_LANE_TMP_NOTICE_KB:-512000}
+LANE_TMP_NOTICE_MIN=${AMUX_CLEANUP_LANE_TMP_NOTICE_MIN:-360}
+# Seam: TARGET is the lane, FILE the message path. The tests point it at a recorder.
+LANE_TMP_NOTICE_CMD=${AMUX_CLEANUP_LANE_TMP_NOTICE_CMD:-amux send TARGET --file FILE}
 # At most this many entries per tick. Deleting 11,781 entries (millions of
 # files) in one pass on 2026-10-04 drove fseventsd from 9 to 57 GB resident
 # and filled 52 GB of swap; a capped pass leaves the rest for the next tick.
@@ -2793,6 +2799,13 @@ for r in out[:3]:
 # 233G down to 206G (13.3 G/h, "full in 15.5h" off the pre-prune 206.2G) while
 # the same run had just pruned 21.9G and the disk read 228.4G. The writer was
 # real and bounded: the hourly prune takes back what it builds, a sawtooth.
+# The fit uses the newest FIT_H (2h) of the history; the history the tick asks
+# for is NET_H (8h) long, and the burn is also capped at the net loss over all
+# of it. Disk RCA 20261115-032743: a VM database's write-and-trim cycle (the
+# ipcheck-standalone guest, bounded by its 120G disk) handed back 35G at
+# 01:27, so the 2h window from there read 18.3G/h, "full in 22h", while free
+# was 406.9G at 19:16 and 404.2G at 03:31. A disk that holds level over 8h is
+# not filling, and the 2h fit still sees a burn that is.
 burn_from_history() { # <history json on stdin> <min_gbh> [now_ts now_free_gb]
   python3 -c '
 import json,sys
@@ -2801,6 +2814,10 @@ try:
     d=json.load(sys.stdin); rows=[(r["ts"],r["disk_free_gb"]) for r in d.get("samples",[]) if r.get("measured") and r.get("disk_free_gb") is not None]
 except Exception:
     rows=[]
+fit_h=float(sys.argv[4]) if len(sys.argv)>4 and sys.argv[4] else 2.0
+long_rows=list(rows)
+if rows:
+    newest=max(r[0] for r in rows); rows=[r for r in rows if newest-r[0]<=fit_h*3600+60]
 hn=len(rows); ran="-"
 try:
     nt,nf=float(sys.argv[2]),float(sys.argv[3])
@@ -2814,9 +2831,14 @@ xs=[(t-rows[0][0])/3600 for t,_ in rows]; ys=[f for _,f in rows]
 mx=sum(xs)/n; my=sum(ys)/n
 slope=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/max(1e-9,sum((x-mx)**2 for x in xs))
 o=sorted(zip(xs,ys)); net=(o[0][1]-o[-1][1])/max(1e-9,o[-1][0]-o[0][0])
+lo=sorted(long_rows+rows[len(rows)-1:] if ran=="run" else long_rows)
+capped="-"; lspan=(lo[-1][0]-lo[0][0])/3600
+if lspan>span+0.5:
+    lnet=(lo[0][1]-lo[-1][1])/max(1e-9,lspan)
+    if lnet<min(-slope,net): net=lnet; capped="%.1f"%lspan
 burn=min(-slope,net); last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
-print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), hn, "%.1f"%span, ran)
-' "$1" "${2:-}" "${3:-}" 2>/dev/null || echo "- - 0 0.0"
+print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), hn, "%.1f"%span, ran, capped)
+' "$1" "${2:-}" "${3:-}" "${BURN_FIT_H:-2}" 2>/dev/null || echo "- - 0 0.0"
 }
 
 # Read a key from the state file; empty if absent.
@@ -3120,9 +3142,21 @@ keep_docker_context() { # <profile>
 #    The tick logged only a count, so backend could not tell what removed it.
 #    Every removal is now one line with path, size and idle floor, in the run's
 #    output and appended to $STATE_DIR/lane-tmp-removed.log.
+#  - An idle entry of LANE_TMP_NOTICE_KB or more is given notice first
+#    (mixpeek-research, 2026-11-15): ~/.amux/tmp/mixpeek-research/adaptive, a
+#    1.3 GB simulator cache that is only READ, was removed on 11-09, 11-10 and
+#    11-15. Reads change no mtime, and APFS does not update atime on a read
+#    either, so a read-only cache looks idle. Its lane gets one message per
+#    tick naming the entries and how to keep them, and an entry goes only when
+#    it is still idle LANE_TMP_NOTICE_MIN after its notice. Needs STATE_DIR,
+#    where the notices are recorded (lane-tmp-notice.tsv).
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 ledger=""
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 n_unsaved=0 ledger=""
   [ -n "${STATE_DIR:-}" ] && ledger="$STATE_DIR/lane-tmp-removed.log"
+  local notice_kb=${LANE_TMP_NOTICE_KB:-512000} notice_min=${LANE_TMP_NOTICE_MIN:-360} notice_file="" notice_dir="" n_notice=0 n_notice_wait=0
+  if [ -n "${STATE_DIR:-}" ] && [ "$dry" != 1 ]; then
+    notice_file="$STATE_DIR/lane-tmp-notice.tsv"; notice_dir=$(mktemp -d "${TMPDIR:-/tmp}/lt-notice.XXXXXX")
+  fi
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   # A directory of a few small files is kept like a small file (mxp-gs12,
   # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
@@ -3130,7 +3164,12 @@ reap_lane_tmp() { # <dry:0|1>
   # only a TOP-LEVEL file was protected. Kept: at most LANE_TMP_KEEP_DIR_FILES
   # files, none over LANE_TMP_KEEP_FILE_KB, LANE_TMP_KEEP_DIR_KB in all. Build
   # trees, clones and dependency dirs still go: they hold big files or many.
-  local keep_dir_files=${LANE_TMP_KEEP_DIR_FILES:-64} keep_dir_kb=${LANE_TMP_KEEP_DIR_KB:-4096} n_small_dir=0 nf
+  # A directory of a few files under 64 MB in all is kept, whatever its files'
+  # sizes (2026-11-16: mixpeek-meta-worker/shared, 9 MB, and backend/s1-blast,
+  # 12 MB, held S1-investigation results; each had a file over 1 MB, so the old
+  # rule, every file under 1 MB, reaped both). Build trees and extracts, what
+  # this reaper is for, have far more files or far more bytes.
+  local keep_dir_files=${LANE_TMP_KEEP_DIR_FILES:-64} keep_dir_kb=${LANE_TMP_KEEP_DIR_KB:-65536} n_small_dir=0 nf
   [ -d "$root" ] || { echo "mac-cleanup: lane tmp: no $root"; return 0; }
   db=${LANE_TMP_SCHED_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
   # Every ~/.amux/tmp/<worker>/<entry> an enabled schedule names, as
@@ -3168,14 +3207,32 @@ reap_lane_tmp() { # <dry:0|1>
     if [ $(( SECONDS - t0 )) -ge "$budget" ]; then n_over=$((n_over+1)); [ -n "$stopped" ] || stopped=$e; continue; fi
     rc=0; out=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -mmin -"$LANE_TMP_IDLE_MIN" -print -quit 2>/dev/null) || rc=$?
     if [ "$rc" = 142 ]; then n_unk=$((n_unk+1)); continue; fi
-    [ -n "$out" ] && continue
+    if [ -n "$out" ]; then
+      [ -n "$notice_file" ] && [ -s "$notice_file" ] && awk -F'\t' -v r="${e#"$root"/}" '$1!=r' "$notice_file" > "$notice_file.new" && mv "$notice_file.new" "$notice_file"
+      continue
+    fi
     if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
     if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.amux-keep" ]; then n_marked=$((n_marked+1)); continue; fi
+    # A git checkout holding work that exists nowhere else is kept (amux,
+    # 2026-11-12): ~/.amux/tmp/amux/wt-ui, a worktree with a tested, uncommitted
+    # dispatcher fix, idled past the floor and was removed. A worktree whose
+    # tracked files are edited or whose commits are on no remote is a lane's
+    # unsaved work; a clean checkout of pushed commits is still reaped. A git
+    # that cannot answer keeps it: unsaved work must not be guessed away.
+    if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.git" ]; then
+      local dirty ahead
+      dirty=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" status --porcelain --untracked-files=no 2>/dev/null) || dirty="?"
+      ahead=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" rev-list -n 1 HEAD --not --remotes 2>/dev/null) || ahead="?"
+      if [ -n "$dirty" ] || [ -n "$ahead" ]; then
+        n_unsaved=$((n_unsaved+1))
+        echo "mac-cleanup:   lane tmp kept $e: a git checkout with unsaved work ($([ -n "$dirty" ] && echo 'uncommitted changes')$([ -n "$dirty" ] && [ -n "$ahead" ] && echo ', ')$([ -n "$ahead" ] && echo 'commits on no remote')) (verdict=lane_tmp_unsaved_work_kept)"
+        continue
+      fi
+    fi
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
-    if [ -d "$e" ] && [ ! -L "$e" ] \
-       && [ -z "$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f -size +"${small_kb}"k -print -quit 2>/dev/null)" ]; then
+    if [ -d "$e" ] && [ ! -L "$e" ]; then
       nf=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f 2>/dev/null | head -n $((keep_dir_files + 1)) | grep -c . || true)
       if [ "$nf" -ge 1 ] && [ "$nf" -le "$keep_dir_files" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$keep_dir_kb" ] 2>/dev/null; then
         n_small_dir=$((n_small_dir+1)); continue
@@ -3189,8 +3246,21 @@ reap_lane_tmp() { # <dry:0|1>
       echo "mac-cleanup:   lane tmp would remove $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min)"
       continue
     fi
+    if [ -n "$notice_file" ] && [ "${k:-0}" -ge "$notice_kb" ] 2>/dev/null; then
+      local rel=${e#"$root"/} since
+      since=$(awk -F'\t' -v r="$rel" '$1==r{print $2; exit}' "$notice_file" 2>/dev/null)
+      if [ -z "$since" ]; then
+        mkdir -p "$STATE_DIR" && printf '%s\t%s\n' "$rel" "$(date +%s)" >> "$notice_file"
+        n_notice=$((n_notice+1))
+        printf -- '- %s (%sM, nothing written in %s min)\n' "$e" "$(( ${k:-0} / 1024 ))" "$LANE_TMP_IDLE_MIN" >> "$notice_dir/${rel%%/*}"
+        echo "mac-cleanup:   lane tmp gave notice for $e ($(( ${k:-0} / 1024 ))M): removed after ${notice_min} min if still idle (verdict=lane_tmp_notice_given)"
+        continue
+      fi
+      if [ $(( $(date +%s) - since )) -lt $(( notice_min * 60 )) ]; then n_notice_wait=$((n_notice_wait+1)); continue; fi
+    fi
     if rm -rf -- "${e:?}" 2>/dev/null; then
       n=$((n+1)); kb=$((kb+${k:-0}))
+      [ -n "$notice_file" ] && [ -s "$notice_file" ] && awk -F'\t' -v r="${e#"$root"/}" '$1!=r' "$notice_file" > "$notice_file.new" && mv "$notice_file.new" "$notice_file"
       echo "mac-cleanup:   lane tmp removed $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min) (verdict=lane_tmp_entry_removed)"
       if [ -n "$ledger" ]; then
         mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tidle_min=%s\n' "$(date '+%F %T %z')" "${e#"$root"/}" "${k:-0}" "$e" "$LANE_TMP_IDLE_MIN" >> "$ledger"
@@ -3199,10 +3269,29 @@ reap_lane_tmp() { # <dry:0|1>
       echo "mac-cleanup:   lane tmp WARN could not remove $e (verdict=lane_tmp_entry_remove_failed)"
     fi
   done
+  # One message per lane, naming each entry given notice this tick. A lane that
+  # cannot be told (no such worker, or an isolated one) is logged; its entries
+  # still wait out the notice.
+  if [ -n "$notice_dir" ]; then
+    local lane msg cmd
+    for lane in $(ls "$notice_dir" 2>/dev/null); do
+      msg="$notice_dir/$lane.msg"
+      { echo "Cleanup notice: these idle entries in your TMPDIR will be removed by the first cleanup tick ${notice_min} min from now if nothing in them is written by then. Reading does not count."
+        echo; cat "$notice_dir/$lane"; echo
+        echo "To keep a directory: touch <dir>/.amux-keep. To keep a file: touch it, or move it into a kept directory."; } > "$msg"
+      cmd=${LANE_TMP_NOTICE_CMD:-amux send TARGET --file FILE}; cmd=${cmd//TARGET/$lane}; cmd=${cmd//FILE/$msg}
+      if eval "$cmd" >/dev/null 2>&1; then
+        echo "mac-cleanup:   lane tmp told $lane about $(grep -c '^- ' "$notice_dir/$lane") entr(ies) (verdict=lane_tmp_notice_sent)"
+      else
+        echo "mac-cleanup:   lane tmp WARN could not tell $lane about $(grep -c '^- ' "$notice_dir/$lane") entr(ies); they still wait ${notice_min} min (verdict=lane_tmp_notice_undelivered)"
+      fi
+    done
+    rm -rf -- "${notice_dir:?}"
+  fi
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, under ${keep_dir_kb}K in all), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$n_notice" -gt 0 ] && echo "; gave notice for $n_notice large entr(ies)")$([ "$n_notice_wait" -gt 0 ] && echo "; $n_notice_wait large entr(ies) inside their ${notice_min} min notice")$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
@@ -3887,12 +3976,13 @@ ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
 STATE="$STATE_DIR/state"
 prev_ts=$(state_get "$STATE" last_ts); prev_free=$(state_get "$STATE" last_disk_free_gb)
 prev_swt=$(state_get "$STATE" last_swap_total_mb || true)   # read before this run's state write below
-HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=2}
-read -r burn htf hist_n hist_span hist_run <<EOF
+HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=${BURN_NET_H:-8}}
+read -r burn htf hist_n hist_span hist_run hist_net <<EOF
 $($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH" "$(date +%s)" "$disk_now")
 EOF
 burn_src="history ${hist_n} samples over ${hist_span}h"
 [ "${hist_run:-}" = "run" ] && burn_src="$burn_src + this run's post-cleanup ${disk_now}G"
+case "${hist_net:--}" in -) ;; *) burn_src="$burn_src, capped at the net loss over ${hist_net}h (verdict=disk_burn_capped_by_net)" ;; esac
 if [ "$htf" = "-" ] && [ "$burn" = "-" ]; then
 read -r burn htf <<EOF
 $(disk_trend "${prev_ts:-0}" "${prev_free:-0}" "$now" "$disk_now" "$BURN_MIN_GBH")
@@ -3965,6 +4055,23 @@ test_binary_note() { # pid command-path
     echo " [cargo test binary, $thr threads, RUST_TEST_THREADS unset: one test thread per core (verdict=cpu_test_threads_unbounded)]"
   fi
 }
+# A worker's tools get OpenMP/BLAS caps from the CPU budget amux exports when
+# the worker STARTS (AMUX_WORKER_CPUS, 130e28713). A worker started before that
+# never got them, so a numpy/torch step it runs opens one thread per core.
+# CPU RCA 20261114-152714: mixpeek-research (running since Oct 29) served at
+# 1200-1700% with 55 busy threads and no OMP_NUM_THREADS. This names such a
+# process and says what applies the cap.
+thread_pool_note() { # pid pcpu command-path
+  case "$3" in */deps/*-[0-9a-f][0-9a-f][0-9a-f]*) return 0 ;; esac
+  [ "${2%%.*}" -ge "${AMUX_CLEANUP_POOL_NOTE_PCT:-400}" ] 2>/dev/null || return 0
+  local envs lane thr
+  envs=$(ps -E -o command= -p "$1" 2>/dev/null)
+  lane=$(printf '%s' "$envs" | grep -o 'AMUX_SESSION=[^ ]*' | head -1); lane=${lane#AMUX_SESSION=}
+  [ -n "$lane" ] || return 0
+  case "$envs" in *OMP_NUM_THREADS=*) return 0 ;; esac
+  thr=$(ps -M -p "$1" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+  echo " [$thr threads, worker $lane has no OMP_NUM_THREADS: it started before its CPU budget; restart the worker or set the cap on the command (verdict=cpu_thread_pools_unbounded)]"
+}
 escalated=0
 if [ -z "$verdicts" ]; then
   echo "mac-cleanup: constraints none"
@@ -3984,7 +4091,7 @@ else
       echo "- $mem pid=$pid $cmd — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
     echo; echo "## Top CPU (with owner)"
     ps -Ao pid=,pcpu=,comm= 2>/dev/null | sort -k2 -rn | head -10 | while read -r pid cpu cmd; do
-      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")"; done
+      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")$(thread_pool_note "$pid" "$cpu" "$cmd")"; done
     if printf '%s\n' "$verdicts" | grep -q '^disk '; then
       echo; echo "## Files over 500M written in the last hour (the writers)"
       # Open files first: wherever they live, and only seconds of the budget.

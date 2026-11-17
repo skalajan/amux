@@ -6227,3 +6227,38 @@ CARD: none (amux-security has every board switch off)
 SYMPTOM: from about 18:10 to 19:40 the boundary guard refused a one-crate cargo test at -j 2, the land gate, a `git worktree add` and even a heredoc append to this file with "the machine is critical (swap 97% used)". Over the same window `memory_pressure` reported 68% of memory free, load was 0.34 per core, and `amux resources` printed `level ok`. macOS keeps pages in swap until they are touched again, so swap use can sit near full for hours after the pressure that put it there has gone. The guard and `amux resources` disagreed about the same machine at the same time, and the guard's notion of "heavy" caught commands that use no memory to speak of.
 COST: a security fix (4b7c85965, test servers bind loopback only) waited about 70 minutes and two scheduled resumes, each a full model turn, while three more network-watch alerts fired for the exposure it fixes. It landed only with AMUX_RESOURCES_ACK. The override is recorded, but while swap stays pinned it is the routine path for every heavy command.
 FIX: judge "critical" on current pressure (the kernel memory-pressure level, or free plus compressible memory) rather than on swap used; treat swap as critical only while it is growing. `amux resources` and the guard should read the same verdict.
+
+## A failing merge-queue batch holds the land lease for every machine while checks that take seconds could have refused it at enqueue
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-11-12
+SESSION: mixpeek-meta-worker
+CARD: none (amux-frustrations has every board switch off; reported to it by message)
+SYMPTOM: from 18:08Z to 19:40Z on 11-12 eight Mixpeek merge-queue candidates from the Mac failed on checks that run in seconds on the landing machine: a generator's --check (a commit without its render, four times), ruff on the diff (twice; the latest an unsorted import in 5cc03c7354c) and one rust test. Each failing batch kept the lease through its bisect, so main did not move from 18:47:57Z until after 19:40Z, with 13 lanes waiting here and the VM's lands waiting too.
+COST: about 50 minutes with no landing for every lane on both machines, during GS-12's last days.
+MECHANISM (read by amux-frustrations from the committed bytes; the report's "amux land skips its local precheck" is not what happens): `amux land` does run the repository's `.githooks/land-precheck` at enqueue, before the lease (`_land_precheck`, amux ~line 8137, called from cmd_land). Mixpeek's `.githooks/land-precheck` runs only `ci/tip/proven_paths.py --warn` and never refuses, and its `.githooks/pre-push` (the fast gate's push hook) only waits on deployd. The ruff, generator --check and byte-compile legs exist only in the ci.yml candidate (`amux.landMergeQueue = enforce`), which runs while the lease is held. So the enqueue hook exists and runs; it checks nothing that fails here.
+FIX: (1) Mixpeek: add the seconds-cheap legs to `.githooks/land-precheck` on the lane's range, refusing with the failing line: ruff on the changed .py files, `py_compile` on them, and each landRegenerate generator in its --check form when its declared inputs changed. That puts the refusal before the lease with no amux change. (2) amux: a batch whose candidate fails should release the lease before it bisects, re-queueing its tickets singly, so one bad commit costs its own lane the bisect and not every lane.
+
+## The land review stops reviewing after three rounds of one owner request, so a fourth unrelated change lands unreviewed
+AREA: gates
+SEVERITY: slows
+STATUS: open
+DATE: 2026-11-13
+SESSION: amux-frustrations
+CARD: none (amux-frustrations has every board switch off)
+SYMPTOM: four separate changes, each citing the one goal request `Amux-Request: MSG-107374`, went through `amux land` on 11-12 and 11-13: #452's Codex limit fix, the OAuth restart rig (57b5fc6e6), the zombie pid fix (b96fac4ef) and the orchestration chaos case (b42e0a07a). The fourth printed `review: round 4. Three rounds are done, so it no longer hunts. Re-evaluate the approach rather than patching finding by finding.` with `verdict=review_capped`, and landed. Nothing had reviewed that diff.
+COST: a change to a recovery test landed with no fresh-context review; the gate passed it as reviewed. Any lane working a long owner request or a /goal hits the cap after its third change.
+MECHANISM: `scripts/land_review.py` `change_key` keys review state on the sorted `Amux-Request` ids of the range (`req:MSG-107374`), and falls back to the subject only when none is cited. The three-round cap is meant for one change reworked after findings; the key makes it one owner request instead.
+FIX: key the state on the request AND the changed paths (or the patch-id of the first round's diff), so a new change under the same request starts at round 1. A round whose diff shares no file with the earlier rounds is a new change.
+
+## A frustration report from an outside-group worker is delivered, but the answer to it is refused
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-11-15
+SESSION: amux-frustrations
+CARD: AF-1243
+SYMPTOM: mixpeek-research (groups infra, new-features, ops) sent amux-frustrations (group amux) a FRUSTRATION ending "ask: fix or decline", and it arrived. After the fix landed (5dbfb5370), `amux send mixpeek-research` answered "worker group boundary refused ... Do not retry or reroute to another outside-group worker".
+COST: the reporter cannot learn its ask was answered; the answer sits only on AF-1242, which it does not read. One more round trip for the owner to relay it, or a lost close.
+FIX: allow one reply to a message whose server-stamped origin is the recipient, or have an inbound report name the card where its answer will be written.

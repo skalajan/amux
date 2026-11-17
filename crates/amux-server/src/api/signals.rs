@@ -1243,13 +1243,15 @@ pub(crate) struct LiveSub {
     pub judge: bool,
     pub dedupe_key: String,
     pub notify_post: Option<i64>,
+    /// Who made it: "owner" for the human, else the worker. A send runs as them.
+    pub owner: String,
 }
 
 pub(crate) fn load_live_subs(conn: &Connection) -> rusqlite::Result<Vec<LiveSub>> {
     ensure_subscription_tables(conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, name, pattern, source_filter, session_filter, action, action_target, action_template, \
-         dedupe_window_s, last_fired_at, criteria, filter, judge, dedupe_key, notify_post \
+         dedupe_window_s, last_fired_at, criteria, filter, judge, dedupe_key, notify_post, owner \
          FROM signal_subscriptions WHERE enabled = 1 ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -1270,6 +1272,7 @@ pub(crate) fn load_live_subs(conn: &Connection) -> rusqlite::Result<Vec<LiveSub>
             judge: r.get::<_, i64>(12)? != 0,
             dedupe_key: r.get(13)?,
             notify_post: r.get(14)?,
+            owner: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
         })
     })?;
     rows.collect()
@@ -1306,16 +1309,45 @@ fn render_template(template: &str, event_type: &str, data: &Value) -> String {
 /// The notice for a fire when the subscription has no template: what
 /// happened, for whom, and where, in one readable line.
 fn default_text(sub: &LiveSub, event_type: &str, ev: &Value) -> String {
-    let pick = |k: &str| ev.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
-    let mut parts = vec![format!("{event_type}")];
-    for k in ["reason", "provider", "worker", "session", "title", "status", "url"] {
-        if let Some(v) = pick(k) {
-            parts.push(format!("{k}: {v}"));
+    // The wake is all a woken worker has to act on, so it carries the event's
+    // fields, the common ones first. A fixed list used to stop at reason,
+    // worker, title and url, so an email.received wake read only
+    // "email.received": no sender, no subject, no message id (live,
+    // 2026-11-12).
+    const FIRST: [&str; 7] = ["reason", "provider", "worker", "session", "title", "status", "url"];
+    const SKIP: [&str; 2] = ["type", "source"];
+    let scalar = |v: &Value| match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Array(a) if !a.is_empty() && a.iter().all(|x| x.is_string()) => {
+            Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
         }
+        _ => None,
+    };
+    let clip = |s: String| if s.chars().count() > 200 { format!("{}…", s.chars().take(200).collect::<String>()) } else { s };
+    let mut parts = vec![event_type.to_string()];
+    let obj = ev.as_object().cloned().unwrap_or_default();
+    for k in FIRST {
+        if let Some(v) = obj.get(k).and_then(scalar) {
+            parts.push(format!("{k}: {}", clip(v)));
+        }
+    }
+    for (k, v) in &obj {
+        if FIRST.contains(&k.as_str()) || SKIP.contains(&k.as_str()) {
+            continue;
+        }
+        if let Some(v) = scalar(v) {
+            parts.push(format!("{k}: {}", clip(v)));
+        }
+    }
+    let mut body = parts.join(" · ");
+    if body.chars().count() > 1500 {
+        body = format!("{}…", body.chars().take(1500).collect::<String>());
     }
     // A blank line: a single newline runs the two together in a Messages post.
     let head = if sub.criteria.is_empty() { String::new() } else { format!("{}\n\n", sub.criteria) };
-    format!("{head}{}", parts.join(" · "))
+    format!("{head}{body}")
 }
 
 /// One event through every live subscription. `subs` is the batch's list and
@@ -1400,7 +1432,7 @@ async fn act(state: &AppState, sub: &mut LiveSub, event_id: Option<i64>, event_t
         super::event_subs::fill(&render_template(&sub.action_template, event_type, data), ev)
     };
     let outcome = match sub.action.as_str() {
-        "send" => execute_send_action(state, &sub.action_target, &text).await,
+        "send" => execute_send_action(state, sub.id, &sub.action_target, &send_sender(&sub.owner, &sub.action_target), &text).await,
         "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
         "schedule" => execute_schedule_action(state, &sub.action_target).await,
         "shell" => execute_shell_action(&sub.action_target, &text).await,
@@ -1475,19 +1507,72 @@ async fn record_fire(state: &AppState, sub: &LiveSub, event_id: Option<i64>, eve
         .await;
 }
 
-async fn execute_send_action(state: &AppState, target: &str, text: &str) -> String {
+/// Who a subscription's send speaks as. It used to be a fixed "signal-dispatcher",
+/// which the steering gate read as a worker in no group, so every send was refused
+/// with worker_group_boundary (gtm-engine's #15 refused 20 of 20 on 2026-11-13).
+/// The owner's subscriptions, and a worker's wake to itself, are harness input; a
+/// worker's send to another worker carries that worker's name, so the same group
+/// rules hold as if it had sent the message itself.
+pub(crate) fn send_sender(owner: &str, target: &str) -> String {
+    if owner.is_empty() || owner == "owner" || owner == target {
+        "harness:signal-subscription".to_string()
+    } else {
+        owner.to_string()
+    }
+}
+
+/// Fold a subscription's event into its message already waiting for `target`,
+/// so a worker that is busy (or between turns) gets ONE message listing every
+/// event, not one turn per event. Only a row this subscription queued and no
+/// delivery has claimed is extended; the claim re-checks the text, so a
+/// delivery holding the older snapshot retries with the merged one. Returns
+/// the row id it extended, or None when there is nothing to fold into.
+pub(crate) fn coalesce_signal_send(conn: &Connection, sub_id: i64, target: &str, text: &str) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM steering_queue WHERE session=?1 AND id GLOB ?2 AND delivering_since IS NULL \
+             ORDER BY queued_at DESC LIMIT 1",
+            rusqlite::params![target, format!("signal-sub:{sub_id}:{target}:*")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(id) = id else { return Ok(None) };
+    let n = conn.execute(
+        "UPDATE steering_queue SET text = text || ?1 WHERE id=?2 AND delivering_since IS NULL",
+        rusqlite::params![format!("\n\n---\n\n{text}"), id],
+    )?;
+    Ok((n > 0).then_some(id))
+}
+
+async fn execute_send_action(state: &AppState, sub_id: i64, target: &str, sender: &str, text: &str) -> String {
     let home = crate::config::amux_home();
     let sessions_dir = home.join("sessions");
     if !sessions_dir.join(format!("{target}.env")).exists() {
         return format!("target_not_found:{target}");
+    }
+    let (t, body) = (target.to_string(), text.to_string());
+    let folded = state
+        .store
+        .write_async(move |conn| {
+            let id = coalesce_signal_send(conn, sub_id, &t, &body)?;
+            Ok(crate::db::WriteOutcome { applied: id.is_some(), events: vec![] })
+        })
+        .await
+        .map(|r| r.applied)
+        .unwrap_or(false);
+    if folded {
+        tracing::info!(target: "amux::signals", subscription_id = sub_id, session = target, measured = true, n_considered = 1,
+            verdict = "signal_send_coalesced", "folded the event into the message already waiting for this worker");
+        return "coalesced".to_string();
     }
     match crate::api::session_verbs::steer_enqueue_idempotent(
         state,
         target,
         text,
         "signal-subscription",
-        "signal-dispatcher",
-        &format!("signal-sub:{}:{}", target, chrono::Utc::now().timestamp()),
+        sender,
+        &format!("signal-sub:{}:{}:{}", sub_id, target, chrono::Utc::now().timestamp_millis()),
     )
     .await
     {
@@ -1621,6 +1706,64 @@ async fn execute_shell_action(command: &str, _text: &str) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // gtm-engine's #15 (email.received -> send to gtm-engine) was refused 20 of 20
+    // times as worker_group_boundary: the send went out as "signal-dispatcher", a
+    // name in no group. Run the real steering gate on what each kind of
+    // subscription now sends as.
+    // The always-on agent's inbox batches: events that arrive while a worker
+    // is busy reach it as one message at its next turn, not one turn each.
+    // Live, 2026-11-14: subscription #10 sent amux 57 deploy wakes, each a turn.
+    #[test]
+    fn a_waiting_subscription_message_absorbs_the_next_event() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE steering_queue (id TEXT PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL, \
+            queued_at REAL NOT NULL, delivering_since REAL);
+            INSERT INTO steering_queue VALUES ('signal-sub:10:amux:1','amux','build A',1,NULL);
+            INSERT INTO steering_queue VALUES ('signal-sub:11:amux:1','amux','other sub',1,NULL);
+            INSERT INTO steering_queue VALUES ('signal-sub:10:w2:1','w2','build A',1,1.0);").unwrap();
+        let text = |id: &str| c.query_row("SELECT text FROM steering_queue WHERE id=?1", [id], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(coalesce_signal_send(&c, 10, "amux", "build B").unwrap().as_deref(), Some("signal-sub:10:amux:1"));
+        assert_eq!(coalesce_signal_send(&c, 10, "amux", "build C").unwrap().as_deref(), Some("signal-sub:10:amux:1"));
+        assert_eq!(text("signal-sub:10:amux:1"), "build A\n\n---\n\nbuild B\n\n---\n\nbuild C");
+        assert_eq!(text("signal-sub:11:amux:1"), "other sub", "another subscription's message is left alone");
+        assert_eq!(coalesce_signal_send(&c, 10, "w2", "build B").unwrap(), None,
+            "a message a delivery already claimed is never extended");
+        assert_eq!(coalesce_signal_send(&c, 10, "w3", "build B").unwrap(), None, "nothing waiting: enqueue fresh");
+    }
+
+    #[test]
+    fn a_subscription_send_speaks_as_its_owner() {
+        for (owner, target) in [("owner", "w1"), ("", "w1"), ("gtm-engine", "gtm-engine")] {
+            let sender = send_sender(owner, target);
+            assert_eq!(sender, "harness:signal-subscription", "{owner} -> {target}");
+            assert!(crate::api::session_verbs::queued_peer_input_refusal(&sender, target).is_none(),
+                "the steering gate lets {owner}'s subscription reach {target}");
+        }
+        // A worker waking a different worker sends as itself, so its groups decide.
+        assert_eq!(send_sender("gtm-engine", "amux"), "gtm-engine");
+    }
+
+    #[test]
+    fn a_wake_carries_the_fields_a_worker_acts_on() {
+        let sub = LiveSub {
+            id: 1, name: "mail".into(), pattern: "email.received".into(), source_filter: String::new(),
+            session_filter: String::new(), action: "send".into(), action_target: "w".into(),
+            action_template: String::new(), dedupe_window_s: 0, last_fired_at: None,
+            criteria: "a customer emails me".into(), filter: Value::Null, judge: false,
+            dedupe_key: String::new(), notify_post: None, owner: "owner".into(),
+        };
+        let ev = json!({"type": "email.received", "source": "email", "session": "",
+            "from": "Alan <alan@acme.com>", "subject": "Invoice 42", "message_id": "<m1@acme.com>",
+            "bulk": false, "labels": ["INBOX", "UNREAD"], "snippet": "x".repeat(400)});
+        let t = default_text(&sub, "email.received", &ev);
+        assert!(t.starts_with("a customer emails me\n\nemail.received"), "{t}");
+        for want in ["from: Alan <alan@acme.com>", "subject: Invoice 42", "message_id: <m1@acme.com>", "bulk: false", "labels: INBOX, UNREAD"] {
+            assert!(t.contains(want), "{want} missing from {t}");
+        }
+        assert!(!t.contains("source: email"), "noise fields stay out: {t}");
+        assert!(t.contains(&format!("snippet: {}…", "x".repeat(200))), "a long field is clipped: {t}");
+    }
 
     #[test]
     fn names_are_lowercase_slugs() {

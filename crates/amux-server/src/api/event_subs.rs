@@ -205,6 +205,8 @@ const MEANINGS: &[(&str, &str)] = &[
     ("browser.started", "a browser was launched for a profile"),
     ("browser.stopped", "a browser was stopped"),
     ("browser.navigated", "a browser went to a url"),
+    ("email.received", "a new email arrived in a connected Gmail inbox: fields account (the inbox), from (\"Name <addr>\"), from_address, from_domain, to, cc, subject, snippet (the first lines), thread_id, message_id, labels, unread, bulk (true for a mailing list or newsletter). Match a sender with eq on from_address or from_domain, an inbox with eq on account, drop newsletters with bulk eq false; judge when the request is about what the mail means"),
+    ("linkedin.message_received", "a new unread LinkedIn message to the owner (read from the ethan browser profile about every 45 minutes, without opening it): fields account, from_name, snippet (the list preview), time_label (LinkedIn's own label, such as 3:45 PM or Nov 14), is_inmail, sponsored, conversation_url (the inbox; the list has no per-thread link), key. Match a sender with eq on from_name, drop InMail with is_inmail eq false; judge when the request is about what the message means"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),
@@ -219,6 +221,10 @@ const MEANINGS: &[(&str, &str)] = &[
     ("deploy.wake", "a new build went live and a worker was told to check its commits"),
     ("chat.message", "a message in a worker's Chat tab"),
     ("task.renamed", "a worker's card title changed"),
+    ("call.requested", "a worker asked amux to place a phone call (call_id, worker, to, contact, contact_name, goal)"),
+    ("call.held", "a requested call is waiting for the owner's approval because its number is not on the allowlist"),
+    ("call.started", "the call bridge accepted a call and is dialing (call_id, worker, to, contact)"),
+    ("call.completed", "a call ended: status is completed, no_answer, busy, failed, canceled or declined, with outcome, worker, to, contact, contact_name, goal and duration_s"),
 ];
 
 pub(crate) fn meaning(event_type: &str) -> Option<&'static str> {
@@ -300,7 +306,28 @@ pub(crate) fn catalog(conn: &rusqlite::Connection, days: i64) -> rusqlite::Resul
     }))
 }
 
-fn entry(t: &str, n: i64, last: i64, fields: std::collections::BTreeSet<String>, example: Value) -> Value {
+/// The fields of a type amux itself emits, known before the first one fires.
+/// A filter is checked against a type's fields, and a type seen 0 times has
+/// none observed, so without this a subscription to it compiled and was then
+/// refused ("the filter reads fields email.received does not have").
+pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
+    (
+        "email.received",
+        &["account", "from", "from_address", "from_domain", "to", "cc", "subject", "snippet", "thread_id", "message_id",
+            "gmail_id", "labels", "unread", "bulk", "date"],
+    ),
+    (
+        "linkedin.message_received",
+        &["account", "from_name", "snippet", "time_label", "is_inmail", "sponsored", "conversation_url", "key"],
+    ),
+];
+
+fn entry(t: &str, n: i64, last: i64, mut fields: std::collections::BTreeSet<String>, example: Value) -> Value {
+    for (dt, df) in DECLARED_FIELDS {
+        if *dt == t {
+            fields.extend(df.iter().map(|f| f.to_string()));
+        }
+    }
     let mut fields: Vec<String> = fields.into_iter().collect();
     for base in ["type", "session", "source"] {
         if !fields.iter().any(|f| f == base) {

@@ -4,6 +4,11 @@
 # exercises the shipped launcher and tiny fake builders rather than copying its
 # Git selection into a unit test.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
+# Their fake cargo writes a few-byte stand-in; the builder refuses those by default.
+export AMUX_DEPLOY_MIN_BIN_BYTES=0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LAUNCHER="$ROOT/scripts/rust-auto-build-authority.sh"
@@ -214,8 +219,10 @@ chmod +x "$TMP/fetch-queued"
   chmod +x scripts/ci-secret-scan.sh scripts/ci-fast-gate.sh )
 GATE_OK=$(commit_next gate-ok)
 PUSHED="$TMP/pushed-at"
+# launchd's PATH: no Homebrew, so no GNU timeout on a Mac (the first live local
+# gate failed with "timeout: command not found").
 run_gate() {
-  env AMUX_CI_REQUIRED_WORKFLOWS=gate AMUX_CI_PUSHED_AT_DIR="$PUSHED" \
+  env PATH=/usr/bin:/bin AMUX_LOCAL_GATE_PATH= AMUX_CI_REQUIRED_WORKFLOWS=gate AMUX_CI_PUSHED_AT_DIR="$PUSHED" \
   AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
   AMUX_AUTHORITY_LOG="$LOG" AMUX_RS_ACTIVATION_REF=origin/main AMUX_CI_VERDICT_CACHE="$CACHE" \
   AMUX_CI_FETCH_CMD="$TMP/fetch-queued" AMUX_RS_HEALTH_URL="file://$TMP/health.json" "$@" bash "$LAUNCHER"
@@ -224,6 +231,8 @@ run_gate() {
 run_gate
 expect grep -q "repo=$WORK sha=$GATE_OK" "$TRACE"
 expect grep -q "LOCAL GATE $GATE_OK green.*verdict=local_gate_green" "$LOG"
+# ...and is cached as the gate's verdict, so the next pass does not ask GitHub again.
+expect test "$(cat "$CACHE/gate/$GATE_OK" 2>/dev/null)" = green
 expect test "$(cat "$PUSHED/$GATE_OK")" = 1794477600
 expect test -z "$(git -C "$STALE" worktree list | grep amux-local-gate)"
 # A failing gate holds the tip, once per sha: the next pass does not rerun it.

@@ -709,13 +709,7 @@ extension AppDelegate {
                     if self.globeDown { self.globeUsed = true }   // another modifier joined in
                     return e
                 }
-                if e.modifierFlags.contains(.function) {
-                    self.globeDown = true
-                    self.globeUsed = false
-                } else if self.globeDown {
-                    self.globeDown = false
-                    if !self.globeUsed { self.globeTapped() }
-                }
+                self.globeChanged(down: e.modifierFlags.contains(.function))
                 return e
             }
             guard self.globeDown else { return e }
@@ -724,15 +718,44 @@ extension AppDelegate {
             guard e.modifierFlags.contains(.function) else { self.globeDown = false; return e }
             // Any key with 🌐 means it was not a tap, Globe+arrow (Home, End) included.
             self.globeUsed = true
+            if self.globeHeld { return e }   // typing while dictating: the keys are the page's
             guard let k = globeKeyName(e) else { return e }
             if !e.isARepeat { self.sendGlobe("Globe+" + k) }
             return nil
         }
-        // Leaving amux with 🌐 held: its release goes to another app.
+        // Leaving amux with 🌐 held: its release goes to another app, so a
+        // take held open ends here.
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.globeDown = false
+            if self?.globeDown == true { self?.globeChanged(down: false) }
         }
     }
+
+    /// 🌐 pressed or let go. Let go alone it is a tap. Held alone past
+    /// globeHoldDelay it is "Globe Hold" (dictation, like Wispr Flow's fn),
+    /// and letting go is "Globe Release", which ends the take.
+    func globeChanged(down: Bool) {
+        if down {
+            globeDown = true
+            globeUsed = false
+            globeHoldTimer?.cancel()
+            let w = DispatchWorkItem { [weak self] in
+                guard let self = self, self.globeDown, !self.globeUsed else { return }
+                self.globeUsed = true
+                self.globeHeld = true
+                self.sendGlobe("Globe Hold")
+            }
+            globeHoldTimer = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + globeHoldDelay, execute: w)
+        } else if globeDown {
+            globeDown = false
+            globeHoldTimer?.cancel()
+            if globeHeld { globeHeld = false; sendGlobe("Globe Release") }
+            else if !globeUsed { globeTapped() }
+        }
+    }
+
+    /// How long 🌐 is held before it dictates; a quicker press is a tap.
+    var globeHoldDelay: TimeInterval { 0.25 }
 
     /// A second tap within 0.45 s is "Globe Globe" (owner, 2026-11-03: "make
     /// hot key for starting dictation pressing globe twice"). The first tap
@@ -744,13 +767,17 @@ extension AppDelegate {
     }
 
     func sendGlobe(_ combo: String) {
-        guard let c = focusedPage() else { return }
+        // A quiet test copy has no key window: its shown page stands in.
+        guard let c = focusedPage() ?? (desktopTestMode ? controllers.first(where: { isShown($0) }) : nil) else { return }
         let lit = String(data: (try? JSONSerialization.data(withJSONObject: [combo])) ?? Data(), encoding: .utf8)?.dropFirst().dropLast() ?? ""
         // macOS starts its own dictation on 🌐🌐 when Keyboard > "Press 🌐 key to"
         // is Start Dictation (AppleFnUsageType 3); the page says so once.
         let macDictation = UserDefaults(suiteName: "com.apple.HIToolbox")?.integer(forKey: "AppleFnUsageType") == 3
-        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit), {mac_dictation: \(macDictation)}) : 'no_hook'") { r, _ in
-            dlog("verdict=globe_key combo=\(combo) mac_dictation=\(macDictation) page=\(c.viewHash) result=\(r ?? "-")")
+        // Wispr Flow dictates on a held fn (🌐) from any app; with it running
+        // both would take the same words, so the page leaves the hold to it.
+        let wispr = !desktopTestMode && !NSRunningApplication.runningApplications(withBundleIdentifier: "com.electron.wispr-flow").isEmpty
+        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit), {mac_dictation: \(macDictation), wispr: \(wispr)}) : 'no_hook'") { r, _ in
+            dlog("verdict=globe_key combo=\(combo) mac_dictation=\(macDictation) wispr=\(wispr) page=\(c.viewHash) result=\(r ?? "-")")
         }
     }
 
@@ -1045,6 +1072,14 @@ extension AppDelegate {
         case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
         case "/pointer-clear": Pointer.testOverride = nil
         case "/recorder": recorderTestHook(q)
+        // 🌐 pressed (?down=1) or let go (?down=0), as the keyboard does it;
+        // ?tap=N taps it N times at once (two hook calls are too far apart).
+        case "/globe":
+            if let n = Int(q.first { $0.name == "tap" }?.value ?? "") {
+                for _ in 0..<n { globeChanged(down: true); globeChanged(down: false) }
+            } else {
+                globeChanged(down: q.first { $0.name == "down" }?.value == "1")
+            }
         // A sideways scroll over the focused pane's tab strip (?dx= in points).
         case "/pane-strip-scroll":
             if let g = arrangeTarget.flatMap({ w in controllers.first { $0.window === w } })?.grid, let f = g.focused { g.views[f]?.scrollStrip(by: num("dx")) }
@@ -1203,6 +1238,48 @@ extension AppDelegate {
                let c = controllers.first(where: { isShown($0) }) ?? controllers.first {
                 c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
             }
+        // Choose a menu item by title (?title=Copy), as a click on it does.
+        case "/menu":
+            let title = q.first { $0.name == "title" }?.value ?? ""
+            func pick(_ m: NSMenu) -> Bool {
+                for (i, it) in m.items.enumerated() {
+                    if it.title == title, it.action != nil { m.performActionForItem(at: i); return true }
+                    if let sub = it.submenu, pick(sub) { return true }
+                }
+                return false
+            }
+            let found = NSApp.mainMenu.map(pick) ?? false
+            dlog("verdict=test_menu_chosen title=\(title) found=\(found ? 1 : 0)")
+        // A real key press (?k=f&mods=cmd+shift) through NSApp, as the keyboard
+        // sends one, to the shown tab's window made key first.
+        case "/key":
+            let raw = q.first { $0.name == "k" }?.value ?? ""
+            let k = raw == "esc" ? "\u{1b}" : raw
+            let mods = q.first { $0.name == "mods" }?.value ?? ""
+            let codes: [String: UInt16] = ["a": 0, "s": 1, "f": 3, "g": 5, "c": 8, "v": 9, "e": 14, "x": 7, "\u{1b}": 53]
+            var f: NSEvent.ModifierFlags = []
+            if mods.contains("cmd") { f.insert(.command) }
+            if mods.contains("ctrl") { f.insert(.control) }
+            if mods.contains("alt") { f.insert(.option) }
+            if mods.contains("shift") { f.insert(.shift) }
+            if let c = controllers.first(where: { isShown($0) }) ?? controllers.first, let w = c.window, let u = k.unicodeScalars.first {
+                w.makeKey()
+                let chars = f.contains(.control) ? String(UnicodeScalar(UInt8(u.value & 0x1f))) : k
+                for t in [NSEvent.EventType.keyDown, .keyUp] {
+                    if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: f, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: chars,
+                                                charactersIgnoringModifiers: k, isARepeat: false, keyCode: codes[k] ?? 0) {
+                        // A quiet copy is never active, so it has no key window and
+                        // NSApp drops key events. AppKit's own order instead: the
+                        // window's key equivalents, the menu, then the key itself.
+                        if NSApp.keyWindow === w { NSApp.sendEvent(e); continue }
+                        if t == .keyDown, !f.intersection([.command, .control]).isEmpty,
+                           w.performKeyEquivalent(with: e) || (NSApp.mainMenu?.performKeyEquivalent(with: e) ?? false) { continue }
+                        w.sendEvent(e)
+                    }
+                }
+                dlog("verdict=test_key_sent k=\(raw) mods=\(mods) key_window=\(NSApp.keyWindow === w ? 1 : 0) responder=\(w.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
+            }
         // Run JS in pane `i` of the key window's grid (or its only page) and
         // write what it returns, as a string, to <state file>.js.
         case "/js-pane":
@@ -1261,6 +1338,9 @@ extension AppDelegate {
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
+                                        "responder": w.firstResponder.map { String(describing: type(of: $0)) } ?? "none",
+                                        "find": c.findBar?.field.stringValue ?? NSNull(), "find_status": c.findBar?.status.stringValue ?? "",
+                                        "clipboard": copyPasteboard.string(forType: .string) ?? "",
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w, "tooltip": w.tab.toolTip ?? "",
                                         "connection": w.tab.accessoryView?.toolTip ?? "",
                                         "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? "",
@@ -1595,4 +1675,22 @@ final class AmuxWindow: NSWindow {
     }
     override func moveTabToNewWindow(_ sender: Any?) { if !refused(sender, "tab_moved") { super.moveTabToNewWindow(sender) } }
     override func mergeAllWindows(_ sender: Any?) { if !refused(sender, "tabs_merged") { super.mergeAllWindows(sender) } }
+    // A key nothing in the window answered: AppKit beeps here.
+    override func noResponder(for eventSelector: Selector) {
+        let e = NSApp.currentEvent
+        let page = firstResponder is WKWebView
+        dlog("verdict=key_unhandled selector=\(NSStringFromSelector(eventSelector)) key=\(e?.charactersIgnoringModifiers ?? "-") mods=\(e.map { keyModsName($0.modifierFlags) } ?? "-") responder=\(firstResponder.map { String(describing: type(of: $0)) } ?? "none") beep=\(page ? 0 : 1)")
+        // A key the page left alone is not an error, as in a browser: no beep.
+        if page && eventSelector == #selector(NSResponder.keyDown(with:)) { return }
+        super.noResponder(for: eventSelector)
+    }
+}
+
+func keyModsName(_ f: NSEvent.ModifierFlags) -> String {
+    var m: [String] = []
+    if f.contains(.command) { m.append("cmd") }
+    if f.contains(.control) { m.append("ctrl") }
+    if f.contains(.option) { m.append("alt") }
+    if f.contains(.shift) { m.append("shift") }
+    return m.isEmpty ? "none" : m.joined(separator: "+")
 }

@@ -109,8 +109,11 @@ pub(crate) fn message_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Opt
     .optional()
 }
 
+/// `ask_owner`: raise the owner's grant ask on a group refusal. True only where
+/// a message is CREATED; the delivery re-check of a queued message passes false,
+/// or every pump tick re-asks (582 counted in minutes on 2026-11-16).
 pub(crate) fn native_peer_input_refusal(
-    conn: &Connection, origin: &str, target: &str,
+    conn: &Connection, origin: &str, target: &str, ask_owner: bool,
 ) -> rusqlite::Result<Option<super::session_verbs::PeerInputRefusal>> {
     if origin.is_empty() || origin == target { return Ok(None); }
     let Some(source) = queries::get_worker(conn, origin)? else {
@@ -123,15 +126,32 @@ pub(crate) fn native_peer_input_refusal(
         return Ok(Some(super::session_verbs::PeerInputRefusal { code:"peer_receive_denied", reason }));
     }
     if source.group_id.is_none() && receiver.group_id.is_none() {
-        return Ok(super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name));
+        let refusal = super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name);
+        if let (true, Some(r)) = (ask_owner, &refusal) {
+            super::session_verbs::ask_owner_for_refused_message(&source.display_name, &receiver.display_name, r);
+        }
+        return Ok(refusal);
     }
     if super::session_verbs::owner_mention_grant_allows(&source.display_name, &receiver.display_name) {
         return Ok(None);
     }
     let source_groups = source.group_id.into_iter().collect();
-    let receiver_groups = receiver.group_id.into_iter().collect();
-    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &receiver_groups);
-    Ok(super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups, &open))
+    let receiver_groups: std::collections::BTreeSet<String> = receiver.group_id.into_iter().collect();
+    if super::capabilities::message_granted(&crate::config::amux_home(), &source.display_name,
+        &receiver.display_name, &receiver_groups).is_some() {
+        return Ok(None);
+    }
+    let home = crate::config::amux_home();
+    let open = super::worker_messaging::open_inbound_groups(&home, &receiver_groups);
+    let refusal = super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups, &open);
+    // The same ask `amux send` raises (session_verbs): refused outside a shared
+    // group, the owner is asked whether to grant it (land review, 2026-11-16:
+    // this path refused and asked nobody).
+    if ask_owner && refusal.is_some() {
+        super::capabilities::existing_refusal(&home, &source.display_name, "message",
+            &format!("worker {}", receiver.display_name), &receiver.display_name);
+    }
+    Ok(refusal)
 }
 
 /// Recheck current group membership before a pending native message delivery.
@@ -147,7 +167,7 @@ pub(crate) fn pending_receive_refusal(conn: &Connection, message: &str, target: 
         }
     };
     let Actor::Worker { id } = actor else { return Ok(None); };
-    Ok(native_peer_input_refusal(conn, id.as_str(), target)?.map(|refusal| refusal.reason))
+    Ok(native_peer_input_refusal(conn, id.as_str(), target, false)?.map(|refusal| refusal.reason))
 }
 
 /// Queue the AtTurnBoundary delivery command for one recipient. The
@@ -461,7 +481,7 @@ pub async fn create_message(
             // fan-out child. Body actor metadata cannot bypass receive policy.
             for recipient in recipients {
                 if let Some(worker) = queries::get_worker(conn, recipient.as_str())? {
-                    if let Some(refusal) = native_peer_input_refusal(conn, &origin, &worker.id)? {
+                    if let Some(refusal) = native_peer_input_refusal(conn, &origin, &worker.id, true)? {
                         return finish(&slot_w, CreateOutcome::Refused { code:refusal.code, why:refusal.reason }, no_write());
                     }
                 }
@@ -1220,6 +1240,10 @@ mod tests {
         assert_eq!(status,StatusCode::CREATED);
         let count = || store.read().unwrap().query_row("SELECT count(*) FROM _amux_messages",[],|r|r.get::<_,i64>(0)).unwrap();
         let before = count();
+        let asked = || crate::api::capabilities::counters::snapshot().iter()
+            .filter(|(k, _)| k.starts_with("message.") && (k.ends_with("existing_refusal_uncarded") || k.ends_with(".refused")))
+            .map(|(_, v)| *v).sum::<u64>();
+        let asked_before = asked();
         for to in [json!(target),json!({"kind":"group","data":other.as_str()})] {
             let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
                 .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
@@ -1227,6 +1251,13 @@ mod tests {
             assert_eq!(response.status(),StatusCode::FORBIDDEN);
             assert_eq!(count(),before,"no partial parent/child persistence");
         }
+        assert!(asked() >= asked_before + 2, "each refusal raises the owner's message ask, as amux send does");
+        // The delivery re-check of a queued message refuses without asking again.
+        let rechecked = asked();
+        for _ in 0..50 {
+            assert!(native_peer_input_refusal(&store.read().unwrap(), &peer, &target, false).unwrap().is_some());
+        }
+        assert!(asked() < rechecked + 50, "a re-check must not raise the ask on every pump tick");
         let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
             .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
             .body(Body::from(json!({"to":{"kind":"group","data":own.as_str()},"body":"same group control"}).to_string())).unwrap()).await.unwrap();

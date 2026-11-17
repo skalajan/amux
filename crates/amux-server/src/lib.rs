@@ -531,6 +531,10 @@ async fn async_main() {
 
     boot_watch::step("app_state");
     let reconciled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    api::human_proof::set_owner_credential_configured(auth_token.is_some());
+    // Governance PR 3: the secret a sign-in door or gateway returns for the
+    // owner (loopback_trust.rs). Minted once, 0600; harmless where no door uses it.
+    api::loopback_trust::init(&cfg.amux_home, cfg.env.get(api::loopback_trust::FRONT_DOOR_SECRET_ENV).map(String::as_str));
     let state = api::AppState {
         store: store.clone(),
         started: Instant::now(),
@@ -572,6 +576,14 @@ async fn async_main() {
         jobs::ids::EMAIL_THEMES,
         Some(secs(api::email_intel::THEME_REFRESH_SECS)),
         api::email_intel::theme_refresh_loop,
+    );
+
+    // Memory curation (memory_dream.rs): asks a worker whose memory grew past
+    // AMUX_MEMORY_DREAM_KB to rewrite it, at most weekly.
+    jobs::spawn_loop(
+        jobs::ids::MEMORY_DREAM,
+        Some(secs(runtime_jobs::memory_dream::TICK_SECS)),
+        { let state = state.clone(); move || runtime_jobs::memory_dream::dream_loop(state.clone()) },
     );
 
     jobs::spawn_loop(
@@ -649,6 +661,8 @@ async fn async_main() {
     // and steers each to open one — server-side, so it reaches any group. One
     // nudge per lane per 24h. Held like board-drive so the loop is not dropped.
     drop(api::messages::accountability_spawn(state.clone()));
+    // Outcome threads (o:<id>) resolve their worker from this registry.
+    api::intent_store::load_registry(&state);
 
     // Pane-size restoration (AMUX-2634): a peek resizes the worker's tmux
     // window to the READER's viewport and tmux pins `window-size manual`, so
@@ -704,6 +718,12 @@ async fn async_main() {
     crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
+    drop(runtime_jobs::ledger_checkpoint::spawn(state.clone()));
+    // Encryption at rest (governance PR 18): seal any plain connector grant
+    // once per boot. Reads seal lazily too; this pass covers grants nothing reads.
+    tokio::task::spawn_blocking(|| {
+        crate::integrations::at_rest::migrate_home(&crate::config::amux_home());
+    });
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
@@ -858,6 +878,8 @@ async fn async_main() {
     // spawned earlier it found no model and logged desc_refresh_no_model.
     drop(runtime_jobs::desc_refresh::spawn(state.clone()));
     drop(runtime_jobs::event_dispatch::spawn(state.clone()));
+    drop(runtime_jobs::email_events::spawn(state.clone()));
+    drop(runtime_jobs::linkedin_events::spawn(state.clone()));
     boot_watch::step("router");
     let app = api::router(state);
 
@@ -1127,10 +1149,13 @@ async fn async_main() {
                             std::fs::metadata(&receipt).ok().and_then(|m| m.modified().ok()));
             let mut observed = stamp();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            // An in-flight shell schedule run holds adoption, for at most
-            // AMUX_ADOPT_SHELL_DEFER_MAX_S (default 900, like the builder's).
+            // An in-flight shell schedule run used to hold adoption (up to
+            // 900s), because an exec killed it. A shell run is now detached
+            // and adopted by the next process (runtime_jobs/shell_detached.rs),
+            // so the hold defaults to 0. AMUX_ADOPT_SHELL_DEFER_MAX_S=<s>
+            // brings it back if adoption ever has to be bypassed.
             let defer_max = std::time::Duration::from_secs(
-                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
+                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
             let mut defer_since: Option<std::time::Instant> = None;
             let mut defer_logged: Option<std::time::Instant> = None;
             loop {

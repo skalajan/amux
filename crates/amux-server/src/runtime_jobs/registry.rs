@@ -99,6 +99,8 @@ pub mod ids {
     pub const TASK_TITLES: &str = "task-titles";
     pub const DESC_REFRESH: &str = "desc-refresh";
     pub const EVENT_DISPATCH: &str = "event-dispatch";
+    pub const EMAIL_EVENTS: &str = "email-events";
+    pub const LINKEDIN_EVENTS: &str = "linkedin-events";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -136,6 +138,7 @@ pub mod ids {
     pub const CONTEXT_HEALTH: &str = "context-health";
     pub const SUBSCRIPTION_RELAUNCH: &str = "subscription-relaunch";
     pub const DISK_WATCH: &str = "disk-watch";
+    pub const LEDGER_CHECKPOINT: &str = "ledger-checkpoint";
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
@@ -157,6 +160,7 @@ pub mod ids {
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
     pub const CONVERSE_RETENTION: &str = "converse-retention";
+    pub const MEMORY_DREAM: &str = "memory-dream";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -204,6 +208,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::CONTEXT_HEALTH,
     ids::SUBSCRIPTION_RELAUNCH,
     ids::DISK_WATCH,
+    ids::LEDGER_CHECKPOINT,
     ids::HOST_METRICS,
     ids::TRACE_ARCHIVE,
     ids::HOST_GUARD,
@@ -211,6 +216,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::TASK_TITLES,
     ids::DESC_REFRESH,
     ids::EVENT_DISPATCH,
+    ids::EMAIL_EVENTS,
+    ids::LINKEDIN_EVENTS,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -232,6 +239,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::LAND_QUEUE,
     ids::CONVERSE_RETENTION,
     ids::WORKER_RESOURCES,
+    ids::MEMORY_DREAM,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -821,6 +829,20 @@ pub const CATALOG: &[Doc] = &[
         detail: Some("/api/traces"),
     },
     Doc {
+        id: ids::LEDGER_CHECKPOINT,
+        name: "Ledger checkpoints",
+        purpose: "Signs the ledger's head (seq and hash) with this host's Ed25519 key every interval and exports it to ~/.amux/ledger-checkpoints.jsonl, and to S3-compatible storage and a webhook when configured, so a rewrite of the ledger that re-hashes every row no longer matches what was signed and published. Measures whether the S3 copy is write-once rather than assuming it.",
+        env: &[
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINTS", effect: "off stops signing and exporting (the ledger itself keeps running)", off: Some("off") },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_SECS", effect: "0 disables the tick loop", off: Some("0") },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_INTERVAL_S", effect: "seconds between checkpoints, default 3600 (the job wakes every 300)", off: None },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_S3_ENDPOINT", effect: "with _BUCKET, _ACCESS_KEY_ID and _SECRET_ACCESS_KEY: export each checkpoint to S3-compatible storage (_REGION default auto, _PREFIX, _LOCK_DAYS and _LOCK_MODE for object lock)", off: None },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_WEBHOOK", effect: "POST each checkpoint as JSON to this URL", off: None },
+        ],
+        pref: None,
+        detail: Some("/api/ledger/checkpoints"),
+    },
+    Doc {
         id: ids::HOST_METRICS,
         name: "Host metrics history",
         purpose: "Samples the host analysis /api/metrics/host serves (CPU, load, memory, swap, disk, process counts) into host_metrics, so utilization over time is answerable rather than only right now. A failed probe is recorded as an unmeasured row, never as a gap.",
@@ -881,6 +903,22 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_EVENT_DISPATCH_SECS", effect: "0 stops the dispatcher; no subscription fires", off: Some("0") }],
         pref: None,
         detail: Some("/api/subscriptions/fires"),
+    },
+    Doc {
+        id: ids::EMAIL_EVENTS,
+        name: "Email events",
+        purpose: "Every 60 s, reads the last day of each connected Gmail inbox and writes each message that arrived since watching began as an email.received event (account, from, to, subject, snippet, thread_id, message_id), so an event subscription can wake a worker when a particular email lands. The first read of an account only records when watching began. Keyed per message, so a re-read never fires twice.",
+        env: &[EnvControl { var: "AMUX_EMAIL_EVENTS_SECS", effect: "seconds between inbox reads, default 60; 0 stops email events", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/subscriptions/catalog"),
+    },
+    Doc {
+        id: ids::LINKEDIN_EVENTS,
+        name: "LinkedIn events",
+        purpose: "About every 45 minutes, opens LinkedIn's conversation list on the ethan browser profile (the compose page, so no conversation is opened or marked read), and writes each new unread message as a linkedin.message_received event (from_name, snippet, time_label, is_inmail, sponsored), so an event subscription can wake a worker when someone messages the owner on LinkedIn. Read-only: no clicks, no typing. The first read only records what is listed. The last read time survives a restart.",
+        env: &[EnvControl { var: "AMUX_LINKEDIN_EVENTS_SECS", effect: "seconds between LinkedIn reads, default 2700; 0 stops LinkedIn events", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/subscriptions/catalog"),
     },
     Doc {
         id: ids::DESC_REFRESH,
@@ -1050,6 +1088,25 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/converse/config"),
+    },
+    Doc {
+        id: ids::MEMORY_DREAM,
+        name: "Memory curation",
+        purpose: "Asks a running worker to rewrite its own amux memory when the file is over AMUX_MEMORY_DREAM_KB, changed since the last ask, and the last ask is a week old. Every launch loads the whole memory and the only other write verb appends, so without this memory only grows. The worker saves with `amux memory curate --stdin`, which keeps the prior version under memory/.history.",
+        env: &[
+            EnvControl {
+                var: "AMUX_MEMORY_DREAM",
+                effect: "0 stops the asks (also settable per worker, group or global scope)",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_MEMORY_DREAM_KB",
+                effect: "size in KB above which a worker is asked (default 12)",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::MODEL_CATALOG_REFRESH,

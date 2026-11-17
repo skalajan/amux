@@ -45,7 +45,7 @@ if [ -r "$ENV_FILE" ]; then
   read_keys=""
   while IFS='=' read -r k v; do
     case "$k" in
-      AMUX_CI_REQUIRED_WORKFLOWS|AMUX_DEPLOY_CI_GATE|AMUX_DEPLOY_PREBUILD|AMUX_ACTIVATION_ROLLBACK|AMUX_ACTIVATION_HEALTH_S) ;;
+      AMUX_CI_REQUIRED_WORKFLOWS|AMUX_DEPLOY_CI_GATE|AMUX_DEPLOY_PREBUILD|AMUX_ACTIVATION_ROLLBACK|AMUX_ACTIVATION_HEALTH_S|AMUX_DEPLOY_TARGET_DIR|AMUX_DEPLOY_NICE|AMUX_RS_BUILD_COOLDOWN|AMUX_DEPLOY_PREBUILT_DIR) ;;
       *) continue ;;
     esac
     [ -z "${!k+x}" ] || continue
@@ -196,6 +196,34 @@ if r: print(int(min(dt.datetime.fromisoformat(x["created_at"].replace("Z","+00:0
 # commit, in a scratch worktree. A pass is the gate's verdict; a failure or an
 # error says nothing, and the walk waits for GitHub as before. Once per sha.
 # AMUX_DEPLOY_LOCAL_GATE=0 turns it off.
+# `timeout` is GNU coreutils: macOS has none on launchd's PATH, and the first
+# local gate on the Mac failed with "timeout: command not found" (2026-11-12).
+# Perl's alarm is on every macOS and Linux this runs on.
+bounded() { # <seconds> <cmd...>
+  local s="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"
+  else perl -e 'alarm shift; exec @ARGV or exit 127' "$s" "$@"; fi
+}
+# Start rust-prebuild.sh on <sha> in the background when its Rust inputs differ from
+# the last prebuilt commit, so the deploy compile overlaps the local gate. Same guards
+# as the prebuild below (off switch, once per sha, a failed one rests 10 minutes).
+early_prebuild() { # <sha>
+  local sha="$1" done pre
+  [ "${AMUX_DEPLOY_PREBUILD:-1}" = 1 ] && [ -f "$WORK/scripts/rust-prebuild.sh" ] || return 0
+  done=$(cat "$HOME/.amux/prebuild-done" 2>/dev/null)
+  [ "$done" != "$sha" ] || return 0
+  { [ "$(cat "$HOME/.amux/prebuild-done.failed" 2>/dev/null)" = "$sha" ] \
+      && [ -n "$(find "$HOME/.amux/prebuild-done.failed" -mmin -10 2>/dev/null)" ]; } && return 0
+  [ -n "$done" ] && git -C "$REPO" diff --quiet "$done" "$sha" -- crates Cargo.toml Cargo.lock 2>/dev/null && return 0
+  pgrep -f "rust-prebuild.*$sha" >/dev/null 2>&1 && return 0
+  pre=$(mktemp "${TMPDIR:-/tmp}/amux-prebuild-sh.XXXXXX") || return 0
+  cp "$WORK/scripts/rust-prebuild.sh" "$pre"
+  ( nohup bash "$pre" "$REPO" "$sha" >/dev/null 2>&1; rm -f "$pre" ) &
+  disown 2>/dev/null || true
+  say "PREBUILD tip $sha alongside the local gate (pid $!) verdict=prebuild_launched_early"
+}
+
 local_gate() { # <sha>: prints green when gate.yml's steps pass here
   local sha="$1" mark d rc t0 parent
   [ "${AMUX_DEPLOY_LOCAL_GATE:-1}" = 1 ] || return 0
@@ -207,13 +235,24 @@ local_gate() { # <sha>: prints green when gate.yml's steps pass here
   t0=$(date +%s)
   if git -C "$REPO" worktree add --detach -q "$d/w" "$sha" 2>/dev/null \
      && [ -x "$d/w/scripts/ci-fast-gate.sh" ] && [ -x "$d/w/scripts/ci-secret-scan.sh" ]; then
-    if (cd "$d/w" && timeout "${AMUX_LOCAL_GATE_TIMEOUT_S:-150}" bash -c \
+    # launchd gives this job /usr/bin:/bin:/usr/sbin:/sbin; the gate's script
+    # tests expect the tools a CI runner has (node, Homebrew's coreutils).
+    # A test over AMUX_FAST_GATE_S is named and does not fail the gate (checks.yml runs
+    # it in full); here the budget is shorter, since this gate only decides the deploy.
+    if (cd "$d/w" && PATH="${AMUX_LOCAL_GATE_PATH-/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin}:$PATH" \
+          AMUX_FAST_GATE_S="${AMUX_LOCAL_GATE_BUDGET_S:-30}" \
+          bounded "${AMUX_LOCAL_GATE_TIMEOUT_S:-150}" bash -c \
           'scripts/ci-secret-scan.sh && scripts/ci-fast-gate.sh "$1" "$2"' _ "$parent" "$sha") > "$d/log" 2>&1; then
       rc=green
     else
       rc=failed
     fi
     mkdir -p "$CI_CACHE" && echo "$rc" > "$mark"
+    # A local pass IS the gate's verdict for this sha: cache it where GitHub's answer
+    # goes, so later passes stop asking GitHub about it. The sandbox reads GitHub
+    # without a token (60 requests an hour); asking about a passed tip on every pass
+    # would spend that and read "unmeasured", which refuses every deploy.
+    [ "$rc" = green ] && echo green > "$CI_CACHE/$sha"
     say "LOCAL GATE $sha $rc in $(( $(date +%s) - t0 ))s ($(tail -1 "$d/log" | cut -c1-160)) verdict=local_gate_$rc"
   else
     say "LOCAL GATE $sha could not check out the commit; waiting for GitHub verdict=local_gate_unmeasured"
@@ -262,6 +301,10 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
   for sha in $(git -C "$REPO" rev-list --first-parent -n "$CI_DEPTH" "$tip"); do
     v=$(ci_verdict "$sha")
     if [ "$sha" = "$tip" ] && { [ "$v" = pending ] || [ "$v" = none ]; }; then
+      # Compile while the gate runs, not after it: with the gate local and
+      # synchronous, the prebuild below (which waits for a pending verdict) started
+      # only once the gate had passed, so 73c7a9f32 gated for 101 s and then compiled.
+      early_prebuild "$sha"
       [ "$(local_gate "$sha")" = green ] && v=green
     fi
     [ -n "$tip_state" ] || tip_state="$v"

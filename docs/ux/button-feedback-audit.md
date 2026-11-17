@@ -27,10 +27,12 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 
 | file | control | handler | kind | handler's own feedback today | gap | covered by shared layer |
 |---|---|---|---|---|---|---|
+| app.js | Send email | `_apprApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Send now | `_apprApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | … | `_apprApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | … | `_apprAttachOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit | `_apprEdit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Reschedule | `_apprSchedule` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -114,6 +116,10 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Inspect | `_bwToggleInspect` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Live | `_bwToggleLive` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Type | `_bwType` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Approve | `_callsDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Decline | `_callsDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Refresh calls | `_callsLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + | `_callsOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Stop | `_chatInterrupt` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | … | `_chatReadAloud` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | + Stream disconnected. | `_chatReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -124,6 +130,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Publish connector | `_chatgptPublish` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Disconnect | `_chatgptRevoke` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | + (_chipEditing ? | `_chipPress` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | span | `_chromeCloseTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Manage billing | `_cloudBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | No thanks | `_cloudOfferDismiss` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_cmdHistMore` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -355,6 +362,23 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … | `_hkDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_hkSaveDialog` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_hkToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Back to all requests | `_homeBack` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Change | `_homeChange` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Back to the conversation | `_homeCloseDetails` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Back to the conversation | `_homeCloseDetails` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Details | `_homeDetails` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Yes, go ahead | `_homeGoalApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Stop | `_homeGoalDismiss` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Reword | `_homeGoalRename` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Not now | `_homeIdeaDismiss` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Do it | `_homeIdeaStart` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Look for new ideas | `_homeIdeasRefresh` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
+| app.js | + | `_homeOpenFromPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | … | `_homeOpenOutcome` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open | `_homeSetPane` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Everything else: the full workspace | `_homeShowEverything` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | See everything behind this | `_homeShowWork` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Done | `_homeTodoDone` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | app.js | ↻ Refresh | `_hostLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ; html += | `_jrnlCalDayClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Delete | `_jrnlDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -478,6 +502,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Remove  | `_msgsScopeToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … … | `_msgsSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_needsYouFetch` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Approve and remember | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Approve and save rule | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Decline | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Send reply | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -620,7 +645,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Retry connection | `_retrySessionRead` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Ping server | `_runPing` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | app.js | + Run now | `_runSystemJob` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| index.html | Refresh | `_sbLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Reset | `_scopeBpLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Save | `_scopeBpSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Close | `_scopeEditClose` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -777,6 +801,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Review in Payment Methods | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | All workers | `_velocityLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `_velocityShowWorker` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | div | `_velocityShowWorker` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Start conversation | `_vxCallButton` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_vxDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Download | `_vxDownload` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -788,6 +813,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Create worker | `_wfwCreateWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Inherit | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_workerTypeSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
@@ -921,6 +947,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Open terminal | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1035,8 +1062,9 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | openPeek(\…\),150)&gt;… | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | workers | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Apps: apps with a backend, and files shared outs | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Calls: phone calls workers placed, held calls to | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Scoreboard: goals, rates, CI, spend, host and wh | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Intent: ask for anything, and see what is coming | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-board | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-browser | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-calendar | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1155,6 +1183,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Select  | `` | onclick |
 | app.js | Select row | `` | onclick |
 | app.js | View on Google Maps ↗ | `` | onclick |
+| app.js | What can I help with? | `` | onclick |
 | app.js | a | `` | onclick |
 | app.js | appr-sched- | `` | onclick |
 | app.js | button | `` | onclick |
@@ -1169,6 +1198,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | label | `` | onclick |
 | app.js | p.remove())&gt;Close | `` | onclick |
 | app.js | p.remove())&gt;✕ | `` | onclick |
+| app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
@@ -1214,11 +1244,12 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ? | `_boardQueryHelp` | onclick |
 | index.html | Stop | `_bwAgentStop` | onclick |
 | app.js | Close | `_calPanelClose` | onclick |
+| app.js | Close | `_callsClose` | onclick |
+| app.js | … | `_callsFilterSet` | onclick |
 | app.js | Copy code | `_chatCopy` | onclick |
 | app.js | Copy reply | `_chatCopy` | onclick |
 | app.js | Latest | `_chatJumpToLatest` | onclick |
 | app.js | + | `_chromeAddTab` | onclick |
-| app.js | span | `_chromeCloseTab` | onclick |
 | app.js | div | `_chromeSwitchTab` | onclick |
 | app.js | … | `_chromeToggleCollapse` | onclick |
 | index.html | Remove template | `_clearTemplate` | onclick |
@@ -1266,7 +1297,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Data | `_dbSetMode` | onclick |
 | index.html | Query | `_dbSetMode` | onclick |
 | index.html | Structure | `_dbSetMode` | onclick |
-| index.html | Cancel | `_dictClosePopup` | onclick |
+| index.html | Discard | `_dictClosePopup` | onclick |
 | app.js | Copy | `_dictCopy` | onclick |
 | app.js | Insert into composer | `_dictInsertId` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |
@@ -1325,6 +1356,12 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Keyboard | `_hkSetFilter` | onclick |
 | index.html | Off | `_hkSetFilter` | onclick |
 | index.html | Text triggers | `_hkSetFilter` | onclick |
+| app.js | Copy | `_homeCopyDraft` | onclick |
+| app.js | … | `_homeFill` | onclick |
+| app.js | … (…) | `_homeGoalTab` | onclick |
+| app.js | + (_home.remindersAll ? Show fewer : Show all … | `_homeRenderUpcoming` | onclick |
+| app.js | … | `_homeToggleRow` | onclick |
+| app.js | … | `_homeToggleRow` | onclick |
 | app.js | button | `_jrnlCalNext` | onclick |
 | app.js | button | `_jrnlCalPrev` | onclick |
 | app.js | Today | `_jrnlCalToday` | onclick |
@@ -1419,6 +1456,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ni-approve-all | `_niApproveAllArm` | onclick |
 | app.js | Cancel | `_niApproveAllCancel` | onclick |
 | app.js | Approve  always | `_niShowPanel` | onclick |
+| app.js | Approve  remember | `_niShowPanel` | onclick |
+| app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Reply | `_niShowPanel` | onclick |
@@ -1581,6 +1620,14 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Playback speed | `_vxSpeed` | onclick |
 | app.js | More actions | `_vxToggleMenu` | onclick |
 | app.js | Voice settings | `_vxToggleSettings` | onclick |
+| app.js | Back | `_wfwBack` | onclick |
+| app.js | Back | `_wfwBack` | onclick |
+| app.js | Copy | `_wfwCopy` | onclick |
+| app.js | Download | `_wfwDownload` | onclick |
+| app.js | Next | `_wfwNext` | onclick |
+| app.js | I don\t know yet | `_wfwSkip` | onclick |
+| app.js | Start over | `_wfwStartOver` | onclick |
+| app.js | … | `_wfwToggleChip` | onclick |
 | app.js | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
 | app.js | Finish | `_wtDismiss` | onclick |
 | app.js | Skip | `_wtDismiss` | onclick |
@@ -1652,6 +1699,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Cancel | `closeTTS` | onclick |
 | app.js | button | `closeTTS` | onclick |
 | app.js | Close themes | `closeThemes` | onclick |
+| app.js | Cancel | `closeWorkflowWizard` | onclick |
+| index.html | wfw-overlay | `closeWorkflowWizard` | onclick |
 | index.html | Copy text | `copyFileContent` | onclick |
 | index.html | Clear console | `dtClearConsole` | onclick |
 | index.html | Console | `dtSwitchTab` | onclick |
@@ -1660,6 +1709,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | a | `e` | addEventListener |
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
+| app.js | m | `e` | addEventListener |
 | app.js | mdx-alt | `e` | addEventListener |
 | app.js | mdx-out-host | `e` | addEventListener |
 | app.js | mdx-tools | `e` | addEventListener |
@@ -1691,6 +1741,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Style guide | `openStyleGuide` | onclick |
 | index.html | Themes… | `openThemes` | onclick |
 | app.js | All shown | `openVisibleWorkerActions` | onclick |
+| index.html | Use the workflow wizard | `openWorkflowWizard` | onclick |
 | app.js | + | `peek-action:chat-toggle` | data-peek-action |
 | app.js | + | `peek-action:file-browser` | data-peek-action |
 | index.html | PR ↗ | `peekGitOpenPR` | onclick |
@@ -1707,6 +1758,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Host pressure | `showHostPressure` | onclick |
 | index.html | Status coverage | `showTelemetryDetail` | onclick |
 | app.js | Copy | `showToast` | onclick |
+| app.js | Open in Mail | `showToast` | onclick |
+| app.js | showToast(\Copied\))&gt;Copy | `showToast` | onclick |
 | index.html | active-btn | `toggleActiveDropdown` | onclick |
 | index.html | Create or connect | `toggleAddMenu` | onclick |
 | index.html | + Add | `toggleAddServer` | onclick |

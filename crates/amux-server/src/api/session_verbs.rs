@@ -2441,6 +2441,103 @@ pub(crate) fn transcript_rate_limit_hit_at(records: &[Value]) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp())
 }
 
+/// When the limit a Codex worker stopped on resets, from Codex's own rollout.
+///
+/// Codex writes the account's rate-limit snapshot on every `token_count`
+/// event (`payload.rate_limits`, with `primary`/`secondary` windows of
+/// `used_percent`, `window_minutes` and `resets_at` in epoch seconds), and on a
+/// usage-limit 429 it writes the snapshot from that response, with
+/// `rate_limit_reached_type` set (codex-rs core `UsageLimitReached` ->
+/// `update_rate_limits`). Only the NEWEST snapshot counts: an older one
+/// describes an earlier state of the account.
+///
+/// The reset is the latest `resets_at` among the windows at 100%, or among
+/// all windows when Codex says a limit was reached without a full window.
+/// `None` when the newest snapshot shows no limit, or there is no snapshot.
+/// This replaces reading the English "try again at Nov 18th, 2026 4:59 PM"
+/// (local time, no zone), which AMUX-2088 rightly refused to guess-parse.
+pub(crate) fn codex_rollout_limit_reset(lines: &[Value]) -> Option<i64> {
+    let snapshot = lines.iter().rev().find_map(|l| {
+        let token_count = l.get("type").and_then(Value::as_str) == Some("event_msg")
+            && l.pointer("/payload/type").and_then(Value::as_str) == Some("token_count");
+        token_count
+            .then(|| l.pointer("/payload/rate_limits"))
+            .flatten()
+            .filter(|v| v.is_object())
+    })?;
+    let windows: Vec<&Value> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|k| snapshot.get(*k).filter(|w| w.is_object()))
+        .collect();
+    let full: Vec<&Value> = windows
+        .iter()
+        .copied()
+        .filter(|w| {
+            w.get("used_percent")
+                .and_then(Value::as_f64)
+                .is_some_and(|p| p >= 100.0)
+        })
+        .collect();
+    let reached = snapshot
+        .get("rate_limit_reached_type")
+        .is_some_and(|t| !t.is_null());
+    let candidates = if !full.is_empty() {
+        full
+    } else if reached {
+        windows
+    } else {
+        return None;
+    };
+    candidates
+        .iter()
+        .filter_map(|w| w.get("resets_at").and_then(Value::as_i64))
+        .filter(|t| *t > 0)
+        .max()
+}
+
+/// The `rate_limited_by` kind of a Codex usage limit.
+pub(crate) const CODEX_LIMIT_KIND: &str = "codex-limit";
+
+/// The sweep's Codex arm: a `codex` lane whose screen shows the usage-limit
+/// message, AND whose rollout names the reset, is limited until that reset.
+/// `rollout_reset` is only called once the message is on screen, so an
+/// unlimited lane never pays for a rollout read.
+///
+/// No reset, no stamp. A stamp without a clock holds the lane in
+/// `lane_block_reason` until the message leaves the screen, and on an idle
+/// Codex lane nothing but a new prompt moves it: a held lane would wait for a
+/// human. Without a clock the lane keeps its pre-existing behaviour and the
+/// sweep logs `codex_limit_reset_unknown`. With one, the existing
+/// provider-clock rules release it at the reset.
+pub(crate) fn codex_sweep_observation(
+    provider: &str,
+    pane: &str,
+    recorded_reset: i64,
+    now: i64,
+    rollout_reset: impl FnOnce() -> Option<i64>,
+) -> Option<ClaudeLimitObservation> {
+    if provider != "codex" || !crate::backend::adapter::codex_usage_limit_on_screen(pane) {
+        return None;
+    }
+    let reset = rollout_reset()?;
+    Some(ClaudeLimitObservation {
+        menu: false,
+        kind: CODEX_LIMIT_KIND,
+        reset_at: effective_rate_limit_reset(recorded_reset, reset, now),
+    })
+}
+
+/// Does a Claude login switch release this lane's limit? Only a limit on the
+/// Claude account does: a Codex limit is the OpenAI account's, which the
+/// Claude rotator does not change.
+pub(crate) fn limit_released_by_account_switch(
+    kind: &str,
+    limited_since: i64,
+    account_changed_at: i64,
+) -> bool {
+    kind != CODEX_LIMIT_KIND && account_switched_since_limit(limited_since, account_changed_at)
+}
+
 /// Screen-only observation; production passes the transcript through
 /// `observe_claude_limit_with`.
 #[cfg(test)]
@@ -3694,7 +3791,7 @@ fn transcript_path_for(name: &str) -> Option<PathBuf> {
         return None;
     }
     let wd = work_dir_of(&parse_env(name));
-    let p = claude_home()
+    let p = super::claude_config::for_session(name)
         .join("projects")
         .join(project_name(&wd))
         .join(format!("{conv}.jsonl"));
@@ -4753,12 +4850,15 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let meta = load_meta(name);
     let conv_id = meta_str(&meta, "cc_conversation_id");
     let cc_cwd = meta_str(&meta, "cc_cwd");
+    // The worker's own Claude config folder (CLAUDE_CONFIG_DIR on its live
+    // process), not always ~/.claude: see claude_config.
+    let chome = super::claude_config::for_session(name);
     if !conv_id.is_empty() {
         for base in [cc_cwd.trim(), wd.as_str()] {
             if base.is_empty() {
                 continue;
             }
-            let cand = claude_home()
+            let cand = chome
                 .join("projects")
                 .join(project_name(base))
                 .join(format!("{conv_id}.jsonl"));
@@ -4781,7 +4881,7 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
         // minutes, dead conversations came due together and cost 463 scans and
         // 1,431 s in 10 hours, up to 29 in a minute, inside the fleet build
         // whose overrun answers /api/sessions with 503 (AF-1146).
-        let projects_dir = claude_home().join("projects");
+        let projects_dir = chome.join("projects");
         if !conversation_miss_is_cached(&conv_id) {
             if let Some(p) = find_conversation_jsonl(&projects_dir, &conv_id) {
                 return Some(p);
@@ -4802,9 +4902,9 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let project_dir = [cc_cwd.trim(), wd.as_str()]
         .into_iter()
         .filter(|b| !b.is_empty())
-        .map(|b| claude_home().join("projects").join(project_name(b)))
+        .map(|b| chome.join("projects").join(project_name(b)))
         .find(|d| d.is_dir())
-        .unwrap_or_else(|| claude_home().join("projects").join(project_name(&wd)));
+        .unwrap_or_else(|| chome.join("projects").join(project_name(&wd)));
     let Ok(rd) = std::fs::read_dir(&project_dir) else {
         return None;
     };
@@ -7669,6 +7769,21 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN queue_id TEXT", []);
     // Migration 0088 carries the same ADDCOL for migrated DBs (F8(e)).
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN repeat_of INTEGER", []);
+    // The trace a delivery ran under (governance PR 8, api/trace.rs): metadata
+    // only, never text in the message (A2, A9).
+    for col in ["trace_id", "span_id", "parent_span_id", "trace_source"] {
+        let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
+    }
+    // Where the instruction came from (governance PR 14,
+    // api/instruction_provenance.rs): derived from the proven sender, never
+    // from the message text. Metadata, so an isolated worker gets it too.
+    for col in ["source_kind", "source_ref", "relayed_from"] {
+        let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
+    }
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cmd_history_trace ON cmd_history(trace_id) WHERE trace_id IS NOT NULL",
+        [],
+    );
     // Dead-lettered vs delivered must be distinguishable in history
     // (AMUX-3110; migration 0024 carries the same ADDCOL for migrated DBs,
     // this covers a DB bootstrapped through this legacy path).
@@ -8987,6 +9102,20 @@ pub(crate) async fn cmd_hist_record_with_id(
                 && amux_core::board::reads_as_qualifier(&text)
                 && !amux_core::board::is_conversational_ack(&text)))
         && !amux_core::board::is_informational_query(&text);
+    // The span this delivery runs as, a child of the request or schedule
+    // firing that sent it; also written to the worker's trace file so the
+    // worker's own calls descend from it (trace.rs). Metadata, never text.
+    let delivery_trace = crate::api::trace::delivery(&session);
+    // Where the instruction came from, from the proven sender and any relay
+    // (instruction_provenance). Metadata, never text, so isolated workers too.
+    let provenance = crate::api::instruction_provenance::enabled().then(|| {
+        crate::api::instruction_provenance::classify(&ctype, &origin, &crate::api::instruction_provenance::current())
+    });
+    // Whom the worker acts for until its next delivery: the proven sender when
+    // that is a person, else its sponsor (agent_commit.rs). The git hook stamps
+    // it as `On-behalf-of`.
+    let obo_kind = provenance.as_ref().map(|p| p.kind.to_string());
+    let obo_ref = provenance.as_ref().map(|p| p.reference.clone());
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let truth_session = cap_session.clone();
@@ -9014,6 +9143,24 @@ pub(crate) async fn cmd_hist_record_with_id(
                 ],
             )?;
             let row_id = conn.last_insert_rowid();
+            if let Some(t) = &delivery_trace {
+                conn.execute(
+                    "UPDATE cmd_history SET trace_id=?2, span_id=?3, parent_span_id=?4, trace_source=?5 WHERE id=?1",
+                    rusqlite::params![row_id, t.trace_id, t.span_id, t.parent_span_id, crate::api::trace::DELIVERED],
+                )?;
+            }
+            if let Some(pv) = &provenance {
+                conn.execute(
+                    "UPDATE cmd_history SET source_kind=?2, source_ref=?3, relayed_from=?4 WHERE id=?1",
+                    rusqlite::params![row_id, pv.kind, pv.reference, pv.relayed_from],
+                )?;
+                crate::api::instruction_provenance::note_recorded();
+            }
+            {
+                let who = crate::api::agent_commit::on_behalf_of(obo_kind.as_deref(), obo_ref.as_deref(),
+                    || crate::api::schedule_authority::sponsor_of(conn, &session));
+                crate::api::agent_commit::note_on_behalf(&crate::config::amux_home(), &session, &who);
+            }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             // cmd_history is the durable Messages ledger, but this write used
             // to publish no StateEvent. A healthy SSE client therefore had no
@@ -10148,6 +10295,7 @@ async fn steer_enqueue_precond_with_id(
     stable_id: Option<&str>,
 ) -> Result<StableEnqueueResult, &'static str> {
     if let Some(refusal) = queued_peer_input_refusal(sender, name) {
+        ask_owner_for_refused_message(sender, name, &refusal);
         return Err(refusal.code);
     }
     // ZERO AMUX HARNESS INTO AN ISOLATED LANE (Ethan, 2026-08-26: "isolated =
@@ -11170,9 +11318,10 @@ async fn live_claude_conversation(name: &str) -> Option<String> {
     let out = tmux(&["list-panes", "-t", &stq, "-F", "#{pane_pid}"]).await?;
     let pane = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
     let kids = run_cmd("pgrep", &["-P", &pane], OP_TIMEOUT).await?;
-    String::from_utf8_lossy(&kids.stdout)
-        .split_whitespace()
-        .find_map(|pid| claude_session_file_id(&claude_home().join("sessions").join(format!("{pid}.json"))))
+    let homes = super::claude_config::search_order(name);
+    String::from_utf8_lossy(&kids.stdout).split_whitespace().find_map(|pid| {
+        homes.iter().find_map(|h| claude_session_file_id(&h.join("sessions").join(format!("{pid}.json"))))
+    })
 }
 
 /// `sessionId` from one Claude Code process file.
@@ -17083,7 +17232,10 @@ pub(crate) async fn start_session(
         let conv_id = meta_str(&meta, "cc_conversation_id");
         let mut resumable = false;
         if !conv_id.is_empty() && uuid_re.is_match(&conv_id) {
-            let conv_file = claude_home()
+            // Under the folder the worker's Claude last ran in: a resume that
+            // looked only in ~/.claude found no file for a worker on another
+            // CLAUDE_CONFIG_DIR and started it fresh, dropping its conversation.
+            let conv_file = super::claude_config::for_session(name)
                 .join("projects")
                 .join(project_name(&work_dir))
                 .join(format!("{conv_id}.jsonl"));
@@ -17103,6 +17255,11 @@ pub(crate) async fn start_session(
     // so the check and the launcher cannot disagree about what gets run.
     let base_bin = launch_base_binary(&provider);
     let rules_opts = worker_rules_shell(name, &provider, isolated);
+    // The CLI's own sandbox, written from the worker's capabilities (governance
+    // PR 16, cli_sandbox.rs). Configuration, not a prompt, so isolated workers
+    // get it too (A9); empty unless AMUX_CLI_SANDBOX=enforce on a Claude lane.
+    let sandbox_opts = super::cli_sandbox::launch_opts(
+        &home(), name, &provider, std::path::Path::new(&work_dir));
     // The model an opencode worker was created with, lifted OUT of the flags
     // before they become argv: the TUI rejects `--model` (usage + exit 1,
     // measured 2026-10-27) and would never start. It is re-attached to the
@@ -17410,7 +17567,7 @@ pub(crate) async fn start_session(
             // channel + lane isolation; see the helper's doc).
             format!("{base_bin}{}", opencode_launch_opts(&flags, extra_flags))
         }
-        _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts,
+        _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts + &sandbox_opts,
     };
 
     // Shell setup line (py:24532): unset Claude env markers, source profile,
@@ -17668,8 +17825,28 @@ pub(crate) async fn start_session(
     // Every lane by default, isolated ones too: the token is environment, not
     // a prompt or a route, so isolation (A9) is unchanged, and an isolated
     // worker's own `amux` calls prove who they are like anyone else's.
+    // The CLI's own OpenTelemetry (governance PR 9, cli_telemetry.rs): the
+    // exporter's headers carry this token, so they ride the vault channel too;
+    // the rest is plain configuration on the command line below. Isolated
+    // workers get it the same way (A9: environment, not a prompt).
+    let otel_plan = super::cli_telemetry::plan_for_launch(
+        &home(), name, &provider, cfg.get("CC_TAGS").unwrap_or(""));
+    let mut otel_prefix = String::new();
     if let Some(token) = super::worker_identity::mint(&home(), name) {
+        if let super::cli_telemetry::Plan::Wire { vars } = &otel_plan {
+            vault_values.push((super::cli_telemetry::HEADERS_ENV.to_string(),
+                super::cli_telemetry::headers_value(name, &token)));
+            otel_prefix = super::cli_telemetry::command_prefix(vars);
+        }
         vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
+    }
+    // Who this worker's commits say made them (governance PR 15,
+    // agent_commit.rs): a per-worker bot author plus this host's id, so a
+    // commit names its worker AND its host. Environment, not a prompt (A9).
+    {
+        let explicit = scoped_setting_in(&home(), name, "GIT_AUTHOR_NAME");
+        vault_values.extend(super::agent_commit::launch_env(
+            &home(), name, super::agent_commit::mode(), explicit.as_deref()));
     }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
     // WHAT THE LAST LAUNCH DELIVERED lives in the tmux session itself
@@ -18036,8 +18213,23 @@ pub(crate) async fn start_session(
     } else {
         String::new()
     };
-    let cmd =
-        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated.then_some(name));
+    let inner = format!("{observer_prefix}{otel_prefix}{cmd}");
+    // The customer boundary (governance PR 17, customer_isolation.rs): a
+    // worker in a boundary group runs its CLI inside a mount namespace that
+    // holds its group's folders and nothing else of the home. Only boundary
+    // workers are touched; report mode (the default) only records the plan.
+    // Configuration, not a prompt, so isolated workers get it too (A9).
+    let inner = match super::customer_isolation::wrap(&home(), name, std::path::Path::new(&work_dir), &inner) {
+        Ok(Some(wrapped)) => wrapped,
+        Ok(None) => inner,
+        Err(why) => {
+            tracing::warn!(session = name, measured = true, n_considered = 1,
+                verdict = "customer_isolation_start_refused", %why,
+                "a boundary worker was not started: no isolation runner (governance PR 17)");
+            return (false, why);
+        }
+    };
+    let cmd = provider_command_in_workspace(&work_dir, &inner, isolated.then_some(name));
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -18161,15 +18353,22 @@ pub(crate) async fn start_session(
             send_key(name, "C-u").await;
             sleep_ms(100).await;
             let fresh_flag = format!("--name {}", sh_quote(name));
-            let cmd_fresh = provider_command_in_workspace(
-                &work_dir,
-                &format!(
-                    "{observer_prefix}{}",
-                    build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
-                        + &rules_opts
-                ),
-                isolated.then_some(name),
+            let inner_fresh = format!(
+                "{observer_prefix}{}",
+                build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
+                    + &rules_opts
+                    + &sandbox_opts
             );
+            // The fresh start stays inside the same customer boundary (PR 17):
+            // a failed resume must not be the way out of it.
+            let inner_fresh = match super::customer_isolation::wrap(
+                &home(), name, std::path::Path::new(&work_dir), &inner_fresh)
+            {
+                Ok(Some(wrapped)) => wrapped,
+                Ok(None) => inner_fresh,
+                Err(why) => return (false, why),
+            };
+            let cmd_fresh = provider_command_in_workspace(&work_dir, &inner_fresh, isolated.then_some(name));
             shell_step!(&cmd_fresh, true);
             for _ in 0..10 {
                 sleep_ms(500).await;
@@ -19282,7 +19481,7 @@ async fn clear_stopped_report(state: &AppState, name: &str) -> anyhow::Result<()
     Ok(())
 }
 
-async fn stop_session_process(name: &str) -> (bool, String) {
+pub(crate) async fn stop_session_process(name: &str) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
     }
@@ -19337,6 +19536,18 @@ async fn stop_session_process(name: &str) -> (bool, String) {
     // process's name file) is not ported; the /rename fallback below pins the
     // resumable name to the amux name, which is what the fresh-start path
     // records anyway.
+    //
+    // ONE ESCAPE FIRST: an open dialog swallows typed commands (2026-11-16).
+    // Two workers sat in Claude's /status panel ("Esc to cancel") for six
+    // days; every stop typed /rename and /exit into it, waited the full 15 s
+    // below for an exit that never came, and only then hard-killed. A delete
+    // runs this stop first, so it outlasted the dashboard's 15 s write bound,
+    // was cancelled before it finished, and the workers survived 8 deletes.
+    // A single Escape closes a dialog and is a no-op at an empty prompt; it
+    // interrupts a running turn, which a stop ends anyway. Exactly one: a
+    // second Escape opens Claude's rewind menu, another dialog.
+    send_key(name, "Escape").await;
+    sleep_ms(200).await;
     let _ = send_literal(name, &format!("/rename {name}")).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -19358,6 +19569,19 @@ async fn stop_session_process(name: &str) -> (bool, String) {
             return (true, "stopped".into());
         }
     }
+    // The agent did not act on /exit. Say so before the hard kill: a stop that
+    // only succeeds this way takes 15 s+, and a caller with a shorter bound
+    // (the dashboard's 15 s write) abandons it with no other trace.
+    let tail = strip_ansi(&tmux_capture(name, 3).await);
+    tracing::warn!(
+        session = name,
+        waited_ms = 15_000u64,
+        verdict = "stop_exit_unanswered",
+        measured = true,
+        n_considered = 1,
+        tail = %tail.trim_end(),
+        "worker did not exit on /exit within 15s; hard-killing its pane children"
+    );
     // Hard kill: the pane shell's children (py:25028).
     if let Some(out) = tmux(&["list-panes", "-t", &stq, "-F", "#{pane_pid}"]).await {
         if out.status.success() {
@@ -20555,7 +20779,7 @@ async fn session_cc_tasks(name: &str) -> Value {
     let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
         return empty;
     };
-    let tdir = claude_home().join("tasks").join(stem);
+    let tdir = super::claude_config::for_session(name).join("tasks").join(stem);
     if !tdir.is_dir() {
         return empty;
     }
@@ -21219,7 +21443,7 @@ fn backup_session_jsonl(name: &str, reason: &str) -> Option<String> {
     if wd.is_empty() {
         return None;
     }
-    let project_dir = claude_home().join("projects").join(project_name(&wd));
+    let project_dir = super::claude_config::for_session(name).join("projects").join(project_name(&wd));
     let Ok(rd) = std::fs::read_dir(&project_dir) else {
         return None;
     };
@@ -21966,7 +22190,7 @@ fn write_claude_memory(name: &str, work_dir: &str) {
 
     let composed = compose_memory_doc(name, &global_content, &session_content);
 
-    let claude_mem_dir = claude_home().join("projects").join(&pname).join("memory");
+    let claude_mem_dir = super::claude_config::for_session(name).join("projects").join(&pname).join("memory");
     let claude_mem_file = claude_mem_dir.join("MEMORY.md");
 
     if std::fs::create_dir_all(&claude_mem_dir).is_err() {
@@ -22547,7 +22771,7 @@ fn rate_limit_hold_for(name: &str, pane: &str) -> Option<RateLimitHold> {
     let meta = load_meta(name);
     let since = meta_i64(&meta, "rate_limited_since");
     let changed_at = observe_claude_account_change(chrono::Utc::now().timestamp());
-    if account_switched_since_limit(since, changed_at) {
+    if limit_released_by_account_switch(&meta_str(&meta, "rate_limited_by"), since, changed_at) {
         // mixpeek-frustrations, 2026-10-20: limited on one account at 10:30Z,
         // the rotator moved the login to an account with 97% left at 12:07Z,
         // and the owner's "continue" was still held for the OLD account's
@@ -22765,7 +22989,7 @@ pub(crate) async fn lane_block_reason(name: &str) -> Option<&'static str> {
         }
         // A limit recorded on the account the login has since moved away
         // from does not gate the queue either (same rule as the send path).
-        && !account_switched_since_limit(since, observe_claude_account_change(now_i64()));
+        && !limit_released_by_account_switch(&kind, since, observe_claude_account_change(now_i64()));
     lane_block_reason_from(env_exists, archived, paused, running, rate_limited)
 }
 
@@ -25212,13 +25436,19 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
 /// caller can win this UPDATE for a given row -- a losing caller means
 /// someone else is already delivering it (or already has), which is
 /// contention, not a delivery refusal.
-async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
-    let id = id.to_string();
+///
+/// The claim also requires the row's text to still be the `text` the caller
+/// read. A subscription send folds a new event into a queued row (signals.rs
+/// `coalesce_signal_send`); a delivery holding the older snapshot then loses
+/// the claim and the next pass delivers the merged text, so no folded event is
+/// typed short.
+async fn claim_steering_row(store: &crate::db::SharedStore, id: &str, text: &str) -> bool {
+    let (id, text) = (id.to_string(), text.to_string());
     store
         .write_async(move |conn| {
             let n = conn.execute(
-                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL",
-                rusqlite::params![now_f64(), id],
+                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL AND text=?3",
+                rusqlite::params![now_f64(), id, text],
             )?;
             Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
         })
@@ -25236,7 +25466,7 @@ async fn send_claimed_steering(
     text: &str,
     mode: SendMode,
 ) -> Option<(bool, String)> {
-    if !claim_steering_row(&state.store, id).await {
+    if !claim_steering_row(&state.store, id, text).await {
         tracing::debug!(
             session,
             delivery_id = id,
@@ -26257,6 +26487,46 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             chrono::Local::now(),
             transcript_reset,
         );
+        // A CODEX worker at its usage limit. Every detector above reads
+        // Claude's wording, so a limited Codex lane read idle: no stamp, no
+        // dispatch hold, no reset. The screen says it is limited; Codex's own
+        // rollout says until when.
+        let observation = observation.or_else(|| {
+            codex_sweep_observation(
+                &provider_of(&cfg),
+                &pane,
+                meta_i64(&load_meta(name), "rate_limited_until"),
+                now_i64(),
+                || {
+                    let rollout = codex_rollout_path(name);
+                    let lines = rollout
+                        .as_ref()
+                        .map(|p| iter_jsonl_tail(p, 1024 * 1024))
+                        .unwrap_or_default();
+                    let reset = codex_rollout_limit_reset(&lines);
+                    // The snapshots read, so a rollout with none reads as
+                    // that rather than as one healthy snapshot.
+                    let snapshots = lines
+                        .iter()
+                        .filter(|l| {
+                            l.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
+                        })
+                        .count();
+                    if reset.is_none()
+                        && crate::log_dedupe::first_this_bucket(
+                            &format!("codex-limit-no-reset:{name}"),
+                            crate::log_dedupe::hour_bucket(now_f64()),
+                        )
+                    {
+                        tracing::warn!(session = %name, rollout_resolved = rollout.is_some(),
+                            measured = rollout.is_some(), n_considered = snapshots,
+                            verdict = "codex_limit_reset_unknown",
+                            "Codex shows its usage limit but its rollout names no reset; the lane is not stamped limited without a clock");
+                    }
+                    reset
+                },
+            )
+        });
         // AUTOMATIC RESUME (AMUX-5235): decided here, before the stamps below
         // move, so the account rule reads the `since` of a limit that predates
         // this tick. See `auto_resume_decision`.
@@ -29233,6 +29503,14 @@ async fn post_dispatch(
                 tracing::warn!(session = %name, reason = %reason, "session_start_refused: /start cannot launch this session");
                 return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason}));
             }
+            // Same for a customer-boundary worker under enforce on a host with
+            // no isolation runner (governance PR 17).
+            if let Some(reason) = super::customer_isolation::start_refusal(&home(), name) {
+                tracing::warn!(session = %name, measured = true, n_considered = 1,
+                    verdict = "customer_isolation_start_refused", reason = %reason,
+                    "session_start_refused: /start cannot launch this session");
+                return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason, "code": "customer_isolation_no_runner"}));
+            }
             let prompt = body_str(body, "prompt");
             update_meta(name, &[("boot_start_scheduled", json!(true))]);
             if !prompt.is_empty() {
@@ -29947,14 +30225,33 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
         return None;
     }
     let target_groups = lane_groups(target);
-    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
+    let home = crate::config::amux_home();
+    // Governance PR 11: the owner can widen a worker's reach with
+    // AMUX_CAP_MESSAGE (workers or `group:<name>`), owner-only to set.
+    if let Some(grant) = super::capabilities::message_granted(&home, origin, target, &target_groups) {
+        tracing::info!(origin, target, grant = %grant, verdict = "message_capability_allowed", measured = true,
+            n_considered = 1, "worker input allowed outside a shared group: an owner-set message capability");
+        return None;
+    }
+    let open = super::worker_messaging::open_inbound_groups(&home, &target_groups);
     worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
+}
+
+/// Raise the owner's grant ask for a message a worker actually SENT and the
+/// group boundary refused. Called where input is sent or queued, never from
+/// `peer_input_refusal` itself: that check also filters every worker's view of
+/// its reachable peers and re-checks queued input each tick, and asking there
+/// counted 13,476 asks in the first 72 s after 7981dd0fd (2026-11-16).
+pub(crate) fn ask_owner_for_refused_message(origin: &str, target: &str, refusal: &PeerInputRefusal) {
+    if refusal.code == "worker_group_boundary" {
+        super::capabilities::existing_refusal(&crate::config::amux_home(), origin, "message", &format!("worker {target}"), target);
+    }
 }
 
 /// Queue producers use an empty sender for system input and "owner" for saved
 /// owner rules. Internal producer names are explicit; a retired worker without
 /// an env file cannot turn its pending message into owner input.
-fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
+pub(crate) fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
     if sender.is_empty() || sender == "owner" || sender.starts_with("harness:") || sender == "browser-reaper" { return None; }
     if speaks_for_owner(sender) { return None; }
     peer_input_refusal(sender, target)
@@ -30683,10 +30980,12 @@ async fn send_post_detached(
     // Same identity send_post reserves: trimmed, first 64 chars.
     let flight_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
     let flight = InFlightSend::enter(name, &flight_id);
-    let joined = tokio::spawn(async move {
+    // The send runs detached from the client, and still inside the request's
+    // trace, so its delivery row descends from it (api/trace.rs).
+    let joined = tokio::spawn(crate::api::trace::carry(crate::api::instruction_provenance::carry(async move {
         let _flight = flight;
         send_post(&st, &n, &h, &b).await
-    })
+    })))
     .await;
     watch.answered = true;
     match joined {
@@ -30720,6 +31019,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     if super::org::local_member_actor(headers).is_none() {
         let origin = hdr_worker(headers);
         if let Some(refusal) = peer_input_refusal(&origin, name) {
+            ask_owner_for_refused_message(&origin, name, &refusal);
             emit_event(state, name, "send.peer_input_refused", Some(json!({"origin":origin,"target":name,"code":refusal.code})), None, "group-scope").await;
             return jresp(StatusCode::FORBIDDEN, json!({"ok":false,"code":refusal.code,"error":refusal.reason,"submitted":false}));
         }
@@ -30868,6 +31168,17 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             tracing::info!(session = name, origin = %origin, verdict = "origin_stamp_skipped_slash_command",
                 "peer slash command delivered bare; the origin is still recorded in history and on the queue row");
         }
+    }
+    // A MEMBER'S WORDS SAY WHOSE THEY ARE (governance PR 14). A peer worker's
+    // send already carried the server-verified origin stamp; a member's did
+    // not, so the worker could not tell a teammate's instruction from the
+    // owner's. Same stamp, member identity; never for the owner, never in an
+    // isolated worker's text (A9: its history row still records the member).
+    if let Some(stamped) =
+        crate::api::instruction_provenance::member_stamp(member_actor.as_deref(), isolated, &text)
+    {
+        text = stamped;
+        crate::api::instruction_provenance::note_stamped();
     }
     // A PEER RELAY IS NOT THE OWNER (AMUX-3764). `origin` is the sender's
     // server-verified session identity, empty only when a person sent it. The
@@ -31773,6 +32084,32 @@ pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
     if append.is_none() && body.get("append").is_some() {
         // Falling through to `content` would replace the memory with "".
         return jresp(StatusCode::BAD_REQUEST, json!({"error": "append is empty"}));
+    }
+    // `curate` is a whole rewrite by the worker (memory_dream.rs). The prior
+    // version is kept under memory/.history first, so a bad rewrite is one
+    // copy back, never a loss.
+    let curate = body.get("curate").and_then(Value::as_str);
+    if let Some(c) = curate {
+        if c.trim().is_empty() {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error": "curate is empty; a curated memory keeps something"}));
+        }
+        let prior = std::fs::read_to_string(&mf).unwrap_or_default();
+        let hist = memory_dir().join(".history");
+        let kept = hist.join(format!("{name}-{}.md", chrono::Utc::now().format("%Y%m%dT%H%M%S")));
+        if std::fs::create_dir_all(&hist).and_then(|_| std::fs::write(&kept, &prior)).is_err() {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not keep the prior memory, so nothing was changed"}));
+        }
+        let content = format!("{}\n", c.trim_end());
+        if std::fs::write(&mf, &content).is_err() {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write memory file"}));
+        }
+        let wd = session_work_dir(name);
+        if !wd.is_empty() {
+            write_claude_memory(name, &wd);
+        }
+        tracing::info!(session = %name, bytes_before = prior.len(), bytes_after = content.len(), kept = %kept.display(),
+            verdict = "worker_memory_curated", "memory: the worker rewrote its amux memory; the prior version is kept");
+        return j200(json!({"ok": true, "curated": true, "bytes_before": prior.len(), "bytes": content.len(), "prior_kept": kept.display().to_string()}));
     }
     let content = match append {
         Some(note) => {
@@ -32721,7 +33058,8 @@ pub(crate) const MEMORY_VERB_CONTEXT: &str = "# Your worker memory\n\n\
 When the owner asks you to remember something, or to add it to this worker's memory, save it to \
 your amux worker memory: `amux memory add --stdin` (a heredoc keeps backticks literal). That is \
 what the owner sees in the Memory tab, and it reaches your next launch. `amux memory` prints it. \
-Claude Code's own memory directory is shared by every worker in this directory and the owner \
+When an entry goes stale, rewrite the whole memory with `amux memory curate --stdin`; the prior \
+version is kept. Claude Code's own memory directory is shared by every worker in this directory and the owner \
 does not see it in amux.";
 
 pub fn compose_worker_context(name: &str, isolated: bool) -> String {
@@ -32744,6 +33082,8 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = if roster.is_empty() { block } else { format!("{block}\n{roster}") };
     let velocity = crate::api::velocity::context_section(name);
     let block = if velocity.is_empty() { block } else { format!("{block}\n\n{velocity}") };
+    let goal = crate::api::velocity::goal_context_section(name);
+    let block = if goal.is_empty() { block } else { format!("{block}\n\n{goal}") };
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\
@@ -33984,7 +34324,9 @@ pub(crate) fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> 
             return Some(hit.clone());
         }
     }
-    let (hit, by_id) = find_transcript(&claude_home().join("projects"), &bases, lifecycle_session)?;
+    let (hit, by_id) = super::claude_config::search_order(name)
+        .iter()
+        .find_map(|h| find_transcript(&h.join("projects"), &bases, lifecycle_session))?;
     if by_id {
         tracing::info!(session = name, path = %hit.display(), verdict = "lifecycle_transcript_found_by_id",
             "conversation found by its id outside the worker's configured directory");
@@ -39932,6 +40274,17 @@ mod tests {
         // Isolation does not take admin reach away.
         std::fs::write(sessions.join("boss.env"), "CC_TAGS=beta, Admin\nCC_ISOLATED=1\n").unwrap();
         std::fs::write(sessions.join("peer.env"), "CC_TAGS=beta\n").unwrap();
+        // Checking reach, as every worker's lane listing does, asks the owner
+        // nothing; only a send does (13,476 asks in 72 s, 2026-11-16).
+        let asked = || crate::api::capabilities::counters::snapshot().iter()
+            .filter(|(k, _)| k.starts_with("message.")).map(|(_, v)| *v).sum::<u64>();
+        let before = asked();
+        std::fs::write(sessions.join("elsewhere.env"), "CC_TAGS=delta\n").unwrap();
+        assert_eq!(peer_input_refusal("peer", "elsewhere").map(|r| r.code), Some("worker_group_boundary"));
+        for _ in 0..50 {
+            assert!(peer_input_refusal("peer", "elsewhere").is_some());
+        }
+        assert!(asked() < before + 50, "a reach check must not raise the owner's ask");
         for (sender, allowed) in [("boss", true), ("peer", false)] {
             assert_eq!(is_admin_worker(sender), allowed, "{sender}");
             for target in ["raw", "closed"] {
@@ -44273,8 +44626,8 @@ mod tests {
             .unwrap();
 
         let (timer, hook) = tokio::join!(
-            claim_steering_row(&st.store, "c1"),
-            claim_steering_row(&st.store, "c1")
+            claim_steering_row(&st.store, "c1", "hello"),
+            claim_steering_row(&st.store, "c1", "hello")
         );
         assert_ne!(
             timer, hook,
@@ -44292,7 +44645,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !claim_steering_row(&st.store, "c1").await,
+            !claim_steering_row(&st.store, "c1", "hello").await,
             "a second claim on an already-claimed row must affect nothing"
         );
         let stamp_after_second: f64 = st
@@ -44312,9 +44665,30 @@ mod tests {
 
         unclaim_steering_row(&st.store, "c1").await;
         assert!(
-            claim_steering_row(&st.store, "c1").await,
+            claim_steering_row(&st.store, "c1", "hello").await,
             "unclaiming (a refused send) must leave the row eligible for a fresh claim (AMUX-2629)"
         );
+    }
+
+    /// A subscription folds a new event into a waiting row (signals.rs
+    /// `coalesce_signal_send`). A delivery that read the row before the fold
+    /// must lose its claim, or it types the message short of the new event.
+    #[tokio::test]
+    async fn a_claim_on_a_row_whose_text_changed_since_it_was_read_fails() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) VALUES('c2','lane-c','build A',0)",
+                    [],
+                )?;
+                conn.execute("UPDATE steering_queue SET text = text || ' + build B' WHERE id='c2'", [])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        assert!(!claim_steering_row(&st.store, "c2", "build A").await, "the stale snapshot loses");
+        assert!(claim_steering_row(&st.store, "c2", "build A + build B").await, "the merged text delivers");
     }
 
     #[tokio::test]
@@ -45954,6 +46328,109 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(observe_claude_limit(pane, 0, now).is_none(), "the screen alone cannot see it");
         let seen = observe_claude_limit_with(pane, 0, now, Some(1790280600)).expect("transcript sees it");
         assert_eq!((seen.kind, seen.reset_at, seen.menu), ("transcript", 1790280600, false));
+    }
+
+    /// One rollout `token_count` line in the shape Codex 0.160 writes.
+    fn codex_token_count(primary: Value, secondary: Value, reached: Value) -> Value {
+        json!({"timestamp":"2026-11-12T18:00:00.000Z","type":"event_msg","payload":{
+            "type":"token_count","info":null,"rate_limits":{
+                "limit_id":"codex","limit_name":null,"primary":primary,"secondary":secondary,
+                "credits":{"has_credits":false,"unlimited":false,"balance":"0"},
+                "individual_limit":null,"spend_control_reached":null,"plan_type":"prolite",
+                "rate_limit_reached_type":reached}}})
+    }
+
+    #[test]
+    fn a_codex_limit_resets_when_codex_s_own_rollout_says() {
+        let week =
+            |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":10080,"resets_at":at});
+        let five_h =
+            |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":300,"resets_at":at});
+        let msg = json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}});
+
+        // The 429 snapshot: the weekly window is full.
+        let limited = codex_token_count(
+            week(100.0, 1_795_000_000),
+            Value::Null,
+            json!("rate_limit_reached"),
+        );
+        assert_eq!(
+            codex_rollout_limit_reset(&[msg.clone(), limited.clone(), msg.clone()]),
+            Some(1_795_000_000)
+        );
+        // Two windows, only the full one decides the reset.
+        let both = codex_token_count(
+            five_h(100.0, 1_794_000_000),
+            week(80.0, 1_795_000_000),
+            json!("rate_limit_reached"),
+        );
+        assert_eq!(codex_rollout_limit_reset(&[both]), Some(1_794_000_000));
+        // Codex says reached but no window reads 100: the latest window reset.
+        let reached = codex_token_count(
+            five_h(97.0, 1_794_000_000),
+            week(60.0, 1_795_000_000),
+            json!("rate_limit_reached"),
+        );
+        assert_eq!(codex_rollout_limit_reset(&[reached]), Some(1_795_000_000));
+        // A newer, healthy snapshot (the limit reset early) ends it.
+        let healthy = codex_token_count(week(3.0, 1_795_600_000), Value::Null, Value::Null);
+        assert_eq!(codex_rollout_limit_reset(&[limited.clone(), healthy]), None);
+        assert_eq!(
+            codex_rollout_limit_reset(&[msg]),
+            None,
+            "no snapshot, no reset"
+        );
+
+        // The sweep's decision: a codex lane showing the message is limited,
+        // with the rollout's reset; nothing else is, and nothing else reads it.
+        let now = 1_790_000_000;
+        let pane = "\u{25a0} You\u{2019}ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 18th, 2026 4:59 PM.\n\n\u{203a} Ask Codex to do anything\n";
+        let seen = codex_sweep_observation("codex", pane, 0, now, || Some(1_795_000_000))
+            .expect("limited");
+        let unread = || -> Option<i64> { panic!("rollout read for a lane that is not limited") };
+        assert!(codex_sweep_observation(
+            "codex",
+            "\u{203a} Ask Codex to do anything\n",
+            0,
+            now,
+            unread
+        )
+        .is_none());
+        assert!(codex_sweep_observation("claude", pane, 0, now, unread).is_none());
+        assert!(
+            codex_sweep_observation("ollama", pane, 0, now, unread).is_none(),
+            "local models have no account limit"
+        );
+        assert_eq!(
+            (seen.kind, seen.reset_at, seen.menu),
+            ("codex-limit", 1_795_000_000, false)
+        );
+        assert!(
+            is_weekly_limit("", seen.reset_at, now),
+            "a reset days out is the weekly limit"
+        );
+        // No clock, no stamp: a clockless stamp would hold an idle lane until
+        // a human typed into it.
+        assert!(codex_sweep_observation("codex", pane, 0, now, || None).is_none());
+
+        // The stamp holds the lane until its reset, then releases it, on both
+        // gates that read it (send path and queue gate).
+        let since = now - 60;
+        assert!(rate_limit_delivery_hold(None, since, seen.reset_at, seen.kind, now).is_some());
+        assert!(rate_limit_still_blocks(since, seen.reset_at, now));
+        assert!(
+            rate_limit_delivery_hold(None, since, seen.reset_at, seen.kind, seen.reset_at + 1)
+                .is_none()
+        );
+        assert!(!rate_limit_still_blocks(
+            since,
+            seen.reset_at,
+            seen.reset_at + 1
+        ));
+        // A Claude login switch does not release it: the OpenAI account is
+        // still limited. It still releases a Claude limit.
+        assert!(!limit_released_by_account_switch(seen.kind, since, now));
+        assert!(limit_released_by_account_switch("transcript", since, now));
     }
 
     #[test]
@@ -51944,6 +52421,108 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         );
     }
 
+    /// 2026-11-16: two workers left in Claude's /status panel survived 8
+    /// dashboard deletes. Stop typed /exit into the panel, waited 15 s, and the
+    /// delete it serves was abandoned by the dashboard's 15 s write bound. The
+    /// stand-in below is that panel: it ignores every key but Escape, then acts
+    /// on /exit like the real prompt.
+    #[tokio::test]
+    #[ignore = "real tmux dialog replay; no model or production worker; run explicitly"]
+    #[allow(clippy::await_holding_lock)] // the AMUX_HOME guard spans the stop
+    async fn real_tmux_stop_closes_an_open_dialog_before_exit() {
+        struct Pane(String);
+        impl Drop for Pane {
+            fn drop(&mut self) {
+                let st = session_target(&self.0);
+                let _ = std::process::Command::new("tmux")
+                    .args(["kill-session", "-t", &st])
+                    .output();
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let keys = home.path().join("keys.bin");
+        let lane = format!(
+            "stop-dialog-{}-{}",
+            std::process::id(),
+            (now_f64() * 1_000_000.0) as u64
+        );
+        let pane = Pane(tmux_name(&lane));
+        let panel = r#"import os,select,sys,time,tty
+tty.setraw(sys.stdin.fileno())
+def paint(s):
+    sys.stdout.write('\x1b[2J\x1b[H'+s.replace('\n','\r\n')); sys.stdout.flush()
+paint(' Status   Config   Usage\n\n   Session name:   lane\n   Model:          stand-in\n\n   Esc to cancel\n')
+mode='dialog'; buf=b''; end=time.monotonic()+40
+with open(sys.argv[1],'ab',buffering=0) as log:
+    while time.monotonic()<end:
+        if not select.select([sys.stdin],[],[],0.2)[0]: continue
+        key=os.read(sys.stdin.fileno(),1); log.write(key)
+        if mode=='dialog':
+            if key==b'\x1b': mode='prompt'; paint('❯ ')
+            continue
+        if key==b'\x15': buf=b''
+        elif key in (b'\r',b'\n'):
+            if buf.strip()==b'/exit': paint('bye\n'); sys.exit(0)
+            buf=b''; paint('❯ ')
+        elif key!=b'\x1b': buf+=key
+"#;
+        let output = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &pane.0,
+                "-x",
+                "200",
+                "-y",
+                "24",
+                "sh",
+                "-c",
+                r#"python3 -c "$1" "$2"; PS1='$ ' exec sh -i"#,
+                "sh",
+                panel,
+                keys.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !tmux_capture(&lane, 25).await.contains("Esc to cancel") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stand-in never drew its dialog"
+            );
+            sleep_ms(50).await;
+        }
+        assert!(is_running(&lane).await, "a worker in a dialog is running");
+
+        let started = std::time::Instant::now();
+        let (ok, detail) = stop_session_process(&lane).await;
+        let took = started.elapsed();
+        let delivered = std::fs::read(&keys).unwrap();
+        assert!(ok, "stop failed: {detail}");
+        assert_eq!(
+            detail, "stopped",
+            "the worker exited on /exit, not by hard kill (took {took:?})"
+        );
+        assert!(
+            took < Duration::from_secs(10),
+            "a stop must answer well inside the dashboard's 15 s bound: {took:?}"
+        );
+        assert_eq!(
+            delivered.iter().filter(|&&b| b == 0x1b).count(),
+            1,
+            "exactly one Escape: a second opens Claude's rewind menu: {delivered:?}"
+        );
+        assert_eq!(delivered.first(), Some(&0x1b), "the Escape goes before any typed command");
+    }
+
     #[tokio::test]
     #[ignore = "real tmux capture replay; no model or production worker; run explicitly"]
     async fn real_tmux_submission_replay_keeps_generating_input_unconfirmed() {
@@ -56606,6 +57185,29 @@ mod commit_shape_tests {
     /// verb for its amux memory, and saved the rule where the Memory tab never
     /// shows it. `append` keeps what is there (the owner's text included), and
     /// every non-isolated launch names the verb.
+    /// A curated rewrite (memory_dream.rs) replaces the memory and keeps the
+    /// prior version under memory/.history; an empty rewrite changes nothing.
+    #[tokio::test]
+    async fn a_curated_memory_replaces_the_old_one_and_keeps_it() {
+        use axum::http::StatusCode;
+        use serde_json::json;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/memcur.env"), "CC_DIR=\"\"\n").unwrap();
+        super::memory_post_verb("memcur", &json!({"content": "old a\nold b\nold a\n"}));
+
+        assert_eq!(super::memory_post_verb("memcur", &json!({"curate": "  \n"})).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(h.join("memory/memcur.md")).unwrap(), "old a\nold b\nold a\n");
+
+        assert!(super::memory_post_verb("memcur", &json!({"curate": "a and b\n\n"})).status().is_success());
+        assert_eq!(std::fs::read_to_string(h.join("memory/memcur.md")).unwrap(), "a and b\n");
+        let kept: Vec<_> = std::fs::read_dir(h.join("memory/.history")).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), "old a\nold b\nold a\n");
+    }
+
     #[tokio::test]
     async fn a_worker_appends_to_its_own_memory_and_its_launch_names_the_verb() {
         use axum::http::StatusCode;

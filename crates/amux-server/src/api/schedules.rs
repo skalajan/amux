@@ -1188,6 +1188,10 @@ pub async fn create(
         return when_on_shell_refusal();
     }
     let by = mutation_by(&headers, body.by.as_deref());
+    // Governance PR 13: the creator the server PROVED, kept on the row so every
+    // firing can re-check that this principal still has authority (the audit's
+    // `by_who` above stays what it was: a name, which may only be claimed).
+    let creator = super::schedule_authority::creator_of(&crate::config::amux_home(), &headers);
     let now = Local::now();
     let now_ts = chrono::Utc::now().timestamp();
     let bounds_in = match parse_bounds(&body, now) {
@@ -1227,6 +1231,8 @@ pub async fn create(
 
     let mut m = Map::new();
     m.insert("title".into(), json!(title));
+    m.insert("created_by".into(), json!(creator.0));
+    m.insert("created_by_verified".into(), json!(i64::from(creator.1)));
     m.insert(
         "session".into(),
         json!(body.session.clone().unwrap_or_default()),
@@ -2245,8 +2251,8 @@ pub async fn run_now(
             let source_bg = source.clone();
             let run_id = claim.run_id();
             crate::db::interactions::spawn(async move {
-                let outcome = LiveDeliverer::new(state_bg.clone())
-                    .deliver(&sched_bg, &source_bg)
+                let outcome = crate::runtime_jobs::shell_detached::SHELL_RUN_ID
+                    .scope(run_id, LiveDeliverer::new(state_bg.clone()).deliver(&sched_bg, &source_bg))
                     .await;
                 let status = outcome.status().to_string();
                 let sid_done = sched_bg.id().to_string();

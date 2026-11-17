@@ -65,6 +65,7 @@ pub mod converse_retention;
 pub mod contract_watch;
 pub mod land_queue;
 pub mod deploy_wake;
+pub mod memory_dream;
 pub mod disk_watch;
 pub mod decision_digest;
 pub mod directive;
@@ -78,6 +79,8 @@ pub mod goal_check;
 pub mod goal_keeper;
 pub mod task_titles;
 pub mod desc_refresh;
+pub mod email_events;
+pub mod linkedin_events;
 pub mod event_dispatch;
 pub mod host_guard;
 pub mod host_metrics;
@@ -96,6 +99,7 @@ pub mod recordings_transcribe;
 pub mod recordings_live;
 pub mod registry;
 pub mod scheduler;
+pub mod shell_detached;
 pub mod schedule_failure;
 pub mod schedule_wake;
 /// Owner card for queued messages held behind a composer draft (called from
@@ -107,6 +111,7 @@ pub mod episodes;
 pub mod status_history;
 pub mod storage;
 pub mod trace_archive;
+pub mod ledger_checkpoint;
 pub mod tailnet_watch;
 pub mod telegram_poll;
 pub mod telegram_relay;
@@ -451,6 +456,8 @@ mod tests {
             ("heartbeat.rs", include_str!("heartbeat.rs")),
             ("status_history.rs", include_str!("status_history.rs")),
             ("board_hygiene.rs", include_str!("board_hygiene.rs")),
+            ("email_events.rs", include_str!("email_events.rs")),
+            ("linkedin_events.rs", include_str!("linkedin_events.rs")),
         ];
         // The control first: this cell is worthless unless the literal it looks
         // for is one these files COULD contain, so prove the deriver produces
