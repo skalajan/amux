@@ -14,6 +14,9 @@ const LOCKED_PREFIXES: &[&str] = &[
     "/api/board/nudges",
     "/api/health/invariants",
     "/api/calendar.ics",
+    "/sso/",
+    "/scim/",
+    "/mfa",
 ];
 
 /// The address every amux listener binds: `AMUX_RS_BIND`, else upstream's 0.0.0.0.
@@ -62,7 +65,7 @@ mod tests {
 
     #[test]
     fn locks_the_public_diagnostics_and_nothing_the_shell_needs() {
-        for p in ["/api/debug/tmux", "/api/system-jobs", "/api/system-jobs/x/run", "/api/board/nudges", "/api/health/invariants", "/api/calendar.ics"] {
+        for p in ["/api/debug/tmux", "/api/system-jobs", "/api/system-jobs/x/run", "/api/board/nudges", "/api/health/invariants", "/api/calendar.ics", "/sso/login", "/scim/v2/Users", "/mfa"] {
             assert!(is_locked(p), "{p}");
         }
         for p in ["/health", "/api/health", "/", "/manifest.json", "/api/connection/session", "/api/share/x", "/api/bridge/hook/telegram"] {
