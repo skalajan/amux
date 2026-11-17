@@ -281,9 +281,10 @@ _curl() {
   # connection (52, 56) may have been processed, so only a GET retries those.
   # Up to AMUX_CURL_RESTART_WAIT seconds (30; 0 turns this off), said on
   # stderr, and only for this machine's own server (below).
-  local method="GET" a prev="" waited=0 wait_max="${AMUX_CURL_RESTART_WAIT:-30}" step=1 told=0 own_auth=0
+  local method="GET" a prev="" waited=0 wait_max="${AMUX_CURL_RESTART_WAIT:-30}" step=1 told=0 own_auth=0 fail=0 h1=()
   for a in "$@"; do
     [[ "$a" == [Aa]uthorization:* || "$a" == -K || "$a" == --config ]] && own_auth=1
+    [[ "$a" == --fail || "$a" == --fail-with-body || ( "$a" == -[!-]* && "$a" == *f* ) ]] && fail=1
     [[ "$prev" == "-X" || "$prev" == "--request" ]] && method="$a"
     [[ "$a" == -X* && ${#a} -gt 2 ]] && method="${a#-X}"
     [[ "$prev" != "-X" && ( "$a" == "-d" || "$a" == "--data"* || "$a" == "--data-binary" ) && "$method" == "GET" ]] && method="POST"
@@ -314,14 +315,16 @@ _curl() {
   while :; do
     rc=0
     if [[ -n "$out" ]]; then
-      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} ${_auth[@]+"${_auth[@]}"} "$@" >"$out" || rc=$?
+      command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${h1[@]+"${h1[@]}"} ${_id[@]+"${_id[@]}"} ${_auth[@]+"${_auth[@]}"} "$@" >"$out" || rc=$?
     else
       command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} ${_auth[@]+"${_auth[@]}"} "$@" || rc=$?
       break
     fi
     case "$rc" in
       7) ;;
-      52|56) [[ "$method" == "GET" ]] || break ;;
+      52|56) [[ "$method" == "GET" ]] || break
+        # curl 8.7.x exits 56 (not 22) on an HTTP/2 --fail error status; one HTTP/1.1 retry tells that from a real drop.
+        (( fail && ${#h1[@]} == 0 )) && { h1=(--http1.1); continue; } ;;
       *) break ;;
     esac
     (( waited >= wait_max )) && break
