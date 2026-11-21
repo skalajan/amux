@@ -27,7 +27,10 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
      - `amux here` and `amux attach` with no name are present;
      - this `fork/` folder is unchanged;
      - the exposure controls are wired: `crates/amux-server/src/api/fork_lockdown.rs` (listen address `AMUX_RS_BIND`, owner token on the diagnostics and the SSO, SCIM and MFA routes upstream serves publicly) and `crates/amux-server/src/api/fork_cdn.rs` (CDN libraries served from the binary). Check `grep -c 'fork_lockdown\|fork_cdn' crates/amux-server/src/api/mod.rs` = 7 and `grep -c fork_lockdown crates/amux-server/src/lib.rs` = 1.
+     - the iOS app signs with the owner's team: run `fork/ios-signing.sh` after the merge, even without a conflict, and stage what it changes. It must print `ios-signing: ok`.
+       - Why: upstream signs with Ethan's team (`M225B6YA42`, bundle `com.EthanSteininger.nextup`, fastlane match), which this Mac cannot build or install.
    - Conflict in `crates/amux-dashboard/static/state/control-registry.json` only: run `git checkout --theirs` on it, then `npm run -s build:state`.
+   - Conflict in `ios/project.yml`, `ios/**/*.entitlements` or the iOS Swift sources that is only about the team, bundle ID, app group or signing: run `git checkout --theirs` on the file, then `fork/ios-signing.sh`.
    - Any other conflict: `git merge --abort` and report.
 6. **Verify:**
    - `fork/cdn-vendor.py --check` — every CDN file the dashboard names is vendored. If not, run `fork/cdn-vendor.py` (it downloads only the new URLs and pins them in `crates/amux-server/fork-cdn/lock.tsv`) and commit the files with the merge. A URL it cannot vendor (a new host or prefix) is a blocker for the owner.

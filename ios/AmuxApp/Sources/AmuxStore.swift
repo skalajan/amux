@@ -16,7 +16,7 @@ import Foundation
 enum AmuxStore {
     /// Must match the App Group capability on BOTH targets' entitlements and
     /// the identifier registered in the Apple Developer portal.
-    static let appGroupID = "group.com.EthanSteininger.nextup"
+    static let appGroupID = "group.cz.janskala.amux"
 
     /// Falls back to `.standard` rather than trapping. A missing App Group
     /// entitlement is a provisioning mistake, and crashing the host app over it

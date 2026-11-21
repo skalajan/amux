@@ -135,7 +135,7 @@ final class ShareSheetUITests: XCTestCase {
         amux.tap()
 
         // Proves the appex LAUNCHED, rather than the row merely existing.
-        let ext = XCUIApplication(bundleIdentifier: "com.EthanSteininger.nextup.Share")
+        let ext = XCUIApplication(bundleIdentifier: "cz.janskala.amux.Share")
         XCTAssertTrue(
             ext.navigationBars["Share to amux"].waitForExistence(timeout: 25)
             || photos.navigationBars["Share to amux"].waitForExistence(timeout: 5),
@@ -156,7 +156,7 @@ final class ShareSheetUITests: XCTestCase {
                           "amux not offered; testTheShareSheetOffersAmuxUnderThatName owns that")
         amux.tap()
 
-        let ext = XCUIApplication(bundleIdentifier: "com.EthanSteininger.nextup.Share")
+        let ext = XCUIApplication(bundleIdentifier: "cz.janskala.amux.Share")
         XCTAssertTrue(ext.navigationBars["Share to amux"].waitForExistence(timeout: 25),
                       "the share UI never appeared")
 
@@ -172,7 +172,7 @@ final class ShareSheetUITests: XCTestCase {
                 attach(ext, "extension-no-server")
                 throw XCTSkip(
                     "the extension ran and has no server configured. Set serverURL "
-                    + "in group.com.EthanSteininger.nextup first; an unset server "
+                    + "in group.cz.janskala.amux first; an unset server "
                     + "is a rig gap, not a bug.")
             }
             attach(ext, "extension-stuck")
@@ -333,7 +333,7 @@ final class ShareSheetUITests: XCTestCase {
         XCTAssertTrue(amux.waitForExistence(timeout: 15), "amux is not offered in the share sheet")
         let tapped = Date()
         amux.tap()
-        let ext = XCUIApplication(bundleIdentifier: "com.EthanSteininger.nextup.Share")
+        let ext = XCUIApplication(bundleIdentifier: "cz.janskala.amux.Share")
 
         // A7: the picker paints from the cached list without waiting on the
         // network or on copying the shared file.
@@ -529,7 +529,7 @@ final class ShareSheetUITests: XCTestCase {
             .matching(NSPredicate(format: "label == %@", Self.expectedRowLabel)).firstMatch
         guard amux.waitForExistence(timeout: 20) else { shot("no-amux"); return XCTFail("amux not in the share sheet") }
         amux.tap()
-        let ext = XCUIApplication(bundleIdentifier: "com.EthanSteininger.nextup.Share")
+        let ext = XCUIApplication(bundleIdentifier: "cz.janskala.amux.Share")
         let firstRow = ext.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'worker-'")).firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 30), "no worker rows")
 
@@ -638,7 +638,7 @@ final class ShareSheetUITests: XCTestCase {
         guard amux.waitForExistence(timeout: 20) else { shot("no-amux"); return XCTFail("amux not in the share sheet") }
         let opened = Date()
         amux.tap()
-        let ext = XCUIApplication(bundleIdentifier: "com.EthanSteininger.nextup.Share")
+        let ext = XCUIApplication(bundleIdentifier: "cz.janskala.amux.Share")
         let rows = ext.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'worker-'"))
         let firstRow = rows.firstMatch
         let painted = firstRow.waitForExistence(timeout: 30)
