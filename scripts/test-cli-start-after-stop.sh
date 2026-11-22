@@ -147,6 +147,51 @@ else
   bad "F: a timed-out probe was read as a stopped worker" "attach: $F_ATTACH | here: $F_HERE"
 fi
 
+# ── G: `amux here` in a subfolder offers the parent's worker, never takes it unasked ──
+mkdir -p "$WORK/workdir/sub"
+SUB=$(cd "$WORK/workdir/sub" && pwd -P)
+# Runs `amux here` in the subfolder on a pty (the choice is read from /dev/tty), typing $1.
+here_tty() {
+  (cd "$SUB" && env -u AMUX_URL AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
+    HOME="$FAKE_HOME" CC_HOME="$CC" KEYS="$1" python3 -c '
+import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", sys.argv[1], "here"])
+os.write(fd, os.environ["KEYS"].encode())
+end = time.time() + 60
+while time.time() < end and select.select([fd], [], [], 1)[0]:
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    sys.stdout.write(data.decode(errors="replace"))
+' "$E_BIN") 2>&1 || true
+}
+fresh_session bash --noprofile --norc
+G_PIPE=$(cd "$SUB" && env -u AMUX_URL AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
+  HOME="$FAKE_HOME" CC_HOME="$CC" bash "$E_BIN" here </dev/null 2>&1) || true
+G_ENTER=$(here_tty $'\n')
+G_NEW=$(here_tty $'n\nn\n')
+if grep -q "NOTHING was started" <<<"$G_PIPE" && ! grep -q "a new worker here" <<<"$G_PIPE" \
+  && grep -q "a new worker here" <<<"$G_ENTER" && grep -q "NOTHING was started" <<<"$G_ENTER" \
+  && grep -q "a new worker here" <<<"$G_NEW" && grep -q "nothing created" <<<"$G_NEW" \
+  && [ ! -e "$CC/sessions/sub.env" ]; then
+  ok "G: in a subfolder, here asks on a terminal (Enter = the parent's worker, n = create here) and keeps the parent's worker without one"
+else
+  bad "G: here in a subfolder of a worker's folder" "pipe: $G_PIPE | enter: $G_ENTER | new: $G_NEW"
+fi
+G_FORCE=$(cd "$SUB" && env -u AMUX_URL AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
+  HOME="$FAKE_HOME" CC_HOME="$CC" bash "$E_BIN" here --new -y </dev/null 2>&1) || true
+if grep -q "^CC_DIR=\"$SUB\"" "$CC/sessions/sub.env" 2>/dev/null; then
+  ok "G: here --new registers a worker for the subfolder instead of using the parent's"
+else
+  bad "G: here --new did not register a worker for the subfolder" "$G_FORCE"
+fi
+rm -f "$CC/sessions/sub.env"
+
 # ── negative control: without the replacement, case A must fail ───────────────
 BROKEN="$WORK/amux-broken"
 sed 's/if \[\[ "\$_pane_rc" == 1 \]\]; then/if false; then/' "$AMUX_BIN" > "$BROKEN"

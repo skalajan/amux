@@ -1697,7 +1697,7 @@ EOF
   cmd_start "$name" "${CC_EXTRA_ARGS[@]+"${CC_EXTRA_ARGS[@]}"}"
 }
 
-# The worker whose CC_DIR is the deepest one containing $PWD (exact dir wins over a parent).
+# The worker whose CC_DIR is the deepest one containing $PWD (exact dir wins over a parent); with `exact`, only a worker in $PWD itself.
 _worker_for_cwd() {
   local here f n d best="" best_len=0 cands=() running=()
   here=$(pwd -P)
@@ -1708,7 +1708,7 @@ _worker_for_cwd() {
     [[ -n "$d" ]] || continue
     d="${d/#\~/$HOME}"
     d=$(cd "$d" 2>/dev/null && pwd -P) || continue
-    [[ "$here" == "$d" || "$here" == "$d"/* ]] || continue
+    [[ "$here" == "$d" || ( "${1:-}" != exact && "$here" == "$d"/* ) ]] || continue
     if (( ${#d} > best_len )); then
       best="$d"; best_len=${#d}; cands=("$n")
     elif [[ "$d" == "$best" ]]; then
@@ -1796,10 +1796,11 @@ print("starting" if d.get("boot_start_scheduled") is True or d.get("start_in_pro
 
 # amux here: attach to this folder's worker, starting it when stopped, or create one.
 cmd_here() {
-  local yes=false new_name="" cfg="" usage="usage: amux here [-y] [--name NAME] [--config-dir DIR]"
+  local yes=false new=false new_name="" cfg="" usage="usage: amux here [-y] [--new] [--name NAME] [--config-dir DIR]"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -y|--yes) yes=true; shift ;;
+      --new) new=true; shift ;;
       --name) [[ -n "${2:-}" ]] || die "$usage"; new_name="$2"; shift 2 ;;
       --config-dir) [[ -n "${2:-}" ]] || die "$usage"; cfg=$(cd "${2/#\~/$HOME}" 2>/dev/null && pwd -P) || die "no such folder: $2"; shift 2 ;;
       -h|--help) echo "$usage"; return 0 ;;
@@ -1807,19 +1808,48 @@ cmd_here() {
     esac
   done
   need_tmux
-  local here name rc=0
+  local here name="" rc=1 above=false
   here=$(pwd -P)
-  name=$(_worker_for_cwd) || rc=$?
-  if (( rc == 2 )); then
+  if ! $new; then
+    rc=0
+    name=$(_worker_for_cwd exact) || rc=$?
+    if (( rc == 1 )); then
+      rc=0
+      name=$(_worker_for_cwd) || rc=$?
+      (( rc == 1 )) || above=true
+    fi
+  fi
+  # A worker of a folder above is offered, never attached to unasked: its agent works there, not here.
+  if (( rc == 2 )) || { $above && [[ -t 0 ]]; }; then
     local opts pick i
     read -r -a opts <<< "$name"
     [[ -t 0 ]] || die "several workers work in $here: $name — use: amux attach <name>"
-    echo "Several workers work in $here:"
+    if $above; then
+      echo "No worker works in $here; a folder above it has:"
+    else
+      echo "Several workers work in $here:"
+    fi
     for i in "${!opts[@]}"; do echo "  $((i + 1))) ${opts[$i]}"; done
-    read -r -p "Attach to [1-${#opts[@]}]: " pick </dev/tty || pick=""
-    [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#opts[@]} )) || die "nothing picked"
-    name="${opts[$((pick - 1))]}"
-  elif (( rc != 0 )); then
+    if $above; then
+      echo "  n) a new worker here"
+      if (( ${#opts[@]} == 1 )); then
+        read -r -p "Attach to ${opts[0]} [Enter], or n for a new worker: " pick </dev/tty || die "nothing picked"
+        pick="${pick:-1}"
+      else
+        read -r -p "Attach to [1-${#opts[@]}], or n for a new worker: " pick </dev/tty || pick=""
+      fi
+    else
+      read -r -p "Attach to [1-${#opts[@]}]: " pick </dev/tty || pick=""
+    fi
+    if $above && [[ "$pick" == [nN]* ]]; then
+      rc=1
+    else
+      [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#opts[@]} )) || die "nothing picked"
+      name="${opts[$((pick - 1))]}"
+      rc=0
+    fi
+  fi
+  if (( rc != 0 )); then
     _here_create "$here" "$yes" "$new_name" "$cfg"
     name="$_HERE_CREATED"
   fi
@@ -7753,7 +7783,7 @@ ${BOLD}Worker management:${RESET}
 
 ${BOLD}Interaction:${RESET}
   amux attach [name]             Attach to a running worker; no name = the one working in this folder (detach: Ctrl-b d)
-  amux here [-y] [--name N]      Attach to this folder's worker; start it if stopped, or create one (account from the nearest .amux-account, else it and group from the parent folders)
+  amux here [-y] [--new] [--name N]  Attach to this folder's worker; start it if stopped, or create one (account from the nearest .amux-account, else it and group from the parent folders). Only a folder above has a worker: asks to attach to it or create one here; --new creates one here
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
