@@ -10,6 +10,7 @@ pub mod aliases;
 pub mod auth;
 pub mod fork_cdn;
 pub mod fork_lockdown;
+pub mod fork_telegram_topics;
 pub mod avatars;
 pub mod whereabouts;
 pub mod board;

@@ -1160,6 +1160,7 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
             let records = sv::iter_jsonl_tail(&path, 2_000_000);
             if let Some(turn) = final_turn(&records) {
                 super::conversations::relay_turn(&st, &n, &turn.prompt, &turn.text).await;
+                super::fork_telegram_topics::on_turn(&st, &n, &turn.uuid, &turn.prompt, &turn.text).await;
             }
         });
     }

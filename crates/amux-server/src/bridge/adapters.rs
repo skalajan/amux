@@ -80,7 +80,9 @@ pub async fn send(platform: &str, conversation: &str, is_group: bool, text: &str
         }
         "telegram" => {
             let url = format!("{}/bot{}/sendMessage", base("telegram", "https://api.telegram.org"), need("TELEGRAM_BOT_TOKEN")?);
-            let r = c.post(url).json(&json!({"chat_id": conversation, "text": text})).send().await.map_err(|e| e.to_string())?;
+            let mut payload = json!({"chat_id": conversation, "text": text});
+            crate::api::fork_telegram_topics::target(&mut payload, conversation);
+            let r = c.post(url).json(&payload).send().await.map_err(|e| e.to_string())?;
             (r.status().as_u16(), r.json().await.unwrap_or(Value::Null))
         }
         "discord" => {

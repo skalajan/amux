@@ -264,6 +264,7 @@ pub async fn send_all(
     tag: &str,
     url: &str,
 ) -> Vec<Value> {
+    crate::api::fork_telegram_topics::notify(state, session, title, body);
     let payload = serde_json::to_vec(&json!({
         "title": title, "body": body, "session": session, "tag": tag, "url": url,
     }))

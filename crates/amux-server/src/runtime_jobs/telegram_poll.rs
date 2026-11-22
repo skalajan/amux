@@ -255,6 +255,9 @@ pub async fn poll_once(
 }
 
 async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Value) {
+    if crate::api::fork_telegram_topics::handle_update(state, update).await {
+        return;
+    }
     let Some(msg) = update.get("message") else {
         return;
     };

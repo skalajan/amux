@@ -27,6 +27,7 @@ The owner's rule, and the reason this gate exists: **nothing leaves the machines
      - `amux here` and `amux attach` with no name are present;
      - this `fork/` folder is unchanged;
      - the exposure controls are wired: `crates/amux-server/src/api/fork_lockdown.rs` (listen address `AMUX_RS_BIND`, owner token on the diagnostics and the SSO, SCIM and MFA routes upstream serves publicly) and `crates/amux-server/src/api/fork_cdn.rs` (CDN libraries served from the binary). Check `grep -c 'fork_lockdown\|fork_cdn' crates/amux-server/src/api/mod.rs` = 7 and `grep -c fork_lockdown crates/amux-server/src/lib.rs` = 1.
+     - Telegram forum topics (one topic per worker, `crates/amux-server/src/api/fork_telegram_topics.rs`, on only with `AMUX_TELEGRAM_FORUM_CHAT`) keep their six one-line hooks: `grep -l fork_telegram_topics crates/amux-server/src/{lib.rs,api/mod.rs,api/turn_end.rs,bridge/adapters.rs,push/mod.rs,runtime_jobs/telegram_poll.rs} | wc -l` = 6.
      - the iOS app signs with the owner's team: run `fork/ios-signing.sh` after the merge, even without a conflict, and stage what it changes. It must print `ios-signing: ok`.
        - Why: upstream signs with Ethan's team (`M225B6YA42`, bundle `com.EthanSteininger.nextup`, fastlane match), which this Mac cannot build or install.
    - Conflict in `crates/amux-dashboard/static/state/control-registry.json` only: run `git checkout --theirs` on it, then `npm run -s build:state`.
