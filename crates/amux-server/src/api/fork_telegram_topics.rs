@@ -23,7 +23,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const PLATFORM: &str = "telegram";
-const TICK: Duration = Duration::from_secs(60);
+const JOB: &str = "telegram-topics";
+const TICK_SECS: u64 = 60;
 /// Telegram throttles a group at about 20 messages a minute; topic creation counts.
 const CREATE_PER_TICK: usize = 5;
 const CHUNK_CHARS: usize = 3900;
@@ -312,15 +313,16 @@ async fn tick(state: &AppState, chat: i64) {
     }
 }
 
-pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
+/// Registered on /api/system-jobs as `telegram-topics` (off with AMUX_TELEGRAM_TOPICS_SECS=0 or AMUX_ISOLATED=1).
+pub fn spawn(state: AppState) -> crate::runtime_jobs::PeriodicTask {
+    crate::runtime_jobs::spawn_periodic(JOB, TICK_SECS, move || {
+        let state = state.clone();
+        async move {
             if let Some(chat) = forum_chat() {
-                if bridge::setting("TELEGRAM_BOT_TOKEN").is_some() && std::env::var("AMUX_ISOLATED").as_deref() != Ok("1") {
+                if bridge::setting("TELEGRAM_BOT_TOKEN").is_some() {
                     tick(&state, chat).await;
                 }
             }
-            tokio::time::sleep(TICK).await;
         }
     })
 }
