@@ -1734,6 +1734,69 @@ for w in json.load(sys.stdin).get("items", []):
   tmux_name "${id:-$1}"
 }
 
+# The workers whose folder is exactly $PWD, one "<name><TAB><running|stopped>" per line, running first.
+_workers_here() {
+  local here f n d tname state run="" stop=""
+  here=$(pwd -P)
+  for f in "$CC_SESSIONS"/*.env; do
+    [[ -f "$f" ]] || continue
+    n=$(basename "$f" .env)
+    d=$(sed -n 's/^CC_DIR="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f" | tail -1)
+    [[ -n "$d" ]] || continue
+    d=$(cd "${d/#\~/$HOME}" 2>/dev/null && pwd -P) || continue
+    [[ "$d" == "$here" ]] || continue
+    state=stopped
+    if [[ "$(session_backend "$n")" == "herdr" ]]; then
+      is_running "$n" && state=running
+    else
+      tname=$(_worker_tmux_session "$n")
+      if tmux has-session -t "=$tname" 2>/dev/null; then
+        [[ "$tname" == "$(tmux_name "$n")" ]] && agent_dead "$n" || state=running
+      fi
+    fi
+    if [[ "$state" == running ]]; then run+="$n"$'\t'"$state"$'\n'; else stop+="$n"$'\t'"$state"$'\n'; fi
+  done
+  printf '%s%s' "$run" "$stop"
+}
+
+# Whether a closed terminal can ask about its worker at all; when not, `amux here` execs tmux as it always did. AMUX_HERE_ASK_ON_CLOSE=0 turns it off.
+_here_can_ask() {
+  [[ "${AMUX_HERE_ASK_ON_CLOSE:-1}" != 0 && -z "${SSH_CONNECTION:-}" ]] && command -v osascript >/dev/null 2>&1
+}
+
+# Bounded: this runs after the terminal is gone, where a hung tmux would hang unseen.
+_here_clients() {
+  perl -e 'alarm shift; exec @ARGV' 3 tmux list-clients -t "=$1" 2>/dev/null || true
+}
+
+# After an attached worker's terminal was closed (not detached), asks whether the worker stops too.
+_here_closed() {
+  local name="$1" tname="$2" ans i
+  tmux_has_session_exact "=$tname" || return 0
+  # The server may still list the client that just died; another terminal on the worker means it is still in use.
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -z "$(_here_clients "$tname")" ]] && break
+    sleep 0.2
+  done
+  [[ -z "$(_here_clients "$tname")" ]] || return 0
+  [[ "$tname" == "$(tmux_name "$name")" ]] && agent_dead "$name" && return 0
+  ans=$(osascript - "$name" 2>/dev/null <<'OSA'
+on run argv
+	set w to item 1 of argv
+	activate
+	set r to display dialog "The terminal of worker \"" & w & "\" was closed." & return & return & "Stop the worker too? Its conversation is kept." with title "amux" buttons {"Stop worker", "Keep running"} default button "Keep running" giving up after 120
+	if gave up of r then return "timeout"
+	return button returned of r
+end run
+OSA
+  ) || ans=""
+  # Checked again: the dialog can stay up for minutes, and a terminal attached meanwhile means the worker is in use.
+  [[ "$ans" == "Stop worker" && -n "$(_here_clients "$tname")" ]] && ans="Stop worker, but a terminal is attached again: kept"
+  printf '%s here: the terminal of %s was closed: %s\n' "$(date -u +%FT%TZ)" "$name" "${ans:-no answer}" >> "$CC_HOME/logs/here.log" 2>/dev/null || true
+  [[ "$ans" == "Stop worker" ]] || return 0
+  _stop_via_api "$name" || tmux kill-session -t "=$tname"
+}
+
 cmd_attach() {
   local name
   if [[ -z "${1:-}" ]]; then
@@ -1810,7 +1873,30 @@ cmd_here() {
   need_tmux
   local here name="" rc=1 above=false
   here=$(pwd -P)
-  if ! $new; then
+  # On a terminal the choice is always offered: one of this folder's workers, or a new one.
+  if ! $new && ! $yes && [[ -t 0 ]]; then
+    local rows=() row pick i
+    while IFS= read -r row; do [[ -n "$row" ]] && rows+=("$row"); done < <(_workers_here)
+    if (( ${#rows[@]} )); then
+      echo "Workers in $here:"
+      for i in "${!rows[@]}"; do printf '  %d) %-28s %s\n' "$((i + 1))" "${rows[$i]%%$'\t'*}" "${rows[$i]##*$'\t'}"; done
+      echo "  n) a new worker"
+      if (( ${#rows[@]} == 1 )); then
+        read -r -p "Attach to ${rows[0]%%$'\t'*} [Enter], or n for a new worker: " pick </dev/tty || die "nothing picked"
+      else
+        read -r -p "Attach to [1-${#rows[@]}, Enter = 1], or n for a new worker: " pick </dev/tty || die "nothing picked"
+      fi
+      pick="${pick:-1}"
+      if [[ "$pick" == [nN]* ]]; then
+        new=true
+      else
+        [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#rows[@]} )) || die "nothing picked"
+        name="${rows[$((pick - 1))]%%$'\t'*}"
+        rc=0
+      fi
+    fi
+  fi
+  if ! $new && [[ -z "$name" ]]; then
     rc=0
     name=$(_worker_for_cwd exact) || rc=$?
     if (( rc == 1 )); then
@@ -1878,12 +1964,26 @@ sys.exit(1 if not d or d.get("error") or d.get("ok") is False else 0)' 2>/dev/nu
     _await_start "$name" || exit 1
   fi
   [[ -n "${TMUX:-}" ]] && exec tmux switch-client -t "=$tname"
-  exec tmux attach-session -t "=$tname"
+  [[ -t 0 && -t 1 ]] && _here_can_ask || exec tmux attach-session -t "=$tname"
+  # Not exec'd: a closed terminal (unlike a detach) must still be able to ask whether the worker stops.
+  local hup=false arc=0
+  trap 'hup=true' HUP
+  tmux attach-session -t "=$tname" || arc=$?
+  trap '' HUP
+  $hup || { : >/dev/tty; } 2>/dev/null || hup=true
+  if $hup; then
+    exec </dev/null >/dev/null 2>&1
+    _here_closed "$name" "$tname" || true
+  fi
+  # Must exit here: bash reads a script by offset, and this file may have been replaced during a long attach.
+  exit "$arc"
 }
 
 # Registers a worker for $1; its account comes from the nearest .amux-account file, else (like its group) from the workers under the nearest parent folder that has any.
 _here_create() {
-  local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2 mark=""
+  local here="$1" yes="$2" name="$3" cfg="$4" dir src="" f d cfgs="" tags="" all_tags="" ans n=2 mark="" head wrc=0
+  _worker_for_cwd exact >/dev/null 2>&1 || wrc=$?
+  if (( wrc == 1 )); then head="No worker works in $here."; else head="New worker in $here."; fi
   if [[ -z "$cfg" ]]; then
     d="$here"
     while [[ "$d" == "$HOME"/* ]]; do
@@ -1927,10 +2027,27 @@ _here_create() {
     while [[ -f "$CC_SESSIONS/$name.env" ]] || _curl -skf -m 10 "$AMUX_API/api/workers/$name" >/dev/null 2>&1; do
       name="$base-$n"; n=$((n + 1))
     done
+    # On a terminal the owner names the worker; only a free folder name is offered as the default.
+    if ! $yes && [[ -t 0 ]]; then
+      local def="" typed
+      [[ "$name" == "$base" ]] && def="$name"
+      echo "$head"; head=""
+      while :; do
+        read -r -p "Name of the new worker${def:+ [$def]}: " typed </dev/tty || die "nothing created"
+        typed="${typed:-$def}"
+        if [[ ! "$typed" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+          echo "  a name is made of a-z, 0-9, - and _"
+        elif [[ -f "$CC_SESSIONS/$typed.env" ]] || _curl -skf -m 10 "$AMUX_API/api/workers/$typed" >/dev/null 2>&1; then
+          echo "  worker '$typed' already exists"
+        else
+          name="$typed"; break
+        fi
+      done
+    fi
   fi
   [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "'$name' is not a worker name (a-z, 0-9, - and _)"
   [[ -f "$CC_SESSIONS/$name.env" ]] && die "worker '$name' already exists (in another folder) — pick another: amux here --name NAME"
-  echo "No worker works in $here."
+  [[ -n "$head" ]] && echo "$head"
   echo "  name:    $name"
   echo "  account: ${cfg:-default}${src:+  (from the workers under $src)}${mark:+  (from $mark)}"
   echo "  group:   ${tags:-none}"
@@ -7783,7 +7900,7 @@ ${BOLD}Worker management:${RESET}
 
 ${BOLD}Interaction:${RESET}
   amux attach [name]             Attach to a running worker; no name = the one working in this folder (detach: Ctrl-b d)
-  amux here [-y] [--new] [--name N]  Attach to this folder's worker; start it if stopped, or create one (account from the nearest .amux-account, else it and group from the parent folders). Only a folder above has a worker: asks to attach to it or create one here; --new creates one here
+  amux here [-y] [--new] [--name N]  Attach to this folder's worker; start it if stopped, or create one (account from the nearest .amux-account, else it and group from the parent folders). On a terminal it lists this folder's workers plus "a new worker" and asks the new one's name. Only a folder above has a worker: asks to attach to it or create one here; --new creates one here. Closing the terminal (not a detach) asks whether the worker stops too (AMUX_HERE_ASK_ON_CLOSE=0: never)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a

@@ -174,7 +174,7 @@ fresh_session bash --noprofile --norc
 G_PIPE=$(cd "$SUB" && env -u AMUX_URL AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
   HOME="$FAKE_HOME" CC_HOME="$CC" bash "$E_BIN" here </dev/null 2>&1) || true
 G_ENTER=$(here_tty $'\n')
-G_NEW=$(here_tty $'n\nn\n')
+G_NEW=$(here_tty $'n\n\nn\n')
 if grep -q "NOTHING was started" <<<"$G_PIPE" && ! grep -q "a new worker here" <<<"$G_PIPE" \
   && grep -q "a new worker here" <<<"$G_ENTER" && grep -q "NOTHING was started" <<<"$G_ENTER" \
   && grep -q "a new worker here" <<<"$G_NEW" && grep -q "nothing created" <<<"$G_NEW" \
@@ -191,6 +191,100 @@ else
   bad "G: here --new did not register a worker for the subfolder" "$G_FORCE"
 fi
 rm -f "$CC/sessions/sub.env"
+
+# ── H: `amux here` on a terminal offers this folder's workers and a new one, and asks the new one's name ──
+# Runs `amux here` in the worker's folder on a pty and types $1; $2 = seconds to wait, or "attach" to wait until the worker is attached
+# (prints ATTACHED); then closes the pty, after a detach when $3 = detach. $ASK is AMUX_HERE_ASK_ON_CLOSE.
+here_pty() {
+  (cd "$WORK/workdir" && env -u AMUX_URL -u SSH_CONNECTION AMUX_HERE_ASK_ON_CLOSE="${ASK:-1}" AMUX_API=https://127.0.0.1:9 AMUX_CURL_RESTART_WAIT=0 PATH="$WORK/bin:$PATH" \
+    HOME="$FAKE_HOME" CC_HOME="$CC" KEYS="$1" HOLD="$2" END="${3:-eof}" SOCK="$SOCK" python3 -c '
+import os, pty, select, subprocess, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", sys.argv[1], "here"])
+def drain(secs):
+    end = time.time() + secs
+    while time.time() < end:
+        if not select.select([fd], [], [], 0.2)[0]:
+            continue
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            return
+        if not data:
+            return
+        sys.stdout.write(data.decode(errors="replace"))
+os.write(fd, os.environ["KEYS"].encode())
+if os.environ["HOLD"] == "attach":
+    end = time.time() + 60
+    while time.time() < end:
+        drain(0.3)
+        if subprocess.run(["tmux", "-S", os.environ["SOCK"], "list-clients", "-t", "=amux-sas"], capture_output=True).stdout.strip():
+            print("ATTACHED")
+            break
+    drain(1)
+else:
+    drain(float(os.environ["HOLD"]))
+if os.environ["END"] == "detach":
+    subprocess.run(["tmux", "-S", os.environ["SOCK"], "detach-client", "-s", "=amux-sas"])
+    drain(3)
+os.close(fd)
+' "$E_BIN") 2>&1 || true
+}
+cat > "$CC/sessions/sas2.env" <<ENVEOF
+CC_DIR="$WORK/workdir"
+CC_PROVIDER="claude"
+ENVEOF
+fresh_session bash --noprofile --norc -c 'sleep 300; true'
+H_MENU=$(here_pty $'x\n' 8)
+H_NAME=$(here_pty $'n\nBad Name\nsas\nthird\nn\n' 12)
+if grep -q "1) sas .*running" <<<"$H_MENU" && grep -q "2) sas2 .*stopped" <<<"$H_MENU" \
+  && grep -q "n) a new worker" <<<"$H_MENU" && grep -q "nothing picked" <<<"$H_MENU"; then
+  ok "H: here lists the folder's workers with their state, the running one first, plus a new worker"
+else
+  bad "H: the menu of a folder with two workers" "$H_MENU"
+fi
+if grep -q "New worker in" <<<"$H_NAME" && grep -q "a name is made of" <<<"$H_NAME" && grep -q "worker 'sas' already exists" <<<"$H_NAME" \
+  && grep -q "name:    third" <<<"$H_NAME" && grep -q "nothing created" <<<"$H_NAME" && [ ! -e "$CC/sessions/third.env" ]; then
+  ok "H: a new worker's name is asked, and a bad or a taken name is asked again"
+else
+  bad "H: naming a new worker" "$H_NAME"
+fi
+rm -f "$CC/sessions/sas2.env"
+
+# ── I: a closed terminal asks whether the worker stops; a detach never asks ───
+# The stub answers the dialog from $OSA_ANSWER and leaves a mark, so a test never opens a real one.
+printf '#!/usr/bin/env bash\necho asked >> "%s"\necho "${OSA_ANSWER:-Keep running}"\n' "$WORK/asked" > "$WORK/bin/osascript"
+chmod +x "$WORK/bin/osascript"
+wait_asked() { local i; for i in $(seq 1 40); do [ -e "$WORK/asked" ] && return 0; sleep 0.25; done; return 1; }
+live_agent() { local p; p=$(pane_pid); [ -n "$p" ] && has_live_child "$p"; }
+fresh_session bash --noprofile --norc -c 'sleep 300; true'
+rm -f "$WORK/asked"; I_OUT=$(here_pty $'\n' attach detach); sleep 2
+if grep -q ATTACHED <<<"$I_OUT" && [ ! -e "$WORK/asked" ] && live_agent; then
+  ok "I: a detach asks nothing and the worker runs on"
+else
+  bad "I: a detach asked about the worker or ended it" "$I_OUT"
+fi
+rm -f "$WORK/asked"; I_OUT=$(ASK=0 here_pty $'\n' attach); sleep 3
+if grep -q ATTACHED <<<"$I_OUT" && [ ! -e "$WORK/asked" ] && live_agent; then
+  ok "I: AMUX_HERE_ASK_ON_CLOSE=0 turns the question off"
+else
+  bad "I: the question was asked with AMUX_HERE_ASK_ON_CLOSE=0" "$I_OUT"
+fi
+rm -f "$WORK/asked"; I_OUT=$(here_pty $'\n' attach)
+if grep -q ATTACHED <<<"$I_OUT" && wait_asked && sleep 2 && live_agent; then
+  ok "I: a closed terminal asks, and \"Keep running\" keeps the worker"
+else
+  bad "I: closing the terminal did not ask, or the worker ended on \"Keep running\""
+fi
+rm -f "$WORK/asked"; I_OUT=$(OSA_ANSWER="Stop worker" here_pty $'\n' attach)
+I_GONE=no
+if grep -q ATTACHED <<<"$I_OUT" && wait_asked; then for _ in $(seq 1 40); do t has-session -t "=amux-sas" 2>/dev/null || { I_GONE=yes; break; }; sleep 0.25; done; fi
+if [ "$I_GONE" = yes ]; then
+  ok "I: \"Stop worker\" stops the worker whose terminal was closed"
+else
+  bad "I: \"Stop worker\" left the worker running"
+fi
 
 # ── negative control: without the replacement, case A must fail ───────────────
 BROKEN="$WORK/amux-broken"
